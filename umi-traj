@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# umi-traj -- X3 录像 -> 夹爪轨迹。先运行一次 install.sh。
+#   ./umi-traj <录像.insv | 放录像的文件夹> [--out 结果目录] [--jobs N] [--mode handheld|dual] [--force] [--keep-work]
+#   ./umi-traj check          # 检查安装
+#   ./umi-traj --help
+ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+DEPS=${UMI_DEPS:-$ROOT/.deps}
+if [ ! -f "$DEPS/env.sh" ]; then
+  echo "还没安装：先运行  bash $ROOT/install.sh" >&2
+  exit 2
+fi
+# shellcheck disable=SC1091
+source "$DEPS/env.sh"
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec "$KIWI_PY" -m software.trajectory "$@"

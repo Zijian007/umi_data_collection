@@ -1,0 +1,100 @@
+# 新仓库待办
+
+把 X3 手持夹爪轨迹工具做成企业内部数采流程。实验室仓库 `umi` 继续留在原地，不把实验历史带过来。
+
+引擎快照来源：`github.com/Torbjorn-s-Apple-Americano/umi`，分支 `dev_Zijian`，提交 `71a124d`。
+
+本仓库：`github.com/Zijian007/umi_data_collection`。
+
+## 已经定下的
+
+- 新仓库从空目录建起，不 fork `umi`。
+- 轨迹算法先原样搬走，不改融合、ORB-SLAM3 封装、X3 读取、Basalt 标定。
+- 第一批使用者是内部采集员。外部账号、付款、权限以后再加。
+- 采集员只交原始 `.insv`。合格 / 重录 / 交工程师由批处理判定。
+- 实验室那台 X3 的出厂标定只作样例设备，不当默认值。
+- ORB-SLAM3 与 Pangolin 继续在安装时下载，不放进仓库。
+
+## 建仓前填上
+
+- [x] 仓库名、账号：`github.com/Zijian007/umi_data_collection`。
+- [ ] 许可证。发给公司以外的人之前写清楚。自己写的代码随仓库走；ORB-SLAM3 是 GPL-3.0，安装时另行下载。
+
+## 0. 建空仓库
+
+- [x] 在 GitHub 新建空仓库，没有导入 `umi`。
+- [x] 把本文件放进新仓库根目录，作为第一次提交。
+- [x] 根目录 `.gitignore` 忽略：`.deps/`、`calibration_user/`、`__pycache__/`、`*.pyc`、`.DS_Store`、`*.insv`、`*.lrv`、`umi_traj_out/`。
+
+## 1. 搬走引擎快照
+
+从 `umi@71a124d` 原样拷贝，拷完不要改这些文件里的算法：
+
+- [x] `software/camera/`
+- [x] `software/trajectory/`
+- [x] `software/calibration/`
+- [x] `software/__init__.py`
+- [x] `install.sh`、`umi-traj`、`umi-calib`、`Dockerfile`、`.dockerignore`
+- [x] `docs/录制说明.md`、`docs/使用说明.md`、`docs/标定说明.md`、`docs/原理与精度.md`
+- [x] `QUICKSTART_X3_STREAM.md`（实时预览说明；`software/tools/live_monitor/` 先不搬，采集端再搬）
+
+明确不拷：
+
+- `experiments/`、训练、部署、控制台、`universal_manipulation_interface/`
+- 录像、`.deps/`、`calibration_user/`
+- 硬件 CAD 整树。相机–TCP 几何和遮手图已在 `software/trajectory/calib/` 与 `software/trajectory/config/` 里，随引擎走。
+
+搬完之后：
+
+- [x] 写 `PROVENANCE.md`：引擎来自 `umi@71a124d`，列出上面的路径，写明此后算法改动要单独记一笔。
+- [x] 在 `software/trajectory/calib/README.md` 说明：`calibration_r1440.json` 是实验室某一台 X3 的样例，不是众包默认标定。文件先留着，供对照跑通。
+- [ ] 在一台 Linux x86_64 上执行 `bash install.sh`，再用一段已知录像跑 `./umi-traj`。对照 `umi` 上同一段的轨迹长度和 `summary.json`，确认同一量级。这一步通过之前不改引擎代码。
+
+## 2. 设备档案 `registry/`
+
+替换「全仓共用一份标定」。一条设备记录包含：
+
+- [ ] 相机序列号
+- [ ] 标定包目录和哈希（内参、相机–IMU、时间偏移；格式与现在的 user bundle 相同）
+- [ ] 夹爪版本
+- [ ] 相机–TCP 几何文件和哈希
+- [ ] 遮手指图和哈希
+- [ ] 状态：样例 / 在用 / 停用
+
+做到：
+
+- [ ] 用记录里的标定包调用现有 `umi-traj`，不靠仓库根目录的 `calibration_user/` 或改环境变量碰运气。
+- [ ] 缺序列号、缺标定、标定哈希对不上时拒绝处理，不要静默退回出厂样例。
+- [ ] 实验室那台 X3 做成第一条「样例」记录，用来完成第 1 节的对照跑。
+
+## 3. 批处理 `process/`
+
+一条输入 = 原始 `.insv`（只读）+ 设备编号。一条输出：
+
+- [ ] 调用第 1 节的 `umi-traj`，不复制一份融合代码。
+- [ ] 判定只有三档：合格、重录、交工程师。建图可疑但重试后仍写出轨迹的，不算合格。
+- [ ] 记录：引擎提交号、设备编号、标定包哈希、夹爪版本、TCP 几何哈希、遮手图哈希、选用了第几次建图、轨迹目录。
+- [ ] 原始 `.insv` 不改名、不转码、不剪辑。处理结果写到旁边的目录。
+
+合格线先用现有信号，写死在配置里，改线要改这一个文件：
+
+- 地图位置覆盖的帧比例低于 95%，或同一段里地图被摆放了不止一次：重录。
+- 录像短于 30 秒、不是 360 4K60、丢帧、IMU 读不出：重录。
+- 设备档案对不上、标定包打不开、程序中途失败：交工程师。
+
+- [ ] 用第 1 节那条已知录像走一遍：档案正确时得到合格或重录（与对照一致），档案故意填错时得到交工程师。
+
+## 4. 采集端（设备档案和批处理稳定之后）
+
+- [ ] 任务卡：这段要录什么、录多长、开头静止、扫图、结尾静止。
+- [ ] 实时预览：确认前镜头没被挡。把 `software/tools/live_monitor/` 从 `umi@71a124d` 再搬过来。
+- [ ] 只上传原始 `.insv`，附上设备编号和任务编号。采集员的电脑不跑 SLAM。
+- [ ] 操作规程写成新仓库里的 `docs/采集规程.md`，对着上面三档判定来写。实验室的 `录制说明.md` 留作算法解释，不把它改成众包手册。
+
+## 先不做
+
+- 不改 `kiwi_fuse3s.py`、ORB-SLAM3 配置、X3 读取和 Basalt 标定流程。
+- 不把 `umi` 的 `experiments/`、训练、部署、控制台并进来。
+- 不做夹爪开合宽度、LeRobot 转换、机械臂部署。
+- 不做外部众包账号、付款和权限。
+- 不把 ORB-SLAM3、Pangolin 的源码放进仓库。

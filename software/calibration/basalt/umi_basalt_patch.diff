@@ -1,0 +1,460 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b827394..21a7bc4 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -79,7 +79,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+ set(CMAKE_CXX_FLAGS_CIDEBUG  "-O0 -DEIGEN_INITIALIZE_MATRICES_BY_NAN")
+ set(CMAKE_CXX_FLAGS_CIRELWITHDEBINFO "-O3 -DEIGEN_INITIALIZE_MATRICES_BY_NAN")
+ 
+-set(BASALT_CXX_FLAGS "-Wall -Wextra -Werror -Wno-error=unused-parameter -ftemplate-backtrace-limit=0")
++set(BASALT_CXX_FLAGS "-Wall -Wextra -ftemplate-backtrace-limit=0")
+ 
+ if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+   set(BASALT_CXX_FLAGS "${BASALT_CXX_FLAGS} -Wno-exceptions -fcolor-diagnostics -Wno-error=deprecated-declarations")
+diff --git a/include/basalt/optimization/linearize.h b/include/basalt/optimization/linearize.h
+index 465886a..b928416 100644
+--- a/include/basalt/optimization/linearize.h
++++ b/include/basalt/optimization/linearize.h
+@@ -135,7 +135,8 @@ struct LinearizeBase {
+   inline void linearize_point(const Eigen::Vector2d& corner_pos, int corner_id,
+                               const Eigen::Matrix4d& T_c_w, const CamT& cam,
+                               PoseCalibH<CamT::N>* cph, double& error,
+-                              int& num_points, double& reproj_err) const {
++                              int& num_points, double& reproj_err,
++                        double* reproj_err_sq = nullptr) const {
+     Eigen::Matrix<double, 2, 4> d_r_d_p;
+     Eigen::Matrix<double, 2, CamT::N> d_r_d_param;
+ 
+@@ -182,6 +183,7 @@ struct LinearizeBase {
+ 
+     error += huber_weight * e * e * (2 - huber_weight);
+     reproj_err += e;
++    if (reproj_err_sq) *reproj_err_sq += e * e;  // fixedscale branch: exact-RMS evidence accumulator
+     num_points++;
+   }
+ 
+diff --git a/include/basalt/optimization/poses_linearize.h b/include/basalt/optimization/poses_linearize.h
+index 4cd814d..d786038 100644
+--- a/include/basalt/optimization/poses_linearize.h
++++ b/include/basalt/optimization/poses_linearize.h
+@@ -71,6 +71,7 @@ struct LinearizePosesOpt : public LinearizeBase<Scalar> {
+   AccumT accum;
+   Scalar error;
+   Scalar reprojection_error;
++  Scalar reprojection_error_sq;
+   int num_points;
+ 
+   size_t opt_size;
+@@ -86,6 +87,7 @@ struct LinearizePosesOpt : public LinearizeBase<Scalar> {
+     accum.reset(opt_size);
+     error = 0;
+     reprojection_error = 0;
++    reprojection_error_sq = 0;
+     num_points = 0;
+   }
+   LinearizePosesOpt(const LinearizePosesOpt& other, tbb::split)
+@@ -94,6 +96,7 @@ struct LinearizePosesOpt : public LinearizeBase<Scalar> {
+     accum.reset(opt_size);
+     error = 0;
+     reprojection_error = 0;
++    reprojection_error_sq = 0;
+     num_points = 0;
+   }
+ 
+@@ -114,16 +117,18 @@ struct LinearizePosesOpt : public LinearizeBase<Scalar> {
+ 
+             double err = 0;
+             double reproj_err = 0;
++            double reproj_err_sq = 0;
+             int num_inliers = 0;
+ 
+             for (size_t i = 0; i < acd.corner_pos.size(); i++) {
+               this->linearize_point(acd.corner_pos[i], acd.corner_id[i],
+                                     T_c_w_m, cam, &cph, err, num_inliers,
+-                                    reproj_err);
++                                    reproj_err, &reproj_err_sq);
+             }
+ 
+             error += err;
+             reprojection_error += reproj_err;
++            reprojection_error_sq += reproj_err_sq;
+             num_points += num_inliers;
+ 
+             const Matrix6 Adj =
+@@ -172,6 +177,7 @@ struct LinearizePosesOpt : public LinearizeBase<Scalar> {
+     accum.join(rhs.accum);
+     error += rhs.error;
+     reprojection_error += rhs.reprojection_error;
++    reprojection_error_sq += rhs.reprojection_error_sq;
+     num_points += rhs.num_points;
+   }
+ };
+@@ -199,6 +205,7 @@ struct ComputeErrorPosesOpt : public LinearizeBase<Scalar> {
+ 
+   Scalar error;
+   Scalar reprojection_error;
++  Scalar reprojection_error_sq;
+   int num_points;
+ 
+   size_t opt_size;
+@@ -213,6 +220,7 @@ struct ComputeErrorPosesOpt : public LinearizeBase<Scalar> {
+     this->common_data = common_data;
+     error = 0;
+     reprojection_error = 0;
++    reprojection_error_sq = 0;
+     num_points = 0;
+   }
+ 
+@@ -221,6 +229,7 @@ struct ComputeErrorPosesOpt : public LinearizeBase<Scalar> {
+     this->common_data = other.common_data;
+     error = 0;
+     reprojection_error = 0;
++    reprojection_error_sq = 0;
+     num_points = 0;
+   }
+ 
+@@ -236,16 +245,18 @@ struct ComputeErrorPosesOpt : public LinearizeBase<Scalar> {
+ 
+             double err = 0;
+             double reproj_err = 0;
++            double reproj_err_sq = 0;
+             int num_inliers = 0;
+ 
+             for (size_t i = 0; i < acd.corner_pos.size(); i++) {
+               this->linearize_point(acd.corner_pos[i], acd.corner_id[i],
+                                     T_c_w_m, cam, nullptr, err, num_inliers,
+-                                    reproj_err);
++                                    reproj_err, &reproj_err_sq);
+             }
+ 
+             error += err;
+             reprojection_error += reproj_err;
++            reprojection_error_sq += reproj_err_sq;
+             num_points += num_inliers;
+           },
+           this->common_data.calibration->intrinsics[acd.cam_id].variant);
+@@ -255,6 +266,7 @@ struct ComputeErrorPosesOpt : public LinearizeBase<Scalar> {
+   void join(ComputeErrorPosesOpt& rhs) {
+     error += rhs.error;
+     reprojection_error += rhs.reprojection_error;
++    reprojection_error_sq += rhs.reprojection_error_sq;
+     num_points += rhs.num_points;
+   }
+ };  // namespace basalt
+diff --git a/include/basalt/optimization/poses_optimize.h b/include/basalt/optimization/poses_optimize.h
+index e444d87..217ce4d 100644
+--- a/include/basalt/optimization/poses_optimize.h
++++ b/include/basalt/optimization/poses_optimize.h
+@@ -34,6 +34,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+ #pragma once
+ 
++#include <cmath>
++#include <iomanip>
++
+ #include <basalt/calibration/aprilgrid.h>
+ #include <basalt/calibration/calibration_helper.h>
+ #include <basalt/optimization/poses_linearize.h>
+@@ -130,6 +133,17 @@ class PosesOptimization {
+     error = lopt.error;
+     num_points = lopt.num_points;
+     reprojection_error = lopt.reprojection_error;
++    {  // fixedscale branch: exact-RMS evidence (same reduction pass as the printed mean)
++      std::streamsize rms_prec_ = std::cout.precision();
++      std::cout << std::setprecision(12)
++                << "RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=" << lopt.num_points
++                << " sum_norm=" << lopt.reprojection_error
++                << " sum_sq=" << lopt.reprojection_error_sq
++                << " mean=" << (lopt.reprojection_error / lopt.num_points)
++                << " rms=" << std::sqrt(lopt.reprojection_error_sq / lopt.num_points)
++                << std::setprecision(rms_prec_) << std::endl;
++    }
++
+ 
+     std::cout << "[LINEARIZE] Error: " << lopt.error << " num points "
+               << lopt.num_points << std::endl;
+@@ -204,6 +218,17 @@ class PosesOptimization {
+         error = eopt.error;
+         num_points = eopt.num_points;
+         reprojection_error = eopt.reprojection_error;
++        {  // fixedscale branch: exact-RMS evidence (same reduction pass as the printed mean)
++          std::streamsize rms_prec_ = std::cout.precision();
++          std::cout << std::setprecision(12)
++                    << "RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=" << eopt.num_points
++                    << " sum_norm=" << eopt.reprojection_error
++                    << " sum_sq=" << eopt.reprojection_error_sq
++                    << " mean=" << (eopt.reprojection_error / eopt.num_points)
++                    << " rms=" << std::sqrt(eopt.reprojection_error_sq / eopt.num_points)
++                    << std::setprecision(rms_prec_) << std::endl;
++        }
++
+ 
+         step = true;
+       }
+diff --git a/include/basalt/optimization/spline_linearize.h b/include/basalt/optimization/spline_linearize.h
+index f09efb4..fe48f02 100644
+--- a/include/basalt/optimization/spline_linearize.h
++++ b/include/basalt/optimization/spline_linearize.h
+@@ -95,6 +95,7 @@ struct LinearizeSplineOpt : public LinearizeBase<Scalar> {
+   AccumT accum;
+   Scalar error;
+   Scalar reprojection_error;
++  Scalar reprojection_error_sq;
+   int num_points;
+ 
+   size_t opt_size;
+@@ -109,6 +110,7 @@ struct LinearizeSplineOpt : public LinearizeBase<Scalar> {
+     accum.reset(opt_size);
+     error = 0;
+     reprojection_error = 0;
++    reprojection_error_sq = 0;
+     num_points = 0;
+ 
+     BASALT_ASSERT(spline);
+@@ -120,6 +122,7 @@ struct LinearizeSplineOpt : public LinearizeBase<Scalar> {
+     accum.reset(opt_size);
+     error = 0;
+     reprojection_error = 0;
++    reprojection_error_sq = 0;
+     num_points = 0;
+   }
+ 
+@@ -401,16 +404,18 @@ struct LinearizeSplineOpt : public LinearizeBase<Scalar> {
+ 
+             double err = 0;
+             double reproj_err = 0;
++            double reproj_err_sq = 0;
+             int num_inliers = 0;
+ 
+             for (size_t i = 0; i < acd.corner_pos.size(); i++) {
+               this->linearize_point(acd.corner_pos[i], acd.corner_id[i],
+                                     T_c_w_m, cam, &cph, err, num_inliers,
+-                                    reproj_err);
++                                    reproj_err, &reproj_err_sq);
+             }
+ 
+             error += err;
+             reprojection_error += reproj_err;
++            reprojection_error_sq += reproj_err_sq;
+             num_points += num_inliers;
+ 
+             Matrix6 Adj = -this->common_data.calibration->T_i_c[acd.cam_id]
+@@ -635,6 +640,7 @@ struct LinearizeSplineOpt : public LinearizeBase<Scalar> {
+     accum.join(rhs.accum);
+     error += rhs.error;
+     reprojection_error += rhs.reprojection_error;
++    reprojection_error_sq += rhs.reprojection_error_sq;
+     num_points += rhs.num_points;
+   }
+ 
+@@ -674,6 +680,7 @@ struct ComputeErrorSplineOpt : public LinearizeBase<Scalar> {
+ 
+   Scalar error;
+   Scalar reprojection_error;
++  Scalar reprojection_error_sq;
+   int num_points;
+ 
+   size_t opt_size;
+@@ -687,6 +694,7 @@ struct ComputeErrorSplineOpt : public LinearizeBase<Scalar> {
+ 
+     error = 0;
+     reprojection_error = 0;
++    reprojection_error_sq = 0;
+     num_points = 0;
+ 
+     BASALT_ASSERT(spline);
+@@ -697,6 +705,7 @@ struct ComputeErrorSplineOpt : public LinearizeBase<Scalar> {
+     this->common_data = other.common_data;
+     error = 0;
+     reprojection_error = 0;
++    reprojection_error_sq = 0;
+     num_points = 0;
+   }
+ 
+@@ -787,16 +796,18 @@ struct ComputeErrorSplineOpt : public LinearizeBase<Scalar> {
+ 
+             double err = 0;
+             double reproj_err = 0;
++            double reproj_err_sq = 0;
+             int num_inliers = 0;
+ 
+             for (size_t i = 0; i < acd.corner_pos.size(); i++) {
+               this->linearize_point(acd.corner_pos[i], acd.corner_id[i],
+                                     T_c_w_m, cam, nullptr, err, num_inliers,
+-                                    reproj_err);
++                                    reproj_err, &reproj_err_sq);
+             }
+ 
+             error += err;
+             reprojection_error += reproj_err;
++            reprojection_error_sq += reproj_err_sq;
+             num_points += num_inliers;
+           },
+           this->common_data.calibration->intrinsics[acd.cam_id].variant);
+@@ -835,6 +846,7 @@ struct ComputeErrorSplineOpt : public LinearizeBase<Scalar> {
+   void join(ComputeErrorSplineOpt& rhs) {
+     error += rhs.error;
+     reprojection_error += rhs.reprojection_error;
++    reprojection_error_sq += rhs.reprojection_error_sq;
+     num_points += rhs.num_points;
+   }
+ 
+diff --git a/include/basalt/optimization/spline_optimize.h b/include/basalt/optimization/spline_optimize.h
+index bd0de2c..ecc09ee 100644
+--- a/include/basalt/optimization/spline_optimize.h
++++ b/include/basalt/optimization/spline_optimize.h
+@@ -34,6 +34,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+ #pragma once
+ 
++#include <cmath>
++#include <iomanip>
++
+ #include <basalt/optimization/accumulator.h>
+ #include <basalt/optimization/spline_linearize.h>
+ 
+@@ -421,6 +424,17 @@ class SplineOptimization {
+     error = lopt.error;
+     num_points = lopt.num_points;
+     reprojection_error = lopt.reprojection_error;
++    {  // fixedscale branch: exact-RMS evidence (same reduction pass as the printed mean)
++      std::streamsize rms_prec_ = std::cout.precision();
++      std::cout << std::setprecision(12)
++                << "RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=" << lopt.num_points
++                << " sum_norm=" << lopt.reprojection_error
++                << " sum_sq=" << lopt.reprojection_error_sq
++                << " mean=" << (lopt.reprojection_error / lopt.num_points)
++                << " rms=" << std::sqrt(lopt.reprojection_error_sq / lopt.num_points)
++                << std::setprecision(rms_prec_) << std::endl;
++    }
++
+ 
+     if (print_info)
+       std::cout << "[LINEARIZE] Error: " << lopt.error << " num points "
+@@ -506,6 +520,17 @@ class SplineOptimization {
+         error = eopt.error;
+         num_points = eopt.num_points;
+         reprojection_error = eopt.reprojection_error;
++        {  // fixedscale branch: exact-RMS evidence (same reduction pass as the printed mean)
++          std::streamsize rms_prec_ = std::cout.precision();
++          std::cout << std::setprecision(12)
++                    << "RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=" << eopt.num_points
++                    << " sum_norm=" << eopt.reprojection_error
++                    << " sum_sq=" << eopt.reprojection_error_sq
++                    << " mean=" << (eopt.reprojection_error / eopt.num_points)
++                    << " rms=" << std::sqrt(eopt.reprojection_error_sq / eopt.num_points)
++                    << std::setprecision(rms_prec_) << std::endl;
++        }
++
+ 
+         step = true;
+       }
+diff --git a/src/calibrate_imu.cpp b/src/calibrate_imu.cpp
+index a1ada70..6a4fea0 100644
+--- a/src/calibrate_imu.cpp
++++ b/src/calibrate_imu.cpp
+@@ -80,6 +80,20 @@ int main(int argc, char** argv) {
+   app.add_option("--skip-images", skip_images, "Number of images to skip");
+   app.add_flag("--no-gui", no_gui, "Run calibration without opening the GUI");
+ 
++  bool fixed_accel_scale = false;
++  app.add_flag("--fixed-accel-scale", fixed_accel_scale,
++               "No-GUI only: save calibration right after the first "
++               "optimization phase (IMU scale and camera time offset both "
++               "kept at their off defaults) and exit before the free-scale "
++               "phase");
++
++  bool fixed_scale_opt_offset = false;
++  app.add_flag("--fixed-scale-opt-offset", fixed_scale_opt_offset,
++               "No-GUI only: after the first optimization phase converges, "
++               "enable ONLY camera time offset optimization (IMU scale is "
++               "never enabled), run a second optimization phase, save the "
++               "calibration and exit");
++
+   try {
+     app.parse(argc, argv);
+   } catch (const CLI::ParseError& e) {
+@@ -100,6 +114,17 @@ int main(int argc, char** argv) {
+     cv.initOptimization();
+     while (!cv.optimizeWithParam(true)) {
+     }
++    if (fixed_accel_scale) {
++      cv.saveCalib();
++      return 0;
++    }
++    if (fixed_scale_opt_offset) {
++      cv.setOptCamTimeOffset(true);
++      while (!cv.optimizeWithParam(true)) {
++      }
++      cv.saveCalib();
++      return 0;
++    }
+     cv.setOptCamTimeOffset(true);
+     cv.setOptImuScale(true);
+     while (!cv.optimizeWithParam(true)) {
+diff --git a/vcpkg.json b/vcpkg.json
+index e36dd6b..5c7302a 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -1,12 +1,6 @@
+ {
+   "name": "basalt",
+   "version-string": "0.1.7",
+-  "overrides": [
+-    {
+-      "name": "realsense2",
+-      "version": "2.51.1"
+-    }
+-  ],
+   "dependencies": [
+     "boost-date-time",
+     "boost-filesystem",
+@@ -38,13 +32,6 @@
+         "png"
+       ]
+     },
+-    {
+-      "name": "realsense2",
+-      "features": [
+-        "rs-usb-backend",
+-        "tm2"
+-      ]
+-    },
+     "tbb",
+     "basalt-headers",
+     "opengv",
+diff --git a/vcpkg/ports/opengv/portfile.cmake b/vcpkg/ports/opengv/portfile.cmake
+index 049626e..6c3175b 100644
+--- a/vcpkg/ports/opengv/portfile.cmake
++++ b/vcpkg/ports/opengv/portfile.cmake
+@@ -5,6 +5,7 @@ vcpkg_from_git(
+ )
+ 
+ file(REMOVE_RECURSE "${SOURCE_PATH}/build")
++vcpkg_replace_string("${SOURCE_PATH}/CMakeLists.txt" "add_definitions (-march=native)" "")
+ vcpkg_replace_string("${SOURCE_PATH}/CMakeLists.txt" "CXX_STANDARD 11" "CXX_STANDARD 17")
+ vcpkg_replace_string("${SOURCE_PATH}/CMakeLists.txt" "set(CMAKE_BUILD_TYPE Release)" "if(NOT CMAKE_BUILD_TYPE)\n  set(CMAKE_BUILD_TYPE Release)\nendif()")
+ vcpkg_replace_string("${SOURCE_PATH}/CMakeLists.txt" "ENDIF()\n\nset(CMAKE_MODULE_PATH" "ENDIF()\n\nadd_compile_options(-include cassert)\n\nset(CMAKE_MODULE_PATH")
+@@ -42,6 +43,7 @@ if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
+     list(APPEND _opengv_cmake_options
+         "-DCMAKE_C_FLAGS_DEBUG=-O0 -g0"
+         "-DCMAKE_CXX_FLAGS_DEBUG=-O0 -g0"
++        "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG"
+     )
+ endif()
+ 
+diff --git a/vcpkg/ports/pangolin/portfile.cmake b/vcpkg/ports/pangolin/portfile.cmake
+index 30f3b6c..1b7443c 100644
+--- a/vcpkg/ports/pangolin/portfile.cmake
++++ b/vcpkg/ports/pangolin/portfile.cmake
+@@ -36,6 +36,10 @@ file(REMOVE_RECURSE "${SOURCE_PATH}/components/pango_core/include/sigslot")
+ 
+ string(COMPARE EQUAL "${VCPKG_CRT_LINKAGE}" "static" MSVC_USE_STATIC_CRT)
+ 
++vcpkg_replace_string("${SOURCE_PATH}/CMakeLists.txt" "add_compile_options(-Wall -Wextra -Werror)" "add_compile_options(-Wall -Wextra)")
++vcpkg_replace_string("${SOURCE_PATH}/CMakeLists.txt" "add_compile_options(-Werror=maybe-uninitialized)" "")
++vcpkg_replace_string("${SOURCE_PATH}/CMakeLists.txt" "add_compile_options(-Werror=vla)" "")
++
+ vcpkg_cmake_configure(
+     SOURCE_PATH "${SOURCE_PATH}"
+     OPTIONS ${FEATURE_OPTIONS}

@@ -1,0 +1,8 @@
+.deps/
+calibration_user/
+__pycache__/
+*.pyc
+.DS_Store
+*.insv
+*.lrv
+umi_traj_out/

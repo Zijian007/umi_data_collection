@@ -1,0 +1,26 @@
+--- a/src/System.cc	2026-09-27 02:49:49.566508280 +1000
++++ b/src/System.cc	2026-10-03 19:35:46.316316960 +1000
+@@ -21,6 +21,7 @@
+ #include "System.h"
+ #include "Converter.h"
+ #include <thread>
++#include <cstdlib>
+ #include <pangolin/pangolin.h>
+ #include <iomanip>
+ #include <openssl/md5.h>
+@@ -139,7 +140,14 @@
+         // mpAtlas->CreateNewMap();
+         // when loading a file from disk, we want to localize
+         vector<Map*> map_vector = mpAtlas->GetAllMaps();
+-        mpAtlas->ChangeMap(map_vector.at(0));
++        for(size_t im = 0; im < map_vector.size(); ++im)
++            cout << "atlas_map index " << im << " id " << map_vector[im]->GetId() << " keyframes " << map_vector[im]->KeyFramesInMap()
++                 << " mappoints " << map_vector[im]->MapPointsInMap() << endl;
++        size_t map_index = 0;
++        const char* env_mi = getenv("ORB_MAP_INDEX");
++        if(env_mi) { map_index = (size_t)atoi(env_mi); if(map_index >= map_vector.size()) map_index = 0; }
++        cout << "atlas_map selected index " << map_index << endl;
++        mpAtlas->ChangeMap(map_vector.at(map_index));
+         Map* pCurrentMap = mpAtlas->GetCurrentMap();
+         cout << "Atlas loaded!" << endl;
+     }

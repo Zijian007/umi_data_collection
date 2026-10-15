@@ -1,0 +1,55 @@
+# OpenCV >= 4.7 changed the ArUco API (Dictionary / DetectorParameters are no longer created through cv::Ptr factories).
+# These are the only edits made to cheng-chi/ORB_SLAM3 @ b741dca3 in the lab0 tree that produced the validated results
+# (taken verbatim from `git diff` there, minus the CMakeLists hunk that build_orbslam3.sh adds itself).
+diff --git a/Examples/Monocular-Inertial/gopro_slam.cc b/Examples/Monocular-Inertial/gopro_slam.cc
+index f9a0f76..13378f0 100644
+--- a/Examples/Monocular-Inertial/gopro_slam.cc
++++ b/Examples/Monocular-Inertial/gopro_slam.cc
+@@ -183,7 +183,7 @@ int main(int argc, char **argv) {
+   }
+ 
+   // Create SLAM system. It initializes all system threads and gets ready to process frames.
+-  cv::Ptr<cv::aruco::Dictionary> aruco_dict = cv::aruco::getPredefinedDictionary(aruco_dict_id);
++  cv::Ptr<cv::aruco::Dictionary> aruco_dict = cv::makePtr<cv::aruco::Dictionary>(cv::aruco::getPredefinedDictionary(aruco_dict_id));
+   ORB_SLAM3::System SLAM(
+     vocabulary, setting, 
+     ORB_SLAM3::System::IMU_MONOCULAR, 
+diff --git a/include/Frame.h b/include/Frame.h
+index 880d553..72f22dd 100644
+--- a/include/Frame.h
++++ b/include/Frame.h
+@@ -66,7 +66,7 @@ public:
+     Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera* pCamera,Frame* pPrevF = static_cast<Frame*>(NULL), const IMU::Calib &ImuCalib = IMU::Calib());
+ 
+     // Constructor for Monocular cameras.
+-    Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, GeometricCamera* pCamera, cv::Mat &distCoef, const float &bf, const float &thDepth, Frame* pPrevF = static_cast<Frame*>(NULL), const IMU::Calib &ImuCalib = IMU::Calib(), cv::Ptr<cv::aruco::Dictionary> aruco_dict=cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50));
++    Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, GeometricCamera* pCamera, cv::Mat &distCoef, const float &bf, const float &thDepth, Frame* pPrevF = static_cast<Frame*>(NULL), const IMU::Calib &ImuCalib = IMU::Calib(), cv::Ptr<cv::aruco::Dictionary> aruco_dict=cv::makePtr<cv::aruco::Dictionary>(cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50)));
+ 
+     // Destructor
+     // ~Frame();
+diff --git a/include/System.h b/include/System.h
+index 58c245d..fd2d2d3 100644
+--- a/include/System.h
++++ b/include/System.h
+@@ -106,7 +106,7 @@ public:
+         const bool bUseViewer = true, 
+         const string &load_atlas_path = std::string(),
+         const string &save_atlas_path = std::string(),
+-        const cv::Ptr<cv::aruco::Dictionary> aruco_dict=cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50),
++        const cv::Ptr<cv::aruco::Dictionary> aruco_dict=cv::makePtr<cv::aruco::Dictionary>(cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50)),
+         const int init_tag_id=13,
+         const float init_tag_size=0.16
+     );
+diff --git a/src/Frame.cc b/src/Frame.cc
+index 393054a..a427030 100644
+--- a/src/Frame.cc
++++ b/src/Frame.cc
+@@ -270,7 +270,7 @@ Frame::Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extra
+     mvInvLevelSigma2 = mpORBextractorLeft->GetInverseScaleSigmaSquares();
+ 
+     // ArUcO detection
+-    cv::Ptr<cv::aruco::DetectorParameters> parameters = cv::aruco::DetectorParameters::create();
++    cv::Ptr<cv::aruco::DetectorParameters> parameters = cv::makePtr<cv::aruco::DetectorParameters>();
+     cv::aruco::detectMarkers(imGray, aruco_dict, markerCorners, markerIds, parameters, rejectedCandidates);
+ 
+     // ORB extraction

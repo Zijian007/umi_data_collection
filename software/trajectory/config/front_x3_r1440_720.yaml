@@ -1,0 +1,60 @@
+%YAML:1.0
+# UMI-fork (gopro_slam) settings for the X3 4K60 workspace lens, r1440 crop downsized to 720x720.
+# Source: frozen v2_openvins_deployment r1440 calibration (calibration.json sha256 e3ef0e5b...), the same
+# numbers as the 2026-09-14 bakeoff orbslam3.yaml, with the pinhole part scaled by 0.5 using the
+# pixel-centre convention  f' = f/2,  c' = (c + 0.5)/2 - 0.5.  KB4 distortion is resolution independent.
+# IMU block copied verbatim from the bakeoff settings (assumed priors carried in the frozen calibration).
+# ORB block: UMI's gopro10_maxlens_fisheye_setting_v1_720.yaml values (= upstream defaults).
+
+File.version: "1.0"
+
+Camera.type: "KannalaBrandt8"
+Camera1.fx: 255.723322960769
+Camera1.fy: 255.868566979085
+Camera1.cx: 363.423916399629
+Camera1.cy: 359.994212400880
+Camera1.k1: 0.038729615123
+Camera1.k2: 0.073177472089
+Camera1.k3: -0.074081707215
+Camera1.k4: 0.021158298423
+
+Camera.width: 720
+Camera.height: 720
+Camera.fps: 30
+Camera.RGB: 1
+
+# camera -> body(IMU) = Basalt T_imu_cam as is (ORB-SLAM3 mTbc)
+IMU.T_b_c1: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: f
+   data: [-0.000760657406, 0.999991666705, -0.004010975117, 0.007450924667,
+          -0.005001886246, 0.004007121409, 0.999979461845, 0.019674876486,
+          0.999987201185, 0.000780704225, 0.004998796518, 0.015284179220,
+          0.000000000000, 0.000000000000, 0.000000000000, 1.000000000000]
+
+IMU.NoiseGyro: 0.0002
+IMU.NoiseAcc: 0.002
+IMU.GyroWalk: 2e-05
+IMU.AccWalk: 0.003
+IMU.Frequency: 997.297324
+
+ORBextractor.nFeatures: 1250
+ORBextractor.scaleFactor: 1.2
+ORBextractor.nLevels: 8
+ORBextractor.iniThFAST: 20
+ORBextractor.minThFAST: 7
+
+System.thFarPoints: 20.0
+
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -3.5
+Viewer.ViewpointF: 500.0
+Viewer.imageViewScale: 1.0

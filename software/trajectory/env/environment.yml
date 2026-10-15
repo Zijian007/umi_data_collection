@@ -1,0 +1,32 @@
+# X3 轨迹工具的运行与编译环境（conda-forge，不需要 sudo）。
+# 版本对齐 lab0 上产出已验证结果的环境：OpenCV 4.12.0、FFmpeg 8.0.1（GPL，带 libx264）、Boost 1.85、Eigen 3.4.0、Python 3.11。
+# install.sh 优先用同目录的 linux-64.lock（逐包锁定 URL + md5）；本文件用于在别的平台重新求解或升级时生成新的 lock。
+name: umi-traj
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy=2.4.6
+  - scipy=1.17.1
+  - matplotlib-base
+  - av                       # 只用来读 INSV 的帧时间戳（demux，不解码）
+  - ffmpeg=8.0.1=gpl*        # 裁前镜头视频（libx264）
+  - libopencv=4.12.0=headless*
+  - eigen=3.4.0
+  - libboost-devel=1.85.0
+  - openssl=3.6
+  - cmake=3.31
+  - make
+  - pkg-config
+  - git
+  - cxx-compiler
+  - c-compiler
+  - gxx_linux-64=11.4.0      # 显式锁编译器大版本
+  - gcc_linux-64=11.4.0
+  # Pangolin v0.6（ORB-SLAM3 链接要用，运行时不开窗口）需要的 OpenGL / X11 头文件与库
+  - libgl-devel
+  - libglu
+  - glew
+  - xorg-libx11
+  - xorg-libxext
+  - pip

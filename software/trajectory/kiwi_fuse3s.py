@@ -1,0 +1,817 @@
+"""[kiwi_fuse3s = kiwi_fuse3r + --refine_chains W (2026-10-07): stage 1 is one joint solve per lens with a SHARED
+ accelerometer bias, so one bad chain can push every chain of the lens over the IMU self-consistency gate. With W > 0 a chain
+ that fails jointly and has >= 2W stage-1 pairs is judged ALONE (own b_a); if it passes alone it joins the re-solve on the good
+ chains (and keeps its own scale / gravity if the joint re-solve still rejects it -- the slowly drifting bias is modelled in
+ the main graph anyway); if it fails alone it is cut in two at its middle pair and the pieces are judged alone (down to 3
+ pairs), recursively.
+ W = 0 (default) is exactly 3r. Found in the release regression: ORB-SLAM3 mapping is not deterministic; when 069 mapping
+ did not lose track while the camera was turned away, one 1017-frame chain carried the bad stretch and its joint solve
+ (b_a -1.5 m/s^2) failed both chains (NO_USABLE_LENS) although [1080, 1747] alone passes (rel_std 0.053); on 070 the last
+ chain failed jointly at 0.246 but passes alone at 0.081. In all 103 archived fusion runs no failing chain has more than
+ 10 pairs, so W = 8 leaves every archived result unchanged.]
+[kiwi_fuse3r = kiwi_fuse3q + --group_chains TOL: full chains of one lens that come from the same map (same 'map' label, or no
+ label) and whose scales agree within a factor TOL share ONE placement (one set of scale / rotation / translation variables). A
+ relocalization back into the same, scale-consistent map (069: before / after turning away) keeps one map frame; scale-inconsistent
+ regions (066: x90) still get their own placement.]
+[kiwi_fuse3q = kiwi_fuse3p + (a) a 'map' column in frames.csv (multi-map localization merged by merge_frames.py) splits chains
+ wherever the source map changes; (b) --split_rot_deg D: split a chain between consecutive frames whose pose-relative rotation
+ disagrees with the gyro-integrated rotation by more than D degrees (catches coordinate jumps such as ORB-SLAM3 map merges).]
+[kiwi_fuse3p = kiwi_fuse3m + --node_stride N: state nodes (pose/vel/bias) only every N frames, IMU preintegrated between nodes,
+ lens / rotation / ZUPT factors only at node frames (KIWI also thins its visual factors); the full-rate trajectory is filled by IMU
+ prediction from the previous node with a linear blend of the end-point mismatch. Records build / optimise wall time.]
+[kiwi_fuse3m = kiwi_fuse3k + --map_residual: the lens position residual is formed IN THE MAP, e = (R^T (p_X - t) - R_m l)/s - p_m,
+ with sigma = lens sigma / (initial chain scale), so localization noise stays in map units and the (nearly noise-free, IMU-driven)
+ trajectory is the regressor. In the world-frame form X - s(p + eps) the noise is scaled by s and the optimizer shrinks s
+ (errors-in-variables); NERO 042 dual came out with length ratio 0.71.]
+[kiwi_fuse3k = kiwi_fuse3j + --acc_noise / --gyro_noise / --acc_rw (IMU noise densities in the graph; defaults = frozen
+ OpenVINS values 0.002 / 0.0002 / 0.003). Diagnostic: NERO motion shows ~0.07 m/s^2/sqrt(Hz) accelerometer HF content vs 0.02 handheld.]
+[kiwi_fuse3j = kiwi_fuse3i + --front_lever_free: the front lever (p_I in C_f, frozen r1440 value) becomes a variable with a
+ --lever_sigma prior, like the rear lever (diagnostic for the 042 front scale bias).]
+[kiwi_fuse3i = kiwi_fuse3h + --adaptive_sigma: each lens' position sigma = pos_sigma * (its stage-1 position RMS /
+ the smallest stage-1 position RMS among lenses with full chains), so a lens whose map is less IMU-consistent weighs less.]
+[kiwi_fuse3h = kiwi_fuse3g with the other-lens gate keyed on the chain's OWN stage 1 (IMU self-consistency) instead of a
+ tight LS residual; default --seg_s 0. Rounds 1-2 (2026-10-01): time segments made every case worse (map -> odometry);
+ the 15 mm LS gate rejected the useful P066 rear chain (28 mm) while the harmful P064 rear chains all fail their own stage 1.]
+KIWI-style offline fusion, one wrist, both lenses, with map placements that may change along the recording
+(2026-10-01, method development on already-seen data; successor of kiwi_fuse2.py).
+
+Why: monocular ORB-SLAM3 maps are not always one similarity away from the metric world. On P066 the front map has two
+regions whose scale differs ~90x (the localization run jumps between them at a relocalization); the P066 rear map's
+window scale wanders 12..20. kiwi_fuse2 (one Sim3 per map) cannot represent either.
+
+Model (equations ours, KIWI code not released):
+  - each lens' localization (frames.csv; only ok=1 AND state=2 frames) is split into CHAINS at every tracking gap;
+  - stage 1 per lens: linear VI alignment (step 30, lever fixed) with one scale and one gravity PER CHAIN, shared b_a;
+    a chain is "good" if its scale is positive, has >= 3 pairs, relative std <= --max_rel_std and |g_free| = 9.81 +- 0.5;
+    chains that are not good keep only their rotation information (rotation-only factor with a per-chain map rotation);
+  - each good chain is cut into SEGMENTS of --seg_s seconds (0 = one segment per chain); segment j has its own
+    log-scale lam_j, rotation R_j, translation t_j:  p_X = e^lam_j R_j p_m + t_j + R_j R_m l,   R_X = R_j R_m R_CI;
+  - consecutive segments of a chain are tied by a robust (Huber) continuity factor at the boundary map point p_b:
+      [lam_b - lam_a ;  Log(R_a^T R_b) ;  (e^lam_b R_b p_b + t_b) - (e^lam_a R_a p_b + t_a)]  with sigmas
+      (--sig_ls, --sig_rw_deg, --sig_c); no tie across chains (a relocalization may land in another map region);
+  - optional --zupt: zero-velocity prior on frames whose +-0.25 s IMU window is static;
+  - IMU: CombinedImuFactor per frame; rear lever is a variable with a 1 cm prior, front lever = frozen r1440 calibration.
+Init lens: among lenses whose stage 1 is sane, the one with the smaller stage-1 position-row RMS. Gauge: longest good
+chain of the init lens (first segment: t = 0, yaw prior). Other chains: anchored to the nearest placed chain in time
+(init lens) or by rotation averaging + linear LS for (s, t) against the init-lens trajectory (other lens).
+
+usage: kiwi_fuse3.py <rear_frames.csv> <front_frames.csv> <imu0.csv> <offset_ns> <q_ICr_xyzw> <out_dir>
+         --lever_prior lx,ly,lz [--times times.csv] [--step 30] [--pos_sigma 0.004] [--front_only] [--rear_only]
+         [--seg_s 2.0] [--sig_ls 0.03] [--sig_rw_deg 0.3] [--sig_c 0.002] [--max_rel_std 0.2] [--zupt] [--selftest]
+         [--accept_rms 0.015] [--accept_rot_deg 1.0] [--lever_sigma 0.01]
+Other-lens map-quality gate (added after round 1, where a P064 rear chain whose own stage 1 failed was admitted by the
+LS fit and bent the front placement): chain rotation must agree with the init lens (median <= --accept_rot_deg), else
+the chain is dropped; full (position) use additionally needs the single-similarity LS residual <= --accept_rms,
+otherwise rotation-only.
+"""
+import csv, json, os, sys, time
+import numpy as np
+from scipy.spatial.transform import Rotation as Rot
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
+import gtsam
+from gtsam.symbol_shorthand import X, V, B
+
+G = 9.81
+FPS = 30000.0 / 1001.0
+a = sys.argv
+
+
+def opt(name, default, typ=float):
+    return typ(a[a.index(name) + 1]) if name in a else default
+
+
+def skew(w):
+    return np.array([[0, -w[2], w[1]], [w[2], 0, -w[0]], [-w[1], w[0], 0]])
+
+
+def jr_inv(phi):
+    th = np.linalg.norm(phi); K = skew(phi)
+    if th < 1e-6:
+        return np.eye(3) + 0.5 * K
+    return np.eye(3) + 0.5 * K + (1.0 / th ** 2 - (1 + np.cos(th)) / (2 * th * np.sin(th))) * K @ K
+
+
+def logR(Rm):
+    return gtsam.Rot3.Logmap(gtsam.Rot3(Rm))
+
+
+# ---------------- custom factors (analytic Jacobians; checked by --selftest) ----------------
+def make_lens_factor(noise, kx, kl, kr, kt, klev, p_m, M, R_m, lever_fixed):
+    """full lens observation; klev=None -> lever fixed"""
+    keys = [kx, kl, kr, kt] + ([klev] if klev is not None else [])
+
+    def f(this, v, H):
+        ks = this.keys()
+        T = v.atPose3(ks[0]); sc = np.exp(v.atVector(ks[1])[0]); Rwm = v.atRot3(ks[2]).matrix(); tt = v.atVector(ks[3])
+        lv = v.atVector(ks[4]) if klev is not None else lever_fixed
+        Rx, px = T.rotation().matrix(), T.translation()
+        e_rot = logR((Rwm @ M).T @ Rx)
+        w = sc * p_m + R_m @ lv
+        e_pos = px - Rwm @ w - tt
+        if H is not None:
+            Ji = jr_inv(e_rot); C = (Rwm @ M).T @ Rx
+            HX = np.zeros((6, 6)); HX[:3, :3] = Ji; HX[3:, 3:] = Rx
+            HS = np.zeros((6, 1)); HS[3:, 0] = -Rwm @ p_m * sc
+            HR = np.zeros((6, 3)); HR[:3, :] = -Ji @ C.T @ M.T; HR[3:, :] = Rwm @ skew(w)
+            HT = np.zeros((6, 3)); HT[3:, :] = -np.eye(3)
+            H[0], H[1], H[2], H[3] = HX, HS, HR, HT
+            if klev is not None:
+                HL = np.zeros((6, 3)); HL[3:, :] = -Rwm @ R_m; H[4] = HL
+        return np.concatenate([e_rot, e_pos])
+    return gtsam.CustomFactor(noise, keys, f)
+
+
+def make_lens_factor_map(noise, kx, kl, kr, kt, klev, p_m, M, R_m, lever_fixed):
+    """full lens observation, position residual in map units: e_pos = (R^T (p_X - t) - R_m l)/s - p_m"""
+    keys = [kx, kl, kr, kt] + ([klev] if klev is not None else [])
+
+    def f(this, v, H):
+        ks = this.keys()
+        T = v.atPose3(ks[0]); sc = np.exp(v.atVector(ks[1])[0]); Rwm = v.atRot3(ks[2]).matrix(); tt = v.atVector(ks[3])
+        lv = v.atVector(ks[4]) if klev is not None else lever_fixed
+        Rx, px = T.rotation().matrix(), T.translation()
+        e_rot = logR((Rwm @ M).T @ Rx)
+        wv = Rwm.T @ (px - tt)
+        u = wv - R_m @ lv
+        e_pos = u / sc - p_m
+        if H is not None:
+            Ji = jr_inv(e_rot); C = (Rwm @ M).T @ Rx
+            HX = np.zeros((6, 6)); HX[:3, :3] = Ji; HX[3:, 3:] = Rwm.T @ Rx / sc
+            HS = np.zeros((6, 1)); HS[3:, 0] = -u / sc
+            HR = np.zeros((6, 3)); HR[:3, :] = -Ji @ C.T @ M.T; HR[3:, :] = skew(wv) / sc
+            HT = np.zeros((6, 3)); HT[3:, :] = -Rwm.T / sc
+            H[0], H[1], H[2], H[3] = HX, HS, HR, HT
+            if klev is not None:
+                HL = np.zeros((6, 3)); HL[3:, :] = -R_m / sc; H[4] = HL
+        return np.concatenate([e_rot, e_pos])
+    return gtsam.CustomFactor(noise, keys, f)
+
+
+def make_rot_factor(noise, kx, kr, M):
+    def f(this, v, H):
+        ks = this.keys()
+        Rx = v.atPose3(ks[0]).rotation().matrix(); Rwm = v.atRot3(ks[1]).matrix()
+        e = logR((Rwm @ M).T @ Rx)
+        if H is not None:
+            Ji = jr_inv(e); C = (Rwm @ M).T @ Rx
+            HX = np.zeros((3, 6)); HX[:, :3] = Ji
+            H[0], H[1] = HX, -Ji @ C.T @ M.T
+        return e
+    return gtsam.CustomFactor(noise, [kx, kr], f)
+
+
+def make_cont_factor(noise, ka, kb, p_b):
+    """ka, kb = (lam, R, T) keys of consecutive segments"""
+    def f(this, v, H):
+        ks = this.keys()
+        la, Ra, ta = v.atVector(ks[0])[0], v.atRot3(ks[1]).matrix(), v.atVector(ks[2])
+        lb, Rb, tb = v.atVector(ks[3])[0], v.atRot3(ks[4]).matrix(), v.atVector(ks[5])
+        sa, sb = np.exp(la), np.exp(lb)
+        eR = logR(Ra.T @ Rb)
+        ep = sb * Rb @ p_b + tb - sa * Ra @ p_b - ta
+        if H is not None:
+            Ji = jr_inv(eR)
+            Hla = np.zeros((7, 1)); Hla[0, 0] = -1; Hla[4:, 0] = -sa * Ra @ p_b
+            HRa = np.zeros((7, 3)); HRa[1:4, :] = -Ji @ Rb.T @ Ra; HRa[4:, :] = sa * Ra @ skew(p_b)
+            Hta = np.zeros((7, 3)); Hta[4:, :] = -np.eye(3)
+            Hlb = np.zeros((7, 1)); Hlb[0, 0] = 1; Hlb[4:, 0] = sb * Rb @ p_b
+            HRb = np.zeros((7, 3)); HRb[1:4, :] = Ji; HRb[4:, :] = -sb * Rb @ skew(p_b)
+            Htb = np.zeros((7, 3)); Htb[4:, :] = np.eye(3)
+            H[0], H[1], H[2], H[3], H[4], H[5] = Hla, HRa, Hta, Hlb, HRb, Htb
+        return np.concatenate([[lb - la], eR, ep])
+    return gtsam.CustomFactor(noise, list(ka) + list(kb), f)
+
+
+def selftest():
+    rng = np.random.default_rng(0)
+    vals = gtsam.Values()
+    kx, kl, kr, kt, klev, kl2, kr2, kt2 = X(0), gtsam.symbol("p", 0), gtsam.symbol("q", 0), gtsam.symbol("r", 0), \
+        gtsam.symbol("l", 0), gtsam.symbol("p", 1), gtsam.symbol("q", 1), gtsam.symbol("r", 1)
+    vals.insert(kx, gtsam.Pose3(gtsam.Rot3.Expmap(rng.normal(size=3)), gtsam.Point3(*rng.normal(size=3))))
+    vals.insert(kl, np.array([0.3])); vals.insert(kr, gtsam.Rot3.Expmap(rng.normal(size=3))); vals.insert(kt, rng.normal(size=3))
+    vals.insert(klev, rng.normal(size=3) * 0.02)
+    vals.insert(kl2, np.array([0.35])); vals.insert(kr2, gtsam.Rot3.Expmap(rng.normal(size=3) * 0.05) * vals.atRot3(kr))
+    vals.insert(kt2, rng.normal(size=3))
+    R_m = Rot.from_rotvec(rng.normal(size=3)).as_matrix(); M = R_m @ Rot.from_rotvec(rng.normal(size=3)).as_matrix()
+    p_m = rng.normal(size=3)
+    n6, n3, n7 = (gtsam.noiseModel.Unit.Create(d) for d in (6, 3, 7))
+    facs = {"lens_rear": make_lens_factor(n6, kx, kl, kr, kt, klev, p_m, M, R_m, None),
+            "lens_front": make_lens_factor(n6, kx, kl, kr, kt, None, p_m, M, R_m, rng.normal(size=3) * 0.02),
+            "lens_map_rear": make_lens_factor_map(n6, kx, kl, kr, kt, klev, p_m, M, R_m, None),
+            "lens_map_front": make_lens_factor_map(n6, kx, kl, kr, kt, None, p_m, M, R_m, rng.normal(size=3) * 0.02),
+            "rot": make_rot_factor(n3, kx, kr, M),
+            "cont": make_cont_factor(n7, (kl, kr, kt), (kl2, kr2, kt2), p_m)}
+    worst = 0.0
+    for name, fac in facs.items():
+        Hs = fac.linearize(vals).jacobian()[0]  # unit noise -> raw Jacobian
+        e0 = fac.unwhitenedError(vals); col = 0
+        for key in fac.keys():
+            x0 = vals.atPose3(key) if gtsam.Symbol(key).chr() == ord("x") else None
+            dim = 6 if x0 is not None else (3 if gtsam.Symbol(key).chr() in (ord("q"),) else len(np.atleast_1d(
+                vals.atVector(key))) if gtsam.Symbol(key).chr() != ord("q") else 3)
+            for i in range(dim):
+                d = np.zeros(dim); d[i] = 1e-6; v2 = gtsam.Values(vals)
+                c = gtsam.Symbol(key).chr()
+                if c == ord("x"):
+                    v2.update(key, vals.atPose3(key).retract(d))
+                elif c == ord("q"):
+                    v2.update(key, vals.atRot3(key).retract(d))
+                else:
+                    v2.update(key, vals.atVector(key) + d)
+                num = (fac.unwhitenedError(v2) - e0) / 1e-6
+                err = np.abs(num - Hs[:, col]).max(); worst = max(worst, err); col += 1
+        print("selftest", name, "max |analytic - numeric| so far", "%.2e" % worst)
+    print("SELFTEST", "PASS" if worst < 1e-4 else "FAIL", "%.2e" % worst)
+    sys.exit(0 if worst < 1e-4 else 1)
+
+
+if "--selftest" in a:
+    selftest()
+
+rcsv, fcsv, icsv, off = a[1], a[2], a[3], int(a[4])
+R_ICr = Rot.from_quat([float(x) for x in a[5].split(",")]).as_matrix()
+out = a[6]
+os.makedirs(out, exist_ok=True)
+STEP = opt("--step", 30, int)
+POS_SIG = opt("--pos_sigma", 0.004)
+SEG_S = opt("--seg_s", 0.0)
+SIG_LS, SIG_RW, SIG_C = opt("--sig_ls", 0.03), np.radians(opt("--sig_rw_deg", 0.3)), opt("--sig_c", 0.002)
+MAX_REL = opt("--max_rel_std", 0.2)
+ACC_RMS, ACC_ROT = opt("--accept_rms", 0.05), opt("--accept_rot_deg", 1.0)   # other-lens map-quality gate
+LEV_SIG = opt("--lever_sigma", 0.01)
+ZUPT = "--zupt" in a
+LEVER_R = np.array([float(v) for v in a[a.index("--lever_prior") + 1].split(",")])
+USE = {"rear": "--front_only" not in a, "front": "--rear_only" not in a}
+R_ICf = Rot.from_quat([0.49755236525086166, 0.49994224223855627, 0.500437891379753, -0.5020570835374644]).as_matrix()
+P_CfinI = np.array([0.007450924667325848, 0.01967487648569278, 0.015284179219744808])
+LEVER_F = -R_ICf.T @ P_CfinI
+LENS = {"rear": {"R_CI": R_ICr.T, "lever": LEVER_R}, "front": {"R_CI": R_ICf.T, "lever": LEVER_F}}
+
+
+MAPCOL = {}
+
+
+def load(p):
+    d = {}; mp = {}
+    for r in csv.DictReader(open(p)):
+        if r["ok"] == "1" and r.get("state", "2") == "2":
+            d[int(r["frame_idx"])] = (np.array([float(r["tx"]), float(r["ty"]), float(r["tz"])]),
+                                      Rot.from_quat([float(r[c]) for c in ("qx", "qy", "qz", "qw")]).as_matrix())
+            if r.get("map"):
+                mp[int(r["frame_idx"])] = r["map"]
+    MAPCOL[p] = mp
+    return d
+
+
+def chains_of(obs):
+    ch = []
+    for k in sorted(obs):
+        if ch and k == ch[-1][1] + 1:
+            ch[-1][1] = k
+        else:
+            ch.append([k, k])
+    return [tuple(c) for c in ch]
+
+
+for m, p in (("rear", rcsv), ("front", fcsv)):
+    LENS[m]["obs"] = load(p) if USE[m] else {}
+    LENS[m]["mapid"] = MAPCOL.get(p, {}) if USE[m] else {}
+    LENS[m]["chains"] = chains_of(LENS[m]["obs"])
+TIMES = a[a.index("--times") + 1] if "--times" in a else None
+if TIMES is not None:
+    tcan = np.array([float(r["t_canonical_s"]) for r in csv.DictReader(open(TIMES))]); nfr = len(tcan)
+else:
+    nfr = max(max(LENS["rear"]["obs"], default=0), max(LENS["front"]["obs"], default=0)) + 1
+imu = np.array([[float(x) for x in row] for row in csv.reader(open(icsv)) if row and not row[0].startswith("#")])
+ti = (imu[:, 0] - off) / 1e9 - 1.0
+gyr, acc = imu[:, 1:4], imu[:, 4:7]
+tf = (tcan - 1.0) if TIMES is not None else np.arange(nfr) / FPS
+static = np.linalg.norm(gyr, axis=1) < 0.02
+bg0 = gyr[static][:2000].mean(0) if static.sum() > 200 else np.zeros(3)
+SPLIT_ROT = opt("--split_rot_deg", 0.0)
+
+
+def gyro_dR(t0, t1):
+    i0, i1 = np.searchsorted(ti, t0), np.searchsorted(ti, t1); Rg = np.eye(3); tprev = t0
+    for i in range(max(i0 - 1, 0), min(i1 + 1, len(ti))):
+        tn = min(ti[i + 1], t1) if i + 1 < len(ti) else t1
+        dt = tn - max(tprev, ti[i])
+        if dt > 0:
+            Rg = Rg @ Rot.from_rotvec((gyr[i] - bg0) * dt).as_matrix()
+        tprev = tn
+        if tn >= t1:
+            break
+    return Rg
+
+
+SPLITS = {}
+for m in LENS:
+    obs, mp, R_CI = LENS[m]["obs"], LENS[m]["mapid"], LENS[m]["R_CI"]
+    new = []; ns = {"map": 0, "rot": 0}
+    for (k0, k1) in LENS[m]["chains"]:
+        start = k0
+        for k in range(k0 + 1, k1 + 1):
+            cut = None
+            if mp and mp.get(k) != mp.get(k - 1):
+                cut = "map"
+            elif SPLIT_ROT > 0:
+                dRp = (obs[k - 1][1] @ R_CI).T @ (obs[k][1] @ R_CI)
+                if np.degrees(np.linalg.norm(Rot.from_matrix(dRp.T @ gyro_dR(tf[k - 1], tf[k])).as_rotvec())) > SPLIT_ROT:
+                    cut = "rot"
+            if cut:
+                new.append((start, k - 1)); start = k; ns[cut] += 1
+        new.append((start, k1))
+    LENS[m]["chains"] = new; SPLITS[m] = ns
+print("chain_splits", SPLITS, flush=True)
+
+
+def preint(t0, t1, bg, ba):
+    i0, i1 = np.searchsorted(ti, t0), np.searchsorted(ti, t1)
+    dR = np.eye(3); dv = np.zeros(3); dp = np.zeros(3); Jv = np.zeros((3, 3)); Jp = np.zeros((3, 3)); tprev = t0
+    for i in range(max(i0 - 1, 0), min(i1 + 1, len(ti))):
+        tn = min(ti[i + 1], t1) if i + 1 < len(ti) else t1
+        dt = tn - max(tprev, ti[i])
+        if dt <= 0:
+            continue
+        aa = acc[i] - ba
+        dp = dp + dv * dt + 0.5 * dR @ aa * dt * dt; Jp = Jp + Jv * dt - 0.5 * dR * dt * dt
+        dv = dv + dR @ aa * dt; Jv = Jv - dR * dt
+        dR = dR @ Rot.from_rotvec((gyr[i] - bg) * dt).as_matrix(); tprev = tn
+        if tn >= t1:
+            break
+    return dR, dv, dp, Jv, Jp, t1 - t0
+
+
+def stage1(m, use_chains=None):
+    """per-chain scale + gravity, shared b_a. Returns dict or None."""
+    obs, R_CI, lever, chains = LENS[m]["obs"], LENS[m]["R_CI"], LENS[m]["lever"], LENS[m]["chains"]
+    pairs = []
+    for c, (k0, k1) in enumerate(chains):
+        if use_chains is not None and c not in use_chains:
+            continue
+        k = k0
+        while k + STEP <= k1:
+            pairs.append((k, c)); k += STEP
+    if len(pairs) < 5:
+        return None
+    nc = len(chains); CS, CG, CB, CV = 0, nc, 4 * nc, 4 * nc + 3
+    vidx = {}
+    for k, c in pairs:
+        for kk in (k, k + STEP):
+            vidx.setdefault(kk, len(vidx))
+    nx = CV + 3 * len(vidx)
+    pre = {k: preint(tf[k], tf[k + STEP], bg0, np.zeros(3)) for k, c in pairs}
+    npair = np.bincount([c for k, c in pairs], minlength=nc)
+
+    def build(gfix):
+        rows, cols, vals, rhs = [], [], [], []
+
+        def put(r0, c0, Mx):
+            Mx = np.atleast_2d(Mx)
+            for i in range(Mx.shape[0]):
+                for j in range(Mx.shape[1]):
+                    if Mx[i, j] != 0:
+                        rows.append(r0 + i); cols.append(c0 + j); vals.append(Mx[i, j])
+        r = 0; prow = []
+        for k, c in pairs:
+            (pk, Rk), (pk1, Rk1) = obs[k], obs[k + STEP]
+            RMI = Rk @ R_CI
+            dR, dv, dp, Jv, Jp, dt = pre[k]
+            put(r, CS + c, (pk1 - pk).reshape(3, 1)); put(r, CV + 3 * vidx[k], -np.eye(3) * dt)
+            b = RMI @ dp - (Rk1 - Rk) @ lever
+            if gfix is None:
+                put(r, CG + 3 * c, -0.5 * np.eye(3) * dt * dt)
+            else:
+                b = b + 0.5 * gfix[c] * dt * dt
+            put(r, CB, -RMI @ Jp); rhs.extend(b); prow.extend([r, r + 1, r + 2]); r += 3
+            put(r, CV + 3 * vidx[k + STEP], np.eye(3)); put(r, CV + 3 * vidx[k], -np.eye(3))
+            b = RMI @ dv
+            if gfix is None:
+                put(r, CG + 3 * c, -np.eye(3) * dt)
+            else:
+                b = b + gfix[c] * dt
+            put(r, CB, -RMI @ Jv); rhs.extend(b); r += 3
+        # tiny ridge rows keep columns of chains without pairs (and g of fixed solves) determined
+        for j in range(nx):
+            rows.append(r); cols.append(j); vals.append(1e-6); rhs.append(0.0); r += 1
+        return sp.csr_matrix((vals, (rows, cols)), shape=(r, nx)), np.array(rhs), np.array(prow)
+    A, bb, _ = build(None)
+    x = spla.lsqr(A, bb, atol=1e-12, btol=1e-12, iter_lim=50000)[0]
+    gfree = x[CG:CB].reshape(nc, 3)
+    gfix = np.array([g / max(np.linalg.norm(g), 1e-9) * G for g in gfree])
+    A, bb, prow = build(gfix)
+    x2 = spla.lsqr(A, bb, atol=1e-12, btol=1e-12, iter_lim=50000)[0]
+    res = A @ x2 - bb
+    dof = max(len(pairs) * 6 - (nx - 3 * nc), 1)
+    sig2 = float((res[:len(pairs) * 6] ** 2).sum() / dof)
+    AtA = (A.T @ A).tocsc()
+    lu = spla.splu(AtA + sp.identity(nx, format="csc") * 1e-12)
+    out_ch = []
+    for c in range(nc):
+        s = float(x2[CS + c])
+        if npair[c] == 0:
+            out_ch.append({"scale": s, "rel_std": None, "g_free": None, "pairs": 0, "good": False}); continue
+        e = np.zeros(nx); e[CS + c] = 1.0
+        var = float(lu.solve(e)[CS + c]) * sig2
+        rel = float(np.sqrt(max(var, 0)) / abs(s)) if s != 0 else np.inf
+        gn = float(np.linalg.norm(gfree[c]))
+        good = bool(s > 0 and npair[c] >= 3 and rel <= MAX_REL and abs(gn - G) <= 0.5)
+        out_ch.append({"scale": s, "rel_std": rel, "g_free": gn, "g_map": gfix[c], "pairs": int(npair[c]), "good": good})
+    ba = x2[CB:CB + 3]
+    pos_rms = float(np.sqrt((res[prow] ** 2).mean()))
+    return {"chains": out_ch, "ba": ba, "pos_rms": pos_rms, "pairs": len(pairs)}
+
+
+def summarize(s):
+    if s is None:
+        return None
+    return {"ba": np.round(s["ba"], 4).tolist(), "pos_rms_mm": round(1e3 * s["pos_rms"], 3), "pairs": s["pairs"],
+            "chains": [{"k": list(LENS_C[i]), "scale": round(c["scale"], 5), "rel_std": None if c["rel_std"] is None else round(c["rel_std"], 4),
+                        "g_free": None if c["g_free"] is None else round(c["g_free"], 3), "pairs": c["pairs"], "good": c["good"]}
+                       for i, c in enumerate(s["chains"])]}
+
+
+REFINE_W = opt("--refine_chains", 0, int)
+REFINED = {}
+ALONE_GOOD = {m: set() for m in LENS}
+ALONE_RES = {m: {} for m in LENS}
+if REFINE_W > 0:
+    # Stage 1 is one joint solve per lens with a SHARED accelerometer bias, so one bad chain can drag every other chain of the
+    # lens over the gate. A long chain (>= 2W pairs) that fails jointly is therefore judged ALONE (its own b_a); if it also fails
+    # alone it is cut in two at its middle pair and the pieces are judged the same way (pieces down to 3 pairs), recursively.
+    for m in LENS:
+        if not (USE[m] and LENS[m]["obs"]):
+            continue
+        pieces, nsplit = set(), 0
+        while True:
+            r = stage1(m)
+            if r is None:
+                break
+            new, changed, alone = [], False, set()
+            for c, (k0, k1) in enumerate(LENS[m]["chains"]):
+                ch = r["chains"][c]
+                eligible = ch["pairs"] >= 2 * REFINE_W or ((k0, k1) in pieces and ch["pairs"] >= 3)
+                if ch["good"] or not eligible:
+                    new.append((k0, k1)); continue
+                ra = stage1(m, {c})
+                if ra is not None and ra["chains"][c]["good"]:
+                    new.append((k0, k1)); alone.add((k0, k1)); ALONE_RES[m][(k0, k1)] = ra["chains"][c]; continue
+                if ch["pairs"] >= 2 * REFINE_W:
+                    mid = k0 + (ch["pairs"] // 2) * STEP
+                    new += [(k0, mid - 1), (mid, k1)]; pieces |= {(k0, mid - 1), (mid, k1)}; changed = True; nsplit += 1
+                else:
+                    new.append((k0, k1))
+            LENS[m]["chains"] = new
+            if not changed:
+                ALONE_GOOD[m] = alone
+                break
+        REFINED[m] = {"splits": nsplit, "good_alone": sorted([list(x) for x in ALONE_GOOD[m]])}
+    print("refined_chains", REFINED, flush=True)
+
+
+s1 = {}
+for m in LENS:
+    if not (USE[m] and LENS[m]["obs"]):
+        s1[m] = None; continue
+    r0 = stage1(m)
+    if r0 is not None:  # re-solve on the good chains only so bad chains do not corrupt b_a / scales
+        goodc = {i for i, c in enumerate(r0["chains"]) if c["good"]}
+        goodc |= {i for i, ch in enumerate(LENS[m]["chains"]) if tuple(ch) in ALONE_GOOD.get(m, ())}   # 3s: passed alone
+        if goodc and len(goodc) < len(r0["chains"]):
+            r1 = stage1(m, goodc)
+            if r1 is not None:
+                for i in range(len(r1["chains"])):
+                    if i not in goodc:
+                        r1["chains"][i] = dict(r0["chains"][i], good=False)
+                r0 = r1
+    if r0 is not None:
+        for i, ch in enumerate(LENS[m]["chains"]):   # 3s: a chain that is IMU-consistent on its OWN keeps its own stage 1
+            if tuple(ch) in ALONE_GOOD.get(m, ()) and not r0["chains"][i]["good"]:
+                r0["chains"][i] = dict(ALONE_RES[m][tuple(ch)], good=True)
+        r0["sane"] = bool(any(c["good"] for c in r0["chains"]) and np.max(np.abs(r0["ba"])) <= 1.0)
+    s1[m] = r0
+cand = [m for m in ("rear", "front") if s1[m] is not None and s1[m]["sane"]]
+if not cand:
+    cand = [m for m in ("rear", "front") if s1[m] is not None and any(c["good"] for c in s1[m]["chains"])]
+if not cand:
+    print("NO_USABLE_LENS"); sys.exit(2)
+INIT = min(cand, key=lambda m: s1[m]["pos_rms"])
+for m in LENS:
+    LENS_C = LENS[m]["chains"]
+    print("stage1", m, json.dumps(summarize(s1[m])), flush=True)
+print("init_lens", INIT, flush=True)
+
+
+def R_from_g(gmap):
+    zg = -gmap / G
+    ax = np.cross(zg, [0, 0, 1.0]); sa = np.linalg.norm(ax); ca = float(np.dot(zg, [0, 0, 1.0]))
+    return np.eye(3) if sa < 1e-9 else Rot.from_rotvec(ax / sa * np.arctan2(sa, ca)).as_matrix()
+
+
+def lens_pose(m, k, pl):
+    p, Rm = LENS[m]["obs"][k]
+    return pl["R"] @ Rm @ LENS[m]["R_CI"], pl["s"] * (pl["R"] @ p) + pl["t"] + pl["R"] @ Rm @ LENS[m]["lever"]
+
+
+# ---------------- chain placements ----------------
+cplace = {m: {} for m in LENS}   # chain index -> {"s","R","t","kind": "full"|"rot"}
+dropped, gates = [], []
+ch0 = LENS[INIT]["chains"]; st0 = s1[INIT]["chains"]
+good0 = [i for i, c in enumerate(st0) if c["good"]]
+gauge = max(good0, key=lambda i: ch0[i][1] - ch0[i][0])
+cplace[INIT][gauge] = {"s": st0[gauge]["scale"], "R": R_from_g(st0[gauge]["g_map"]), "t": np.zeros(3), "kind": "full"}
+todo = sorted([i for i in good0 if i != gauge], key=lambda i: abs(i - gauge))
+for i in todo:
+    j = min(cplace[INIT], key=lambda jj: abs(jj - i))
+    pl = {"s": st0[i]["scale"], "R": R_from_g(st0[i]["g_map"]), "t": np.zeros(3), "kind": "full"}
+    ka, kc = (ch0[j][1], ch0[i][0]) if j < i else (ch0[j][0], ch0[i][1])
+    pa = lens_pose(INIT, ka, cplace[INIT][j])[1]; pc = lens_pose(INIT, kc, pl)[1]
+    pl["t"] = pa - pc
+    cplace[INIT][i] = pl
+GRP_TOL = opt("--group_chains", 0.0)
+GROUPS = {m: {} for m in LENS}   # member chain -> leader chain
+
+
+def chain_map(m, i):
+    return LENS[m]["mapid"].get(LENS[m]["chains"][i][0])
+
+
+def group_full_chains(m, scale_of):
+    full = sorted([i for i, pl in cplace[m].items() if pl["kind"] == "full"], key=lambda i: -(LENS[m]["chains"][i][1] - LENS[m]["chains"][i][0]))
+    leaders = []
+    for i in full:
+        for j in leaders:
+            if chain_map(m, i) == chain_map(m, j) and abs(np.log(scale_of(i) / scale_of(j))) < np.log(GRP_TOL):
+                GROUPS[m][i] = j; break
+        else:
+            leaders.append(i)
+    for i, j in GROUPS[m].items():   # members use the leader's placement (same map frame)
+        cplace[m][i] = dict(cplace[m][j], leader=j)
+
+
+if GRP_TOL > 1.0:
+    group_full_chains(INIT, lambda i: st0[i]["scale"])
+for i in range(len(ch0)):
+    if i not in cplace[INIT]:
+        j = min(good0, key=lambda jj: abs(jj - i))
+        cplace[INIT][i] = {"R": cplace[INIT][j]["R"], "kind": "rot"}
+cover = {}
+for i, pl in cplace[INIT].items():
+    if pl["kind"] == "full":
+        for k in range(ch0[i][0], ch0[i][1] + 1):
+            cover[k] = lens_pose(INIT, k, pl)
+tk = np.array(sorted(cover))
+init_pose = {k: cover[int(tk[np.argmin(np.abs(tk - k))])] for k in range(nfr)}
+for m in LENS:
+    if m == INIT or s1[m] is None:
+        continue
+    for i, (k0, k1) in enumerate(LENS[m]["chains"]):
+        common = [k for k in range(k0, k1 + 1) if k in cover]
+        if len(common) < 10:
+            dropped.append({"lens": m, "chain": [k0, k1], "why": "fewer than 10 frames shared with the init lens"}); continue
+        Rs = [cover[k][0] @ (LENS[m]["obs"][k][1] @ LENS[m]["R_CI"]).T for k in common]
+        Rm_W = Rot.from_matrix(np.array(Rs)).mean().as_matrix()
+        st = s1[m]["chains"][i]
+        ext = np.linalg.norm(np.ptp(np.array([cover[k][1] for k in common]), axis=0))
+        rot_med = float(np.median([np.degrees(np.linalg.norm(Rot.from_matrix(Rm_W.T @ Rr).as_rotvec())) for Rr in Rs]))
+        gate = {"lens": m, "chain": [k0, k1], "n_common": len(common), "good_stage1": st["good"], "ext_mm": round(1e3 * ext, 1),
+                "rot_med_deg": round(rot_med, 3)}
+        if rot_med > ACC_ROT:  # map-quality gate (rotation): this chain disagrees with the init lens -> not used at all
+            dropped.append(dict(gate, why="rotation median %.2f deg > %.2f" % (rot_med, ACC_ROT))); gates.append(dict(gate, kind="dropped")); continue
+        if st["good"]:
+            A = np.zeros((3 * len(common), 4)); y = np.zeros(3 * len(common))
+            for n, k in enumerate(common):
+                p, Rk = LENS[m]["obs"][k]
+                A[3 * n:3 * n + 3, 0] = Rm_W @ p; A[3 * n:3 * n + 3, 1:4] = np.eye(3)
+                y[3 * n:3 * n + 3] = cover[k][1] - Rm_W @ Rk @ LENS[m]["lever"]
+            sol = np.linalg.lstsq(A, y, rcond=None)[0]
+            rms = float(np.sqrt(((A @ sol - y) ** 2).reshape(-1, 3).sum(1).mean()))
+            gate["ls_scale"] = round(float(sol[0]), 5); gate["ls_rms_mm"] = round(1e3 * rms, 2)
+            if st["good"] and sol[0] > 0 and rms <= ACC_RMS:  # gate: chain is IMU-consistent on its own and not grossly off
+                cplace[m][i] = {"s": float(sol[0]), "R": Rm_W, "t": sol[1:4], "kind": "full"}; gates.append(dict(gate, kind="full")); continue
+        cplace[m][i] = {"R": Rm_W, "kind": "rot"}; gates.append(dict(gate, kind="rot"))
+
+if GRP_TOL > 1.0:
+    for m in LENS:
+        if m != INIT:
+            group_full_chains(m, lambda i, m=m: cplace[m][i]["s"])
+print("chain_groups", json.dumps({m: {str(LENS[m]["chains"][i]): str(LENS[m]["chains"][j]) for i, j in g.items()} for m, g in GROUPS.items()}), flush=True)
+
+# ---------------- segments ----------------
+SEGLEN = int(round(SEG_S * FPS)) if SEG_S > 0 else 10 ** 9
+segs = {m: [] for m in LENS}  # list of dicts: chain, k0, k1, sid
+for m in LENS:
+    for i, pl in sorted(cplace[m].items()):
+        if pl["kind"] != "full" or "leader" in pl:
+            continue
+        k0, k1 = LENS[m]["chains"][i]
+        cuts = list(range(k0, k1 + 1, SEGLEN))
+        if len(cuts) > 1 and (k1 + 1 - cuts[-1]) < SEGLEN // 2:
+            cuts.pop()
+        for n, c0 in enumerate(cuts):
+            c1 = (cuts[n + 1] - 1) if n + 1 < len(cuts) else k1
+            segs[m].append({"chain": i, "k0": c0, "k1": c1, "sid": len(segs[m])})
+CH = {"rear": ("m", "n", "o", "u"), "front": ("p", "q", "r", "w")}
+
+
+def kseg(m, sid):
+    c = CH[m]
+    return gtsam.symbol(c[0], sid), gtsam.symbol(c[1], sid), gtsam.symbol(c[2], sid)
+
+
+KL = gtsam.symbol("l", 0)
+KLF = gtsam.symbol("k", 0)
+FRONT_LEV_FREE = "--front_lever_free" in a
+print("chains", json.dumps({m: [[list(LENS[m]["chains"][i]), pl["kind"]] for i, pl in sorted(cplace[m].items())] for m in LENS}),
+      "segments", {m: len(segs[m]) for m in LENS}, "gates", json.dumps(gates), flush=True)
+
+# ---------------- graph ----------------
+pim_params = gtsam.PreintegrationCombinedParams.MakeSharedU(G)
+ACC_N, GYR_N, ACC_RW = opt("--acc_noise", 0.002), opt("--gyro_noise", 0.0002), opt("--acc_rw", 0.003)
+pim_params.setAccelerometerCovariance(np.eye(3) * ACC_N ** 2)
+pim_params.setGyroscopeCovariance(np.eye(3) * GYR_N ** 2)
+pim_params.setIntegrationCovariance(np.eye(3) * 1e-8)
+pim_params.setBiasAccCovariance(np.eye(3) * ACC_RW ** 2)
+pim_params.setBiasOmegaCovariance(np.eye(3) * 2e-5 ** 2)
+graph = gtsam.NonlinearFactorGraph(); init = gtsam.Values()
+bias0 = gtsam.imuBias.ConstantBias(s1[INIT]["ba"], bg0)
+hub = gtsam.noiseModel.mEstimator.Huber.Create(1.345)
+ADAPT = "--adaptive_sigma" in a
+full_lenses = [m for m in LENS if any(pl["kind"] == "full" for pl in cplace[m].values()) and s1[m] is not None]
+rms_min = min(s1[m]["pos_rms"] for m in full_lenses) if full_lenses else 1.0
+LENS_SIG = {m: (POS_SIG * max(1.0, s1[m]["pos_rms"] / rms_min) if (ADAPT and m in full_lenses) else POS_SIG) for m in LENS}
+noise6m = {m: gtsam.noiseModel.Robust.Create(hub, gtsam.noiseModel.Diagonal.Sigmas(np.array([np.radians(0.5)] * 3 + [LENS_SIG[m]] * 3))) for m in LENS}
+MAPRES = "--map_residual" in a
+NOISE_MAP = {}
+print("lens_pos_sigma_mm", {m: round(1e3 * v, 2) for m, v in LENS_SIG.items()}, flush=True)
+noise3 = gtsam.noiseModel.Robust.Create(hub, gtsam.noiseModel.Isotropic.Sigma(3, np.radians(0.5)))
+noise7 = gtsam.noiseModel.Robust.Create(hub, gtsam.noiseModel.Diagonal.Sigmas(np.array([SIG_LS] + [SIG_RW] * 3 + [SIG_C] * 3)))
+segof = {m: {} for m in LENS}
+n_obs = {m: 0 for m in LENS}; n_rot = {m: 0 for m in LENS}; n_cont = {m: 0 for m in LENS}
+for m in LENS:
+    for sg in segs[m]:
+        pl = cplace[m][sg["chain"]]; kl, kr, kt = kseg(m, sg["sid"])
+        init.insert(kl, np.array([np.log(pl["s"])])); init.insert(kr, gtsam.Rot3(pl["R"])); init.insert(kt, np.array(pl["t"], float))
+        for k in range(sg["k0"], sg["k1"] + 1):
+            segof[m][k] = sg["sid"]
+        first = sg["k0"] == LENS[m]["chains"][sg["chain"]][0]
+        if first:
+            gauge_seg = m == INIT and sg["chain"] == gauge
+            graph.add(gtsam.PriorFactorVector(kl, np.array([np.log(pl["s"])]), gtsam.noiseModel.Isotropic.Sigma(1, 0.5)))
+            graph.add(gtsam.PriorFactorRot3(kr, gtsam.Rot3(pl["R"]), gtsam.noiseModel.Isotropic.Sigma(3, 0.05 if gauge_seg else 0.5)))
+            graph.add(gtsam.PriorFactorVector(kt, np.array(pl["t"], float), gtsam.noiseModel.Isotropic.Sigma(3, 1e-3 if gauge_seg else 1.0)))
+        else:
+            prev = segs[m][sg["sid"] - 1]
+            graph.add(make_cont_factor(noise7, kseg(m, prev["sid"]), (kl, kr, kt), LENS[m]["obs"][sg["k0"]][0])); n_cont[m] += 1
+    for i, pl in cplace[m].items():
+        if pl["kind"] == "rot":
+            init.insert(gtsam.symbol(CH[m][3], i), gtsam.Rot3(pl["R"]))
+    for i, j in GROUPS[m].items():   # member chains observe through their leader's (single-segment) placement
+        sid_l = [sg["sid"] for sg in segs[m] if sg["chain"] == j][0]
+        for k in range(LENS[m]["chains"][i][0], LENS[m]["chains"][i][1] + 1):
+            segof[m][k] = sid_l
+use_lever = any(segs["rear"])
+use_flever = FRONT_LEV_FREE and any(segs["front"])
+if use_flever:
+    init.insert(KLF, LENS["front"]["lever"].astype(float))
+    graph.add(gtsam.PriorFactorVector(KLF, LENS["front"]["lever"].astype(float), gtsam.noiseModel.Isotropic.Sigma(3, LEV_SIG)))
+if use_lever:
+    init.insert(KL, LENS["rear"]["lever"].astype(float))
+    graph.add(gtsam.PriorFactorVector(KL, LENS["rear"]["lever"].astype(float), gtsam.noiseModel.Isotropic.Sigma(3, LEV_SIG)))
+graph.add(gtsam.PriorFactorConstantBias(B(0), bias0, gtsam.noiseModel.Diagonal.Sigmas(np.array([0.1] * 3 + [0.01] * 3))))
+NSTRIDE = opt("--node_stride", 1, int)
+nodes = list(range(0, nfr, NSTRIDE))
+if nodes[-1] != nfr - 1:
+    nodes.append(nfr - 1)
+node_set = set(nodes)
+T_BUILD0 = time.time()
+P0 = np.array([init_pose[k][1] for k in range(nfr)])
+V0 = np.gradient(P0, 1.0 / FPS, axis=0)
+graph.add(gtsam.PriorFactorVector(V(0), V0[0], gtsam.noiseModel.Isotropic.Sigma(3, 0.5)))
+# zero-velocity detection: +-0.25 s IMU window static
+zupt = np.zeros(nfr, bool)
+if ZUPT:
+    gn = np.linalg.norm(gyr - bg0, axis=1); an = np.linalg.norm(acc, axis=1)
+    for k in range(nfr):
+        i0, i1 = np.searchsorted(ti, tf[k] - 0.25), np.searchsorted(ti, tf[k] + 0.25)
+        if i1 - i0 > 20 and gn[i0:i1].max() < 0.03 and an[i0:i1].std() < 0.08:
+            zupt[k] = True
+            if k in node_set:
+                graph.add(gtsam.PriorFactorVector(V(k), np.zeros(3), gtsam.noiseModel.Isotropic.Sigma(3, 0.01)))
+    V0[zupt] = 0.0
+chain_idx = {m: {} for m in LENS}
+for m in LENS:
+    for i, (k0, k1) in enumerate(LENS[m]["chains"]):
+        for k in range(k0, k1 + 1):
+            chain_idx[m][k] = i
+def preint_between(ta, tb, bias):
+    pim = gtsam.PreintegratedCombinedMeasurements(pim_params, bias)
+    i0, i1 = np.searchsorted(ti, ta), np.searchsorted(ti, tb); tprev = ta
+    for i in range(max(i0 - 1, 0), min(i1 + 1, len(ti))):
+        tn = min(ti[i + 1], tb) if i + 1 < len(ti) else tb
+        dt = tn - max(tprev, ti[i])
+        if dt > 0:
+            pim.integrateMeasurement(acc[i], gyr[i], dt)
+        tprev = tn
+        if tn >= tb:
+            break
+    return pim
+
+
+for ni, k in enumerate(nodes):
+    for m in LENS:
+        if k not in LENS[m]["obs"]:
+            continue
+        p_m, R_m = LENS[m]["obs"][k]; M = R_m @ LENS[m]["R_CI"]
+        if k in segof[m]:
+            kl, kr, kt = kseg(m, segof[m][k])
+            klev_ = KL if m == "rear" else (KLF if FRONT_LEV_FREE else None)
+            if MAPRES:
+                sid_ = segof[m][k]; s_ini = cplace[m][segs[m][sid_]["chain"]]["s"]
+                if (m, sid_) not in NOISE_MAP:
+                    NOISE_MAP[(m, sid_)] = gtsam.noiseModel.Robust.Create(hub, gtsam.noiseModel.Diagonal.Sigmas(
+                        np.array([np.radians(0.5)] * 3 + [LENS_SIG[m] / s_ini] * 3)))
+                graph.add(make_lens_factor_map(NOISE_MAP[(m, sid_)], X(k), kl, kr, kt, klev_, p_m, M, R_m, LENS[m]["lever"]))
+            else:
+                graph.add(make_lens_factor(noise6m[m], X(k), kl, kr, kt, klev_, p_m, M, R_m, LENS[m]["lever"]))
+            n_obs[m] += 1
+        elif chain_idx[m].get(k) in cplace[m] and cplace[m][chain_idx[m][k]]["kind"] == "rot":
+            graph.add(make_rot_factor(noise3, X(k), gtsam.symbol(CH[m][3], chain_idx[m][k]), M)); n_rot[m] += 1
+    init.insert(X(k), gtsam.Pose3(gtsam.Rot3(init_pose[k][0]), gtsam.Point3(*init_pose[k][1])))
+    init.insert(V(k), V0[k]); init.insert(B(k), bias0)
+    if ni + 1 < len(nodes):
+        k2 = nodes[ni + 1]
+        graph.add(gtsam.CombinedImuFactor(X(k), V(k), X(k2), V(k2), B(k), B(k2), preint_between(tf[k], tf[k2], bias0)))
+print("graph", {"factors": graph.size(), "lens": n_obs, "rot_only": n_rot, "cont": n_cont, "zupt_frames": int(zupt.sum())}, flush=True)
+T_OPT0 = time.time()
+params = gtsam.LevenbergMarquardtParams(); params.setMaxIterations(100)
+opt_ = gtsam.LevenbergMarquardtOptimizer(graph, init, params)
+res = opt_.optimize()
+T_OPT1 = time.time()
+err0, err1 = graph.error(init), graph.error(res)
+# full-rate states: node states directly; in between, IMU prediction from the previous node, end-point mismatch blended linearly
+FULL = {}
+for ni, a in enumerate(nodes):
+    Ta, va, ba_ = res.atPose3(X(a)), res.atVector(V(a)), res.atConstantBias(B(a))
+    FULL[a] = (Ta, va, ba_)
+    if ni + 1 >= len(nodes):
+        break
+    b = nodes[ni + 1]
+    if b == a + 1:
+        continue
+    nav = gtsam.NavState(Ta, va); pred = {}
+    for k in range(a + 1, b + 1):
+        st_ = preint_between(tf[a], tf[k], ba_).predict(nav, ba_); pred[k] = (st_.pose(), st_.velocity())
+    Tb = res.atPose3(X(b)); dp = Tb.translation() - pred[b][0].translation()
+    dr = gtsam.Rot3.Logmap(pred[b][0].rotation().between(Tb.rotation()))
+    dv = res.atVector(V(b)) - pred[b][1]
+    for k in range(a + 1, b):
+        w = (k - a) / (b - a); Pk, vk = pred[k]
+        Rk = Pk.rotation().compose(gtsam.Rot3.Expmap(w * dr))
+        FULL[k] = (gtsam.Pose3(Rk, gtsam.Point3(*(Pk.translation() + w * dp))), vk + w * dv, ba_)
+T_OUT1 = time.time()
+
+with open(os.path.join(out, "traj_tum.txt"), "w") as fo:
+    fo.write("# t x y z qx qy qz qw | T_WI, W gravity-aligned metric, front+rear relocalization + IMU, piecewise map placement (KIWI-style, ours) | canonical s\n")
+    for k in range(nfr):
+        T = FULL[k][0]; q = Rot.from_matrix(T.rotation().matrix()).as_quat(); p = T.translation()
+        fo.write("%.9f %.9f %.9f %.9f %.9f %.9f %.9f %.9f\n" % (1.0 + tf[k], p[0], p[1], p[2], q[0], q[1], q[2], q[3]))
+cols = "t,px,py,pz,vx,vy,vz,bgx,bgy,bgz,bax,bay,baz,qx,qy,qz,qw,pstd_x,pstd_y,pstd_z,n_msckf,n_slam,dt_cam_imu,rItoC_x,rItoC_y,rItoC_z,pIinC_x,pIinC_y,pIinC_z,fx,fy,cx,cy,k1,k2,k3,k4,init_time,imu_t_last".split(",")
+with open(os.path.join(out, "state.csv"), "w") as fo:
+    fo.write(",".join(cols) + "\n")
+    for k in range(nfr):
+        T, v, bb = FULL[k]
+        p = T.translation(); q = Rot.from_matrix(T.rotation().matrix()).as_quat()
+        d = dict.fromkeys(cols, 0.0)
+        d.update(t=1.0 + tf[k], px=p[0], py=p[1], pz=p[2], vx=v[0], vy=v[1], vz=v[2], qx=q[0], qy=q[1], qz=q[2], qw=q[3],
+                 bgx=bb.gyroscope()[0], bgy=bb.gyroscope()[1], bgz=bb.gyroscope()[2],
+                 bax=bb.accelerometer()[0], bay=bb.accelerometer()[1], baz=bb.accelerometer()[2], init_time=1.0, imu_t_last=1.0 + tf[k])
+        fo.write(",".join("%.9g" % d[c] for c in cols) + "\n")
+with open(os.path.join(out, "seg_placement.csv"), "w") as fo:
+    fo.write("lens,chain,sid,k0,k1,t0_s,t1_s,scale_init,scale,R_change_deg,tx,ty,tz\n")
+    for m in LENS:
+        for sg in segs[m]:
+            kl, kr, kt = kseg(m, sg["sid"]); pl = cplace[m][sg["chain"]]
+            dR = np.degrees(np.linalg.norm(logR(pl["R"].T @ res.atRot3(kr).matrix())))
+            t = res.atVector(kt)
+            fo.write("%s,%d,%d,%d,%d,%.3f,%.3f,%.6g,%.6g,%.3f,%.5f,%.5f,%.5f\n" % (m, sg["chain"], sg["sid"], sg["k0"], sg["k1"], tf[sg["k0"]], tf[sg["k1"]],
+                                                                                 pl["s"], np.exp(res.atVector(kl)[0]), dR, t[0], t[1], t[2]))
+sc_final = {m: [float(np.exp(res.atVector(kseg(m, sg["sid"])[0])[0])) for sg in segs[m]] for m in LENS}
+info = {"version": "kiwi_fuse3s", "init_lens": INIT, "frames": nfr, "obs": n_obs, "rot_only_obs": n_rot, "cont_factors": n_cont,
+        "zupt_frames": int(zupt.sum()), "dropped": dropped, "gates": gates,
+        "chains": {m: [[list(LENS[m]["chains"][i]), pl["kind"]] for i, pl in sorted(cplace[m].items())] for m in LENS},
+        "stage1": {}, "segments": {m: len(segs[m]) for m in LENS},
+        "seg_scale_range": {m: ([round(min(v), 5), round(float(np.median(v)), 5), round(max(v), 5)] if v else None) for m, v in sc_final.items()},
+        "rear_lever_final": res.atVector(KL).round(4).tolist() if use_lever else None,
+        "front_lever_prior": LENS["front"]["lever"].round(4).tolist(), "front_lever_final": res.atVector(KLF).round(4).tolist() if use_flever else None,
+        "ba_final": res.atConstantBias(B(nodes[-1])).accelerometer().round(4).tolist(),
+        "nodes": len(nodes), "timing_s": {"build": round(T_OPT0 - T_BUILD0, 1), "optimise": round(T_OPT1 - T_OPT0, 1), "fill": round(T_OUT1 - T_OPT1, 1), "lm_iterations": getattr(opt_, "iterations", lambda: -1)()},
+        "graph_error_init": float(err0), "graph_error_final": float(err1),
+        "params": {"group_chains": GRP_TOL, "chain_groups": {m: {str(LENS[m]["chains"][i]): str(LENS[m]["chains"][j]) for i, j in g.items()} for m, g in GROUPS.items()}, "split_rot_deg": SPLIT_ROT, "chain_splits": SPLITS, "refine_chains": REFINE_W, "refined": REFINED, "node_stride": NSTRIDE, "map_residual": MAPRES, "acc_noise": ACC_N, "gyro_noise": GYR_N, "acc_rw": ACC_RW, "pos_sigma": POS_SIG, "adaptive_sigma": ADAPT, "lens_pos_sigma": LENS_SIG, "step": STEP, "seg_s": SEG_S, "sig_ls": SIG_LS, "sig_rw_deg": float(np.degrees(SIG_RW)),
+                   "sig_c": SIG_C, "max_rel_std": MAX_REL, "zupt": ZUPT,
+                   "accept_rms": ACC_RMS, "accept_rot_deg": ACC_ROT, "lever_sigma": LEV_SIG}}
+for m in LENS:
+    LENS_C = LENS[m]["chains"]; info["stage1"][m] = summarize(s1[m])
+json.dump(info, open(os.path.join(out, "fuse_info.json"), "w"), indent=1)
+print(json.dumps(info))

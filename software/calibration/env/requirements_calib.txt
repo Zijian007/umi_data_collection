@@ -1,0 +1,7 @@
+# umi-calib 的额外 Python 依赖，装在 <deps>/calib_env（叠在 umi-traj 环境之上的 venv，不改 umi-traj 的锁定环境）。
+# rosbags 及其依赖 = 2026-08 出厂标定时 lab 上的版本；OpenCV = 生成并自检标定板时用的 4.13（带 contrib 的 ArUco）。
+opencv-contrib-python-headless==4.13.0.92
+rosbags==0.11.4
+lz4==4.4.5
+zstandard==0.25.0
+ruamel.yaml==0.19.1
