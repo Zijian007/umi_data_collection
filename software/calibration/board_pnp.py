@@ -1,9 +1,8 @@
 """Per-frame camera pose from the AprilGrid board (KB4 intrinsics + PnP), and comparison of a trajectory against it.
 
-The solver functions are the validated ones of software/data_collection/probes/vio/calib/calib_validate_pnp.py (dev branch),
-copied without change: SQPnP + the two IPPE solutions as candidates, outlier rejection on normalised reprojection error,
-SQPnP re-solve, LM refinement.  The board pose is metric and independent of the IMU and of the trajectory tool, which makes
-it the ruler for checking a new calibration on the C recording.
+SQPnP and the two IPPE solutions are candidates. Outliers are rejected on normalised reprojection error, then SQPnP
+is solved again and refined with Levenberg-Marquardt. The board pose is metric and independent of the IMU and of the
+trajectory, so the C recording can check a new calibration against it.
 """
 
 from __future__ import annotations
@@ -108,8 +107,7 @@ MIN_TAGS_KEEP = 12   # poses from fewer decoded tags jitter by 5-8 mm at this re
 
 
 def detect_up(gray: np.ndarray, det, up: float = UPSCALE) -> dict:
-    """Detection on a bicubic-upsampled image, corners mapped back to native pixels.  Same as the project's audited 4K60
-    reference generator (dev: experiments/reviews/data/20260904_x3_4k60_calibration_rerunA/tools/p3_make_reference_up2.py)."""
+    """Detection on a bicubic-upsampled image, corners mapped back to native pixels."""
     g = cv2.resize(gray, None, fx=up, fy=up, interpolation=cv2.INTER_CUBIC) if up != 1.0 else gray
     dets = det.detect(g)
     # cv2.resize maps source pixel centre x to (x + 0.5) * up - 0.5 -> invert exactly (no constant +0.25 px bias at 2x)

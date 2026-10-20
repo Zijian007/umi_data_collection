@@ -1,5 +1,4 @@
-`calibration_r1440.json` 是实验室同学用 Basalt 给某一台 Insta360 X3 标定的结果（2026-09-04，前镜头内参和相机–IMU），不是相机厂家的出厂标定。
+这个目录给 `umi-traj` 读，不是 `umi-calib` 的产出。
 
-代码和 `docs/标定说明.md` 里把它叫「出厂标定」或 factory，意思只是「随这份工具一起发布的那份」，用来和以后装进 `calibration_user/` 的标定区分。
-
-众包时它只代表这一台相机，不能当作所有相机的默认标定。换一台相机必须使用设备档案里那一台的标定包。文件先留着，供对照跑通。
+- `calibration_r1440.json`：某一台 Insta360 X3 的相机–IMU 标定（2026-09-04）。说明文档叫样例标定。代码和 `summary.json` 里的 `source` 仍写 `factory`，用来和装进仓库根目录 `calibration_user/` 的标定区分，这个字段不改名。换相机先 `./umi-calib verify`，见 `docs/标定/说明.md`。
+- `t_tcp_camera_nominal_cad.json`：夹爪尖相对镜头的 CAD 名义值，还没有独立实测。`umi-calib` 不算它。

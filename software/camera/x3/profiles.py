@@ -1,50 +1,33 @@
 """Insta360 X3 recording profiles: stream geometry recognition and lens/crop planning.
 
-This module is the X3 recording profile table.  It answers three questions and nothing else:
+Answers three questions and nothing else:
 
   1. which recording mode produced this video stream (from the stream geometry alone);
-  2. what the profile says about frame size, nominal fps, default ROI and VIO frame step;
-  3. where a requested lens half / centre crop lands in ABSOLUTE source-frame pixels.
+  2. what that mode says about frame size, nominal fps and a default centre crop;
+  3. where a requested lens half and centre crop land in absolute source-frame pixels.
 
-It decodes nothing, reads no file and applies no ROI on its own.  Choosing an ROI is a
-calibration / dataset-version decision, so the table carries a ``status`` string per profile and
-callers are expected to copy it, verbatim, into whatever they write to disk.
-
-STATUS LABELS -- copied verbatim from the Phase A/B decision record (decision D4):
-
-  ``x3_360_5k7_30``  status ``FROZEN (5.7K30 calibration/evidence unchanged)``.
-      The frozen 1440 ROI feeds the r1440 ``v2_openvins_deployment`` calibration, which is the
-      project's ONLY VALIDATED frozen item (``freeze_manifest_r1440_v2.json``).  "FROZEN" here is a
-      statement about the 5.7K30 recording geometry, not a claim that every downstream number is
-      validated.
-  ``x3_360_4k_60``   status ``CANDIDATE (mode-probe 023, 2026-09-04; no calibration yet)``.
-      The 4K60 ``default_crop_size`` (960) and ``vio_frame_step`` (2) are CANDIDATES.  No
-      calibration exists for this mode.  Documentation, ``--help`` text and READMEs must never
-      describe it as validated, frozen or recommended.
-
-Provenance: the table, ``detect_profile_from_streams``, ``is_packed_dual_fisheye``,
-``plan_lens_crop`` and ``profile_summary`` are a byte-faithful COPY of
-``software/data_collection/probes/x3_profiles.py`` (a frozen, sha-pinned file that must not be
-edited -- decision D3).  ``software/camera/tests/test_x3_profiles_equivalence.py`` asserts the copy
-still agrees with the frozen original, field by field and on a grid of crop plans.
+It decodes nothing and reads no file. The trajectory does not take the table's default crop.
+``x3_360_4k_60`` is the mode ``umi-traj`` accepts; its frame (centre 1440, every second frame)
+is ``software.trajectory.frame``. ``default_crop_size`` for that mode is 960 and is not used.
+``x3_360_5k7_30`` is recognised so a different recording is refused instead of being guessed.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-#: Recording profile table.  Keys and values are identical to the frozen probe module.
+#: Recording profile table. Geometry is what the stream looks like; status says what this repository does with it.
 PROFILES: dict[str, dict] = {
     "x3_360_5k7_30": {
         "recording_files": 2,            # _00_ + _10_ (LRV optional)
         "packed_dual_fisheye": False,
         "per_lens_size": [2880, 2880],
         "nominal_fps": 29.97,
-        "default_crop_size": 1440,       # frozen ROI [720:2160]^2
+        "default_crop_size": 1440,       # 5.7K30 centre crop; umi-traj does not run this mode
         "vio_frame_step": 1,             # 30 Hz camera into OpenVINS
         "workspace_lens": "_10_",
         "imu_source": "_00_",
-        "status": "FROZEN (5.7K30 calibration/evidence unchanged)",
+        "status": "recognised; umi-traj does not run this mode",
     },
     "x3_360_4k_60": {
         "recording_files": 1,
@@ -52,22 +35,13 @@ PROFILES: dict[str, dict] = {
         "packed_frame_size": [3840, 1920],
         "per_lens_size": [1920, 1920],
         "nominal_fps": 59.94,
-        "default_crop_size": 960,        # CANDIDATE: same angular field as 5.7K30 (not frozen)
+        "default_crop_size": 960,        # not the trajectory crop; that crop is frame.CROP (1440)
         "crop_candidates": {"center_960": 960, "center_1440": 1440},
-        "vio_frame_step": 2,             # CANDIDATE: keep 1 of every 2 frames -> 29.97 Hz
+        "vio_frame_step": 2,             # keep 1 of every 2 frames -> 29.97 Hz; see frame.STEP
         "workspace_lens": "right",
         "imu_source": "same_file",
-        "status": "CANDIDATE (mode-probe 023, 2026-09-04; no calibration yet)",
+        "status": "umi-traj mode; crop is software.trajectory.frame, not default_crop_size",
     },
-}
-
-#: The one calibration this project has validated and frozen, for reference in CLI help/README.
-VALIDATED_FROZEN_CALIBRATION = {
-    "name": "v2_openvins_deployment",
-    "profile": "x3_360_5k7_30",
-    "working_size_px": 1440,
-    "evidence": "freeze_manifest_r1440_v2.json",
-    "status": "VALIDATED",
 }
 
 UNKNOWN_PROFILE = "unknown"
@@ -158,15 +132,15 @@ def profile_status(name: str) -> str:
 
 
 def default_crop_size(name: str) -> int:
-    """The profile's default centre crop in native pixels (0 when the profile is unknown).
+    """The profile table's centre crop in native pixels (0 when the profile is unknown).
 
-    For ``x3_360_4k_60`` this value is a CANDIDATE, see the module docstring.
+    For ``x3_360_4k_60`` this is 960. The trajectory crops to 1440; see ``software.trajectory.frame``.
     """
     return int(PROFILES.get(name, {}).get("default_crop_size", 0))
 
 
 __all__ = [
-    "PROFILES", "UNKNOWN_PROFILE", "VALIDATED_FROZEN_CALIBRATION", "StreamGeom",
+    "PROFILES", "UNKNOWN_PROFILE", "StreamGeom",
     "detect_profile_from_streams", "is_packed_dual_fisheye", "plan_lens_crop",
     "profile_summary", "profile_status", "default_crop_size", "asdict",
 ]

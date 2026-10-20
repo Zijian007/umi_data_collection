@@ -1,4 +1,4 @@
-"""postprocess -- turn one KIWI run (run_kiwi_segment.sh output) into the files a user reads.
+"""postprocess -- turn one fusion run (run_kiwi_segment.sh output) into the files a user reads.
 
     traj_tcp.txt     TCP (gripper reference point) pose, TUM: t x y z qx qy qz qw      <- the trajectory to use
     traj_camera.txt  front-lens camera pose (optical frame: x right, y down, z forward), TUM
@@ -13,7 +13,7 @@ Conventions (all three trajectories):
   * W = world frame of this recording: metric, z up (gravity along -z); origin and heading are arbitrary per recording
     (fixed by the algorithm), so only motion relative to the recording itself is meaningful.
   * quaternions are Hamilton, scalar last (x y z w); a pose maps body coordinates to W.
-  * T_W_cam = T_W_imu * T_imu_cam (frozen r1440 calibration, calib/calibration_r1440.json, Basalt convention p_imu = T_imu_cam p_cam);
+  * T_W_cam = T_W_imu * T_imu_cam (sample calibration calib/calibration_r1440.json, Basalt convention p_imu = T_imu_cam p_cam);
     T_W_tcp = T_W_cam * T_cam_tcp (calib/t_tcp_camera_nominal_cad.json, NOMINAL_CAD_CANDIDATE_UNVERIFIED) -- the same chain
     as the earlier pipeline's S4 stage.
 """
@@ -28,11 +28,11 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
+from software.trajectory.frame import FPS_USED, T0_S
+
 HERE = Path(__file__).resolve().parent
 CALIB_IMU_CAM = HERE / "calib" / "calibration_r1440.json"
 CALIB_CAM_TCP = HERE / "calib" / "t_tcp_camera_nominal_cad.json"
-T0_S = 1.0
-FPS_USED = 30000.0 / 1001.0
 
 
 def _T(R, t) -> np.ndarray:
@@ -171,7 +171,7 @@ def plot(path: Path, t, p_tcp, kind, title: str) -> None:
 
 
 def postprocess(kiwi_dir: Path, extract_manifest: dict, out_dir: Path, mode: str, name: str, calib: dict | None = None) -> dict:
-    """calib = software.trajectory.calibration.active(); None = the factory calibration in this folder."""
+    """calib = software.trajectory.calibration.active(); None = the sample calibration in this folder."""
     kiwi_dir, out_dir = Path(kiwi_dir), Path(out_dir)
     fuse = kiwi_dir / "fuse"
     info = json.loads((fuse / "fuse_info.json").read_text(encoding="utf-8"))
@@ -191,10 +191,10 @@ def postprocess(kiwi_dir: Path, extract_manifest: dict, out_dir: Path, mode: str
     write_tum(out_dir / "traj_tcp.txt", t, p_tcp, q_tcp,
               "TCP pose  t x y z qx qy qz qw\n" + common +
               "\nT_W_tcp = T_W_imu * T_imu_cam (%s) * T_cam_tcp (nominal CAD, status %s)."
-              % ("user calibration %s" % calib["id"] if user_cal else "frozen r1440 calibration", ex["cad_status"]))
+              % ("user calibration %s" % calib["id"] if user_cal else "sample calibration calibration_r1440.json", ex["cad_status"]))
     write_tum(out_dir / "traj_camera.txt", t, p_cam, q_cam,
               "front-lens camera pose (optical frame: x right, y down, z forward)  t x y z qx qy qz qw\n" + common +
-              "\nT_W_cam = T_W_imu * T_imu_cam (frozen r1440 calibration).")
+              "\nT_W_cam = T_W_imu * T_imu_cam (sample calibration calibration_r1440.json).")
     write_tum(out_dir / "traj_imu.txt", t, p_imu, q_imu, "IMU body pose (fusion output)  t x y z qx qy qz qw\n" + common)
 
     kind = frame_constraints(info, n)
@@ -247,7 +247,7 @@ def postprocess(kiwi_dir: Path, extract_manifest: dict, out_dir: Path, mode: str
         "notes_basis": "rules of thumb, not a validated accuracy test; the accuracy evidence is in docs (README)",
         "fusion": {k: info.get(k) for k in ("init_lens", "segments", "zupt_frames", "nodes", "timing_s", "seg_scale_range")},
         "calibration": {"imu_cam": ("user calibration %s (%s)" % (calib["id"], calib["dir"]) if user_cal
-                                    else CALIB_IMU_CAM.name + " (v2_openvins_deployment r1440, VALIDATED)"),
+                                    else CALIB_IMU_CAM.name + " (sample calibration, one X3, 2026-09-04)"),
                         "cam_tcp": CALIB_CAM_TCP.name + " (" + str(ex["cad_status"]) + ")",
                         "cam_imu_time_offset_ns": ex["cam_time_offset_ns"]},
         "conventions": "see the header of traj_tcp.txt",

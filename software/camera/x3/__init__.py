@@ -1,6 +1,5 @@
-"""software.camera.x3 -- Insta360 X3 specific camera-layer code.
+"""Insta360 X3 readers for the trajectory.
 
-The algorithm layer (``software/algorithms/``) MUST NOT import anything from this package.  That
-rule is enforced by ``software/algorithms/tests/test_dependency_boundary.py``, which runs the
-algorithm code in a subprocess where importing ``software.camera.x3`` raises.
+``insv_reader`` and ``imu_reader`` read the trailer. ``profiles`` recognises the stream geometry.
+The trajectory calls these directly. It does not go through another capture format.
 """

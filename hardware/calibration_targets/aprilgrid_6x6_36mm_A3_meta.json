@@ -1,0 +1,95 @@
+{
+ "stem": "aprilgrid_6x6_36mm_A3",
+ "generator_version": 2,
+ "family": "t36h11",
+ "black_border_bits": 2,
+ "cells_per_tag": 10,
+ "tag_size_definition": "outer black square edge incl. 2-bit border (Kalibr/Basalt tagSize)",
+ "compat": "Basalt 0.1.7 ApriltagDetector blackTagBorder=2 / Kalibr aprilgrid; NOT decodable by standard AprilTag-3 (1-bit border) detectors",
+ "v1_warning": "v1 (commit cedc11d, 1-bit border, 8x8 cells) is incompatible with Basalt/Kalibr — reprint if v1 was printed",
+ "layout": {
+  "paper": "A3",
+  "paper_mm": [
+   297.0,
+   420.0
+  ],
+  "rows": 6,
+  "cols": 6,
+  "tag_size_mm": 36.0,
+  "spacing": 0.3,
+  "pitch_mm": 46.800000000000004,
+  "grid_mm": [
+   270.0,
+   270.0
+  ],
+  "origin_mm": [
+   13.5,
+   75.0
+  ],
+  "convention": "tag0 bottom-left; id = row*cols+col, +x right, +y up; corners 0 BL,1 BR,2 TR,3 TL (board frame x right, y up)"
+ },
+ "n_tags": 36,
+ "pdf_footer": {
+  "footer_bboxes_mm": [
+   [
+    107.92,
+    67.97,
+    189.08,
+    70.0
+   ],
+   [
+    111.93,
+    64.37,
+    185.07,
+    66.4
+   ],
+   [
+    101.19,
+    60.77,
+    195.81,
+    62.8
+   ],
+   [
+    95.5,
+    57.17,
+    201.5,
+    59.2
+   ],
+   [
+    54.4,
+    47.41,
+    72.6,
+    49.1
+   ]
+  ],
+  "scale_bar_y_mm": 51.6,
+  "all_inside": true,
+  "paper_mm": [
+   297.0,
+   420.0
+  ]
+ },
+ "selfcheck": {
+  "detector": "OpenCV 4.13.0 ArUco DICT_APRILTAG_36h11, markerBorderBits=2, refine=APRILTAG",
+  "black_border_bits": 2,
+  "n_expected": 36,
+  "n_detected_ids_in_layout": 36,
+  "n_with_correct_corner_order_and_position(<1.0px)": 36,
+  "corner_err_px_max_over_all": 0.5656854249493666,
+  "px_per_mm": 8.0,
+  "pass": true
+ },
+ "files": [
+  "aprilgrid_6x6_36mm_A3.pdf",
+  "aprilgrid_6x6_36mm_A3.png",
+  "aprilgrid_6x6_36mm_A3.json (Basalt aprilgrid)",
+  "aprilgrid_6x6_36mm_A3.yaml (Kalibr target)"
+ ],
+ "print_instructions": [
+  "print at 100% scale (disable fit-to-page/shrink)",
+  "verify with ruler: black square edge = 36 mm, 100 mm scale bar = 100 mm",
+  "check footer says v2 border=2 and each tag has a thick (2-cell) black border",
+  "mount flat on rigid board (foam/acrylic), matte paper, no glossy lamination",
+  "if measured size differs, set tagSize to the MEASURED value in aprilgrid.json/yaml"
+ ]
+}

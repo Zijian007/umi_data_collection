@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -31,6 +32,18 @@ from software.trajectory.x3_extract import Refused, extract  # noqa: E402
 
 RUNNER = HERE / "run_kiwi_segment.sh"
 _print_lock = threading.Lock()
+
+
+@dataclass(frozen=True)
+class RunRequest:
+    """One recording through the trajectory tool. The command line fills this in; other callers can too."""
+
+    mode: str = "handheld"
+    max_tries: int = 3
+    cores: str = ""
+    keep_work: bool = False
+    force: bool = False
+    allow_irregular: bool = False
 
 
 def say(msg: str) -> None:
@@ -82,10 +95,8 @@ def write_times_csv(mav0: Path, path: Path) -> None:
     path.write_text("t_canonical_s\n" + "".join("%.9f\n" % (int(r) / 1e9) for r in rows), encoding="utf-8")
 
 
-# A run is "suspicious" when the fusion had to place the camera map more than once or the map gave a position to fewer than
-# 95 % of the frames. ORB-SLAM3 mapping is not deterministic (multi-threaded); on the archived recordings every inaccurate run
-# (067 12 mm, 069 17 mm, 070 29 mm against 4-7 mm otherwise) had one of the two, and every normal recording passes both
-# (experiments/reviews/20261007_umi_traj_release.md on the dev branch). Among the tries the one with the fewest placements and
+# A run is suspicious when the fusion placed the camera map more than once or the map gave a position to fewer than
+# 95% of the frames. ORB-SLAM3 mapping is not deterministic. Among the tries, the one with the fewest placements and
 # then the largest map-position share is kept.
 SUSPECT_FULL_FRACTION = 0.95
 
@@ -110,12 +121,12 @@ def try_key(q: dict) -> tuple:
     return (q["placements"], -q["full_fraction"])
 
 
-def process(video: Path, out_root: Path, a) -> dict:
+def run_recording(video: Path, out_root: Path, req: RunRequest) -> dict:
     from software.trajectory.postprocess import postprocess
 
     name = video.stem
     odir = out_root / name
-    if not a.force and already_done(odir):
+    if not req.force and already_done(odir):
         say(f"[{name}] already done -> {odir} (use --force to redo)")
         return {"video": video.name, "status": "skipped", "out": str(odir)}
     if odir.exists():
@@ -141,7 +152,7 @@ def process(video: Path, out_root: Path, a) -> dict:
         fr = man["frames"]
         times = []
         if not fr["regular"]:
-            if not a.allow_irregular:
+            if not req.allow_irregular:
                 summary["reason"] = ("frame timing is irregular (the camera dropped frames: max deviation %.1f ms, %d gaps); "
                                      "not processed by default -- rerun with --allow-irregular (unvalidated path)"
                                      % (fr["max_deviation_from_29p97_grid_ms"], fr["gaps_over_1p5x_median"]))
@@ -151,10 +162,10 @@ def process(video: Path, out_root: Path, a) -> dict:
         say(f"[{name}]     {fr['n_frames_used']} frames, {fr['duration_s']:.1f} s")
         say(f"[{name}] 2/3 lens video -> map -> relocalization -> IMU fusion (several minutes)")
         tries, best = [], None
-        for i in range(1, max(1, a.max_tries) + 1):
+        for i in range(1, max(1, req.max_tries) + 1):
             kd = work / ("kiwi" if i == 1 else "kiwi_try%d" % i)
             cmd = ["bash", str(RUNNER), "--insv", str(video), "--euroc", str(work / "dataset" / "mav0"), "--out", str(kd),
-                   "--mode", a.mode] + (["--cores", a.cores] if a.cores else []) + times
+                   "--mode", req.mode] + (["--cores", req.cores] if req.cores else []) + times
             if i > 1:
                 cmd += ["--lens-video-from", str(work / "kiwi")]
             with open(logs / ("runner.log" if i == 1 else "runner_try%d.log" % i), "w", encoding="utf-8") as lf:
@@ -165,7 +176,7 @@ def process(video: Path, out_root: Path, a) -> dict:
                 best = i
             if q is not None and not q["suspicious"]:
                 break
-            if i < a.max_tries:
+            if i < req.max_tries:
                 why = ("failed (rc %d)" % rc) if q is None else (
                     "%d separate map placements, map position on %.0f%% of frames" % (q["placements"], 100 * q["full_fraction"]))
                 say(f"[{name}]     try {i}: {why} -> mapping again (ORB-SLAM3 maps differently every run)")
@@ -182,7 +193,7 @@ def process(video: Path, out_root: Path, a) -> dict:
             if src.is_file():
                 shutil.copy(src, logs / f.replace("/", "_"))
         say(f"[{name}] 3/3 writing results")
-        s = postprocess(kd, man, odir, a.mode, video.name, cal)
+        s = postprocess(kd, man, odir, req.mode, video.name, cal)
         summary.update(s)
         summary["status"] = "ok"
     except Exception as e:
@@ -191,7 +202,7 @@ def process(video: Path, out_root: Path, a) -> dict:
         summary["wall_s"] = round(time.time() - t0, 1)
         summary["tool_commit"] = summary.get("tool_commit") or git_commit()
         (odir / "summary.json").write_text(json.dumps(summary, indent=1, ensure_ascii=False), encoding="utf-8")
-        if summary["status"] == "ok" and not a.keep_work:
+        if summary["status"] == "ok" and not req.keep_work:
             shutil.rmtree(work, ignore_errors=True)
     if summary["status"] == "ok":
         say(f"[{name}] done in {summary['wall_s']:.0f} s: TCP path {summary['tcp_path_length_m']:.2f} m, map position on "
@@ -244,8 +255,8 @@ def check() -> int:
         line(f.is_file(), "file " + str(f.relative_to(REPO)))
     try:
         cal = calibration.active()
-        line(True, "camera calibration in use: " + ("factory (shipped with the tool)" if cal["source"] == "factory"
-                                                   else "USER calibration %s from %s" % (cal["id"], cal["dir"])))
+        line(True, "camera calibration in use: " + ("sample shipped with the tool" if cal["source"] == "factory"
+                                                   else "user calibration %s from %s" % (cal["id"], cal["dir"])))
     except calibration.CalibrationError as e:
         line(False, "camera calibration", str(e))
     print("ALL OK" if ok else "SOMETHING IS MISSING -- rerun install.sh (see its log in <deps>/logs)")
@@ -272,6 +283,8 @@ def main(argv=None) -> int:
     ap.add_argument("--allow-irregular", action="store_true",
                     help="also process recordings with dropped frames (uses real frame times; unvalidated)")
     a = ap.parse_args(argv)
+    req = RunRequest(mode=a.mode, max_tries=a.max_tries, cores=a.cores, keep_work=a.keep_work,
+                     force=a.force, allow_irregular=a.allow_irregular)
     videos = find_inputs(a.inputs)
     if not videos:
         print("no .insv found in: " + " ".join(a.inputs))
@@ -280,7 +293,7 @@ def main(argv=None) -> int:
     out_root.mkdir(parents=True, exist_ok=True)
     say(f"{len(videos)} video(s) -> {out_root}  (mode {a.mode}, {a.jobs} at a time)")
     with cf.ThreadPoolExecutor(max_workers=max(1, a.jobs)) as ex:
-        results = list(ex.map(lambda v: process(v, out_root, a), videos))
+        results = list(ex.map(lambda v: run_recording(v, out_root, req), videos))
     print()
     print("%-40s %-8s %s" % ("video", "status", "result / reason"))
     for r in results:

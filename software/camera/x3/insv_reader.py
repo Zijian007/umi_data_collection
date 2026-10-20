@@ -10,17 +10,10 @@ An ``.insv`` file is an MP4-compatible container with a private trailer appended
 
 This module stays at the container level: it locates records and hands back their bytes, and it
 decodes the metadata record's protobuf fields.  Turning the gyro record into physical units is
-``imu_reader.py``'s job; turning the video stream into frames is ``video_frames.py``'s job.
+``imu_reader.py``'s job.  The trajectory reads frame times in ``software.trajectory.x3_extract``.
 
-Everything here reads ONLY the byte ranges the trailer advertises.  A recording is hundreds of MB
-to several GB, so no function in this module ever reads a whole media file into memory.
-
-Provenance: ``MAGIC``, ``RECORD_NAMES``, ``walk_boxes``, ``parse_trailer`` and ``sha256_file`` are a
-logic-level COPY of ``software/data_collection/probes/x3_insv_probe.py``; ``read_varint``,
-``parse_nested_varints`` and ``parse_metadata_record`` are a logic-level COPY of
-``software/data_collection/probes/x3_gate0_forensics.py``.  Both source files are frozen and
-sha-pinned (decision D3): they are not imported and not edited.  The copies are checked against the
-originals by ``software/camera/tests/test_x3_insv_reader_equivalence.py``.
+Everything here reads only the byte ranges the trailer advertises.  A recording is hundreds of MB
+to several GB, so no function in this module reads a whole media file into memory.
 """
 
 from __future__ import annotations
@@ -41,7 +34,7 @@ RECORD_GYRO = 3
 FIELD_SERIAL = 1
 FIELD_MODEL = 2
 FIELD_FIRMWARE = 3
-FIELD_OFFSET_V3 = 54            # factory lens parameters (UCM + rad-tan), see lens_geometry.py
+FIELD_OFFSET_V3 = 54            # lens parameters stored in the trailer; the trajectory does not read them
 FIELD_FIRST_FRAME_TS_US = 24    # video t=0 expressed on the IMU clock, microseconds
 FIELD_FIRST_FRAME_TS_MS = 36    # same value in milliseconds (cross-check only)
 FIELD_GYRO_CFG_INFO = 65        # nested {1: acc_range_g, 2: gyro_range_dps}

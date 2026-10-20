@@ -1,15 +1,15 @@
-"""umi-calib -- 重新标定 Insta360 X3（360 视频 4K60）的前镜头内参与相机–IMU 外参，并装进 umi-traj。
+"""umi-calib -- 换了一台 X3 时，先验证样例标定，不够再重新标定前镜头内参和相机–IMU。
 
+    umi-calib verify <C 段录像>           # 只验证、不标定：现在的标定在这台相机上准不准（约 15 分钟）
     umi-calib run <放着 A B C D 四段录像的文件夹> [--out DIR] [--tag-size-mm 24.0] [--install]
     umi-calib run --a A.insv --b B.insv --c C.insv --d D.insv [...]
-    umi-calib verify <C 段录像>           # 只验证、不标定：umi-traj 现在用的标定在这台相机上准不准（约 15 分钟）
     umi-calib install <结果目录>          # 把通过检查的标定装进 umi-traj（写到 <仓库>/calibration_user/）
-    umi-calib uninstall                   # 回到出厂标定
+    umi-calib uninstall                   # 回到样例标定
     umi-calib status                      # 现在 umi-traj 用的是哪份标定
     umi-calib check                       # 标定组件装好了吗
 
-四段录像怎么录见 docs/标定说明.md。给文件夹时按文件名（即录制时间）排序，依次当作 A、B、C、D。
-流程与 2026-09-04 的出厂标定相同：A -> 内参（basalt_calibrate kb4）；B -> 相机–IMU（basalt_calibrate_imu，固定 IMU 尺度、
+四段录像怎么录见 docs/标定/说明.md。给文件夹时按文件名（即录制时间）排序，依次当作 A、B、C、D。
+流程与 2026-09-04 的样例标定相同：A -> 内参（basalt_calibrate kb4）；B -> 相机–IMU（basalt_calibrate_imu，固定 IMU 尺度、
 第二阶段只优化相机时间差）；D -> 六朝向静止的重力一致性检查；C -> 用新标定跑 umi-traj，与标定板 PnP 位姿比较。
 """
 
@@ -40,8 +40,7 @@ BOARD_JSON = REPO / "hardware" / "calibration_targets" / "aprilgrid_6x6_24mm_A4.
 # IMU noise priors of the validated runs (assumed consumer-MEMS values passed on the command line; Basalt copies them into the json)
 IMU_PRIORS = ["--gyro-noise-std", "0.0002", "--accel-noise-std", "0.002", "--gyro-bias-std", "0.00002", "--accel-bias-std", "0.003"]
 # acceptance of the C check = the project's board-grader rubric: ATE <= 30 mm; metric scale within 3 % passes, outside 10 %
-# is a hard fail, in between is a warning (the trajectory tool reads 0.93-0.98 on the project's own hand-held recordings,
-# dev: experiments/reviews/20261007_umi_traj_release.md section 3)
+# is a hard fail, in between is a warning (hand-held recordings of the sample camera read 0.93-0.98)
 GATE_ATE_MM, GATE_SCALE, GATE_SCALE_FAIL = 30.0, 0.03, 0.10
 # verify: the project's own hand-held recordings read 3.3-7.7 mm against the board with the factory calibration (README), the
 # C recording of the factory calibration 5.3-5.5 mm; clearly above that on another camera means: calibrate it
@@ -85,8 +84,8 @@ def kb4_of(calib_json: Path) -> list[float]:
 def board_stats(found: dict, kb4: list[float], grid: dict) -> dict:
     """How well a recording shows the board (found = board_pnp.detect_all): share of sampled frames with a board pose, how
     far from the lens centre the board corners reach (r = distance from the principal point / lens radius) and in how many
-    of the four image directions, distance range.  The reach is what failed in the first 4K60 calibration attempt: the
-    board stayed within r = 0.23 and the intrinsics came out degenerate (dev: experiments/reviews/20260904_x3_4k60_calibration.md)."""
+    of the four image directions, distance range.  A recording whose board stays near the lens centre (r about 0.23)
+    produces degenerate intrinsics."""
     from software.calibration import board_pnp as bp
 
     ref = bp.board_reference(found, kb4, grid)
@@ -194,6 +193,7 @@ def cmd_run(a) -> int:
     logs.mkdir(parents=True)
     for k, v in seg.items():
         say(f"{k} = {v.name}")
+    say("请核对：A 内参，B 相机–IMU，C 验证，D 六个朝向。不对就停掉，改用 --a --b --c --d。")
     grid = json.loads(BOARD_JSON.read_text(encoding="utf-8"))
     grid["tagSize"] = a.tag_size_mm / 1000.0
     (out / "aprilgrid.json").write_text(json.dumps(grid, indent=1), encoding="utf-8")
@@ -256,9 +256,9 @@ def cmd_run(a) -> int:
     mr = rep["intrinsics_stage"]["mean_reprojection_px"]
     item(checks, "内参：平均重投影误差 (px)", mr, mr is not None and mr <= 1.0, "<= 1.0")
     df = abs(kb4[0] / fac["fx"] - 1)
-    item(checks, "内参：焦距与出厂标定相差", round(df, 4), df <= 0.03, "<= 3 %（同型号相机应接近；> 10 % 判失败）", fail=df > 0.10)
+    item(checks, "内参：焦距与样例标定相差", round(df, 4), df <= 0.03, "<= 3 %（同型号相机应接近；> 10 % 判失败）", fail=df > 0.10)
     dc = float(np.hypot(kb4[2] - fac["cx"], kb4[3] - fac["cy"]))
-    item(checks, "内参：主点与出厂标定相差 (px)", round(dc, 1), dc <= 40, "<= 40")
+    item(checks, "内参：主点与样例标定相差 (px)", round(dc, 1), dc <= 40, "<= 40")
 
     # ---- 3. camera-IMU from B ----
     say("3/6 B 段 -> 相机–IMU 外参与时间差（约 10–20 分钟）")
@@ -296,11 +296,11 @@ def cmd_run(a) -> int:
     mr = rep["cam_imu_stage"]["mean_reprojection_px"]
     item(checks, "相机–IMU：平均重投影误差 (px)", mr, mr is not None and mr <= 1.2, "<= 1.2")
     dp = float(np.linalg.norm(np.array(new["p"]) - np.array(fac["p"])) * 1e3)
-    item(checks, "相机–IMU：平移与出厂标定相差 (mm)", round(dp, 2), dp <= 10, "<= 10（同型号相机应接近；> 50 判失败）", fail=dp > 50)
+    item(checks, "相机–IMU：平移与样例标定相差 (mm)", round(dp, 2), dp <= 10, "<= 10（同型号相机应接近；> 50 判失败）", fail=dp > 50)
     dr = rot_angle_deg(new["q_xyzw"], fac["q_xyzw"])
-    item(checks, "相机–IMU：旋转与出厂标定相差 (°)", round(dr, 3), dr <= 2.0, "<= 2.0", fail=dr > 10)
+    item(checks, "相机–IMU：旋转与样例标定相差 (°)", round(dr, 3), dr <= 2.0, "<= 2.0", fail=dr > 10)
     dt = abs(new["cam_time_offset_ns"] - fac["cam_time_offset_ns"]) / 1e6
-    item(checks, "相机–IMU：时间差与出厂标定相差 (ms)", round(dt, 3), dt <= 5.0, "<= 5.0")
+    item(checks, "相机–IMU：时间差与样例标定相差 (ms)", round(dt, 3), dt <= 5.0, "<= 5.0")
 
     # ---- 4. D six-pose physical check ----
     say("4/6 D 段 -> 六朝向静止的重力一致性检查")
@@ -325,14 +325,14 @@ def cmd_run(a) -> int:
     rep["bundle"] = {"dir": str(out / "bundle"), "id": b["id"]}
 
     # ---- 6. C: trajectory with the new calibration vs board poses (and, for reference, with the factory calibration) ----
-    say("6/6 C 段 -> 用新标定、出厂标定各跑一次轨迹，对照标定板（每次约 8 分钟）")
+    say("6/6 C 段 -> 用新标定、样例标定各跑一次轨迹，对照标定板（每次约 8 分钟）")
     found_c = bp.detect_all(ds["C"], GridDetector, step=1, workers=nw)
     rep["C_new"] = trajectory_check(seg["C"], found_c, out / "calibration.json", str(out / "bundle"), grid, work, logs, "new", a.cores)
     rep["C_factory"] = trajectory_check(seg["C"], found_c, tcal.FACTORY_JSON, "factory", grid, work, logs, "factory", a.cores)
     c_items(checks, rep["C_new"], "新标定下的")
     f = rep["C_factory"]
     if rep["C_new"].get("status") == "ok" and f.get("status") == "ok" and "ate_se3_rmse_mm" in f:
-        item(checks, "C 段：出厂标定下的轨迹误差 ATE (mm)；尺度（对照）", f"{f['ate_se3_rmse_mm']:.2f}；{f['scale_board_over_trajectory']:.4f}", None, "仅供比较")
+        item(checks, "C 段：样例标定下的轨迹误差 ATE (mm)；尺度（对照）", f"{f['ate_se3_rmse_mm']:.2f}；{f['scale_board_over_trajectory']:.4f}", None, "仅供比较")
     bad = [x for x in checks if x["result"] == "FAIL"]
     warn = [x for x in checks if x["result"] == "WARN"]
     verdict = "FAIL" if bad else ("PASS（有提醒，见报告）" if warn else "PASS")
@@ -340,7 +340,8 @@ def cmd_run(a) -> int:
     if rc == 0 and a.install:
         return install_bundle(out, force=False)
     if rc == 0:
-        say(f"要让 umi-traj 用这份标定：  ./umi-calib install {out}")
+        say(f"要让这台电脑上的 umi-traj 默认用这份标定：  ./umi-calib install {out}")
+        say(f"另一台相机不要再 install。处理它的录像时：  UMI_TRAJ_CALIB={out / 'bundle'} ./umi-traj <录像文件夹>")
     return rc
 
 
@@ -378,7 +379,7 @@ def cmd_verify(a) -> int:
     except tcal.CalibrationError as e:
         say(f"标定包有问题：{e}")
         return 2
-    name = "出厂标定" if cal["source"] == "factory" else "用户标定"
+    name = "样例标定" if cal["source"] == "factory" else "用户标定"
     say(f"用 umi-traj 现在的标定（{name} {cal['id']}）验证 {insv.name}")
     grid = json.loads(BOARD_JSON.read_text(encoding="utf-8"))
     grid["tagSize"] = a.tag_size_mm / 1000.0
@@ -426,7 +427,7 @@ def write_text_report(out: Path, rep: dict) -> None:
          "录像：" + "，".join(f"{k}={v}" for k, v in rep["segments"].items()), f"标定板 tag 边长：{rep['tag_size_mm']} mm", ""]
     if "result" in rep:
         r = rep["result"]
-        L += ["结果（括号里是出厂标定）",
+        L += ["结果（括号里是样例标定）",
               f"  相机在 IMU 系的位置 (mm)：{r['T_imu_cam']['p_mm']}（{r['factory']['p_mm']}）",
               f"  相机–IMU 时间差 (ms)：{r['cam_time_offset_ms']}（{r['factory']['cam_time_offset_ms']}）",
               f"  焦距 fx：{r['intrinsics_1440']['fx']:.2f}（{r['factory']['fx']:.2f}），主点：{r['intrinsics_1440']['cx']:.1f}, {r['intrinsics_1440']['cy']:.1f}"
@@ -434,8 +435,12 @@ def write_text_report(out: Path, rep: dict) -> None:
     L += ["检查项", "  结果  项目：数值（要求）"]
     for c in rep["checks"]:
         L.append(f"  {c['result']:<5} {c['check']}：{c['value']}（{c['limit']}）")
-    L += ["", "OK = 正常；WARN = 能用但建议看一下（常见原因见 docs/标定说明.md 的“结果不好怎么办”）；FAIL = 这份标定不要用。",
+    L += ["", "OK = 正常；WARN = 能用但建议看一下（常见原因见 docs/标定/说明.md 的“结果不好怎么办”）；FAIL = 这份标定不要用。",
           "标定文件：calibration.json；给 umi-traj 用的标定包：bundle/；每一步的日志：logs/。"]
+    if str(rep.get("verdict", "")).startswith("PASS"):
+        L += ["", f"下一步（设成这台电脑的默认标定）：./umi-calib install {out}",
+              "另一台相机不要再 install，处理时用：",
+              f"UMI_TRAJ_CALIB={out / 'bundle'} ./umi-traj <录像文件夹>"]
     (out / "report.txt").write_text("\n".join(L) + "\n", encoding="utf-8")
 
 
@@ -464,7 +469,7 @@ def install_bundle(out: Path, force: bool) -> int:
     shutil.copytree(out / "bundle", tcal.USER_DIR)
     shutil.copyfile(out / "report.txt", tcal.USER_DIR / "report.txt")
     d = tcal.active()
-    say(f"已安装：umi-traj 现在使用用户标定 {d['id']}（{d['dir']}）。回到出厂标定：./umi-calib uninstall")
+    say(f"已安装：umi-traj 现在使用用户标定 {d['id']}（{d['dir']}）。回到样例标定：./umi-calib uninstall")
     return 0
 
 
@@ -474,17 +479,17 @@ def cmd_status() -> int:
     except tcal.CalibrationError as e:
         say(f"标定包有问题：{e}")
         return 1
-    say("umi-traj 当前使用：" + ("出厂标定 " + d["id"] if d["source"] == "factory" else f"用户标定 {d['id']}（{d['dir']}）"))
+    say("umi-traj 当前使用：" + ("样例标定 " + d["id"] if d["source"] == "factory" else f"用户标定 {d['id']}（{d['dir']}）"))
     return 0
 
 
 def cmd_uninstall() -> int:
     if not tcal.USER_DIR.exists():
-        say("没有安装用户标定，umi-traj 用的就是出厂标定。")
+        say("没有安装用户标定，umi-traj 用的就是样例标定。")
         return 0
     bak = tcal.USER_DIR.with_name("calibration_user.removed_" + time.strftime("%Y%m%d_%H%M%S"))
     tcal.USER_DIR.rename(bak)
-    say(f"已回到出厂标定（原用户标定挪到 {bak.name}，确认不要了可以删掉）。")
+    say(f"已回到样例标定（原用户标定挪到 {bak.name}，确认不要了可以删掉）。")
     return 0
 
 
@@ -533,7 +538,7 @@ def main(argv=None) -> int:
     r.add_argument("--keep-work", action="store_true", help="保留中间文件（很大）")
     r.add_argument("--force", action="store_true", help="结果目录已存在时覆盖")
     v = sub.add_parser("verify", help="只验证不标定：一段 C 录像 + umi-traj 现在的标定，对照标定板")
-    v.add_argument("video", help="C 段录像（按 docs/标定说明.md 第 3 节 C 段的录法）")
+    v.add_argument("video", help="C 段录像（按 docs/标定/说明.md 第 3 节 C 段的录法）")
     v.add_argument("--out", help="结果目录（默认 <录像名>_umi_calib_verify，在录像旁边）")
     v.add_argument("--tag-size-mm", type=float, default=24.0, help="标定板上一个黑色方块的边长，用尺子量到的值（A4 板 24，A3 板 36）")
     v.add_argument("--cores", help="限制使用的 CPU，例如 0-7")
@@ -542,7 +547,7 @@ def main(argv=None) -> int:
     i = sub.add_parser("install", help="把一份通过检查的标定装进 umi-traj")
     i.add_argument("out")
     i.add_argument("--force", action="store_true")
-    sub.add_parser("uninstall", help="回到出厂标定")
+    sub.add_parser("uninstall", help="回到样例标定")
     sub.add_parser("status", help="umi-traj 现在用哪份标定")
     sub.add_parser("check", help="检查标定组件是否装好")
     a = ap.parse_args(argv)

@@ -1,45 +1,25 @@
-"""[kiwi_fuse3s = kiwi_fuse3r + --refine_chains W (2026-10-07): stage 1 is one joint solve per lens with a SHARED
- accelerometer bias, so one bad chain can push every chain of the lens over the IMU self-consistency gate. With W > 0 a chain
- that fails jointly and has >= 2W stage-1 pairs is judged ALONE (own b_a); if it passes alone it joins the re-solve on the good
- chains (and keeps its own scale / gravity if the joint re-solve still rejects it -- the slowly drifting bias is modelled in
- the main graph anyway); if it fails alone it is cut in two at its middle pair and the pieces are judged alone (down to 3
- pairs), recursively.
- W = 0 (default) is exactly 3r. Found in the release regression: ORB-SLAM3 mapping is not deterministic; when 069 mapping
- did not lose track while the camera was turned away, one 1017-frame chain carried the bad stretch and its joint solve
- (b_a -1.5 m/s^2) failed both chains (NO_USABLE_LENS) although [1080, 1747] alone passes (rel_std 0.053); on 070 the last
- chain failed jointly at 0.246 but passes alone at 0.081. In all 103 archived fusion runs no failing chain has more than
- 10 pairs, so W = 8 leaves every archived result unchanged.]
-[kiwi_fuse3r = kiwi_fuse3q + --group_chains TOL: full chains of one lens that come from the same map (same 'map' label, or no
- label) and whose scales agree within a factor TOL share ONE placement (one set of scale / rotation / translation variables). A
- relocalization back into the same, scale-consistent map (069: before / after turning away) keeps one map frame; scale-inconsistent
- regions (066: x90) still get their own placement.]
-[kiwi_fuse3q = kiwi_fuse3p + (a) a 'map' column in frames.csv (multi-map localization merged by merge_frames.py) splits chains
- wherever the source map changes; (b) --split_rot_deg D: split a chain between consecutive frames whose pose-relative rotation
- disagrees with the gyro-integrated rotation by more than D degrees (catches coordinate jumps such as ORB-SLAM3 map merges).]
-[kiwi_fuse3p = kiwi_fuse3m + --node_stride N: state nodes (pose/vel/bias) only every N frames, IMU preintegrated between nodes,
- lens / rotation / ZUPT factors only at node frames (KIWI also thins its visual factors); the full-rate trajectory is filled by IMU
- prediction from the previous node with a linear blend of the end-point mismatch. Records build / optimise wall time.]
-[kiwi_fuse3m = kiwi_fuse3k + --map_residual: the lens position residual is formed IN THE MAP, e = (R^T (p_X - t) - R_m l)/s - p_m,
- with sigma = lens sigma / (initial chain scale), so localization noise stays in map units and the (nearly noise-free, IMU-driven)
- trajectory is the regressor. In the world-frame form X - s(p + eps) the noise is scaled by s and the optimizer shrinks s
- (errors-in-variables); NERO 042 dual came out with length ratio 0.71.]
-[kiwi_fuse3k = kiwi_fuse3j + --acc_noise / --gyro_noise / --acc_rw (IMU noise densities in the graph; defaults = frozen
- OpenVINS values 0.002 / 0.0002 / 0.003). Diagnostic: NERO motion shows ~0.07 m/s^2/sqrt(Hz) accelerometer HF content vs 0.02 handheld.]
-[kiwi_fuse3j = kiwi_fuse3i + --front_lever_free: the front lever (p_I in C_f, frozen r1440 value) becomes a variable with a
- --lever_sigma prior, like the rear lever (diagnostic for the 042 front scale bias).]
-[kiwi_fuse3i = kiwi_fuse3h + --adaptive_sigma: each lens' position sigma = pos_sigma * (its stage-1 position RMS /
- the smallest stage-1 position RMS among lenses with full chains), so a lens whose map is less IMU-consistent weighs less.]
-[kiwi_fuse3h = kiwi_fuse3g with the other-lens gate keyed on the chain's OWN stage 1 (IMU self-consistency) instead of a
- tight LS residual; default --seg_s 0. Rounds 1-2 (2026-10-01): time segments made every case worse (map -> odometry);
- the 15 mm LS gate rejected the useful P066 rear chain (28 mm) while the harmful P064 rear chains all fail their own stage 1.]
-KIWI-style offline fusion, one wrist, both lenses, with map placements that may change along the recording
-(2026-10-01, method development on already-seen data; successor of kiwi_fuse2.py).
+"""Fuse lens localization and the IMU into one metric, gravity-aligned trajectory.
 
-Why: monocular ORB-SLAM3 maps are not always one similarity away from the metric world. On P066 the front map has two
-regions whose scale differs ~90x (the localization run jumps between them at a relocalization); the P066 rear map's
-window scale wanders 12..20. kiwi_fuse2 (one Sim3 per map) cannot represent either.
+A monocular map is not always one similarity away from the metric world: one map can contain
+regions whose scales disagree, and relocalization can jump between them. Each tracking chain
+therefore has its own scale and placement. Chains from the same map whose scales agree share
+one placement. A long chain that fails the joint IMU check is judged alone and, if it still
+fails, split until the bad stretch is isolated.
 
-Model (equations ours, KIWI code not released):
+With --refine_chains W > 0, a chain that fails the joint solve and has at least 2W stage-1 pairs
+is judged alone (its own accelerometer bias). If it passes alone it rejoins the good chains. If
+the joint re-solve still rejects it, it keeps its own scale and gravity. If it fails alone it is
+cut in two at its middle pair and the pieces are judged alone, down to 3 pairs. W = 0 skips this.
+The runner passes W = 8.
+
+--group_chains TOL puts full chains of one lens that share a map label and agree in scale within
+TOL onto one placement. --split_rot_deg D splits a chain where the pose-relative rotation and the
+gyro-integrated rotation disagree by more than D degrees. --node_stride N keeps pose, velocity and
+bias nodes every N frames and fills the other frames from the IMU. The lens position residual is
+formed in the map, so localization noise stays in map units. IMU noise defaults are 0.002, 0.0002
+and 0.003. A lens whose stage-1 position RMS is worse gets a larger position sigma.
+
+Model:
   - each lens' localization (frames.csv; only ok=1 AND state=2 frames) is split into CHAINS at every tracking gap;
   - stage 1 per lens: linear VI alignment (step 30, lever fixed) with one scale and one gravity PER CHAIN, shared b_a;
     a chain is "good" if its scale is positive, has >= 3 pairs, relative std <= --max_rel_std and |g_free| = 9.81 +- 0.5;
@@ -50,19 +30,17 @@ Model (equations ours, KIWI code not released):
       [lam_b - lam_a ;  Log(R_a^T R_b) ;  (e^lam_b R_b p_b + t_b) - (e^lam_a R_a p_b + t_a)]  with sigmas
       (--sig_ls, --sig_rw_deg, --sig_c); no tie across chains (a relocalization may land in another map region);
   - optional --zupt: zero-velocity prior on frames whose +-0.25 s IMU window is static;
-  - IMU: CombinedImuFactor per frame; rear lever is a variable with a 1 cm prior, front lever = frozen r1440 calibration.
+  - IMU: CombinedImuFactor per frame; rear lever is a variable with a 1 cm prior, front lever = the sample camera-IMU calibration.
 Init lens: among lenses whose stage 1 is sane, the one with the smaller stage-1 position-row RMS. Gauge: longest good
 chain of the init lens (first segment: t = 0, yaw prior). Other chains: anchored to the nearest placed chain in time
 (init lens) or by rotation averaging + linear LS for (s, t) against the init-lens trajectory (other lens).
 
-usage: kiwi_fuse3.py <rear_frames.csv> <front_frames.csv> <imu0.csv> <offset_ns> <q_ICr_xyzw> <out_dir>
+usage: kiwi_fuse3s.py <rear_frames.csv> <front_frames.csv> <imu0.csv> <offset_ns> <q_ICr_xyzw> <out_dir>
          --lever_prior lx,ly,lz [--times times.csv] [--step 30] [--pos_sigma 0.004] [--front_only] [--rear_only]
          [--seg_s 2.0] [--sig_ls 0.03] [--sig_rw_deg 0.3] [--sig_c 0.002] [--max_rel_std 0.2] [--zupt] [--selftest]
          [--accept_rms 0.015] [--accept_rot_deg 1.0] [--lever_sigma 0.01]
-Other-lens map-quality gate (added after round 1, where a P064 rear chain whose own stage 1 failed was admitted by the
-LS fit and bent the front placement): chain rotation must agree with the init lens (median <= --accept_rot_deg), else
-the chain is dropped; full (position) use additionally needs the single-similarity LS residual <= --accept_rms,
-otherwise rotation-only.
+Other-lens gate: chain rotation must agree with the init lens (median <= --accept_rot_deg), else the chain is
+dropped. Full (position) use also needs the single-similarity residual <= --accept_rms; otherwise rotation only.
 """
 import csv, json, os, sys, time
 import numpy as np

@@ -9,7 +9,7 @@
 | `bin/basalt_calibrate_imu` | `8b437691e12455798488c22c246ac0f34a90e2e98db0eb40fe8772b9b6d4a43e` |
 | `lib/libbasalt.so` | `febf3d3d0f53cb5fd761bf9f4024783675c0990adebac9b98d15514a753ff884` |
 
-这两个程序就是算出出厂标定（`software/trajectory/calib/calibration_r1440.json`，2026-09-04）的那两个文件，逐字节相同。
+这两个程序就是算出样例标定（`software/trajectory/calib/calibration_r1440.json`，2026-09-04）的那两个文件，逐字节相同。
 
 ## 源码
 
@@ -23,7 +23,6 @@
 ## 怎么编的
 
 2026-08-26/27，Ubuntu 20.04（glibc 2.35）x86_64，conda-forge gcc 12，Basalt 自带的 vcpkg 流程，Release。
-编译过程和日志见 dev 分支 `experiments/reviews/20260826_x3_calib_b013_fsoffset_candidate.md` 与 `experiments/reviews/20260827_x3_phase4a8_prerecord.md`。
 从源码重编：检出官方 `0.1.7`，`git apply umi_basalt_patch.diff`，按官方 README 的 vcpkg 步骤构建（依赖多，下载量大，耗时一小时量级）。
 
 ## 为什么自带运行库

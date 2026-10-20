@@ -1,13 +1,9 @@
 """One X3 360 4K60 recording -> EuRoC folder for calibration (timestamps, IMU and, optionally, the front-lens frames).
 
-Same data the calibration was validated on (dev: x3_to_calib_dataset.py --size 1440 --crop-size 1440 --step 2 --lens-half auto):
-  * timestamps + IMU: software.trajectory.x3_extract (byte-identical csv rows to that converter, see its docstring);
-  * frames: every 2nd decoded frame, front lens = right half of the 3840x1920 frame, centre crop 1440x1440 at native pixels
-    (x 2160..3599, y 240..1679), written as <t_ns>.png.  The grey image is the decoder's luma (Y) plane, untouched.  That
-    is what the validated converter's frame.to_ndarray(format="gray") returned with PyAV 12 / libswscale 7 for this
-    full-range video; newer libswscale versions re-scale in that call (checked: PyAV 17 gives different pixels), so the
-    plane is read directly and the pixels no longer depend on the version.  With it the A bag of the 2026-09-04
-    calibration is reproduced byte for byte.
+  * timestamps + IMU: software.trajectory.x3_extract;
+  * frames: every 2nd decoded frame, front lens = the right-half crop from software.trajectory.frame, written as <t_ns>.png.
+    The grey image is the decoder's luma (Y) plane, read directly. frame.to_ndarray(format="gray") rescales on newer
+    libswscale, so the pixels would change with the PyAV version.
     PNG encoding is the slow part (about 0.12 s a frame on one core), so the files are written by a few threads; the
     bytes of each file do not depend on that.
 """
@@ -26,9 +22,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from software.trajectory.x3_extract import STEP, T0_S, extract  # noqa: E402
+from software.trajectory.frame import SRC_H, SRC_W, STEP, T0_S, crop_xywh  # noqa: E402
+from software.trajectory.x3_extract import extract  # noqa: E402
 
-CROP_X0, CROP_Y0, CROP = 2160, 240, 1440     # front lens (right half), centre 1440x1440 -- the tool's fixed crop
+CROP_X0, CROP_Y0, CROP_W, CROP_H = crop_xywh("right")
 LUMA_FORMATS = ("yuvj420p", "yuv420p")       # 8-bit planar, plane 0 = luma
 
 
@@ -62,8 +59,8 @@ def build(insv: Path, out: Path, with_images: bool = True, progress=None) -> dic
         st = c.streams.video[0]
         st.thread_type = "AUTO"
         tb = float(st.time_base)
-        if st.codec_context.width != 3840 or st.codec_context.height != 1920:
-            raise RuntimeError(f"{insv.name}: {st.codec_context.width}x{st.codec_context.height}, expected 3840x1920 (360 video, 4K60)")
+        if st.codec_context.width != SRC_W or st.codec_context.height != SRC_H:
+            raise RuntimeError(f"{insv.name}: {st.codec_context.width}x{st.codec_context.height}, expected {SRC_W}x{SRC_H} (360 video, 4K60)")
         for k, fr in enumerate(c.decode(st)):
             if k % STEP:
                 continue
@@ -75,7 +72,7 @@ def build(insv: Path, out: Path, with_images: bool = True, progress=None) -> dic
             if fr.format.name not in LUMA_FORMATS:
                 raise RuntimeError(f"{insv.name}: pixel format {fr.format.name}, expected one of {LUMA_FORMATS} (360 video, 4K60)")
             y = fr.planes[0]
-            g = np.frombuffer(y, np.uint8).reshape(y.height, y.line_size)[CROP_Y0:CROP_Y0 + CROP, CROP_X0:CROP_X0 + CROP].copy()
+            g = np.frombuffer(y, np.uint8).reshape(y.height, y.line_size)[CROP_Y0:CROP_Y0 + CROP_H, CROP_X0:CROP_X0 + CROP_W].copy()
             pending.append(pool.submit(_write_png, img_dir / name, g))
             if len(pending) >= 4 * nw:        # bounded backlog: wait for the oldest half (re-raises a write error)
                 for f in pending[: 2 * nw]:
@@ -88,5 +85,5 @@ def build(insv: Path, out: Path, with_images: bool = True, progress=None) -> dic
             f.result()
     if n_out != len(names):
         raise RuntimeError(f"{insv.name}: decoded {n_out} of {len(names)} frames listed by the container timestamps")
-    man["images"] = {"n": n_out, "crop_xywh": [CROP_X0, CROP_Y0, CROP, CROP], "format": "luma plane, gray png", "step": STEP}
+    man["images"] = {"n": n_out, "crop_xywh": [CROP_X0, CROP_Y0, CROP_W, CROP_H], "format": "luma plane, gray png", "step": STEP}
     return man

@@ -8,15 +8,11 @@ writes
     <dir>/extract_manifest.json     source size / sha256, profile, counts, frame-timing check
 
 No image is decoded or written (the lens video is cut separately by make_lens_video.py); the filename column only keeps the
-EuRoC format.  The numbers are the ones the frozen converter
-software/data_collection/probes/vio/calib/x3_to_calib_dataset.py writes for the same file (--size 1440 --crop-size 1440
---step 2 --lens-half auto), byte for byte:
-  * IMU: software.camera.x3.imu_reader.read_imu_and_meta (a bit-identical copy of the converter's reader) and the converter's
-    row format; t_ns = round((t_s + 1 s) * 1e9), rows with t_ns < 0 dropped;
-  * frames: the converter decodes the stream and keeps decoded frames 0, 2, 4, ...; here the same presentation timestamps are
-    read from the container packets (no decoding), sorted into presentation order, and every 2nd one is kept.
-    t_s = float(pts * float(time_base)), t_ns = int(round((t_s + 1.0) * 1e9)) -- the converter's arithmetic, operation for
-    operation (float time base, not an exact fraction), so the integers agree to the nanosecond.
+EuRoC format.
+  * IMU: software.camera.x3.imu_reader.read_imu_and_meta. t_ns = round((t_s + 1 s) * 1e9), rows with t_ns < 0 dropped.
+  * Frames: presentation timestamps are read from the container packets (no decoding), sorted, and every 2nd one is kept.
+    t_s = float(pts * float(time_base)), t_ns = int(round((t_s + 1.0) * 1e9)). The time base is the container's float
+    value, not an exact fraction.
 
 Refuses (exit 2) anything that is not a single packed 3840x1920 stream (= the X3 "360 4K60" mode the calibration belongs to),
 an IMU trailer that cannot be read, or duplicate / missing presentation timestamps.  The fusion places frame k at k / 29.97 s;
@@ -39,11 +35,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from software.camera.x3.imu_reader import ImuReadError, read_imu_and_meta  # noqa: E402
 from software.camera.x3.profiles import detect_profile_from_streams  # noqa: E402
-
-T0_S = 1.0                      # EuRoC origin offset of the frozen converter (keeps t = 0 away from "invalid" in tools)
-STEP = 2                        # 59.94 fps recording -> every 2nd frame -> 29.97 fps, as calibrated / validated
-FPS_USED = 30000.0 / 1001.0     # the fusion's frame grid (kiwi_fuse3r.py FPS)
-PROFILE = "x3_360_4k_60"
+from software.trajectory.frame import FPS_SRC, FPS_USED, PROFILE, STEP, T0_S  # noqa: E402
 EUROC_IMU_HEADER = ("#timestamp [ns],w_RS_S_x [rad s^-1],w_RS_S_y [rad s^-1],w_RS_S_z [rad s^-1],"
                     "a_RS_S_x [m s^-2],a_RS_S_y [m s^-2],a_RS_S_z [m s^-2]")
 
@@ -111,7 +103,7 @@ def extract(insv: Path, out: Path, with_sha256: bool = True) -> dict:
     if profile != PROFILE:
         raise Refused(f"{insv.name}: video streams {info['video_streams']} -> profile '{profile}'. Only the X3 '360 4K60' "
                       f"recording mode (one 3840x1920 stream, both lenses side by side) is calibrated for this tool.")
-    if info["average_rate"] is None or abs(info["average_rate"] - 60000 / 1001) > 0.05:
+    if info["average_rate"] is None or abs(info["average_rate"] - FPS_SRC) > 0.05:
         raise Refused(f"{insv.name}: frame rate {info['average_rate']} fps, expected 59.94 (X3 360 4K60)")
     try:
         imu = read_imu_and_meta(insv)

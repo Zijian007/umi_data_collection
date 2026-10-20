@@ -1,7 +1,7 @@
 """merge_frames.py --out merged.csv --src label:priority:frames.csv [--src ...]
 Per frame, keep using the current source while it has a valid pose (ok=1, state=2); otherwise switch to the valid source with the
 highest priority (e.g. keyframe count of its map). Writes frames.csv columns + 'map' (= source label); invalid frames ok=0.
-Chains must be split wherever 'map' changes (different coordinate frames) - kiwi_fuse3q does that."""
+Chains must be split wherever 'map' changes (different coordinate frames). The fusion does that."""
 import csv, sys
 a = sys.argv; out = a[a.index("--out") + 1]
 srcs = [a[i + 1].split(":", 2) for i in range(len(a)) if a[i] == "--src"]

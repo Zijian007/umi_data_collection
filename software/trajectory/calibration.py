@@ -1,4 +1,6 @@
-"""Which camera calibration umi-traj uses, and how a new one is turned into the files the pipeline reads.
+"""Pack a solved Basalt calibration.json into the three files umi-traj reads.
+
+Solving the json is ``software.calibration`` (``./umi-calib``). This module does not calibrate a camera.
 
 The pipeline reads the camera-IMU calibration in three places:
   * ORB-SLAM3 settings (720x720 KannalaBrandt8 intrinsics)            config/front_x3_r1440_720.yaml

@@ -6,12 +6,12 @@
 #   2. cheng-chi/ORB_SLAM3（UMI 用的 fork）@ b741dca3          -> <deps>/src/ORB_SLAM3
 #   源码先从组织下的 fork 拉（Torbjorn-s-Apple-Americano/Pangolin、/ORB_SLAM3，2026-10-07 建，防止原仓库被删），
 #   拉不到再退回原作者仓库；两种来源都按固定的提交号校验，所以编出来的是同一份代码。
-#      + opencv47_aruco_api.patch（OpenCV >= 4.7 的 ArUco 接口；lab0 验证树上的唯一改动）
+#      + opencv47_aruco_api.patch（OpenCV >= 4.7 的 ArUco 接口）
 #      + orbslam3_map_select.patch（环境变量 ORB_MAP_INDEX 选定位用的地图）
 #      + x3_mono_slam.cc（纯视觉单目驱动，逐帧写位姿）
 #   产物：<deps>/src/ORB_SLAM3/lib/libORB_SLAM3.so、Examples/Monocular-Inertial/x3_mono_slam、Vocabulary/ORBvoc.txt
 #
-# 环境变量：JOBS（并行编译数，默认 nproc）、ORB3_MARCH（默认 native = 与 lab0 一致；
+# 环境变量：JOBS（并行编译数，默认 nproc）、ORB3_MARCH（默认 native = 按本机 CPU；
 #   要在别的 CPU 上复用同一份编译结果时设成 x86-64-v2 之类）。
 # 编译器、OpenCV、Eigen、Boost、OpenSSL、OpenGL 全部来自 conda 环境（$CONDA_PREFIX），不碰系统。
 set -euo pipefail
@@ -39,7 +39,7 @@ clone_first() {  # <dest> <git clone args...> -- <url...>: try each url in turn
   echo "could not clone from any source: $*"; return 1
 }
 
-# Compiler flags: everything (Pangolin, DBoW2, g2o, ORB-SLAM3, x3_mono_slam) is compiled as C++14, like the lab0 build
+# Compiler flags: everything (Pangolin, DBoW2, g2o, ORB-SLAM3, x3_mono_slam) is compiled as C++14
 # (system gcc 9, whose default is C++14). GCC >= 11 and conda's activation flags default to C++17; mixing C++17 parts
 # (DBoW2 / g2o / Pangolin) with the C++14 ORB-SLAM3 library breaks Eigen's aligned allocation across the boundary and the
 # mapper dies with "double free or corruption" right after map initialisation. conda's other defaults (-march=nocona,
@@ -59,7 +59,7 @@ if [ ! -f "$DEPS/pangolin/lib/cmake/Pangolin/PangolinConfig.cmake" ]; then
   # GCC >= 11 不再间接包含 <limits>；v0.6 的 colour.h 用到了 std::numeric_limits
   grep -q '#include <limits>' "$SRC/Pangolin/include/pangolin/gl/colour.h" || \
     sed -i 's|#include <stdexcept>|#include <stdexcept>\n#include <limits>|' "$SRC/Pangolin/include/pangolin/gl/colour.h"
-  # 与 lab0 编译选项一致：不要视频/图像格式/Python/示例，只要 GL 显示部分
+  # 不要视频/图像格式/Python/示例，只要 GL 显示部分
   cmake -S "$SRC/Pangolin" -B "$SRC/Pangolin/build" "${CMAKE_COMMON[@]}" -DCMAKE_INSTALL_PREFIX="$DEPS/pangolin" \
     -DBUILD_EXAMPLES=OFF -DBUILD_TESTS=OFF -DBUILD_TOOLS=OFF -DBUILD_PANGOLIN_PYTHON=OFF -DBUILD_PYPANGOLIN_MODULE=OFF \
     -DBUILD_PANGOLIN_FFMPEG=OFF -DBUILD_PANGOLIN_LIBPNG=OFF -DBUILD_PANGOLIN_LIBJPEG=OFF -DBUILD_PANGOLIN_LIBTIFF=OFF \
@@ -84,7 +84,7 @@ if [ ! -f "$O/.umi_patched" ]; then
   git -C "$O" apply "$HERE/orbslam3_map_select.patch"
   mkdir -p "$O/Examples/Monocular"
   cp "$HERE/x3_mono_slam.cc" "$O/Examples/Monocular/x3_mono_slam.cc"
-  # 与 lab0 验证树相同的位置：可执行文件落在 Examples/Monocular-Inertial（fork 的 CMakeLists 末尾的 RUNTIME 目录）
+  # 可执行文件落在 Examples/Monocular-Inertial（fork 的 CMakeLists 末尾的 RUNTIME 目录）
   printf '\nadd_executable(x3_mono_slam\nExamples/Monocular/x3_mono_slam.cc)\ntarget_link_libraries(x3_mono_slam ${PROJECT_NAME})\n' >> "$O/CMakeLists.txt"
   if [ "$MARCH" != native ]; then
     sed -i "s/-march=native/-march=$MARCH/g" "$O/CMakeLists.txt" "$O/Thirdparty/DBoW2/CMakeLists.txt" "$O/Thirdparty/g2o/CMakeLists.txt"

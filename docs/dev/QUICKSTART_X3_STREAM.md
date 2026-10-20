@@ -1,6 +1,8 @@
 # 五步：插上 Insta360 X3，在浏览器里看到画面
 
-写给**第一次接触这个仓库的人**。目标是一台全新的 Windows 机器，从 `git clone` 到看见画面
+> 预览程序还没放进这个仓库。下面的步骤对应以后要搬来的 `software/tools/live_monitor/`。算轨迹从仓库根目录的 `README.md` 开始。
+
+写给**第一次接触实时预览的人**。目标是一台全新的 Windows 机器，从 `git clone` 到看见画面
 **15 分钟以内**，除了「用 Zadig 绑一次驱动」和「放一个 SDK 包」之外不需要你做任何判断。
 
 > **只支持 Windows。** 相机驱动（WinUSB）和 Insta360 的 CameraSDK 都是这样。
@@ -27,16 +29,17 @@ git --version
 
 ## 第 2 步：clone 仓库
 
+预览程序还不在这个仓库里。下面的目录名和脚本路径是预览程序搬来之后的用法，现在按它操作不会找到 `software\tools\live_monitor`。
+
 ```bat
 cd D:\
-git clone https://github.com/Torbjorn-s-Apple-Americano/umi.git
-cd umi
+git clone https://github.com/Zijian007/umi_data_collection.git
+cd umi_data_collection
 ```
 
-### 这个仓库是**私有**的，所以 clone 要先有凭据
+### 如果 clone 要求登录
 
-直接跑上面那条命令多半会失败，报 `could not read Username for 'https://github.com'`
-或者 `Failed to enumerate credentials`。两条路二选一：
+命令失败并报 `could not read Username for 'https://github.com'` 或 `Failed to enumerate credentials` 时，两条路二选一：
 
 **A. 用 GitHub CLI（推荐）**
 
@@ -53,14 +56,7 @@ gh auth login
 把你的 GitHub 用户名发给项目负责人，被加进仓库之后再 clone；
 Windows 上第一次 clone 会弹 Git Credential Manager 的登录窗口，登一次就行。
 
-> **`x3_bridge.exe` 不需要走认证。** 它已经在仓库里
-> （`software\tools\live_monitor\bin\x3_bridge.exe`，90,624 字节，我们自己源码编的，
-> 来历见同目录的 `BUILD_INFO.md`），clone 下来就有，安装脚本会校验 sha256 之后直接用。
-> GitHub Release 那条路只有在你**想换一个更新的版本**时才需要（加 `-FromRelease`，
-> 私有仓同样要先 `gh auth login`），默认 tag 是
-> [`x3-stream-v0.2`](https://github.com/Torbjorn-s-Apple-Americano/umi/releases/tag/x3-stream-v0.2)。
-> **不要手动指回 `x3-stream-v0.1`**：那一版的附件有个会话回收竞态，正常停流会被
-> 看门狗误判成断流、反复回收会话，几十次之后相机只能物理重插 USB。
+> `x3_bridge.exe` 随预览程序一起，当前仓库里没有。不要拿 `x3-stream-v0.1` 来顶：那一版正常停流会被误判成断流，反复回收会话，最后只能把 USB 拔掉再插上。
 
 ## 第 3 步：自己向 Insta360 申请 CameraSDK，放到 `third_party\insta360\`
 
@@ -183,9 +179,7 @@ PAGE     [LAN] http://192.168.x.x:8080/
 
 不用页面也行：`curl -X POST "http://<地址>:8080/switch?res=148"`、`curl http://<地址>:8080/status.json`。
 
-> **真机切换已验收（2026-09-25）**：9 → 74 → 148 → 1 → 9 两轮共 10 次，全部在同一相机会话里完成
-> （不关不开相机），每次 1.9–3.4 秒出新档第一帧，切完 30 秒帧率 29.95–30.14、零重开
-> （`experiments/reviews/20260924_live_ui_switch.md`）。切档时画面会断两三秒，这是正常的。
+> 切档时画面会断两三秒，这是正常的。
 
 **同一个局域网里的别的机器怎么看**：用脚本打印的 `[LAN]` 那一组地址（比如
 `http://192.168.x.x:8080/`）。第一次跑的时候 Windows 可能会弹防火墙提示，
@@ -239,8 +233,7 @@ netsh advfirewall firewall delete rule name="umi_x3_stream_8080"
 
 1. **只支持 Windows。** 驱动和 SDK 都是。
 2. **仓库默认档是 1440×720 @30 fps（enum 9，≈4 Mbps）**；想要画质就在页面上切到 **2560×1280（enum 1，
-   ≈44.5 Mbps）**——2026-09-25 按夹爪镜头画质测出来的最高档（清晰度与块效应两项都最好），实验室笔记本的
-   常驻服务已经用 `serve_config.json` 把它设成了开机默认（证据：`experiments/reviews/20260924_default_rung_by_quality.md`）。
+   ≈44.5 Mbps）**。清晰度和块效应都比默认档好。开机默认可以写进桥旁边的 `serve_config.json`。
    四档（9 / 74 / 148 / 1）都过了 30 分钟浸泡零重开。
 3. **60 fps 档（`-LiveRes 28`，3840×1080 并排 = 每镜头 1920×1080）是实验档，不稳**：
    视频流会在 **29–118 秒**之间随机停止推送，原因未知。现在桥会自动做会话回收把它救回来，
@@ -253,8 +246,4 @@ netsh advfirewall firewall delete rule name="umi_x3_stream_8080"
 
 ## 出了这份文档解决不了的问题
 
-带上这三样找项目负责人：`serve_urls.txt`、脚本完整输出、
-`software\tools\live_monitor\bin\` 的目录列表。
-
-更细的东西在 `software/tools/live_monitor/STREAMING_QUICKSTART.md`
-和 `experiments/reviews/20260922_x3_stream_server.md`。
+带上这三样：`serve_urls.txt`、脚本完整输出、`software\tools\live_monitor\bin\` 的目录列表。

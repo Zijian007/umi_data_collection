@@ -18,15 +18,7 @@ UNITS AND CLOCK (the only two things downstream is allowed to assume):
     ``first_frame_timestamp_us`` is metadata field 24, a value ASSERTED by the device, never
     measured by this project.
   * axis order is the raw trailer order (accel x,y,z then gyro x,y,z).  The mapping to the camera
-    frame is NOT established here.
-
-Provenance: the gyro decoding is a logic-level COPY of
-``software/data_collection/probes/x3_insv_probe.py`` (``parse_gyro``, ``gyro_integrity``,
-``infer_timebase``); :func:`read_imu_and_meta` is a logic-level COPY of
-``software/data_collection/probes/vio/calib/x3_to_calib_dataset.py:read_imu_and_meta``, with the
-same arithmetic in the same order so the numbers are bit-identical.  Both sources are frozen and
-sha-pinned (decision D3): not imported, not edited.  ``software/camera/tests/
-test_x3_imu_reader_equivalence.py`` and the fixture golden pin the agreement.
+    frame is not established here.
 """
 
 from __future__ import annotations
@@ -50,7 +42,7 @@ from software.camera.x3.insv_reader import (
     records_by_id,
 )
 
-#: 1 g in m/s^2, the value the frozen chain uses.
+#: 1 g in m/s^2.
 G0 = 9.80665
 
 #: The X3 firmware writes the trailer gyro in blocks of this many records; whole-block duplicates

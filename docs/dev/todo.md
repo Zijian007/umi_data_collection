@@ -23,7 +23,7 @@
 ## 0. 建空仓库
 
 - [x] 在 GitHub 新建空仓库，没有导入 `umi`。
-- [x] 把本文件放进新仓库根目录，作为第一次提交。
+- [x] 把本文件放进新仓库根目录，作为第一次提交。后来挪到 `docs/dev/todo.md`，根目录只留给使用者的 README。
 - [x] 根目录 `.gitignore` 忽略：`.deps/`、`calibration_user/`、`__pycache__/`、`*.pyc`、`.DS_Store`、`*.insv`、`*.lrv`、`umi_traj_out/`。
 
 ## 1. 搬走引擎快照
@@ -35,8 +35,8 @@
 - [x] `software/calibration/`
 - [x] `software/__init__.py`
 - [x] `install.sh`、`umi-traj`、`umi-calib`、`Dockerfile`、`.dockerignore`
-- [x] `docs/录制说明.md`、`docs/使用说明.md`、`docs/标定说明.md`、`docs/原理与精度.md`
-- [x] `QUICKSTART_X3_STREAM.md`（实时预览说明；`software/tools/live_monitor/` 先不搬，采集端再搬）
+- [x] `docs/轨迹/录制.md`、`docs/轨迹/使用.md`、`docs/轨迹/原理.md`、`docs/标定/说明.md`（当初平铺四份，后来按标定 / 轨迹两块收进目录）
+- [x] `docs/dev/QUICKSTART_X3_STREAM.md`（实时预览说明；`software/tools/live_monitor/` 先不搬，采集端再搬）
 
 明确不拷：
 
@@ -46,7 +46,7 @@
 
 搬完之后：
 
-- [x] 写 `PROVENANCE.md`：引擎来自 `umi@71a124d`，列出上面的路径，写明此后算法改动要单独记一笔。
+- [x] 写 `docs/dev/PROVENANCE.md`：引擎来自 `umi@71a124d`，列出上面的路径，写明此后算法改动要单独记一笔。
 - [x] 在 `software/trajectory/calib/README.md` 说明：`calibration_r1440.json` 是实验室同学给某一台 X3 标定的样例（2026-09-04），不是厂家出厂标定，也不是众包默认标定。文件先留着，供对照跑通。
 - [ ] 在一台 Linux x86_64 上执行 `bash install.sh`，再用一段已知录像跑 `./umi-traj`。对照 `umi` 上同一段的轨迹长度和 `summary.json`，确认同一量级。这一步通过之前不改引擎代码。
 
@@ -89,7 +89,7 @@
 - [ ] 任务卡：这段要录什么、录多长、开头静止、扫图、结尾静止。
 - [ ] 实时预览：确认前镜头没被挡。把 `software/tools/live_monitor/` 从 `umi@71a124d` 再搬过来。
 - [ ] 只上传原始 `.insv`，附上设备编号和任务编号。采集员的电脑不跑 SLAM。
-- [ ] 操作规程写成新仓库里的 `docs/采集规程.md`，对着上面三档判定来写。实验室的 `录制说明.md` 留作算法解释，不把它改成众包手册。
+- [ ] 操作规程写成新仓库里的 `docs/采集规程.md`，对着上面三档判定来写。实验室的 `docs/轨迹/录制.md` 留作算法解释，不把它改成众包手册。
 
 ## 先不做
 

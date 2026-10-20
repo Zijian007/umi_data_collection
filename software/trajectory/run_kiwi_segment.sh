@@ -17,17 +17,13 @@
 #   <dataset>/mav0 is written by software/trajectory/x3_extract.py (cam0 timestamps + imu0 of the SAME recording;
 #   frame k of the lens videos == dataset frame k).
 #
-# This is the validated runner software/data_collection/probes/vio/kiwi/run_kiwi_segment.sh (dev branch) with the same steps
-# and parameters; only the environment defaults (lab0 paths -> installed locations), the optional CPU pinning and the
-# removal of the development-only grading step differ.
-#
 # Environment (set by <deps>/env.sh, which install.sh writes and `umi-traj` sources):
 #   KIWI_PY          python with numpy, scipy, gtsam (fusion) -- also used for the lens-video / merge helpers
 #   ORB3_DIR         ORB-SLAM3 tree built by orbslam3/build_orbslam3.sh (lib/ + Examples/Monocular-Inertial/x3_mono_slam)
 #   ORB3_VOCAB       ORBvoc.txt
 #   ORB3_EXTRA_LD    library path for x3_mono_slam (conda env lib + Pangolin)
 #   ffmpeg / ffprobe must be on PATH
-#   KIWI_CAM_IMU_OFFSET_NS, KIWI_REAR_Q_IC, KIWI_REAR_LEVER   calibration constants (frozen r1440 offset; rear lens Basalt 065)
+#   KIWI_CAM_IMU_OFFSET_NS, KIWI_REAR_Q_IC, KIWI_REAR_LEVER   sample-calibration time offset; rear lens Basalt 065
 #   KIWI_FRONT_SETTING, KIWI_FUSER   front-lens ORB-SLAM3 settings and fusion script; default = the validated files in this
 #                    folder. `umi-traj` points them (and KIWI_CAM_IMU_OFFSET_NS) at a user calibration bundle when one is
 #                    installed (software/trajectory/calibration.py)

@@ -1,11 +1,5 @@
 %YAML:1.0
-# REAR lens: KB4 from Basalt basalt_calibrate on 065 (2026-10-01, dedicated rear-lens board clip; 1440 px fx 510.811 fy 510.567 cx 722.719 cy 724.679; fx within 0.8% of the cv2 062+065 solve (515.10))
-# UMI-fork (gopro_slam) settings for the X3 4K60 workspace lens, r1440 crop downsized to 720x720.
-# Source: frozen v2_openvins_deployment r1440 calibration (calibration.json sha256 e3ef0e5b...), the same
-# numbers as the 2026-09-14 bakeoff orbslam3.yaml, with the pinhole part scaled by 0.5 using the
-# pixel-centre convention  f' = f/2,  c' = (c + 0.5)/2 - 0.5.  KB4 distortion is resolution independent.
-# IMU block copied verbatim from the bakeoff settings (assumed priors carried in the frozen calibration).
-# ORB block: UMI's gopro10_maxlens_fisheye_setting_v1_720.yaml values (= upstream defaults).
+# Rear lens, 720. Intrinsics from a Basalt solve on recording 065 (1440 px: fx 510.811, fy 510.567, cx 722.719, cy 724.679), scaled the same way as the front lens.
 
 File.version: "1.0"
 

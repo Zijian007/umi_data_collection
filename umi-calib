@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# umi-calib -- 重新标定 X3 相机（内参 + 相机–IMU），并装进 umi-traj。怎么录、怎么用见 docs/标定说明.md。
+# umi-calib -- 换相机时先验证样例标定，不够再重新标定。怎么录、怎么用见 docs/标定/说明.md。
+#   ./umi-calib verify <C段.insv> --tag-size-mm 24.0
 #   ./umi-calib run <放着 A B C D 四段录像的文件夹> [--tag-size-mm 24.0] [--install]
 #   ./umi-calib install <结果目录> | uninstall | status | check
 ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
