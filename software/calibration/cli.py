@@ -1,12 +1,14 @@
-"""umi-calib -- 换了一台 X3 时，先验证样例标定，不够再重新标定前镜头内参和相机–IMU。
+"""umi-calib -- 给一台 X3 做前镜头内参和相机–IMU 标定。每台新相机默认走全套 A/B/C/D。
 
-    umi-calib verify <C 段录像>           # 只验证、不标定：现在的标定在这台相机上准不准（约 15 分钟）
     umi-calib run <放着 A B C D 四段录像的文件夹> [--out DIR] [--tag-size-mm 24.0] [--install]
     umi-calib run --a A.insv --b B.insv --c C.insv --d D.insv [...]
-    umi-calib install <结果目录>          # 把通过检查的标定装进 umi-traj（写到 <仓库>/calibration_user/）
-    umi-calib uninstall                   # 回到样例标定
-    umi-calib status                      # 现在 umi-traj 用的是哪份标定
+    umi-calib install <结果目录>          # 按录像序列号写入 registry/cameras/<serial>/
+    umi-calib devices                     # 列出设备档案
+    umi-calib retire <serial>             # 停用一台
+    umi-calib status                      # 同 devices
     umi-calib check                       # 标定组件装好了吗
+    umi-calib verify <C 段录像>           # 可选：不标定，只检查现有标定在这台上准不准
+    umi-calib adopt-sample --serial S     # 可选：verify PASS 后沿用样例相机–IMU（不是默认入库）
 
 四段录像怎么录见 docs/标定/说明.md。给文件夹时按文件名（即录制时间）排序，依次当作 A、B、C、D。
 流程与 2026-09-04 的样例标定相同：A -> 内参（basalt_calibrate kb4）；B -> 相机–IMU（basalt_calibrate_imu，固定 IMU 尺度、
@@ -32,6 +34,9 @@ REPO = HERE.parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from software.registry import (  # noqa: E402
+    RegistryError, adopt_sample, list_devices, read_insv_serial, register, retire, resolve_insv, sample,
+)
 from software.trajectory import calibration as tcal  # noqa: E402
 
 DEPS = Path(os.environ.get("UMI_DEPS", REPO / ".deps"))
@@ -194,12 +199,22 @@ def cmd_run(a) -> int:
     for k, v in seg.items():
         say(f"{k} = {v.name}")
     say("请核对：A 内参，B 相机–IMU，C 验证，D 六个朝向。不对就停掉，改用 --a --b --c --d。")
+    try:
+        serials = {k: read_insv_serial(v) for k, v in seg.items()}
+    except RegistryError as e:
+        say(str(e))
+        return 2
+    if len(set(serials.values())) != 1:
+        say("四段录像不是同一台相机：" + "，".join(f"{k}={serials[k]}" for k in "ABCD"))
+        return 2
+    say(f"相机序列号 {serials['C']}")
     grid = json.loads(BOARD_JSON.read_text(encoding="utf-8"))
     grid["tagSize"] = a.tag_size_mm / 1000.0
     (out / "aprilgrid.json").write_text(json.dumps(grid, indent=1), encoding="utf-8")
     pin = (["taskset", "-c", a.cores] if a.cores else [])
     checks: list = []
     rep = {"kind": "umi_calib_report", "segments": {k: v.name for k, v in seg.items()}, "tag_size_mm": a.tag_size_mm,
+           "serial": serials["C"],
            "tool_commit": git_commit(), "basalt": (BASALT / "BASALT_COMMIT.txt").read_text().strip() if (BASALT / "BASALT_COMMIT.txt").is_file() else None,
            "factory_calibration": tcal.describe(tcal.HERE, "factory")["id"], "checks": checks}
     t0 = time.time()
@@ -338,10 +353,9 @@ def cmd_run(a) -> int:
     verdict = "FAIL" if bad else ("PASS（有提醒，见报告）" if warn else "PASS")
     rc = finish(verdict, "；".join(x["check"] for x in bad))
     if rc == 0 and a.install:
-        return install_bundle(out, force=False)
+        return install_bundle(out, force=False, serial=rep.get("serial"), gripper=getattr(a, "gripper", None))
     if rc == 0:
-        say(f"要让这台电脑上的 umi-traj 默认用这份标定：  ./umi-calib install {out}")
-        say(f"另一台相机不要再 install。处理它的录像时：  UMI_TRAJ_CALIB={out / 'bundle'} ./umi-traj <录像文件夹>")
+        say(f"写入设备档案：  ./umi-calib install {out}")
     return rc
 
 
@@ -375,12 +389,17 @@ def cmd_verify(a) -> int:
     work, logs = out / "work", out / "logs"
     logs.mkdir(parents=True)
     try:
-        cal = tcal.active()
-    except tcal.CalibrationError as e:
-        say(f"标定包有问题：{e}")
+        serial = read_insv_serial(insv)
+    except RegistryError as e:
+        say(str(e))
         return 2
-    name = "样例标定" if cal["source"] == "factory" else "用户标定"
-    say(f"用 umi-traj 现在的标定（{name} {cal['id']}）验证 {insv.name}")
+    try:
+        cal = resolve_insv(insv)
+        name = f"档案 {cal['serial']} / {cal['id']}"
+    except RegistryError:
+        cal = sample()
+        name = f"样例标定 {cal['id']}（序列号 {serial} 还没有档案）"
+    say(f"用 {name} 验证 {insv.name}（序列号 {serial}）")
     grid = json.loads(BOARD_JSON.read_text(encoding="utf-8"))
     grid["tagSize"] = a.tag_size_mm / 1000.0
     from software.calibration import board_pnp as bp, dataset
@@ -388,15 +407,16 @@ def cmd_verify(a) -> int:
     from software.trajectory.x3_extract import Refused
 
     t0, checks = time.time(), []
-    rep = {"kind": "umi_calib_verify_report", "video": insv.name, "tag_size_mm": a.tag_size_mm, "tool_commit": git_commit(),
-           "calibration": {"source": cal["source"], "id": cal["id"]}, "checks": checks}
+    rep = {"kind": "umi_calib_verify_report", "video": insv.name, "serial": serial, "tag_size_mm": a.tag_size_mm, "tool_commit": git_commit(),
+           "calibration": {"source": cal["source"], "id": cal["id"], "dir": cal["dir"]}, "checks": checks}
     say("1/3 读取录像（时间戳 + IMU + 画面）")
     try:
         dataset.build(insv, work / "ds", with_images=True)
         say("2/3 在画面里找标定板")
         found = bp.detect_all(work / "ds", GridDetector, step=1, workers=dataset.n_workers())
         say("3/3 算轨迹，对照标定板（约 8 分钟）")
-        rep["C"] = trajectory_check(insv, found, Path(cal["json"]), "factory" if cal["source"] == "factory" else cal["dir"], grid, work, logs, "current", a.cores)
+        bundle = "factory" if cal["source"] == "factory" else cal["dir"]
+        rep["C"] = trajectory_check(insv, found, Path(cal["json"]), bundle, grid, work, logs, "current", a.cores)
     except (Refused, RuntimeError) as e:
         rep["C"] = {"status": "failed", "reason": f"录像读不了：{e}"}
     c_items(checks, rep["C"], f"{name}下的")
@@ -406,8 +426,12 @@ def cmd_verify(a) -> int:
     bad = [x for x in checks if x["result"] == "FAIL"]
     warn = [x for x in checks if x["result"] == "WARN"]
     verdict = "FAIL" if bad else ("PASS（有提醒，见报告）" if warn else "PASS")
-    advice = {"PASS": f"这份标定在这台相机上够准，不需要重新标定。",
-              "FAIL": "这份标定在这台相机上不够准（或这段录像没法验证）：先看下面标 FAIL 的项；录像没问题的话，录全套 A B C D 重新标定（./umi-calib run）。"}
+    in_reg = cal.get("serial") == serial
+    advice = {
+        "PASS": ("这份标定在这台相机上够准。默认仍应录 A/B/C/D，./umi-calib run 通过后再 install。"
+                 + (f" 若明确沿用样例： ./umi-calib adopt-sample --serial {serial}" if not in_reg else "")),
+        "FAIL": "这份标定在这台相机上不够准（或这段录像没法验证）：先看下面标 FAIL 的项；录像没问题的话，录全套 A B C D 重新标定（./umi-calib run）。",
+    }
     rep.update(verdict=verdict, wall_s=round(time.time() - t0, 1),
                advice=advice.get(verdict, "能用，但有提醒：如果提醒的是“能认出标定板的帧数 / 移动范围”，按标定说明重录一段 C 再验证；如果是误差或尺度偏大，建议录全套重新标定。"))
     (out / "report.json").write_text(json.dumps(rep, indent=1, ensure_ascii=False), encoding="utf-8")
@@ -438,9 +462,7 @@ def write_text_report(out: Path, rep: dict) -> None:
     L += ["", "OK = 正常；WARN = 能用但建议看一下（常见原因见 docs/标定/说明.md 的“结果不好怎么办”）；FAIL = 这份标定不要用。",
           "标定文件：calibration.json；给 umi-traj 用的标定包：bundle/；每一步的日志：logs/。"]
     if str(rep.get("verdict", "")).startswith("PASS"):
-        L += ["", f"下一步（设成这台电脑的默认标定）：./umi-calib install {out}",
-              "另一台相机不要再 install，处理时用：",
-              f"UMI_TRAJ_CALIB={out / 'bundle'} ./umi-traj <录像文件夹>"]
+        L += ["", f"下一步（按序列号写入设备档案）：./umi-calib install {out}"]
     (out / "report.txt").write_text("\n".join(L) + "\n", encoding="utf-8")
 
 
@@ -451,45 +473,81 @@ def git_commit() -> str:
         return "unknown"
 
 
-def install_bundle(out: Path, force: bool) -> int:
+def install_bundle(out: Path, force: bool, serial: str | None = None, gripper: str | None = None) -> int:
     out = Path(out)
     try:
         rep = json.loads((out / "report.json").read_text(encoding="utf-8"))
-        tcal.describe(out / "bundle", "user")
+        tcal.describe(out / "bundle", "registry")
     except Exception as e:
         say(f"{out} 不是一个完整的 umi-calib 结果目录：{e}")
         return 2
     if not str(rep.get("verdict", "")).startswith("PASS") and not force:
         say(f"这份标定的结论是 {rep.get('verdict')}，没有安装。确实要用的话加 --force。")
         return 1
-    if tcal.USER_DIR.exists():
-        bak = tcal.USER_DIR.with_name("calibration_user.bak_" + time.strftime("%Y%m%d_%H%M%S"))
-        tcal.USER_DIR.rename(bak)
-        say(f"原来的用户标定挪到了 {bak.name}")
-    shutil.copytree(out / "bundle", tcal.USER_DIR)
-    shutil.copyfile(out / "report.txt", tcal.USER_DIR / "report.txt")
-    d = tcal.active()
-    say(f"已安装：umi-traj 现在使用用户标定 {d['id']}（{d['dir']}）。回到样例标定：./umi-calib uninstall")
+    serial = serial or rep.get("serial")
+    if not serial:
+        say("报告里没有相机序列号。加上 --serial <从 .insv 读到的序列号>。")
+        return 2
+    try:
+        d = register(serial, out / "bundle", gripper=gripper, status="active",
+                     note=f"umi-calib install from {out}", report=out / "report.txt")
+    except RegistryError as e:
+        say(str(e))
+        return 2
+    say(f"已写入设备档案：相机 {d['serial']}  标定 {d['id']}  夹爪 {d['gripper']}  -> {d['dir']}")
     return 0
 
 
-def cmd_status() -> int:
+def cmd_adopt_sample(a) -> int:
+    serial = a.serial or (read_insv_serial(Path(a.from_video)) if a.from_video else None)
+    if not serial:
+        say("需要 --serial，或 --from-video <这台相机的 .insv>")
+        return 2
     try:
-        d = tcal.active()
-    except tcal.CalibrationError as e:
-        say(f"标定包有问题：{e}")
+        d = adopt_sample(serial, gripper=a.gripper, note=a.note)
+    except RegistryError as e:
+        say(str(e))
+        return 2
+    say(f"已登记：{d['serial']} 使用样例相机–IMU 标定 {d['id']}，夹爪 {d['gripper']}")
+    return 0
+
+
+def cmd_devices() -> int:
+    rows = list_devices()
+    if not rows:
+        say("设备档案是空的")
         return 1
-    say("umi-traj 当前使用：" + ("样例标定 " + d["id"] if d["source"] == "factory" else f"用户标定 {d['id']}（{d['dir']}）"))
+    print("%-20s %-8s %-14s %s" % ("serial", "status", "calib", "gripper"))
+    for d in rows:
+        print("%-20s %-8s %-14s %s" % (d.get("serial"), d.get("status"), d.get("calib_id") or "?",
+                                       d.get("gripper") or ""))
+        if not d.get("ok"):
+            print("  ", d.get("error"))
+    return 0 if all(d.get("ok") for d in rows) else 1
+
+
+def cmd_status() -> int:
+    say("umi-traj 按录像里的相机序列号查 registry/，没有整机默认标定。")
+    return cmd_devices()
+
+
+def cmd_retire(serial: str) -> int:
+    try:
+        retire(serial)
+    except RegistryError as e:
+        say(str(e))
+        return 2
+    say(f"已停用 {serial}。再处理这台相机的录像会被拒绝。")
     return 0
 
 
 def cmd_uninstall() -> int:
-    if not tcal.USER_DIR.exists():
-        say("没有安装用户标定，umi-traj 用的就是样例标定。")
+    if tcal.USER_DIR.exists():
+        bak = tcal.USER_DIR.with_name("calibration_user.removed_" + time.strftime("%Y%m%d_%H%M%S"))
+        tcal.USER_DIR.rename(bak)
+        say(f"已去掉旧的整机默认目录 {bak.name}。现在只认 registry/。")
         return 0
-    bak = tcal.USER_DIR.with_name("calibration_user.removed_" + time.strftime("%Y%m%d_%H%M%S"))
-    tcal.USER_DIR.rename(bak)
-    say(f"已回到样例标定（原用户标定挪到 {bak.name}，确认不要了可以删掉）。")
+    say("没有 calibration_user/。停用某台相机请用 ./umi-calib retire <serial>。")
     return 0
 
 
@@ -534,21 +592,32 @@ def main(argv=None) -> int:
     r.add_argument("--out", help="结果目录（默认 <录像文件夹>/umi_calib_out）")
     r.add_argument("--tag-size-mm", type=float, default=24.0, help="标定板上一个黑色方块的边长，用尺子量到的值（A4 板 24，A3 板 36）")
     r.add_argument("--cores", help="限制使用的 CPU，例如 0-7")
-    r.add_argument("--install", action="store_true", help="检查通过后直接装进 umi-traj")
+    r.add_argument("--install", action="store_true", help="检查通过后按序列号写入设备档案")
+    r.add_argument("--gripper", help="夹爪 id（默认 registry 的 default_gripper）")
     r.add_argument("--keep-work", action="store_true", help="保留中间文件（很大）")
     r.add_argument("--force", action="store_true", help="结果目录已存在时覆盖")
-    v = sub.add_parser("verify", help="只验证不标定：一段 C 录像 + umi-traj 现在的标定，对照标定板")
+    v = sub.add_parser("verify", help="可选：不标定，只检查现有标定在这段 C 上准不准（不是默认入库）")
     v.add_argument("video", help="C 段录像（按 docs/标定/说明.md 第 3 节 C 段的录法）")
     v.add_argument("--out", help="结果目录（默认 <录像名>_umi_calib_verify，在录像旁边）")
     v.add_argument("--tag-size-mm", type=float, default=24.0, help="标定板上一个黑色方块的边长，用尺子量到的值（A4 板 24，A3 板 36）")
     v.add_argument("--cores", help="限制使用的 CPU，例如 0-7")
     v.add_argument("--keep-work", action="store_true", help="保留中间文件（很大）")
     v.add_argument("--force", action="store_true", help="结果目录已存在时覆盖")
-    i = sub.add_parser("install", help="把一份通过检查的标定装进 umi-traj")
+    i = sub.add_parser("install", help="把一份通过检查的标定按序列号写入设备档案")
     i.add_argument("out")
+    i.add_argument("--serial", help="覆盖报告里的序列号")
+    i.add_argument("--gripper", help="夹爪 id（默认 handheld_v1）")
     i.add_argument("--force", action="store_true")
-    sub.add_parser("uninstall", help="回到样例标定")
-    sub.add_parser("status", help="umi-traj 现在用哪份标定")
+    ad = sub.add_parser("adopt-sample", help="可选：verify PASS 后沿用样例相机–IMU（不是默认入库）")
+    ad.add_argument("--serial", help="相机序列号")
+    ad.add_argument("--from-video", help="从这段 .insv 读序列号")
+    ad.add_argument("--gripper", help="夹爪 id")
+    ad.add_argument("--note", help="写进档案的备注")
+    sub.add_parser("devices", help="列出设备档案")
+    rt = sub.add_parser("retire", help="停用一台相机")
+    rt.add_argument("serial")
+    sub.add_parser("uninstall", help="去掉旧的 calibration_user/ 整机默认目录")
+    sub.add_parser("status", help="列出设备档案")
     sub.add_parser("check", help="检查标定组件是否装好")
     a = ap.parse_args(argv)
     if a.cmd == "run":
@@ -556,7 +625,13 @@ def main(argv=None) -> int:
     if a.cmd == "verify":
         return cmd_verify(a)
     if a.cmd == "install":
-        return install_bundle(Path(a.out), a.force)
+        return install_bundle(Path(a.out), a.force, serial=a.serial, gripper=a.gripper)
+    if a.cmd == "adopt-sample":
+        return cmd_adopt_sample(a)
+    if a.cmd == "devices":
+        return cmd_devices()
+    if a.cmd == "retire":
+        return cmd_retire(a.serial)
     if a.cmd == "uninstall":
         return cmd_uninstall()
     if a.cmd == "status":

@@ -1,0 +1,36 @@
+{
+ "kind": "umi_traj_calibration_bundle",
+ "calibration_sha256": "e3ef0e5b79ebd8f9fecc164b6fa75a68ccb9dca960979d2e5295e0a87c090ae6",
+ "T_imu_cam": {
+  "p": [
+   0.007450924667325848,
+   0.01967487648569278,
+   0.015284179219744808
+  ],
+  "q_xyzw": [
+   0.49755236525086166,
+   0.49994224223855627,
+   0.500437891379753,
+   -0.5020570835374644
+  ]
+ },
+ "cam_time_offset_ns": 8442942,
+ "intrinsics_1440": {
+  "fx": 511.4466459215381,
+  "fy": 511.73713395817026,
+  "cx": 727.3478327992581,
+  "cy": 720.4884248017598,
+  "k": [
+   0.0387296151231798,
+   0.07317747208914381,
+   -0.07408170721476473,
+   0.021158298423077208
+  ]
+ },
+ "derived_from": {
+  "front_x3_r1440_720.yaml": "factory yaml, intrinsics + IMU.T_b_c1 replaced",
+  "kiwi_fuse3s.py": "validated fuser 3dfb5efd3924, R_ICf / P_CfinI lines replaced"
+ },
+ "created_by": "registry seed",
+ "note": "lab X3 sample calibration_r1440.json 2026-09-04; not a manufacturer factory cal"
+}

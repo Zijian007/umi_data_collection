@@ -143,7 +143,8 @@ def extract(insv: Path, out: Path, with_sha256: bool = True) -> dict:
                 "integrity": imu.get("integrity")}
     man = {"tool": "software/trajectory/x3_extract.py",
            "source": {"name": insv.name, "bytes": insv.stat().st_size,
-                      "sha256": sha256_file(insv) if with_sha256 else None, "firmware": imu.get("firmware")},
+                      "sha256": sha256_file(insv) if with_sha256 else None, "firmware": imu.get("firmware"),
+                      "serial": imu.get("serial")},
            "profile": profile, "video": info, "frames": timing, "imu": imu_info,
            "time_base": "t_ns = video presentation time (first frame = 0) + 1 s; IMU on the same clock via metadata "
                         "first_frame_timestamp (device-asserted)"}

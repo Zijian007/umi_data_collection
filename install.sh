@@ -23,9 +23,19 @@ MM=$DEPS/bin/micromamba
 
 step() { echo; echo "==== $* ===="; }
 fail() { echo; echo "安装失败：$1"; [ -n "${2:-}" ] && [ -f "$2" ] && { echo "---- $2 的最后 30 行 ----"; tail -30 "$2"; }; exit 1; }
-run_logged() {  # <log> <cmd...>
+run_logged() {  # <log> <cmd...>  日志照写，同时打到屏幕。用 script 分配伪终端，micromamba / cmake 才会出进度条（重定向到文件时它们会静默）。
   local log=$1; shift
-  if ! "$@" > "$log" 2>&1; then fail "命令失败：$*" "$log"; fi
+  echo "日志：$log"
+  local rc=0
+  if command -v script >/dev/null 2>&1; then
+    script -q -e -f -c "$(printf '%q ' "$@")" "$log" || rc=$?
+  else
+    set +e
+    "$@" 2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}
+    set -e
+  fi
+  [ "$rc" -eq 0 ] || fail "命令失败：$*" "$log"
 }
 
 case "$(uname -s)-$(uname -m)" in
@@ -39,7 +49,7 @@ echo "安装到 $DEPS（平台 $PLAT，编译并行 $JOBS）"
 
 step "1/5 micromamba $MAMBA_VERSION"
 if [ ! -x "$MM" ] || ! echo "$MAMBA_SHA  $MM" | sha256sum -c --quiet - 2>/dev/null; then
-  curl -fsSL --retry 3 -o "$MM.part" "https://github.com/mamba-org/micromamba-releases/releases/download/$MAMBA_VERSION/micromamba-$PLAT" \
+  curl -fL --retry 3 --progress-bar -o "$MM.part" "https://github.com/mamba-org/micromamba-releases/releases/download/$MAMBA_VERSION/micromamba-$PLAT" \
     || fail "下载 micromamba 失败（需要能访问 github.com）"
   echo "$MAMBA_SHA  $MM.part" | sha256sum -c --quiet - || fail "micromamba 校验和不对（下载损坏或被替换）"
   mv "$MM.part" "$MM"; chmod +x "$MM"
@@ -47,13 +57,16 @@ fi
 "$MM" --version
 
 step "2/5 conda 环境（Python、FFmpeg、OpenCV、编译器等）"
-if [ ! -f "$ENV/.umi_env_ok" ]; then
+# Skip only when Python is actually there. micromamba can exit 0 after Ctrl+C, which used to
+# leave .umi_env_ok and make the next run skip this step (python missing).
+if [ ! -x "$ENV/bin/python" ]; then
   rm -rf "$ENV"
   if [ "$PLAT" = linux-64 ]; then
     run_logged "$DEPS/logs/2_conda.log" "$MM" create -y -p "$ENV" --file "$T/env/linux-64.lock"
   else
     run_logged "$DEPS/logs/2_conda.log" "$MM" create -y -p "$ENV" -f "$T/env/environment.yml"
   fi
+  [ -x "$ENV/bin/python" ] || fail "conda 环境没装完（多半是安装被 Ctrl+C 中断了）。直接再跑一次 bash install.sh" "$DEPS/logs/2_conda.log"
   touch "$ENV/.umi_env_ok"
 fi
 "$ENV/bin/python" --version

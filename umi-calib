@@ -1,19 +1,29 @@
 #!/usr/bin/env bash
-# umi-calib -- 换相机时先验证样例标定，不够再重新标定。怎么录、怎么用见 docs/标定/说明.md。
-#   ./umi-calib verify <C段.insv> --tag-size-mm 24.0
+# umi-calib -- 每台新 X3 默认全套标定。怎么录、怎么用见 docs/标定/说明.md。
 #   ./umi-calib run <放着 A B C D 四段录像的文件夹> [--tag-size-mm 24.0] [--install]
-#   ./umi-calib install <结果目录> | uninstall | status | check
+#   ./umi-calib install <结果目录> | devices | retire | uninstall | check
+#   ./umi-calib verify / adopt-sample   # 可选，不是默认入库
 ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 DEPS=${UMI_DEPS:-$ROOT/.deps}
 if [ ! -f "$DEPS/env.sh" ]; then
   echo "还没安装 umi-traj：先运行  bash $ROOT/install.sh" >&2
   exit 2
 fi
-if [ ! -x "$DEPS/calib_env/bin/python" ] || [ ! -x "$DEPS/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/bin/basalt_calibrate_imu" ]; then
-  echo "第一次使用 umi-calib，先安装标定组件（1-3 分钟）..." >&2
-  bash "$ROOT/software/calibration/install_calib.sh" >&2 || exit 2
+CMD=${1:-}
+# registry listing / install / adopt do not need Basalt or the calib venv
+NEED_CALIB=1
+case "$CMD" in devices|status|retire|adopt-sample|install|uninstall) NEED_CALIB=0 ;; esac
+if [ "$NEED_CALIB" = 1 ]; then
+  if [ ! -x "$DEPS/calib_env/bin/python" ] || [ ! -x "$DEPS/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/bin/basalt_calibrate_imu" ]; then
+    echo "第一次使用 umi-calib，先安装标定组件（1-3 分钟）..." >&2
+    bash "$ROOT/software/calibration/install_calib.sh" >&2 || exit 2
+  fi
 fi
 # shellcheck disable=SC1091
 source "$DEPS/env.sh"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-exec "$DEPS/calib_env/bin/python" -m software.calibration "$@"
+if [ "$NEED_CALIB" = 1 ]; then
+  exec "$DEPS/calib_env/bin/python" -m software.calibration "$@"
+else
+  exec "$KIWI_PY" -m software.calibration "$@"
+fi

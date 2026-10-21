@@ -4,6 +4,7 @@
     traj_camera.txt  front-lens camera pose (optical frame: x right, y down, z forward), TUM
     traj_imu.txt     IMU body pose (= the fusion output as is), TUM
     frames.csv       per trajectory row: video frame number, time, which kind of evidence pinned that frame
+    run_settings.json  command settings and the on-disk assets this run actually read
     summary.json     what was processed, how much of it the camera map tracked, path length, checks, versions
     trajectory.png   quick look: top view, side view, position over time
 
@@ -21,18 +22,23 @@ Conventions (all three trajectories):
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
+import os
 from pathlib import Path
 
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
-from software.trajectory.frame import FPS_USED, T0_S
+from software.trajectory.calibration import read_basalt
+from software.trajectory.frame import CROP, FPS_SRC, FPS_USED, LENS_HALF, PROFILE, SRC_H, SRC_W, STEP, T0_S, crop_xywh
 
 HERE = Path(__file__).resolve().parent
 CALIB_IMU_CAM = HERE / "calib" / "calibration_r1440.json"
 CALIB_CAM_TCP = HERE / "calib" / "t_tcp_camera_nominal_cad.json"
+FRONT_MASK = HERE / "config" / "front_hand_mask.png"
+REAR_YAML = HERE / "config" / "rear_basalt065_720.yaml"
 
 
 def _T(R, t) -> np.ndarray:
@@ -42,14 +48,173 @@ def _T(R, t) -> np.ndarray:
     return T
 
 
-def load_extrinsics(calib_json: Path | None = None) -> dict:
+def _sha12(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+
+
+def _file_asset(path: Path, **extra) -> dict:
+    p = Path(path)
+    out = {"path": str(p), "sha256_12": _sha12(p)}
+    out.update(extra)
+    return out
+
+
+def _yaml_scalars(path: Path) -> dict:
+    """Camera / IMU-noise / ORB scalar lines actually in the settings file this run used."""
+    out = {}
+    if not path.is_file():
+        return out
+    skip = ("IMU.T_b_c1", "data:", "rows:", "cols:", "dt:", "Viewer.")
+    for line in path.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith(("%", "#")) or s.startswith(skip):
+            continue
+        if ":" not in s:
+            continue
+        k, v = s.split(":", 1)
+        k, v = k.strip(), v.strip().strip('"')
+        if k.startswith(("File.", "Camera", "IMU.", "ORBextractor.", "System.")):
+            out[k] = v
+    return out
+
+
+def _binaries_from_run(run_txt: Path) -> dict:
+    """Short hashes written by run_kiwi_segment.sh (sha256sum cut to 16 hex chars)."""
+    out = {}
+    if not run_txt.is_file():
+        return out
+    for line in run_txt.read_text(encoding="utf-8", errors="replace").splitlines():
+        p = line.split()
+        if len(p) >= 6 and p[0] == "kiwi_fuse3s.py" and p[2] == "front_setting":
+            out["kiwi_fuse3s.py"] = p[1]
+            out["front_setting"] = p[3]
+            if "cam_imu_offset_ns" in p:
+                out["cam_imu_offset_ns"] = p[p.index("cam_imu_offset_ns") + 1]
+        elif len(p) >= 4 and p[0] == "x3_mono_slam" and p[2] == "lib":
+            out["x3_mono_slam"] = p[1]
+            out["libORB_SLAM3.so"] = p[3]
+    return out
+
+
+def collect_run_settings(kiwi_dir: Path, extract_manifest: dict, mode: str, name: str,
+                         calib: dict | None = None, command: dict | None = None,
+                         fuse_info: dict | None = None) -> dict:
+    """The settings and on-disk assets this run read. Written next to the trajectory as run_settings.json."""
+    kiwi_dir = Path(kiwi_dir)
+    src = calib or {}
+    json_path = Path(src["json"]) if src.get("json") else CALIB_IMU_CAM
+    yaml_path = Path(src["yaml"]) if src.get("yaml") else HERE / "config" / "front_x3_r1440_720.yaml"
+    fuser_path = Path(src["fuser"]) if src.get("fuser") else HERE / "kiwi_fuse3s.py"
+    basalt = read_basalt(json_path)
+    tcp_path = Path(src["tcp_json"]) if src.get("tcp_json") else CALIB_CAM_TCP
+    mask_path = Path(src["mask"]) if src.get("mask") else FRONT_MASK
+    cad = json.loads(tcp_path.read_text(encoding="utf-8"))
+    env_cal = (os.environ.get("UMI_TRAJ_CALIB") or "").strip() or None
+    source = src.get("source") or "factory"
+    front_half = LENS_HALF["front"]
+    rear_half = LENS_HALF["rear"]
+    run_txt = kiwi_dir / "logs" / "run.txt"
+    info = fuse_info if fuse_info is not None else {}
+    if not info:
+        for cand in (kiwi_dir / "fuse" / "fuse_info.json", kiwi_dir / "logs" / "fuse_info.json"):
+            if cand.is_file():
+                info = json.loads(cand.read_text(encoding="utf-8"))
+                break
+    video_src = dict(extract_manifest.get("source") or {})
+    video_src.setdefault("name", name)
+    return {
+        "kind": "umi_traj_run_settings",
+        "video": {
+            **video_src,
+            "profile": extract_manifest.get("profile"),
+            "container": extract_manifest.get("video"),
+            "time_base": extract_manifest.get("time_base"),
+        },
+        "command": {
+            "mode": mode,
+            **(command or {}),
+        },
+        "calibration_selection": {
+            "order": ["$UMI_TRAJ_CALIB (engineer override: bundle dir or the word factory)",
+                      "registry/index.json keyed by camera serial from the .insv trailer"],
+            "active": source,
+            "selection": src.get("selection"),
+            "serial": src.get("serial"),
+            "status": src.get("status"),
+            "gripper": src.get("gripper"),
+            "UMI_TRAJ_CALIB": env_cal,
+            "id": src.get("id") or _sha12(json_path),
+            "dir": src.get("dir") or str(HERE),
+            "bundle_sha256": src.get("bundle_sha256"),
+        },
+        "assets": {
+            "camera_imu_calibration": _file_asset(
+                json_path,
+                note=("registry camera-IMU bundle for serial %s" % src.get("serial") if source == "registry"
+                      else "sample calibration of one X3, 2026-09-04"),
+                camera_type=basalt["camera_type"],
+                resolution=basalt["resolution"],
+                intrinsics_1440={"fx": basalt["fx"], "fy": basalt["fy"], "cx": basalt["cx"], "cy": basalt["cy"],
+                                 "k": basalt["k"]},
+                T_imu_cam={"p": basalt["p"], "q_xyzw": basalt["q_xyzw"]},
+                cam_time_offset_ns=basalt["cam_time_offset_ns"],
+            ),
+            "camera_tcp_geometry": _file_asset(
+                tcp_path,
+                note="CAD nominal closed-fingertip pose in the camera frame; umi-calib does not solve this",
+                status=cad.get("status"),
+                version=cad.get("version"),
+                date=cad.get("date"),
+                T_camera_tcp=cad.get("T_camera_tcp"),
+                optical_center_depth_mm=cad.get("optical_center_depth_mm"),
+            ),
+            "orbslam3_front_settings": _file_asset(
+                yaml_path,
+                note="720x720 KannalaBrandt8; fx/cx scaled from the 1440 crop in camera_imu_calibration",
+                scalars=_yaml_scalars(yaml_path),
+            ),
+            "fusion_script": _file_asset(
+                fuser_path,
+                note="GTSAM fusion; a user bundle replaces only the two front-lens extrinsics lines",
+            ),
+            "front_hand_mask": _file_asset(mask_path, note="painted out during mapping so fingers are not mapped as the room"),
+            **({"orbslam3_rear_settings": _file_asset(REAR_YAML, note="used only with --mode dual")} if mode == "dual" else {}),
+        },
+        "frame_geometry": {
+            "profile": PROFILE,
+            "source_px": [SRC_W, SRC_H],
+            "crop_px": CROP,
+            "front_lens": {"half": front_half, "crop_xywh": list(crop_xywh(front_half))},
+            "rear_lens": {"half": rear_half, "crop_xywh": list(crop_xywh(rear_half)), "used": mode == "dual"},
+            "slam_video_px": [720, 720],
+            "frame_step": STEP,
+            "fps_src": FPS_SRC,
+            "fps_used": FPS_USED,
+        },
+        "pose_chain": {
+            "formula": "T_W_tcp = T_W_imu * T_imu_cam * T_cam_tcp",
+            "T_imu_cam": "Basalt p_imu = T_imu_cam p_cam, from camera_imu_calibration",
+            "T_cam_tcp": "from camera_tcp_geometry (CAD, unverified)",
+            "world": "metric, z up (gravity -z); origin and heading arbitrary per recording",
+            "clock": "video presentation time, first frame = 0; fusion canonical time = t + 1 s",
+        },
+        "fusion_params": info.get("params") or {},
+        "binaries_from_run_log": _binaries_from_run(run_txt),
+        "not_in_this_repository": ["gripper opening width", "LeRobot dataset", "training / robot deployment"],
+    }
+
+
+def load_extrinsics(calib_json: Path | None = None, tcp_json: Path | None = None) -> dict:
     cal = json.loads(Path(calib_json or CALIB_IMU_CAM).read_text(encoding="utf-8"))
     ic = (cal.get("value0") or cal)["T_imu_cam"][0]
     T_imu_cam = _T(Rot.from_quat([ic["qx"], ic["qy"], ic["qz"], ic["qw"]]).as_matrix(), [ic["px"], ic["py"], ic["pz"]])
-    cad = json.loads(CALIB_CAM_TCP.read_text(encoding="utf-8"))
+    tcp_path = Path(tcp_json) if tcp_json else CALIB_CAM_TCP
+    cad = json.loads(tcp_path.read_text(encoding="utf-8"))
     T_cam_tcp = _T(cad["T_camera_tcp"]["R_rows"], cad["T_camera_tcp"]["t_m"])
     return {"T_imu_cam": T_imu_cam, "T_cam_tcp": T_cam_tcp, "cad_status": cad.get("status"),
-            "cam_time_offset_ns": (cal.get("value0") or cal).get("cam_time_offset_ns")}
+            "cam_time_offset_ns": (cal.get("value0") or cal).get("cam_time_offset_ns"), "tcp_json": str(tcp_path)}
 
 
 def read_tum(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -170,16 +335,17 @@ def plot(path: Path, t, p_tcp, kind, title: str) -> None:
     plt.close(fig)
 
 
-def postprocess(kiwi_dir: Path, extract_manifest: dict, out_dir: Path, mode: str, name: str, calib: dict | None = None) -> dict:
-    """calib = software.trajectory.calibration.active(); None = the sample calibration in this folder."""
+def postprocess(kiwi_dir: Path, extract_manifest: dict, out_dir: Path, mode: str, name: str,
+                calib: dict | None = None, command: dict | None = None) -> dict:
+    """calib = software.registry.resolve_insv(...). command = extra umi-traj flags recorded in run_settings.json."""
     kiwi_dir, out_dir = Path(kiwi_dir), Path(out_dir)
     fuse = kiwi_dir / "fuse"
     info = json.loads((fuse / "fuse_info.json").read_text(encoding="utf-8"))
     tc, p_imu, q_imu = read_tum(fuse / "traj_tum.txt")
     n = len(tc)
     t = tc - T0_S
-    user_cal = bool(calib) and calib.get("source") != "factory"
-    ex = load_extrinsics(calib["json"] if calib else None)
+    user_cal = bool(calib) and calib.get("source") not in (None, "factory")
+    ex = load_extrinsics(calib["json"] if calib else None, (calib or {}).get("tcp_json"))
     p_cam, q_cam = compose(p_imu, q_imu, ex["T_imu_cam"])
     p_tcp, q_tcp = compose(p_imu, q_imu, ex["T_imu_cam"] @ ex["T_cam_tcp"])
     q_imu = q_imu.copy()
@@ -246,12 +412,16 @@ def postprocess(kiwi_dir: Path, extract_manifest: dict, out_dir: Path, mode: str
         "notes": notes,
         "notes_basis": "rules of thumb, not a validated accuracy test; the accuracy evidence is in docs (README)",
         "fusion": {k: info.get(k) for k in ("init_lens", "segments", "zupt_frames", "nodes", "timing_s", "seg_scale_range")},
-        "calibration": {"imu_cam": ("user calibration %s (%s)" % (calib["id"], calib["dir"]) if user_cal
+        "calibration": {"imu_cam": ("registry %s serial %s (%s)" % (calib["id"], calib.get("serial"), calib["dir"]) if user_cal
                                     else CALIB_IMU_CAM.name + " (sample calibration, one X3, 2026-09-04)"),
-                        "cam_tcp": CALIB_CAM_TCP.name + " (" + str(ex["cad_status"]) + ")",
-                        "cam_imu_time_offset_ns": ex["cam_time_offset_ns"]},
+                        "cam_tcp": Path(ex["tcp_json"]).name + " (" + str(ex["cad_status"]) + ")",
+                        "cam_imu_time_offset_ns": ex["cam_time_offset_ns"],
+                        "serial": (calib or {}).get("serial"), "gripper": (calib or {}).get("gripper")},
         "conventions": "see the header of traj_tcp.txt",
+        "run_settings": "run_settings.json",
     }
+    settings = collect_run_settings(kiwi_dir, extract_manifest, mode, name, calib, command, info)
+    (out_dir / "run_settings.json").write_text(json.dumps(settings, indent=1, ensure_ascii=False), encoding="utf-8")
     title = "%s  |  %.1f s  |  TCP path %.2f m  |  map position on %.0f%% of frames" % (
         summary["video"], summary["duration_s"], summary["tcp_path_length_m"], 100 * frac["full"])
     try:
@@ -261,4 +431,5 @@ def postprocess(kiwi_dir: Path, extract_manifest: dict, out_dir: Path, mode: str
     return summary
 
 
-__all__ = ["postprocess", "load_extrinsics", "frame_constraints", "compose", "read_tum", "write_tum", "runs"]
+__all__ = ["postprocess", "collect_run_settings", "load_extrinsics", "frame_constraints",
+           "compose", "read_tum", "write_tum", "runs"]

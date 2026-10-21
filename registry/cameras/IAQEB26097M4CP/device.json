@@ -1,0 +1,7 @@
+{
+ "serial": "IAQEB26097M4CP",
+ "status": "active",
+ "gripper": "handheld_v1",
+ "uses_bundle": "cameras/sample/bundle",
+ "note": "engineer: reuse sample camera-IMU to unblock umi-traj on this X3 (no verify)"
+}

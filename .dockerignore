@@ -1,8 +1,9 @@
-# 镜像里只需要安装脚本、入口和 software/；其余（CAD、git 历史、文档、数据、实验记录）都不进构建上下文
+# 镜像里只需要安装脚本、入口、software/ 和设备档案；其余（CAD、git 历史、文档、数据、实验记录）都不进构建上下文
 *
 !install.sh
 !umi-traj
 !software
+!registry
 **/__pycache__
 **/*.insv
 **/*.lrv

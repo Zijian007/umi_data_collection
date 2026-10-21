@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # umi-traj -- X3 录像 -> 夹爪轨迹。先运行一次 install.sh。
 #   ./umi-traj <录像.insv | 放录像的文件夹> [--out 结果目录] [--jobs N] [--mode handheld|dual] [--force] [--keep-work]
+#                                         [--device 序列号] [--gripper handheld_v1]
 #   ./umi-traj check          # 检查安装
 #   ./umi-traj --help
 ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)

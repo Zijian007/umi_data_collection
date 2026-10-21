@@ -82,7 +82,7 @@ run_orb() {  # <dir> <video> <setting> <mask|none> <map_build|localize:atlas> [m
   echo "$(basename "$d"): rc=$? $(grep -o 'TRACKED.*' "$d/log.txt")"
 }
 for L in $LENSES; do
-  if [ "$L" = front ]; then SET="$KIWI_FRONT_SETTING"; MASK="$HERE/config/front_hand_mask.png"   # KIWI: hands masked while mapping
+  if [ "$L" = front ]; then SET="$KIWI_FRONT_SETTING"; MASK="${KIWI_FRONT_MASK:-$HERE/config/front_hand_mask.png}"   # KIWI: hands masked while mapping
   else SET="$HERE/config/rear_basalt065_720.yaml"; MASK=none; fi
   run_orb "$OUT/$L/map" "$OUT/$L/$L.mp4" "$SET" "$MASK" map_build | tee -a "$OUT/logs/run.txt"
   if [ "$L" = front ] && [ ! -s "$OUT/$L/map/map.osa" ]; then   # without a front map nothing below can work

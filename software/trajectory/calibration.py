@@ -14,8 +14,10 @@ The pipeline reads the camera-IMU calibration in three places:
 Feeding the factory calibration.json through `make_bundle` reproduces the factory yaml and script byte for byte (tested),
 so a user bundle differs from the validated pipeline in the calibration numbers and in nothing else.
 
-Which one is active:  $UMI_TRAJ_CALIB (a bundle folder, or the word "factory")  >  <repo>/calibration_user/  >  factory.
-`umi-calib` (software/calibration) writes <repo>/calibration_user/; delete that folder to go back to the factory files.
+Which bundle ``umi-traj`` uses is decided by ``software.registry`` (camera serial in the
+recording). ``active()`` is only the engineer override: ``$UMI_TRAJ_CALIB`` = a bundle folder, or
+the word ``factory`` (the sample files in this folder, used by ``umi-calib`` when it compares a
+new solve to the sample). ``calibration_user/`` is no longer read.
 """
 
 from __future__ import annotations
@@ -126,7 +128,7 @@ def describe(d: Path, source: str) -> dict:
     f = d / "kiwi_fuse3s.py" if source != "factory" else FACTORY_FUSER
     for p in (j, y, f):
         if not p.is_file():
-            raise CalibrationError(f"calibration bundle {d} is incomplete: {p.name} missing (re-run umi-calib, or delete the folder to use the factory calibration)")
+            raise CalibrationError(f"calibration bundle {d} is incomplete: {p.name} missing")
     c = read_basalt(j)
     if source != "factory":  # the derived files must match the json they sit next to
         if y.read_text(encoding="utf-8") != yaml_text(c) or f.read_text(encoding="utf-8") != fuser_text(c):
@@ -137,16 +139,21 @@ def describe(d: Path, source: str) -> dict:
 
 
 def active() -> dict:
+    """Engineer override only. ``umi-traj`` normally calls ``software.registry.resolve_insv``."""
     env = os.environ.get("UMI_TRAJ_CALIB", "").strip()
-    if env == "factory":          # explicit: ignore an installed user calibration (umi-calib uses this for its comparison run)
+    if env == "factory":
         return describe(HERE, "factory")
     if env:
-        return describe(Path(env).expanduser().resolve(), "user")
-    if USER_DIR.is_dir():
-        return describe(USER_DIR, "user")
-    return describe(HERE, "factory")
+        return describe(Path(env).expanduser().resolve(), "registry")
+    raise CalibrationError(
+        "no $UMI_TRAJ_CALIB override; umi-traj selects a calibration by the camera serial in the recording "
+        "(see software.registry / ./umi-calib devices)"
+    )
 
 
 def runner_env(cal: dict) -> dict:
     """Environment for run_kiwi_segment.sh (it defaults to the factory files when these are unset)."""
-    return {"KIWI_FRONT_SETTING": cal["yaml"], "KIWI_FUSER": cal["fuser"], "KIWI_CAM_IMU_OFFSET_NS": str(cal["cam_time_offset_ns"])}
+    env = {"KIWI_FRONT_SETTING": cal["yaml"], "KIWI_FUSER": cal["fuser"], "KIWI_CAM_IMU_OFFSET_NS": str(cal["cam_time_offset_ns"])}
+    if cal.get("mask"):
+        env["KIWI_FRONT_MASK"] = cal["mask"]
+    return env

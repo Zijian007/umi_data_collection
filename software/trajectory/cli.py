@@ -1,6 +1,7 @@
 """umi-traj -- Insta360 X3 recordings in, gripper trajectories out.
 
     umi-traj <video.insv | folder> [more ...] [--out DIR] [--mode handheld|dual] [--jobs N] [--keep-work] [--force]
+                                         [--device SERIAL] [--gripper ID]
     umi-traj check                         # is everything installed?
 
 A folder means every *.insv directly inside it.  Results go to <out>/<video name>/ (default <out> = umi_traj_out/ next to
@@ -27,6 +28,7 @@ REPO = HERE.parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from software.registry import RegistryError, list_devices, resolve_insv  # noqa: E402
 from software.trajectory import calibration  # noqa: E402
 from software.trajectory.x3_extract import Refused, extract  # noqa: E402
 
@@ -44,6 +46,8 @@ class RunRequest:
     keep_work: bool = False
     force: bool = False
     allow_irregular: bool = False
+    device: str = ""
+    gripper: str = ""
 
 
 def say(msg: str) -> None:
@@ -126,6 +130,11 @@ def run_recording(video: Path, out_root: Path, req: RunRequest) -> dict:
 
     name = video.stem
     odir = out_root / name
+    try:
+        cal = resolve_insv(video, device=req.device or None, gripper=req.gripper or None)
+    except RegistryError as e:
+        say(f"[{name}] FAILED: {e}")
+        return {"video": video.name, "status": "failed", "out": str(odir), "reason": str(e)}
     if not req.force and already_done(odir):
         say(f"[{name}] already done -> {odir} (use --force to redo)")
         return {"video": video.name, "status": "skipped", "out": str(odir)}
@@ -137,18 +146,20 @@ def run_recording(video: Path, out_root: Path, req: RunRequest) -> dict:
     t0 = time.time()
     summary = {"video": video.name, "status": "failed", "out": str(odir), "tool_commit": git_commit()}
     try:
-        cal = calibration.active()   # factory files, or a user bundle (calibration_user/ or $UMI_TRAJ_CALIB)
-        summary["calibration_used"] = {k: cal[k] for k in ("source", "id", "dir")}
+        summary["calibration_used"] = {k: cal.get(k) for k in
+                                       ("source", "id", "dir", "serial", "gripper", "status", "selection")}
         run_env = dict(os.environ, **calibration.runner_env(cal))
-        if cal["source"] != "factory":
-            say(f"[{name}] using USER camera calibration {cal['id']} ({cal['dir']})")
+        who = cal.get("serial") or cal.get("id")
+        if cal.get("selection") == "UMI_TRAJ_CALIB":
+            say(f"[{name}] UMI_TRAJ_CALIB override {cal['id']} ({cal['dir']})")
+        else:
+            say(f"[{name}] camera {who}  calib {cal['id']}  gripper {cal.get('gripper')}  ({cal['dir']})")
         say(f"[{name}] 1/3 reading timestamps + IMU")
         try:
             man = extract(video, work / "dataset")
-        except Refused as e:
+        except (Refused, RegistryError) as e:
             summary["reason"] = f"refused: {e}"
             raise
-        shutil.copy(work / "dataset" / "extract_manifest.json", logs / "extract_manifest.json")
         fr = man["frames"]
         times = []
         if not fr["regular"]:
@@ -168,7 +179,8 @@ def run_recording(video: Path, out_root: Path, req: RunRequest) -> dict:
                    "--mode", req.mode] + (["--cores", req.cores] if req.cores else []) + times
             if i > 1:
                 cmd += ["--lens-video-from", str(work / "kiwi")]
-            with open(logs / ("runner.log" if i == 1 else "runner_try%d.log" % i), "w", encoding="utf-8") as lf:
+            runner_log = logs / ("runner_try%d.log" % i)
+            with open(runner_log, "w", encoding="utf-8") as lf:
                 rc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, env=run_env).returncode
             q = assess_try(kd) if rc == 0 else None
             tries.append({"try": i, "rc": rc, **(q or {})})
@@ -182,18 +194,32 @@ def run_recording(video: Path, out_root: Path, req: RunRequest) -> dict:
                 say(f"[{name}]     try {i}: {why} -> mapping again (ORB-SLAM3 maps differently every run)")
         summary["tries"] = tries
         if best is None:
-            last = logs / ("runner.log" if len(tries) == 1 else "runner_try%d.log" % len(tries))
+            last = logs / ("runner_try%d.log" % len(tries))
             tail = last.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-3:]
             summary["reason"] = "trajectory step failed in all %d tries (last rc %d): %s" % (len(tries), tries[-1]["rc"], " | ".join(tail))
             raise RuntimeError(summary["reason"])
         summary["chosen_try"] = best
         kd = work / ("kiwi" if best == 1 else "kiwi_try%d" % best)
-        for f in ("logs/run.txt", "logs/fuse.log", "fuse/fuse_info.json", "front/map/log.txt", "front/loc/frames.csv"):
-            src = kd / f
+        # Unique artifacts only. TRACKED counts, extract timing, and fuse JSON also live in summary.json /
+        # run_settings.json; runner stdout and fuse.log are kept for failed tries (work/ is deleted on success).
+        for src, dest in (
+            (kd / "logs" / "run.txt", logs / "run.txt"),
+            (kd / "fuse" / "fuse_info.json", logs / "fuse_info.json"),
+            (kd / "front" / "map" / "log.txt", logs / "front_map_log.txt"),
+            (kd / "front" / "loc" / "frames.csv", logs / "front_loc_frames.csv"),
+        ):
             if src.is_file():
-                shutil.copy(src, logs / f.replace("/", "_"))
+                shutil.copy(src, dest)
+        (logs / ("runner_try%d.log" % best)).unlink(missing_ok=True)
         say(f"[{name}] 3/3 writing results")
-        s = postprocess(kd, man, odir, req.mode, video.name, cal)
+        s = postprocess(kd, man, odir, req.mode, video.name, cal, command={
+            "max_tries": req.max_tries, "chosen_try": best, "tries": tries,
+            "allow_irregular": req.allow_irregular, "keep_work": req.keep_work,
+            "cores": req.cores or None,
+            "UMI_TRAJ_CALIB": os.environ.get("UMI_TRAJ_CALIB") or None,
+            "device": req.device or None, "gripper": req.gripper or None,
+            "serial": cal.get("serial"),
+        })
         summary.update(s)
         summary["status"] = "ok"
     except Exception as e:
@@ -254,11 +280,14 @@ def check() -> int:
               HERE / "config" / "front_x3_r1440_720.yaml", HERE / "config" / "front_hand_mask.png"):
         line(f.is_file(), "file " + str(f.relative_to(REPO)))
     try:
-        cal = calibration.active()
-        line(True, "camera calibration in use: " + ("sample shipped with the tool" if cal["source"] == "factory"
-                                                   else "user calibration %s from %s" % (cal["id"], cal["dir"])))
-    except calibration.CalibrationError as e:
-        line(False, "camera calibration", str(e))
+        rows = list_devices()
+        line(bool(rows), "device registry", "%d camera(s)" % len(rows))
+        for d in rows:
+            line(bool(d.get("ok")), "  " + str(d.get("serial")),
+                 ("%s  calib %s  gripper %s" % (d.get("status"), d.get("calib_id"), d.get("gripper")))
+                 if d.get("ok") else d.get("error", ""))
+    except Exception as e:
+        line(False, "device registry", repr(e))
     print("ALL OK" if ok else "SOMETHING IS MISSING -- rerun install.sh (see its log in <deps>/logs)")
     return 0 if ok else 1
 
@@ -282,9 +311,11 @@ def main(argv=None) -> int:
     ap.add_argument("--force", action="store_true", help="reprocess videos that already have a successful result")
     ap.add_argument("--allow-irregular", action="store_true",
                     help="also process recordings with dropped frames (uses real frame times; unvalidated)")
+    ap.add_argument("--device", default="", help="registry serial (default: read from the .insv trailer)")
+    ap.add_argument("--gripper", default="", help="registry gripper id (default: the device's recorded gripper)")
     a = ap.parse_args(argv)
     req = RunRequest(mode=a.mode, max_tries=a.max_tries, cores=a.cores, keep_work=a.keep_work,
-                     force=a.force, allow_irregular=a.allow_irregular)
+                     force=a.force, allow_irregular=a.allow_irregular, device=a.device, gripper=a.gripper)
     videos = find_inputs(a.inputs)
     if not videos:
         print("no .insv found in: " + " ".join(a.inputs))
