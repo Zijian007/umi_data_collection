@@ -1,0 +1,13 @@
+$ /home/zijianwang/umi_data_collection/.deps/env/bin/python -m software.trajectory /home/zijianwang/umi_data_collection/recordings/M4CP/calib_20261022/C/VID_20261022_210045_00_003.insv --out /home/zijianwang/umi_data_collection/recordings/M4CP/calib_20261022/umi_calib_out/work/C_traj_new --force
+22:15:15 1 video(s) -> /home/zijianwang/umi_data_collection/recordings/M4CP/calib_20261022/umi_calib_out/work/C_traj_new  (mode handheld, 1 at a time)
+22:15:15 [VID_20261022_210045_00_003] UMI_TRAJ_CALIB override 839fd277d850 (/home/zijianwang/umi_data_collection/recordings/M4CP/calib_20261022/umi_calib_out/bundle)
+22:15:15 [VID_20261022_210045_00_003] 1/3 reading timestamps + IMU
+22:15:17 [VID_20261022_210045_00_003]     2453 frames, 81.8 s
+22:15:17 [VID_20261022_210045_00_003] 2/3 lens video -> map -> relocalization -> IMU fusion (several minutes)
+22:18:39 [VID_20261022_210045_00_003] 3/3 writing results
+/tmp/umi-traj-mpl is not a writable directory
+Matplotlib created a temporary cache directory at /tmp/matplotlib-bqarb1jt because there was an issue with the default path (/tmp/umi-traj-mpl); it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+22:18:41 [VID_20261022_210045_00_003] done in 206 s: TCP path 6.73 m, map position on 100% of frames -> /home/zijianwang/umi_data_collection/recordings/M4CP/calib_20261022/umi_calib_out/work/C_traj_new/VID_20261022_210045_00_003
+
+video                                    status   result / reason
+VID_20261022_210045_00_003.insv          ok       /home/zijianwang/umi_data_collection/recordings/M4CP/calib_20261022/umi_calib_out/work/C_traj_new/VID_20261022_210045_00_003

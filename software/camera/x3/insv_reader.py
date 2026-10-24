@@ -10,7 +10,7 @@ An ``.insv`` file is an MP4-compatible container with a private trailer appended
 
 This module stays at the container level: it locates records and hands back their bytes, and it
 decodes the metadata record's protobuf fields.  Turning the gyro record into physical units is
-``imu_reader.py``'s job.  The trajectory reads frame times in ``software.trajectory.x3_extract``.
+``imu_reader.py``'s job.  The trajectory reads frame times in ``software.camera.x3.extraction``.
 
 Everything here reads only the byte ranges the trailer advertises.  A recording is hundreds of MB
 to several GB, so no function in this module reads a whole media file into memory.
@@ -18,7 +18,6 @@ to several GB, so no function in this module reads a whole media file into memor
 
 from __future__ import annotations
 
-import hashlib
 import struct
 from pathlib import Path
 
@@ -38,51 +37,6 @@ FIELD_OFFSET_V3 = 54            # lens parameters stored in the trailer; the tra
 FIELD_FIRST_FRAME_TS_US = 24    # video t=0 expressed on the IMU clock, microseconds
 FIELD_FIRST_FRAME_TS_MS = 36    # same value in milliseconds (cross-check only)
 FIELD_GYRO_CFG_INFO = 65        # nested {1: acc_range_g, 2: gyro_range_dps}
-
-
-def sha256_file(path: Path, chunk_bytes: int = 8 * 1024 * 1024) -> str:
-    """Chunked file hash.  Media files reach several GB; never read one whole into memory."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while True:
-            b = f.read(chunk_bytes)
-            if not b:
-                break
-            h.update(b)
-    return h.hexdigest()
-
-
-# ---------------------------------------------------------------------------
-# MP4 box structure
-# ---------------------------------------------------------------------------
-
-
-def walk_boxes(path: Path, limit: int = 40) -> list[dict]:
-    """Walk the top-level MP4 boxes.  Non-box data before EOF is reported, not guessed at."""
-    boxes: list[dict] = []
-    size_total = Path(path).stat().st_size
-    with open(path, "rb") as f:
-        off = 0
-        while off < size_total and len(boxes) < limit:
-            f.seek(off)
-            head = f.read(8)
-            if len(head) < 8:
-                break
-            size = struct.unpack(">I", head[:4])[0]
-            typ = head[4:8]
-            if size == 1:
-                size = struct.unpack(">Q", f.read(8))[0]
-            if size < 8 or not (32 <= typ[0] <= 126):
-                boxes.append({"offset": off, "note": "non-box data till EOF (trailer?)"})
-                break
-            boxes.append({"offset": off, "type": typ.decode("latin1"), "size": size})
-            off += size
-    return boxes
-
-
-# ---------------------------------------------------------------------------
-# private trailer
-# ---------------------------------------------------------------------------
 
 
 def parse_trailer(path: Path, max_records: int = 64, gyro_parser=None) -> dict:
@@ -247,7 +201,7 @@ __all__ = [
     "MAGIC", "RECORD_NAMES", "RECORD_GYRO", "RECORD_METADATA",
     "FIELD_SERIAL", "FIELD_MODEL", "FIELD_FIRMWARE", "FIELD_OFFSET_V3",
     "FIELD_FIRST_FRAME_TS_US", "FIELD_FIRST_FRAME_TS_MS", "FIELD_GYRO_CFG_INFO",
-    "sha256_file", "walk_boxes", "parse_trailer", "records_by_id", "read_record_bytes",
+    "parse_trailer", "records_by_id", "read_record_bytes",
     "read_varint", "parse_nested_varints", "parse_metadata_record", "read_metadata",
     "metadata_summary",
 ]

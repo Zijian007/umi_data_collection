@@ -1,0 +1,46 @@
+%YAML:1.0
+# Camera geometry template; runtime appends algorithm settings from config/trajectory.yaml.
+# Front-lens ORB-SLAM3 settings. The 1440 crop of the sample calibration, scaled to 720:
+# f' = f/2, c' = (c - 0.5) / 2. KB4 distortion is unchanged. See software/trajectory/calibration_assets.py.
+
+File.version: "1.0"
+
+Camera.type: "KannalaBrandt8"
+Camera1.fx: 255.723322960769
+Camera1.fy: 255.868566979085
+Camera1.cx: 363.423916399629
+Camera1.cy: 359.994212400880
+Camera1.k1: 0.038729615123
+Camera1.k2: 0.073177472089
+Camera1.k3: -0.074081707215
+Camera1.k4: 0.021158298423
+
+Camera.width: 720
+Camera.height: 720
+Camera.fps: 30
+Camera.RGB: 1
+
+# camera -> body(IMU) = Basalt T_imu_cam as is (ORB-SLAM3 mTbc)
+IMU.T_b_c1: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: f
+   data: [-0.000760657406, 0.999991666705, -0.004010975117, 0.007450924667,
+          -0.005001886246, 0.004007121409, 0.999979461845, 0.019674876486,
+          0.999987201185, 0.000780704225, 0.004998796518, 0.015284179220,
+          0.000000000000, 0.000000000000, 0.000000000000, 1.000000000000]
+
+
+
+
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -3.5
+Viewer.ViewpointF: 500.0
+Viewer.imageViewScale: 1.0

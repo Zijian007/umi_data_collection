@@ -1,5 +1,5 @@
-"""Solve a Basalt camera-IMU calibration (``./umi-calib``).
+"""Calibrate one X3 using A/B recordings, then validate with D/C (``./umi-calib``).
 
-The result is a ``calibration.json``. Packing that file into the three files ``umi-traj`` reads is
-``software.trajectory.calibration.make_bundle``, not this package.
+Start reading at workflow.run or workflow.verify; see README.md for the module map.
+The workflow writes a report and bundle, and activates it only on explicit request.
 """

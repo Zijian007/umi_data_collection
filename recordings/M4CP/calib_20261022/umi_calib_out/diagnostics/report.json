@@ -1,0 +1,313 @@
+{
+ "kind": "umi_calib_report",
+ "segments": {
+  "A": "VID_20261022_205544_00_001.insv",
+  "B": "VID_20261022_205824_00_002.insv",
+  "C": "VID_20261022_210045_00_003.insv",
+  "D": "VID_20261022_210232_00_004.insv"
+ },
+ "tag_size_mm": 24.0,
+ "serial": "IAQEB26097M4CP",
+ "tool_commit": "401a11db5c84",
+ "basalt": "7573abdfd6a868b76375c08f7bce7de86179ea6b",
+ "factory_calibration": "e3ef0e5b79eb",
+ "checks": [
+  {
+   "check": "A 段：平均每帧用上的标定板角点数",
+   "value": 140.0,
+   "limit": ">= 30（太少说明板太远、画面糊或经常出画面）",
+   "result": "OK"
+  },
+  {
+   "check": "A 段：标定板扫到离画面中心多远（占镜头半径的比例）",
+   "value": 0.654,
+   "limit": ">= 0.5（板要扫到画面边上）",
+   "result": "OK"
+  },
+  {
+   "check": "A 段：板扫到画面边上的帧数（右 / 左 / 下 / 上）",
+   "value": "27 / 2 / 84 / 169",
+   "limit": "仅供参考（四个方向都有、越均匀越好）",
+   "result": "INFO"
+  },
+  {
+   "check": "A 段：能认出标定板的帧占比；相机到板的距离 (m)",
+   "value": "0.998；[0.19, 0.29]",
+   "limit": "仅供参考",
+   "result": "INFO"
+  },
+  {
+   "check": "内参：平均重投影误差 (px)",
+   "value": 0.814375,
+   "limit": "<= 1.0",
+   "result": "OK"
+  },
+  {
+   "check": "内参：焦距与样例标定相差",
+   "value": 0.0416,
+   "limit": "<= 3 %（同型号相机应接近；> 10 % 判失败）",
+   "result": "WARN"
+  },
+  {
+   "check": "内参：主点与样例标定相差 (px)",
+   "value": 6.0,
+   "limit": "<= 40",
+   "result": "OK"
+  },
+  {
+   "check": "B 段：平均每帧用上的标定板角点数",
+   "value": 139.5,
+   "limit": ">= 25（太少说明板太远、动得太猛画面糊，或经常出画面）",
+   "result": "OK"
+  },
+  {
+   "check": "B 段：转动快慢（角速度的 95 分位，rad/s）",
+   "value": 1.204,
+   "limit": ">= 0.8（太小说明动作不够）",
+   "result": "OK"
+  },
+  {
+   "check": "B 段：能认出标定板的帧占比；相机到板的距离 (m)",
+   "value": "0.987；[0.16, 0.35]",
+   "limit": "仅供参考",
+   "result": "INFO"
+  },
+  {
+   "check": "相机–IMU：平均重投影误差 (px)",
+   "value": 0.925721,
+   "limit": "<= 1.2",
+   "result": "OK"
+  },
+  {
+   "check": "相机–IMU：平移与样例标定相差 (mm)",
+   "value": 17.4,
+   "limit": "<= 10（同型号相机应接近；> 50 判失败）",
+   "result": "WARN"
+  },
+  {
+   "check": "相机–IMU：旋转与样例标定相差 (°)",
+   "value": 1.167,
+   "limit": "<= 2.0",
+   "result": "OK"
+  },
+  {
+   "check": "相机–IMU：时间差与样例标定相差 (ms)",
+   "value": 0.86,
+   "limit": "<= 5.0",
+   "result": "OK"
+  },
+  {
+   "check": "D 段：静止时测到的重力与 9.81 m/s² 的最大偏差 (m/s²)",
+   "value": 0.052,
+   "limit": "<= 0.3（181 个静止时段）",
+   "result": "OK"
+  },
+  {
+   "check": "D 段：静止朝向数",
+   "value": 4,
+   "limit": ">= 5（应为 6 个）",
+   "result": "WARN"
+  },
+  {
+   "check": "C 段：新标定下的轨迹误差 ATE (mm)",
+   "value": 5.42,
+   "limit": "<= 30",
+   "result": "OK"
+  },
+  {
+   "check": "C 段：新标定下的尺度（板 / 轨迹）",
+   "value": 1.0761,
+   "limit": "1 ± 0.03（超出 1 ± 0.1 判失败）",
+   "result": "WARN"
+  },
+  {
+   "check": "C 段：能认出标定板的帧数",
+   "value": 2076,
+   "limit": ">= 100（太少则这项验证不够可靠）",
+   "result": "OK"
+  },
+  {
+   "check": "C 段：这些帧里相机移动的范围 (m)",
+   "value": 0.405,
+   "limit": ">= 0.15（太小则量不准尺度）",
+   "result": "OK"
+  },
+  {
+   "check": "C 段：样例标定下的轨迹误差 ATE (mm)；尺度（对照）",
+   "value": "230.50；0.0416",
+   "limit": "仅供比较",
+   "result": "INFO"
+  }
+ ],
+ "imu": {
+  "A": {
+   "duration_s": 106.0,
+   "accel_norm_std_m_s2": 0.145,
+   "accel_norm_p95_minus_p5_m_s2": 0.404,
+   "gyro_norm_p95_rad_s": 0.334
+  },
+  "B": {
+   "duration_s": 116.1,
+   "accel_norm_std_m_s2": 0.248,
+   "accel_norm_p95_minus_p5_m_s2": 0.734,
+   "gyro_norm_p95_rad_s": 1.204
+  },
+  "C": {
+   "duration_s": 83.2,
+   "accel_norm_std_m_s2": 0.254,
+   "accel_norm_p95_minus_p5_m_s2": 0.765,
+   "gyro_norm_p95_rad_s": 0.94
+  },
+  "D": {
+   "duration_s": 133.1,
+   "accel_norm_std_m_s2": 0.499,
+   "accel_norm_p95_minus_p5_m_s2": 0.475,
+   "gyro_norm_p95_rad_s": 0.919
+  }
+ },
+ "intrinsics_stage": {
+  "converged": 1,
+  "num_points": 439168,
+  "mean_reprojection_px": 0.814375,
+  "corners_per_frame": 140.0
+ },
+ "A_board": {
+  "frames_sampled": 628,
+  "frames_with_board_pose": 627,
+  "board_pose_fraction": 0.998,
+  "reach_r_p99": 0.654,
+  "frames_reaching_r0p5_by_direction": {
+   "right": 27,
+   "left": 2,
+   "down": 84,
+   "up": 169
+  },
+  "directions_reached": 3,
+  "board_distance_m": [
+   0.19,
+   0.29
+  ]
+ },
+ "cam_imu_stage": {
+  "converged": 2,
+  "num_points": 479142,
+  "mean_reprojection_px": 0.925721,
+  "corners_per_frame": 139.5
+ },
+ "result": {
+  "T_imu_cam": {
+   "p_mm": [
+    4.95,
+    2.49,
+    16.42
+   ],
+   "q_xyzw": [
+    -0.5033040836790392,
+    -0.49540141850652575,
+    -0.5047644299699745,
+    0.49646279229244517
+   ]
+  },
+  "cam_time_offset_ms": 7.583,
+  "intrinsics_1440": {
+   "fx": 532.7040484634135,
+   "fy": 531.0789512090645,
+   "cx": 724.1984598128562,
+   "cy": 725.6097512924697,
+   "k": [
+    0.09925447190789621,
+    -0.0662236596999861,
+    0.03253007947232959,
+    -0.0068474978488767225
+   ]
+  },
+  "factory": {
+   "p_mm": [
+    7.45,
+    19.67,
+    15.28
+   ],
+   "cam_time_offset_ms": 8.443,
+   "fx": 511.4466459215381,
+   "cx": 727.3478327992581,
+   "cy": 720.4884248017598
+  }
+ },
+ "B_board": {
+  "frames_sampled": 229,
+  "frames_with_board_pose": 226,
+  "board_pose_fraction": 0.987,
+  "reach_r_p99": 0.583,
+  "frames_reaching_r0p5_by_direction": {
+   "right": 1,
+   "left": 21,
+   "down": 17,
+   "up": 0
+  },
+  "directions_reached": 2,
+  "board_distance_m": [
+   0.16,
+   0.35
+  ]
+ },
+ "D_check": {
+  "status": "CONSISTENT_ON_OBSERVED_WINDOWS_NOT_VALIDATED",
+  "windows": 181,
+  "gravity_directions": 4,
+  "residual_abs_max_m_s2": 0.05181138651897932
+ },
+ "bundle": {
+  "dir": "/home/zijianwang/umi_data_collection/recordings/M4CP/calib_20261022/umi_calib_out/bundle",
+  "id": "839fd277d850"
+ },
+ "C_new": {
+  "status": "ok",
+  "board_frames": 2076,
+  "frames": 2453,
+  "map_position_fraction": 1.0,
+  "calibration_used": {
+   "source": "registry",
+   "id": "839fd277d850",
+   "dir": "/home/zijianwang/umi_data_collection/recordings/M4CP/calib_20261022/umi_calib_out/bundle",
+   "serial": "IAQEB26097M4CP",
+   "gripper": "handheld_v1",
+   "status": "override",
+   "selection": "UMI_TRAJ_CALIB"
+  },
+  "n": 2076,
+  "ate_se3_rmse_mm": 5.423036314433721,
+  "ate_se3_p95_mm": 10.695389775534045,
+  "ate_sim3_rmse_mm": 1.826695779359091,
+  "scale_board_over_trajectory": 1.0760540472996378,
+  "board_extent_m": 0.40477440877235255
+ },
+ "C_factory": {
+  "status": "ok",
+  "board_frames": 2065,
+  "frames": 2453,
+  "map_position_fraction": 1.0,
+  "calibration_used": {
+   "source": "factory",
+   "id": "e3ef0e5b79eb",
+   "dir": "/home/zijianwang/umi_data_collection/software/trajectory",
+   "serial": "IAQEB26097M4CP",
+   "gripper": "handheld_v1",
+   "status": "override",
+   "selection": "UMI_TRAJ_CALIB"
+  },
+  "n": 2065,
+  "ate_se3_rmse_mm": 230.5016543454374,
+  "ate_se3_p95_mm": 420.0324169407954,
+  "ate_sim3_rmse_mm": 69.12590101004776,
+  "scale_board_over_trajectory": 0.04164370763027231,
+  "board_extent_m": 0.3819905444106696
+ },
+ "verdict": "PASS（有提醒，见报告）",
+ "why": "",
+ "wall_s": 1092.8,
+ "activation": {
+  "checked_at": "2026-10-22T22:38:41+08:00",
+  "state": "active",
+  "message": "已设为该设备默认标定（UMI_TRAJ_CALIB 可临时覆盖）"
+ }
+}

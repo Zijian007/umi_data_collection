@@ -15,7 +15,7 @@ import re
 import shutil
 from pathlib import Path
 
-from software.trajectory import calibration as tcal
+from software.trajectory import calibration_assets as tcal
 
 REPO = Path(__file__).resolve().parents[1]
 ROOT = REPO / "registry"
@@ -29,6 +29,10 @@ STATUSES = ("sample", "active", "retired")
 
 class RegistryError(RuntimeError):
     """The recording cannot be matched to a device record. Message is shown to the user."""
+
+
+class UnknownCameraError(RegistryError):
+    """The serial has no registry entry; other registry failures must not fall back."""
 
 
 def sha256_file(path: Path) -> str:
@@ -45,10 +49,10 @@ def _rel(path: Path) -> str:
 
 def load_index() -> dict:
     if not INDEX.is_file():
-        raise RegistryError(f"device registry missing: {INDEX} (the checkout is incomplete)")
+        raise RegistryError(f"设备档案索引不存在：{INDEX}；请检查项目是否完整")
     idx = json.loads(INDEX.read_text(encoding="utf-8"))
     if idx.get("kind") != "umi_device_registry":
-        raise RegistryError(f"{INDEX} is not a device registry index")
+        raise RegistryError(f"设备档案索引格式无效：{INDEX}")
     idx.setdefault("devices", {})
     idx.setdefault("default_gripper", DEFAULT_GRIPPER)
     return idx
@@ -65,7 +69,7 @@ def gripper_paths(gripper_id: str) -> dict:
     d = GRIPPERS / gripper_id
     tcp, mask = d / "t_tcp_camera.json", d / "front_hand_mask.png"
     if not tcp.is_file() or not mask.is_file():
-        raise RegistryError(f"gripper {gripper_id!r} is incomplete under {d} (need t_tcp_camera.json and front_hand_mask.png)")
+        raise RegistryError(f"夹爪 {gripper_id!r} 配置不完整：{d}；需要 t_tcp_camera.json 和 front_hand_mask.png")
     return {"id": gripper_id, "dir": str(d), "tcp_json": str(tcp), "mask": str(mask),
             "tcp_sha256": sha256_file(tcp), "mask_sha256": sha256_file(mask)}
 
@@ -81,11 +85,11 @@ def read_insv_identity(path: Path) -> dict:
     path = Path(path)
     tr = parse_trailer(path, gyro_parser=False)
     if not tr.get("present"):
-        raise RegistryError(f"{path.name}: no Insta360 trailer (not a raw .insv; Studio export cannot be used)")
+        raise RegistryError(f"{path.name} 缺少 Insta360 尾部数据；请使用原始 .insv，不能使用 Studio 导出视频")
     meta = metadata_summary(read_metadata(path, tr))
     serial = meta.get("serial")
     if not serial:
-        raise RegistryError(f"{path.name}: trailer has no camera serial")
+        raise RegistryError(f"{path.name} 的尾部数据缺少相机序列号")
     return {"serial": str(serial), "firmware": meta.get("firmware"), "model": meta.get("model")}
 
 
@@ -93,28 +97,27 @@ def read_insv_serial(path: Path) -> str:
     return read_insv_identity(path)["serial"]
 
 
-def _record_view(serial: str, rec: dict, *, expect_hash: bool = True) -> dict:
+def _record_view(serial: str, rec: dict) -> dict:
     if rec.get("status") == "retired":
-        raise RegistryError(f"camera {serial} is retired in the registry")
+        raise RegistryError(f"相机 {serial} 已在设备档案中停用")
     status = rec.get("status")
     if status not in STATUSES:
-        raise RegistryError(f"camera {serial}: unknown status {status!r}")
+        raise RegistryError(f"相机 {serial} 的档案状态无效：{status!r}")
     bundle = ROOT / rec["camera_bundle"] if not Path(rec["camera_bundle"]).is_absolute() else Path(rec["camera_bundle"])
     try:
         cal = tcal.describe(bundle, "registry")
     except tcal.CalibrationError as e:
-        raise RegistryError(f"camera {serial}: calibration bundle unusable: {e}") from e
+        raise RegistryError(f"相机 {serial} 的标定包不可用：{e}") from e
     got = bundle_sha256(bundle)
     want = rec.get("camera_bundle_sha256")
-    if expect_hash and want and got != want:
-        raise RegistryError(f"camera {serial}: calibration hash {got[:12]} does not match the registry ({want[:12]}). "
-                            f"Re-run ./umi-calib install for this camera, or fix registry/index.json.")
+    if want and got != want:
+        raise RegistryError(f"相机 {serial} 的标定哈希 {got[:12]} 与档案记录 {want[:12]} 不一致；"
+                            f"请重新执行 ./umi-calib install，或核对 registry/index.json")
     grip = gripper_paths(rec.get("gripper") or load_index().get("default_gripper") or DEFAULT_GRIPPER)
-    if expect_hash:
-        if rec.get("tcp_sha256") and rec["tcp_sha256"] != grip["tcp_sha256"]:
-            raise RegistryError(f"camera {serial}: gripper TCP file hash does not match the registry")
-        if rec.get("mask_sha256") and rec["mask_sha256"] != grip["mask_sha256"]:
-            raise RegistryError(f"camera {serial}: hand-mask hash does not match the registry")
+    if rec.get("tcp_sha256") and rec["tcp_sha256"] != grip["tcp_sha256"]:
+        raise RegistryError(f"相机 {serial} 的夹爪 TCP 文件哈希与档案记录不一致")
+    if rec.get("mask_sha256") and rec["mask_sha256"] != grip["mask_sha256"]:
+        raise RegistryError(f"相机 {serial} 的遮手图哈希与档案记录不一致")
     cal.update(source="registry", serial=serial, status=status, note=rec.get("note"),
                gripper=grip["id"], tcp_json=grip["tcp_json"], mask=grip["mask"],
                bundle_sha256=got, tcp_sha256=grip["tcp_sha256"], mask_sha256=grip["mask_sha256"],
@@ -126,10 +129,10 @@ def get(serial: str) -> dict:
     idx = load_index()
     rec = (idx.get("devices") or {}).get(serial)
     if rec is None:
-        raise RegistryError(
-            f"camera serial {serial!r} is not in the device registry. "
-            f"Record A/B/C/D, then ./umi-calib run and ./umi-calib install. "
-            f"List: ./umi-calib devices"
+        raise UnknownCameraError(
+            f"相机 {serial!r} 尚未登记；"
+            f"请录制 A/B/C/D，执行 ./umi-calib run，验收通过后执行 ./umi-calib install。"
+            f"查看设备档案：./umi-calib devices"
         )
     return _record_view(serial, rec)
 
@@ -158,7 +161,6 @@ def resolve_insv(path: Path, device: str | None = None, gripper: str | None = No
     env = (os.environ.get("UMI_TRAJ_CALIB") or "").strip()
     if env:
         cal = tcal.active()
-        ident = None
         try:
             ident = read_insv_identity(path)
         except RegistryError:
@@ -170,9 +172,7 @@ def resolve_insv(path: Path, device: str | None = None, gripper: str | None = No
     serial = device or read_insv_serial(path)
     cal = get(serial)
     if gripper and gripper != cal["gripper"]:
-        cal = dict(cal)
-        cal.update(attach_gripper(cal, gripper))
-        cal["serial"] = serial
+        cal = attach_gripper(cal, gripper)
     cal["selection"] = "registry"
     return cal
 
@@ -194,15 +194,15 @@ def list_devices() -> list[dict]:
 
 
 def register(serial: str, bundle_dir: Path, *, gripper: str | None = None, status: str = "active",
-             note: str | None = None, report: Path | None = None) -> dict:
+             note: str | None = None) -> dict:
     """Copy a umi-traj bundle under cameras/<serial>/ and point the index at it."""
     serial = str(serial).strip()
     if not serial or serial == SAMPLE_SERIAL:
-        raise RegistryError("refusing to overwrite the sample camera this way (use adopt-sample for a new serial)")
+        raise RegistryError("需要新相机的序列号，不能覆盖样例设备；沿用样例请使用 adopt-sample")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", serial):
-        raise RegistryError(f"serial {serial!r} is not a safe device id")
+        raise RegistryError(f"相机序列号 {serial!r} 无效；仅允许字母、数字、点、下划线和连字符")
     if status not in STATUSES or status == "sample":
-        raise RegistryError(f"status must be active or retired, got {status!r}")
+        raise RegistryError(f"状态应为 active 或 retired，实际为 {status!r}")
     gripper = gripper or load_index().get("default_gripper") or DEFAULT_GRIPPER
     grip = gripper_paths(gripper)
     src = Path(bundle_dir)
@@ -212,8 +212,6 @@ def register(serial: str, bundle_dir: Path, *, gripper: str | None = None, statu
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(src, dest)
-    if report and Path(report).is_file():
-        shutil.copyfile(report, CAMERAS / serial / "report.txt")
     (CAMERAS / serial / "device.json").write_text(json.dumps(
         {"serial": serial, "status": status, "gripper": gripper, "note": note}, indent=1, ensure_ascii=False) + "\n",
         encoding="utf-8")
@@ -231,13 +229,13 @@ def adopt_sample(serial: str, *, gripper: str | None = None, note: str | None = 
     """Register ``serial`` as using the sample camera-IMU bundle (after verify PASS on this camera)."""
     serial = str(serial).strip()
     if not serial or serial == SAMPLE_SERIAL:
-        raise RegistryError("adopt-sample needs the new camera's serial, not 'sample'")
+        raise RegistryError("adopt-sample 需要新相机的序列号，不能使用 sample")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", serial):
-        raise RegistryError(f"serial {serial!r} is not a safe device id")
+        raise RegistryError(f"相机序列号 {serial!r} 无效；仅允许字母、数字、点、下划线和连字符")
     idx = load_index()
     sample_rec = (idx.get("devices") or {}).get(SAMPLE_SERIAL)
     if not sample_rec:
-        raise RegistryError("sample camera is not in the registry")
+        raise RegistryError("设备档案中缺少样例相机")
     gripper = gripper or sample_rec.get("gripper") or idx.get("default_gripper") or DEFAULT_GRIPPER
     grip = gripper_paths(gripper)
     idx.setdefault("devices", {})[serial] = {
@@ -259,8 +257,8 @@ def retire(serial: str) -> None:
     idx = load_index()
     rec = (idx.get("devices") or {}).get(serial)
     if rec is None:
-        raise RegistryError(f"camera {serial} is not in the registry")
+        raise UnknownCameraError(f"相机 {serial} 尚未登记")
     if serial == SAMPLE_SERIAL:
-        raise RegistryError("the sample camera cannot be retired")
+        raise RegistryError("不能停用样例相机")
     rec["status"] = "retired"
     save_index(idx)

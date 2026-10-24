@@ -1,0 +1,14 @@
+{
+  "status": "SAMPLE_GEOMETRY_NOT_CALIBRATED_FOR_THIS_DEVICE",
+  "q_imu_camera_xyzw": [
+    0.500794,
+    0.498606,
+    -0.501155,
+    0.499441
+  ],
+  "lever_camera_imu_m": [
+    0.0147,
+    -0.0093,
+    -0.0163
+  ]
+}

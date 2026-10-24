@@ -1,0 +1,181 @@
+# 标定参数：按 B 噪声先验 → A/B/C 板检测 → D 静止检查 → C 轨迹配置 → 验收规则阅读。
+# A/B 实际求解仍使用完整的数据集；这里的检测步长只控制额外的板检测与质量评估。
+# noise / bias_rw 是连续时间模型参数；不是直接从一帧 IMU 读数得到的标准差。
+# 下方 checks 只改变判定，不会改善求解出的标定。配置覆盖方法见 config/README.md。
+
+# 配置结构版本，用于加载器检查字段格式；不是算法调参项。
+schema_version: 1
+
+# B：传给 Basalt 相机–IMU 求解器的噪声先验。
+imu:
+  # 陀螺仪测量噪声密度，(rad/s)/√Hz；调大表示更不信任角速度观测。
+  gyro_noise: 0.0002
+
+  # 加速度计测量噪声密度，(m/s²)/√Hz；调大表示更不信任加速度观测。
+  acc_noise: 0.002
+
+  # 陀螺仪 bias 随机游走强度，(rad/s)/√s；调大允许零偏随时间变化更多。
+  gyro_bias_rw: 0.00002
+
+  # 加速度计 bias 随机游走强度，(m/s²)/√s；调大允许零偏随时间变化更多。
+  acc_bias_rw: 0.003
+
+# A/B/C：检测 AprilGrid，并用 PnP 从板角点求独立的相机位姿。
+# “标签数”指完整识别出的方块个数；每个标签提供 4 个角点。
+board:
+  # A 段质量评估每隔多少帧检测一次；越大越快，但覆盖统计越稀疏。
+  intrinsics_step: 5
+
+  # B 段质量评估的检测步长，单位为帧；不会减少 Basalt 的求解图像。
+  camera_imu_step: 15
+
+  # C 段参考轨迹的检测步长，单位为帧；1 表示逐帧检测，调大会减少误差评估证据。
+  validation_step: 1
+
+  # 检测前将图像边长放大的倍率；角点随后映射回原图。调大可能更易识别小标签，也更慢。
+  detection_upscale: 2.0
+
+  # 每帧启动 PnP 至少需要的标签数，必须 >= 4；调大更严格，但可用位姿更少。
+  minimum_pnp_tags: 4
+
+  # PnP 成功后，保留为参考位姿还需达到的标签数；须 >= minimum_pnp_tags。
+  # 调大通常能减少少量标签造成的位姿抖动，也会丢掉更多帧。
+  minimum_reference_tags: 12
+
+  # PnP 内点的归一化重投影误差上限，无量纲；不是像素误差。
+  # 调小更严格地剔除偏离角点；其对应像素量级与焦距有关。
+  normalized_inlier_threshold: 0.004
+
+  # 保留角点的单位视线向量 z 分量下限，无量纲；调大排除更多靠近鱼眼边缘的视线。
+  minimum_bearing_z: 0.2
+
+  # PnP 中“按误差剔除角点 → 重新求解”的轮数；随后仍会执行 LM 精化。
+  refinement_iterations: 2
+
+  # C 段至少要有多少帧同时具备板参考位置和有效轨迹位置，才计算 ATE、尺度等误差。
+  # 调大要求更多比较证据；不足时不会返回有效误差结果。
+  minimum_comparison_frames: 30
+
+  # 覆盖率统计的归一化半径，单位 px，用于 1440×1440 裁切图中的角点坐标。
+  # 默认 960 来自原始 1920×1920 镜头半幅的半宽，并非裁切图的半宽 720。
+  # r = 角点距主点的像素距离 / 此值；增大分母会使同一画面的覆盖比例变小。
+  coverage_radius_px: 960.0
+
+  # 将一帧计入“扫到边缘的右/左/下/上方向”统计时，最远角点至少达到的半径比例。
+  # 0.5 表示上述归一化半径的一半；调大更难计入。A 的验收门限另见 checks。
+  coverage_reach: 0.5
+
+  # 先取每帧最远角点的归一化半径，再取跨帧的该百分位（0–100）。
+  # 99 表示第 99 百分位；调大更容易受少量极端角点影响，不是“99% 覆盖率”。
+  coverage_percentile: 99.0
+
+  # 一个方向累计至少多少个达标采样帧，才计为“该方向已覆盖”；只影响方向统计。
+  minimum_direction_frames: 3
+
+# D：按真实时间戳划分互不重叠的窗口，筛出静止段，再检查校准后的重力模长。
+# 窗口筛选使用原始 IMU；重力残差使用校准后的加速度。这里不重新求解 IMU 标定。
+gravity:
+  # 非重叠窗口时长，单位 s；调大要求连续静止更久，也能汇总更多样本。
+  window_s: 0.5
+
+  # 窗口内原始角速度模长的最大值必须小于此值，单位 °/s；调小使静止判定更严格。
+  maximum_gyro_deg_s: 2.0
+
+  # 窗口内原始加速度模长的标准差必须小于此值，单位 m/s²；调小排除更多抖动窗口。
+  maximum_acc_norm_std_m_s2: 0.05
+
+  # 一个窗口至少包含的 IMU 样本数；还需同时满足下面的时间跨度要求。
+  minimum_samples: 20
+
+  # 用于比较静止加速度模长的重力参考值，单位 m/s²；残差 = 平均模长 - 此值。
+  gravity_m_s2: 9.81
+
+  # 朝向聚类的余弦阈值：与已有中心的点积 >= 此值时归为同一朝向。
+  # 调大意味着更小的角度差也可能被计为新朝向，统计到的朝向数通常增多。
+  distinct_direction_cosine: 0.95
+
+  # 窗口首末样本的实际时间跨度 / window_s 至少达到此比例，范围 (0,1]。
+  # 0.8 用于排除尾部残缺或过于稀疏的窗口；调大要求窗口更完整。
+  minimum_window_span_fraction: 0.8
+
+# C：通过真实的 umi-traj 入口，使用新标定抽取轨迹，再与板参考比较。
+trajectory_validation:
+  # 轨迹覆盖配置文件；空字符串使用项目默认 trajectory.yaml。
+  # 相对路径从本标定配置文件所在目录解析；它影响 C 的实际重建，不只是报告。
+  config: ""
+
+# A/B/C/D：将测量指标判为 OK / WARN / FAIL。以下比较边界均以代码中的 <= / >= 为准。
+# WARN 表示提醒；FAIL 表示本次验收失败；样例相机差异不等于本设备的真实测量误差。
+checks:
+  # C 相机位置 ATE RMSE 的失败上限，单位 mm；仅做旋转/平移对齐，不允许缩放。
+  # 超过此值判 FAIL；调大只会放宽验收，不会提高精度。
+  ate_fail_mm: 30.0
+
+  # 仅用于 verify（及其 recheck）的额外 ATE 提醒，单位 mm；不是 run 的 C 失败上限。
+  # 高于此值但未超过 ate_fail_mm 时给出 WARN；必须 <= ate_fail_mm。
+  ate_warn_mm: 12.0
+
+  # C 尺度比 = 板参考 / 轨迹；|尺度比 - 1| 的提醒界限，无量纲，0.03 即 3%。
+  # 超过此值先 WARN；还需结合 scale_fail 判定是否 FAIL。
+  scale_warn: 0.03
+
+  # C 尺度偏差的失败界限，无量纲，0.10 即 10%；必须 >= scale_warn。
+  scale_fail: 0.10
+
+  # C 至少应有的有效板参考位姿帧数；不足给 WARN。
+  # 与 board.minimum_comparison_frames 不同：后者是能否计算误差的最低匹配帧数。
+  minimum_board_frames: 100
+
+  # C 参与比较的板参考相机位置包围盒对角线长度下限，单位 m；不足给 WARN。
+  # 衡量移动范围，不是累计路径长度；范围太小，尺度比较容易不稳定。
+  minimum_board_extent_m: 0.15
+
+  # A 求解器平均每帧实际使用的角点数下限；不足给 WARN，不是每帧必须达到的数量。
+  intrinsics_minimum_corners: 30
+
+  # A 的最远角点半径百分位指标下限，无量纲；低于此值给 WARN。
+  # 指标由 board.coverage_radius_px 和 coverage_percentile 定义；0.5 表示半径比例 50%。
+  intrinsics_minimum_reach: 0.5
+
+  # A 平均重投影误差的提醒上限，单位 px；超过给 WARN。
+  intrinsics_reprojection_px: 1.0
+
+  # 内参 fx 相对样例 fx 的偏差提醒界限，无量纲；这里只比较 fx，0.03 即 3%。
+  focal_warn_fraction: 0.03
+
+  # fx 相对样例的偏差失败界限，无量纲；必须 >= focal_warn_fraction。
+  focal_fail_fraction: 0.10
+
+  # 主点 (cx, cy) 与样例主点的二维距离上限，单位 px；超过给 WARN。
+  principal_point_warn_px: 40.0
+
+  # B 求解器平均每帧实际使用的角点数下限；不足给 WARN。
+  camera_imu_minimum_corners: 25
+
+  # B 角速度模长第 95 百分位的下限，单位 rad/s；不足给 WARN，提示运动激励偏弱。
+  minimum_gyro_p95_rad_s: 0.8
+
+  # B 平均重投影误差的提醒上限，单位 px；超过给 WARN。
+  camera_imu_reprojection_px: 1.2
+
+  # 相机在 IMU 系中的平移向量，与样例平移向量之差的模长提醒界限，单位 mm。
+  translation_warn_mm: 10.0
+
+  # 上述平移差的失败界限，单位 mm；必须 >= translation_warn_mm。
+  translation_fail_mm: 50.0
+
+  # 相机–IMU 外参旋转相对样例的旋转角提醒界限，单位 °。
+  rotation_warn_deg: 2.0
+
+  # 上述旋转差的失败界限，单位 °；必须 >= rotation_warn_deg。
+  rotation_fail_deg: 10.0
+
+  # 相机–IMU 时间偏移与样例之差的绝对值提醒界限，单位 ms；不是时间偏移本身的上限。
+  time_offset_warn_ms: 5.0
+
+  # D 所有合格静止窗口中，|平均校准加速度模长 - gravity.gravity_m_s2| 的最大值上限。
+  # 单位 m/s²；任一合格窗口超过即 FAIL，不能用不同朝向的正负残差相互抵消。
+  gravity_residual_m_s2: 0.3
+
+  # D 至少应统计出的不同静止朝向数；不足给 WARN，录制仍建议覆盖六个明显不同朝向。
+  minimum_gravity_directions: 5

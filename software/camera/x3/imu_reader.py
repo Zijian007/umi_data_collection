@@ -212,16 +212,7 @@ def read_imu_and_meta(imu_insv: Path) -> dict:
             "firmware": meta.get(FIELD_FIRMWARE, [None])[0]}
 
 
-def imu_scaling_note(imu: dict) -> dict:
-    """The scaling / clock provenance block written into a canonical manifest."""
-    return {"acc_range_g": imu.get("acc_range_g"), "gyro_range_dps": imu.get("gyro_range_dps"),
-            "acc_lsb_per_g": I16_BIAS / imu["acc_range_g"],
-            "gyro_lsb_per_dps": I16_BIAS / imu["gyro_range_dps"],
-            "first_frame_timestamp_us": imu.get("fft_us"),
-            "n_raw_samples": imu.get("n")}
-
-
 __all__ = [
     "G0", "GYRO_BLOCK_RECORDS", "GYRO_LAYOUTS", "I16_BIAS", "ImuReadError",
-    "infer_timebase", "gyro_integrity", "parse_gyro", "read_imu_and_meta", "imu_scaling_note",
+    "infer_timebase", "gyro_integrity", "parse_gyro", "read_imu_and_meta",
 ]

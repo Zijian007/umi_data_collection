@@ -1,0 +1,42 @@
+{
+ "kind": "umi_traj_calibration_bundle",
+ "calibration_sha256": "839fd277d850fd1b0e7460a49126304d2ed8515e381b5e49f11ac6b9b8cabef2",
+ "T_imu_cam": {
+  "p": [
+   0.004947579745004202,
+   0.0024918712358898924,
+   0.016418811228856106
+  ],
+  "q_xyzw": [
+   -0.5033040836790392,
+   -0.49540141850652575,
+   -0.5047644299699745,
+   0.49646279229244517
+  ]
+ },
+ "cam_time_offset_ns": 7582811,
+ "intrinsics_1440": {
+  "fx": 532.7040484634135,
+  "fy": 531.0789512090645,
+  "cx": 724.1984598128562,
+  "cy": 725.6097512924697,
+  "k": [
+   0.09925447190789621,
+   -0.0662236596999861,
+   0.03253007947232959,
+   -0.0068474978488767225
+  ]
+ },
+ "derived_from": {
+  "front_x3_r1440_720.yaml": "factory yaml, intrinsics + IMU.T_b_c1 replaced",
+  "kiwi_fuse3s.py": "validated fuser 3dfb5efd3924, R_ICf / P_CfinI lines replaced"
+ },
+ "created_by": "umi-calib",
+ "segments": {
+  "A": "VID_20261022_205544_00_001.insv",
+  "B": "VID_20261022_205824_00_002.insv",
+  "C": "VID_20261022_210045_00_003.insv",
+  "D": "VID_20261022_210232_00_004.insv"
+ },
+ "tag_size_mm": 24.0
+}

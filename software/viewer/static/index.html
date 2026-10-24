@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#101719"><title>UMI Trace · 轨迹工作台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%23141f22'/%3E%3Cpath d='M10 27V13h7v14h7V13h7' fill='none' stroke='%238ee3bf' stroke-width='3'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/viewer.css"><script type="module" src="/app.mjs"></script>
+</head>
+<body>
+<header class="app-header">
+  <a class="brand" href="/" aria-label="UMI Trace 首页"><span class="brand-mark">u<span>m</span>i</span><span class="brand-name">Trace<span>轨迹工作台</span></span></a>
+  <div class="header-meta"><span class="local-dot"></span> LOCAL WORKSPACE <span class="header-divider"></span><span>3D · 视频 · 位姿</span></div>
+  <button class="quiet-button" id="help-button" title="快捷键与操作说明">操作说明 <kbd>?</kbd></button>
+</header>
+<div class="workspace">
+<aside class="library">
+  <div class="library-heading"><div><span class="eyebrow">RECORDINGS</span><h2>录像库 <span id="record-count">0</span></h2></div><button id="refresh" class="icon-button" aria-label="刷新录像列表" title="刷新录像列表">↻</button></div>
+  <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="搜索录像或设备…" aria-label="搜索录像或设备"></label>
+  <div class="library-filters"><span class="selected-filter">全部录像</span><span>本地数据</span></div>
+  <div class="recording-list" id="recording-list" aria-label="录像列表"></div>
+  <div class="library-footer"><span class="local-dot"></span><span id="root-path" title="当前数据目录">正在读取数据目录…</span></div>
+</aside>
+<main>
+  <section class="recording-heading">
+    <div class="recording-title"><span class="eyebrow">TRAJECTORY INSPECTOR</span><h1 id="record-title">选择一段录像，开始查看</h1><div class="recording-subtitle"><span class="status-badge" id="status-badge">等待加载</span><span id="record-meta">从左侧选择已抽取的 UMI 轨迹</span></div></div>
+    <div class="summary-stats"><div><span>时长</span><strong id="stat-duration">—<small> s</small></strong></div><div><span>TCP 路程</span><strong id="stat-path">—<small> m</small></strong></div><div><span>地图位置约束</span><strong id="stat-coverage">—<small> %</small></strong></div></div>
+  </section>
+  <div id="message" class="message" role="status" aria-live="polite" hidden></div>
+  <div class="inspector-grid">
+    <section class="panel trajectory-panel">
+      <div class="panel-header"><div class="panel-title"><span class="panel-dot"></span><h2>空间轨迹</h2><span class="muted">3D</span></div><div class="segmented" id="track-buttons" role="group" aria-label="显示的轨迹"><button class="active" data-track="tcp">TCP</button><button data-track="camera">相机</button><button data-track="imu">IMU</button></div></div>
+      <div class="scene" id="scene"><canvas id="trajectory-canvas" tabindex="0" aria-label="三维轨迹，左键旋转、右键平移、滚轮缩放，点击轨迹定位时间"></canvas><div class="scene-empty" id="scene-empty"><span>↗</span><strong>运动，在空间中展开</strong><p>加载轨迹，查看每一帧的位置与朝向</p></div><div class="scene-toolbar" role="group" aria-label="三维视角"><button class="active" data-view="home" title="复位视角（R）">透视</button><button data-view="top" title="俯视（2）">俯视</button><button data-view="front" title="正视（3）">正视</button><button data-view="side" title="侧视（4）">侧视</button></div><div class="scene-top-right"><label><input id="show-pose" type="checkbox" checked> 姿态轴</label><label><input id="show-overlay" type="checkbox"> 对照轨迹</label></div><div class="scene-legend"><span><i id="legend-color" class="legend-dot mint"></i><span id="legend-track">TCP 轨迹</span></span><span><i class="legend-dot white"></i>当前位置</span><span id="scene-scale">单位 m · Z ↑</span></div><div class="scene-hint">左键旋转 · 右键平移 · 滚轮缩放 · 点击轨迹定位</div></div>
+      <div class="pose-readout"><div><span>X <small>m</small></span><strong id="pose-x">—</strong></div><div><span>Y <small>m</small></span><strong id="pose-y">—</strong></div><div><span>Z <small>m</small></span><strong id="pose-z">—</strong></div><div><span>速度 <small>m/s</small></span><strong id="pose-speed">—</strong></div><div class="constraint-readout"><span>当前帧约束</span><strong id="pose-constraint">—</strong></div></div>
+    </section>
+    <section class="panel video-panel">
+      <div class="panel-header"><div class="panel-title"><span class="panel-dot blue"></span><h2>前镜头</h2><span class="muted">VIDEO</span></div><span class="sync-label"><i></i> 时间同步</span></div>
+      <div class="video-stage"><video id="video" playsinline muted preload="metadata" aria-label="同步前镜头视频"></video><img id="video-frame" alt="与轨迹当前帧同步的前镜头画面" hidden><div id="video-empty" class="video-empty"><span>▣</span><p>选择录像后显示同步画面</p></div><span class="video-frame-label" id="video-frame-label">FRAME —</span></div>
+      <div class="video-caption"><span id="video-note">前镜头裁切 · 原始鱼眼画面</span><button class="quiet-button" id="compatibility-mode" title="当前浏览器无法播放视频时使用" disabled>兼容播放</button><button class="quiet-button" id="video-fullscreen" title="全屏视频">⛶</button></div>
+      <div class="record-details"><div><span>相机序列号</span><code id="detail-serial">—</code></div><div><span>标定 ID</span><code id="detail-calibration">—</code></div><div><span>轨迹点数</span><code id="detail-rows">—</code></div><div><span>姿态四元数 <small>xyzw</small></span><code id="detail-quaternion">—</code></div></div>
+    </section>
+    <section class="panel speed-panel"><div class="panel-header"><div class="panel-title"><span class="panel-dot amber"></span><h2>运动速度</h2><span class="muted">m/s</span></div><span class="chart-hint">点击曲线跳转 · 与三维和视频联动</span></div><div class="speed-stage"><canvas id="speed-canvas" aria-label="速度随时间变化曲线，点击定位时间"></canvas></div></section>
+  </div>
+  <footer class="inspection-footer"><span><i class="local-dot"></i> 本地世界坐标 · Z 轴朝上</span><span>跟踪完整度不等于真实精度 · TCP 使用 CAD 名义几何</span><button id="details-button" class="text-button">查看本次记录 ↗</button></footer>
+</main>
+</div>
+<section class="playback-bar" aria-label="轨迹回放控制">
+  <div class="transport"><button id="previous-frame" class="icon-button" aria-label="上一帧" title="上一帧（←）">Ⅰ‹</button><button id="play" class="play-button" aria-label="播放" disabled>▶</button><button id="next-frame" class="icon-button" aria-label="下一帧" title="下一帧（→）">›Ⅰ</button></div>
+  <div class="time-display"><strong id="current-time">00:00.00</strong><span>/ <span id="total-time">00:00.00</span></span></div>
+  <div class="timeline-wrap"><input id="timeline" type="range" min="0" max="1" step="1" value="0" disabled aria-label="轨迹播放进度"><div class="timeline-labels"><span id="frame-counter">FRAME 0 / 0</span><span>空格播放 / 暂停</span></div></div>
+  <div class="playback-options"><label for="rate">倍速</label><select id="rate"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select><button id="loop" class="icon-button" aria-pressed="false" title="循环播放" aria-label="循环播放">↻</button></div>
+</section>
+<dialog id="help-dialog"><div class="dialog-heading"><h2>回放与检查</h2><button data-close="help-dialog" class="icon-button" aria-label="关闭说明">×</button></div><p>同步查看 UMI 的三维轨迹、位姿、前镜头视频和速度。所有数据从本机读取。</p><dl class="shortcuts"><dt>空格</dt><dd>播放 / 暂停</dd><dt>← / →</dt><dd>上一帧 / 下一帧</dd><dt>R / 1</dt><dd>恢复透视视角</dd><dt>2 / 3 / 4</dt><dd>俯视 / 正视 / 侧视</dd><dt>左键拖动</dt><dd>绕轨迹旋转</dd><dt>右键或 Shift 拖动</dt><dd>平移视图</dd><dt>滚轮 / 双指</dt><dd>缩放</dd><dt>点击轨迹或速度图</dt><dd>定位到对应帧</dd></dl><p class="dialog-note">红、绿、蓝姿态轴分别表示局部 X、Y、Z。每段录像的世界原点和水平朝向独立，不能直接将不同录像的坐标拼接。</p></dialog>
+<dialog id="details-dialog"><div class="dialog-heading"><h2>本次轨迹记录</h2><button data-close="details-dialog" class="icon-button" aria-label="关闭记录">×</button></div><pre id="details-text"></pre></dialog>
+<noscript>此查看器需要启用 JavaScript。</noscript>
+</body>
+</html>

@@ -1,56 +1,66 @@
-# 标定一台相机，再抽出一段轨迹
+# UMI 相机标定与轨迹抽取
 
-这个仓库做两件事：
+从 Insta360 X3 原始 `.insv` 录像生成夹爪 TCP 的位置和姿态。完整顺序是：
 
-- **标定** `./umi-calib`：给一台 Insta360 X3 算出内参、镜头和机内 IMU 的关系。一台相机做一次。
-- **轨迹** `./umi-traj`：读一段 360 4K60 的 `.insv`，用这台相机的标定，写出夹爪尖的轨迹。
+**安装 → 每台相机标定并手动启用 → 录制任务 → 抽取轨迹 → 同步查看视频与轨迹。**
 
-每台 X3 都要先做一次全套相机–IMU 标定（录 A/B/C/D，`./umi-calib run` 通过后再 `./umi-calib install`），见 [docs/标定/说明.md](docs/标定/说明.md)。四段各干一件事，不能互相替代；标定不建工作区地图，后面每段任务仍要自己扫图。仓库里那份样例标定只属于当初那一台，不是新相机的默认值。`umi-traj` 按 `.insv` 里的序列号查 `registry/`，对不上会拒绝。档案写好之后，同一台走下面五步。夹爪尖相对镜头是 CAD 名义值，这两条命令都不重算它。
+## 1. 安装
 
-## 1. 设置相机
-
-Insta360 X3 选 **360 视频、4K60**。曝光锁定，快门 **1/240 秒或更快**，灯光开亮。
-
-## 2. 录
-
-按下录制之后：
-
-1. 拿稳不动几秒（不必竖直放）。
-2. 慢慢环顾要干活的区域，大约 10–20 秒，边看边稍微前后左右移动（这段是给**这一段录像**建图，标定代替不了）。
-3. 做这段要录的动作。
-4. 回到开始的位置，再拿稳不动几秒。
-
-桌上放些有花纹的东西。避开白墙、玻璃、镜子。夹爪正对的画面里不要有人走过。
-
-## 3. 拷录像
-
-从相机里拷出原始 `.insv`，放进电脑上一个文件夹。不要改名，不要剪辑，不要用 Insta360 Studio 导出。
-
-## 4. 抽出轨迹
-
-在 **64 位 Linux** 上：
+在 Linux x86_64 上，从项目根目录执行：
 
 ```bash
-git clone https://github.com/Zijian007/umi_data_collection.git
-cd umi_data_collection
 bash install.sh
-./umi-traj <放录像的文件夹>
+./umi-traj check
+./umi-calib check
 ```
 
-安装要 15–40 分钟，只做一次。处理一段一分钟的录像大约几分钟。Windows / macOS 用 Docker，见 [docs/轨迹/使用.md](docs/轨迹/使用.md) 第 3 节。
+`umi-calib` 首次使用会补装标定组件。克隆、机器要求、安装日志和 Docker 用法见 [安装指南](docs/安装.md)。
 
-## 5. 看结果
+## 2. 标定并启用相机
 
-轨迹在录像旁边：
+每台相机录制 A/B/C/D 四段，推荐按完整序列号整理：
 
 ```text
-umi_traj_out/<录像名>/traj_tcp.txt
+recordings/IAQEB26097M4CP/
+├── calib_20261022/
+│   ├── A/原始文件名.insv
+│   ├── B/原始文件名.insv
+│   ├── C/原始文件名.insv
+│   └── D/原始文件名.insv
+└── tasks/20261023/
+    └── 原始文件名.insv
 ```
 
-屏幕上不是成功，就把同目录的 `summary.json` 发出来。录法不对导致失败时，按 [docs/轨迹/录制.md](docs/轨迹/录制.md) 重录。
+```bash
+./umi-calib run recordings/IAQEB26097M4CP/calib_20261022 --tag-size-mm 24.0
+# 查看 umi_calib_out/report.txt，验收通过后手动启用：
+./umi-calib install recordings/IAQEB26097M4CP/calib_20261022/umi_calib_out
+```
 
----
+以上序列号、日期和板尺寸按实际替换。四段怎么录、报告怎么看，见 [标定指南](docs/标定/说明.md)。设备档案和目录规则见 [设备与目录](docs/设备与目录.md)。
 
-- 新买的或换了一台相机：按 [docs/标定/说明.md](docs/标定/说明.md) 录 A/B/C/D，`./umi-calib run` 通过后 `./umi-calib install`。不要把样例标定直接套到新序列号上。
-- 安装失败、命令选项、结果里每一列是什么：[docs/轨迹/使用.md](docs/轨迹/使用.md)。
-- 这段轨迹能不能信：[docs/轨迹/原理.md](docs/轨迹/原理.md)。
+## 3. 录制并抽取任务轨迹
+
+相机使用 **360 视频、4K60**，锁定曝光，快门 1/240 秒或更快。每段按“静止 3–5 秒 → 环顾工作区并带平移 10–20 秒 → 正常动作 → 结尾静止”录制，保留原始 `.insv`。详见 [任务录制](docs/轨迹/录制.md)。
+
+```bash
+./umi-traj recordings/IAQEB26097M4CP/tasks/20261023
+```
+
+工具按录像内部序列号选择已启用标定。每段任务各自建图、定位和融合，标定结果不提供工作区地图。更多选项和排错见 [轨迹抽取](docs/轨迹/使用.md)。
+
+## 4. 查看结果
+
+结果默认在输入目录旁的 `umi_traj_out/<录像名>/`。先读 `report.txt`，使用 `traj_tcp.txt`，用 `trajectory.png` 预览。
+
+```bash
+UMI_VIEW_PYTHON=.deps/env/bin/python ./umi-view
+```
+
+浏览器打开 **http://127.0.0.1:9091**，同步查看三维轨迹、姿态、前镜头视频和速度。视频是保留鱼眼畸变的裁切，默认 720×720，可通过 [视频配置](config/README.md#图像规格与轨迹分辨率) 的 `video.size_px` 调整；每段录像的世界坐标系独立。TCP 几何来自 CAD 名义值，任务报告中的地图覆盖比例不代表实际误差。
+
+操作见 [三维查看](docs/查看.md)，文件和字段见 [轨迹结果](docs/轨迹/结果.md)，精度证据见 [原理与验证](docs/轨迹/原理.md)。
+
+完整入口：[文档导航](docs/README.md) · [代码维护](docs/dev/README.md)。
+
+算法参数、配置覆盖、只读预检和重新验收见 [参数管理](config/README.md)。

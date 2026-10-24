@@ -1,5 +1,5 @@
-"""X3 readers used by the trajectory: ``software.camera.x3``.
+"""X3 readers shared by calibration and trajectory: ``software.camera.x3``.
 
 Importing this package does not open a recording or choose a crop. The crop and frame step live in
-``software.trajectory.frame``.
+``software.camera.x3.frame``.
 """

@@ -1,0 +1,7 @@
+# pip 部分：GTSAM 只有 PyPI 有带 Python 绑定的官方 wheel。
+# lab0 验证时用的是 nightly gtsam-develop 4.3a2.dev202609030306（PyPI 只保留最近 24 个 nightly，会被删），
+# 这里改锁正式版 4.3.0；与 nightly 的差异由回归测试检查（见 software/trajectory/README.md）。
+gtsam==4.3.0
+
+# 标定和轨迹共用的 YAML 1.2 配置解析器（拒绝重复键）。
+ruamel.yaml==0.19.1

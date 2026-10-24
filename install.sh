@@ -62,26 +62,30 @@ step "2/5 conda 环境（Python、FFmpeg、OpenCV、编译器等）"
 if [ ! -x "$ENV/bin/python" ]; then
   rm -rf "$ENV"
   if [ "$PLAT" = linux-64 ]; then
-    run_logged "$DEPS/logs/2_conda.log" "$MM" create -y -p "$ENV" --file "$T/env/linux-64.lock"
+    run_logged "$DEPS/logs/2_conda.log" "$MM" create -y -p "$ENV" --file "$T/setup/env/linux-64.lock"
   else
-    run_logged "$DEPS/logs/2_conda.log" "$MM" create -y -p "$ENV" -f "$T/env/environment.yml"
+    run_logged "$DEPS/logs/2_conda.log" "$MM" create -y -p "$ENV" -f "$T/setup/env/environment.yml"
   fi
   [ -x "$ENV/bin/python" ] || fail "conda 环境没装完（多半是安装被 Ctrl+C 中断了）。直接再跑一次 bash install.sh" "$DEPS/logs/2_conda.log"
   touch "$ENV/.umi_env_ok"
 fi
 "$ENV/bin/python" --version
 
-step "3/5 pip：GTSAM"
+step "3/5 pip：GTSAM、YAML 配置"
 if ! "$ENV/bin/python" -c "import gtsam" 2>/dev/null; then
-  run_logged "$DEPS/logs/3_pip.log" "$ENV/bin/python" -m pip install --no-cache-dir -r "$T/env/requirements.txt"
+  run_logged "$DEPS/logs/3_pip.log" "$ENV/bin/python" -m pip install --no-cache-dir -r "$T/setup/env/requirements.txt"
+elif ! "$ENV/bin/python" -c "import ruamel.yaml" 2>/dev/null; then
+  # 已有轨迹环境只补 YAML 解析器，保留当前已验证的 GTSAM。
+  YAML_REQUIREMENT=$(sed -n '/^ruamel\.yaml==/p' "$T/setup/env/requirements.txt")
+  run_logged "$DEPS/logs/3_pip.log" "$ENV/bin/python" -m pip install --no-cache-dir "$YAML_REQUIREMENT"
 fi
-"$ENV/bin/python" -c "import gtsam, numpy, scipy, av, matplotlib; print('gtsam ok, numpy', numpy.__version__)"
+"$ENV/bin/python" -c "import gtsam, numpy, scipy, av, matplotlib, ruamel.yaml; print('gtsam ok, numpy', numpy.__version__, 'yaml', ruamel.yaml.__version__)"
 
 step "4/5 编译 Pangolin + ORB-SLAM3（10-30 分钟）"
 O=$DEPS/src/ORB_SLAM3
 if [ ! -x "$O/Examples/Monocular-Inertial/x3_mono_slam" ] || [ ! -f "$O/Vocabulary/ORBvoc.txt" ]; then
   echo "日志：$DEPS/logs/4_build.log"
-  JOBS=$JOBS run_logged "$DEPS/logs/4_build.log" "$MM" run -p "$ENV" bash "$T/orbslam3/build_orbslam3.sh" "$DEPS"
+  JOBS=$JOBS run_logged "$DEPS/logs/4_build.log" "$MM" run -p "$ENV" bash "$T/setup/orbslam3/build_orbslam3.sh" "$DEPS"
 fi
 tail -4 "$DEPS/logs/4_build.log" 2>/dev/null || true
 
