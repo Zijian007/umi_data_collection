@@ -15,7 +15,7 @@ import numpy as np
 from software.calibration import recording_data
 from software.calibration.models import CalibrationInputs, CameraImuResult, GravityResult, IntrinsicsResult, SegmentPaths
 from software.scene import rear_calibration
-from software.scene.storage import write_json
+from software.storage import write_json
 from software.trajectory.models import LensVideo
 import test_scene as scene_fixtures
 
@@ -54,7 +54,8 @@ class RearCalibrationTests(unittest.TestCase):
             target.mkdir(parents=True)
         a = IntrinsicsResult(self.front.files['front'], [350., 350., 720., 720., 0., 0., 0., 0.], self.metrics(), self.coverage())
         reference = dict(idx=np.arange(len(self.poses)), p=scale*self.poses[:, :3, 3], n_frames=len(self.poses), reproj_deg_med=[])
-        with patch.object(rear_calibration.inputs, 'prepare_inputs', return_value=self.inputs), \
+        with patch.object(rear_calibration.registry, 'pin', return_value=self.fixture.device_pins[self.front.serial]), \
+             patch.object(rear_calibration.inputs, 'prepare_inputs', return_value=self.inputs), \
              patch.object(rear_calibration, 'select_camera', return_value=self.front), \
              patch.object(rear_calibration.runtime, 'prepare', return_value=True), \
              patch.object(rear_calibration.recording_data, 'build', side_effect=dataset) as build, \

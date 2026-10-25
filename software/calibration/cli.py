@@ -39,6 +39,10 @@ def main(argv=None) -> int:
         return workflow.recheck(args.out, args.config)
     if args.cmd == "install":
         return devices.install_bundle(Path(args.out), args.force, camera_serial=args.serial, gripper=args.gripper)
+    if args.cmd == "install-rear":
+        return devices.install_rear(args.measurement)
+    if args.cmd == "install-gripper":
+        return devices.install_gripper(args.gripper_id, args.directory)
     if args.cmd == "adopt-sample":
         return devices.adopt_sample(camera_serial=args.serial,
                                     from_video=Path(args.from_video) if args.from_video else None,
@@ -88,6 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--serial", help="覆盖报告里的序列号")
     install_parser.add_argument("--gripper", help="夹爪 id（默认 handheld_v1）")
     install_parser.add_argument("--force", action="store_true")
+    rear_parser = commands.add_parser("install-rear", help="登记通过验收的后镜头标定版本")
+    rear_parser.add_argument("measurement", type=Path)
+    gripper_parser = commands.add_parser("install-gripper", help="登记夹爪几何版本，已有版本保留")
+    gripper_parser.add_argument("gripper_id")
+    gripper_parser.add_argument("directory", type=Path)
     sample_parser = commands.add_parser("adopt-sample", help="可选：verify PASS 后沿用样例相机–IMU（不是默认入库）")
     sample_parser.add_argument("--serial", help="相机序列号")
     sample_parser.add_argument("--from-video", help="从这段 .insv 读序列号")

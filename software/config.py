@@ -413,7 +413,7 @@ def resolve_trajectory_request(request):
 
 def code_identity(domain: str) -> dict:
     """Content hashes cover uncommitted source too; never rely on Git HEAD alone."""
-    paths = [ROOT / 'software/config.py', *sorted((ROOT / 'software' / domain).rglob('*.py')),
+    paths = [ROOT / 'software/config.py', ROOT / 'software/registry.py', ROOT / 'software/storage.py', *sorted((ROOT / 'software' / domain).rglob('*.py')),
              *sorted((ROOT / 'software/camera').rglob('*.py'))]
     if domain == 'trajectory':
         paths += sorted((ROOT / 'software/trajectory/assets/config').glob('*.yaml'))

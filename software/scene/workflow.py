@@ -9,7 +9,7 @@ import os
 import shutil
 import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
@@ -18,8 +18,8 @@ from software import config
 from software.console import Console
 from software.scene import engine, fusion, mapping, results
 from software.scene.geometry import camera_to_imu
-from software.scene.models import Camera, Scene, read_episode, read_scene, select_camera
-from software.scene.storage import locked, publish_link, write_json
+from software.scene.models import Camera, Scene, read_episode, read_scene, rear_files, select_camera
+from software.storage import locked, publish_link, write_json
 from software.trajectory import runtime
 from software.trajectory.models import ReconstructionError
 
@@ -40,8 +40,10 @@ def recording_identity(path: Path) -> dict:
     return dict(path=str(path), bytes=stat.st_size, mtime_ns=stat.st_mtime_ns)
 
 
-def select_cameras(videos: dict, scene: Scene) -> dict[str, Camera]:
+def select_cameras(videos: dict, scene: Scene, expected: dict | None = None) -> dict[str, Camera]:
     cameras = {arm: select_camera(video, scene) for arm, video in videos.items()}
+    if expected is not None and any(camera.serial != expected[arm] for arm, camera in cameras.items()):
+        raise ValueError('INSV 内部序列号与任务清单不一致')
     if len({camera.serial for camera in cameras.values()}) != len(cameras):
         raise ValueError('左右手必须来自两台不同序列号的相机')
     if scene.mode == 'dual' and set(videos) - scene.recordings.keys():
@@ -63,22 +65,26 @@ def validate_assets(directory: Path, hashes: dict) -> None:
             raise ValueError(f'场景/任务资产缺失、越界或内容已变：{name}')
 
 
-def load_published(scene: Scene) -> tuple[Path, dict]:
-    if not (scene.root / 'maps/current.json').is_file():
-        raise ValueError('场景尚未发布地图，请先运行 umi-scene build <scene.yaml>')
-    pointer = json.loads((scene.root / 'maps/current.json').read_text())
-    version = pointer['version']
+def load_published(scene: Scene, *, version: str | None = None, manifest_sha256: str | None = None) -> tuple[Path, dict]:
+    pinned = version is not None
+    if not pinned:
+        if not (scene.root / 'maps/current.json').is_file():
+            raise ValueError('场景尚未发布地图，请先运行 umi-scene build <scene.yaml>')
+        pointer = json.loads((scene.root / 'maps/current.json').read_text())
+        version, manifest_sha256 = pointer['version'], pointer['manifest_sha256']
     if not isinstance(version, str) or not version or any(c not in '0123456789abcdef-' for c in version):
         raise ValueError('场景版本指针无效')
     directory = (scene.root / 'maps/versions' / version).resolve()
     if not directory.is_relative_to((scene.root / 'maps/versions').resolve()):
         raise ValueError('场景版本指针越界')
     manifest = directory / 'manifest.json'
-    if config.file_hash(manifest) != pointer['manifest_sha256']:
+    if manifest_sha256 is not None and config.file_hash(manifest) != manifest_sha256:
         raise ValueError('场景版本清单哈希不匹配')
     data = json.loads(manifest.read_text())
-    if data['definition'] != mapping.definition(scene):
+    if not pinned and data['definition'] != mapping.definition(scene):
         raise ValueError('场景建图配置已变化；请先运行 umi-scene build，任务不会自动重建地图')
+    if data['name'] != scene.name or data['mode'] != scene.mode:
+        raise ValueError('固定地图的场景或镜头模式与当前配置不一致')
     validate_assets(directory, data['assets'])
     current_engine = config.engine_identity('trajectory')
     if data['inputs']['engines'].get('orb_library') != current_engine.get('orb_library'):
@@ -88,7 +94,7 @@ def load_published(scene: Scene) -> tuple[Path, dict]:
 
 def build_scene(path: Path, *, force=False, keep_work=False, cores='', dry_run=False) -> dict:
     scene = read_scene(path)
-    cameras = select_cameras(scene.recordings, scene)
+    cameras = select_cameras(scene.recordings, scene, scene.recording_serials)
     runtime.validate_engines(dict(os.environ))
     inputs = dict(definition=mapping.definition(scene), recordings={arm: recording_identity(video) for arm, video in scene.recordings.items()},
         cameras={arm: camera.identity() for arm, camera in cameras.items()}, code=config.code_identity('scene'),
@@ -151,6 +157,7 @@ def build_scene(path: Path, *, force=False, keep_work=False, cores='', dry_run=F
 
 def episode_inputs(episode, cameras, published) -> dict:
     return dict(scene_version=published['version'], frame_id=published['frame_id'], scene_assets=published['assets'],
+        session=episode.session.name, session_manifest_sha256=config.file_hash(episode.session.path),
         episode_manifest_sha256=config.file_hash(episode.path), scene_manifest_sha256=config.file_hash(episode.scene.path),
         recordings={arm: recording_identity(video) for arm, video in episode.recordings.items()},
         cameras={arm: camera.identity() for arm, camera in cameras.items()}, synchronization=episode.synchronization,
@@ -162,11 +169,17 @@ def run_episode(path: Path, *, force=False, keep_work=False, cores='', dry_run=F
     episode = read_episode(path)
     offsets = episode.offsets()
     scene = episode.scene
-    cameras = select_cameras(episode.recordings, scene)
+    device_scene = replace(scene, devices=episode.session.devices, rear_calibrations=rear_files(episode.session.devices))
+    cameras = select_cameras(episode.recordings, device_scene, episode.serials)
     runtime.validate_engines(dict(os.environ))
-    directory, published = load_published(scene)
+    directory, published = load_published(scene, version=episode.session.map_version,
+                                          manifest_sha256=episode.session.map_manifest_sha256)
     # 已建图相机的镜头测量被固定；新标定不能静默套用在旧地图的场景放置上。
     pinned = {item['serial']: item['assets'] for item in published['inputs']['cameras'].values()}
+    if scene.mode == 'dual':
+        for arm, camera in cameras.items():
+            if published['maps'][f'{arm}_front']['camera_serial'] != camera.serial:
+                raise ValueError(f'{arm} 设备与固定前地图不匹配；更换设备或左右手需要新地图版本')
     for camera in cameras.values():
         if camera.serial in pinned and any(pinned[camera.serial].get(lens) != config.file_hash(camera.files[lens]) for lens in camera.measurements):
             raise ValueError(f'相机 {camera.serial} 的镜头标定已变化，请重建场景地图')
@@ -191,7 +204,7 @@ def run_episode(path: Path, *, force=False, keep_work=False, cores='', dry_run=F
             if max(prepared[arm].times[0]+offsets[arm] for arm in prepared) >= min(prepared[arm].times[-1]+offsets[arm] for arm in prepared):
                 raise ValueError('左右手录像在任务时间轴上没有重叠')
             display = json.loads((directory / 'map.json').read_text())
-            scene_record = dict(name=scene.name, version=published['version'], frame_id=published['frame_id'])
+            scene_record = dict(name=scene.name, version=published['version'], frame_id=published['frame_id'], session=episode.session.name)
             tracks = {}
             for arm, recording in prepared.items():
                 console.write(f'{arm}：已有场景地图定位 → 固定场景系融合', step=(2, 3))
@@ -207,9 +220,9 @@ def run_episode(path: Path, *, force=False, keep_work=False, cores='', dry_run=F
                 tracks[arm] = results.write_arm(arm, recording, result, offsets[arm], scene_record, display, target / arm)
             console.write('对齐双手时间并发布结果', step=(3, 3))
             common = results.write_bimanual(tracks, target)
-            if inputs != episode_inputs(episode, {arm: select_camera(video, scene) for arm, video in episode.recordings.items()}, published):
+            if inputs != episode_inputs(episode, select_cameras(episode.recordings, device_scene, episode.serials), published):
                 raise ValueError('任务期间录像或标定发生变化，拒绝发布')
-            (target / 'report.txt').write_text(f'场景任务：{episode.path.parent.name}\n坐标：{published["frame_id"]}\n'
+            (target / 'report.txt').write_text(f'场景任务：{episode.path.parent.name}\n采集批次：{episode.session.name}\n坐标：{published["frame_id"]}\n'
                 f'手：{", ".join(tracks)}\n共同有效时间：{common[0]:.6f}–{common[1]:.6f} s\n'
                 f'同步：{episode.synchronization["method"]}；offsets_s={offsets}\n'
                 '轨迹共享米制坐标；左右手分别融合。\n实际误差：未测量；TCP 使用 CAD 名义几何。\n'
@@ -219,7 +232,7 @@ def run_episode(path: Path, *, force=False, keep_work=False, cores='', dry_run=F
                 if (target / name).is_file():
                     assets[name] = config.file_hash(target / name)
             primary_times = tracks.get('left', next(iter(tracks.values())))[0]
-            metadata = dict(kind='umi_scene_episode', schema_version=1, status='ok', name=episode.path.parent.name, scene=scene_record,
+            metadata = dict(kind='umi_scene_episode', schema_version=1, status='ok', name=episode.path.parent.name, session=episode.session.name, scene=scene_record,
                 frame_id=published['frame_id'], arms={arm: arm for arm in tracks}, common_interval_s=common,
                 rows=int(np.count_nonzero((primary_times >= common[0]) & (primary_times <= common[1]))),
                 inputs=inputs, assets=assets, elapsed_s=time.monotonic()-started, actual_error='not_measured')

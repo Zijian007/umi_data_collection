@@ -14,7 +14,7 @@ from software.viewer.data import RecordingCatalog, ViewerDataError
 from software.viewer.media import decode_frame, preview_file, preview_status, video_version
 
 STATIC = Path(__file__).resolve().parent / 'static'
-DEFAULT_ROOT = Path(__file__).resolve().parents[2] / 'recordings'
+DEFAULT_ROOT = Path(__file__).resolve().parents[2] / 'scenes'
 
 
 def byte_range(header: str, size: int) -> tuple[int, int]:

@@ -9,14 +9,14 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software import config
+from software import config, registry
 from software.calibration import camera_imu, checks, inputs, intrinsics, recording_data, runtime, validation
 from software.calibration.algorithms import aprilgrid_detect, board_pnp
 from software.calibration.models import CalibrationRequest, RunPaths, StageContext, TrajectoryValidation
 from software.scene import engine, fusion, mapping
 from software.scene.geometry import camera_to_imu
 from software.scene.models import Scene, load_parameters, select_camera
-from software.scene.storage import write_json
+from software.storage import write_json
 from software.trajectory.algorithms import postprocess
 
 
@@ -28,7 +28,8 @@ def run(folder: Path, *, output: Path | None = None, tag_size_mm=24., cores='', 
     trajectory = configuration.load_trajectory_validation()
     output = (output or folder / 'umi_calib_rear_out').expanduser().resolve()
     scene = Scene(output / 'scene.yaml', 'rear_validation', 'shared_front', 'left',
-                  dict(left=source.recordings.c), {}, trajectory, load_parameters(None))
+                  dict(left=source.recordings.c), {}, trajectory, load_parameters(None),
+                  {source.camera_serial: registry.pin(source.camera_serial)})
     front = select_camera(source.recordings.c, scene)
     if dry_run:
         return dict(status='planned', serial=source.camera_serial, lens='rear', output=str(output), parameters=configuration.snapshot())

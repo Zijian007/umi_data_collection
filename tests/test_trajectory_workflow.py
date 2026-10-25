@@ -139,7 +139,7 @@ class SelectionTests(unittest.TestCase):
 
     def test_gripper_override_preserves_camera_and_calibration(self):
         record = dict(registry.sample(), serial='actual', gripper='original')
-        replacement = dict(id='replacement', tcp_json='/new/tcp.json', mask='/new/mask.png',
+        replacement = dict(id='replacement', version='geometry_002', tcp_json='/new/tcp.json', mask='/new/mask.png',
                            tcp_sha256='tcp', mask_sha256='mask', dir='/new')
         with patch.dict(os.environ, {'UMI_TRAJ_CALIB': ''}), patch.object(registry, 'get', return_value=record), \
                 patch.object(registry, 'gripper_paths', return_value=replacement):

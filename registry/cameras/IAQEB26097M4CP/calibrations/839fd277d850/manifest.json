@@ -1,0 +1,14 @@
+{
+  "kind": "umi_camera_calibration",
+  "serial": "IAQEB26097M4CP",
+  "version": "839fd277d850",
+  "note": "umi-calib install from /home/zijianwang/umi_data_collection/recordings/M4CP/calib_20261022/umi_calib_out",
+  "assets": {
+    "report.txt": "3268ffbfb0c6b27bbb72c08c1749516e2bc1d1a9c4b14f18e9883ca4f4d05e39",
+    "provenance/device.json": "54b2b6fd449300eb162778a6b136776ecbf53bdbe9f3ecdeacf9834879c6b014",
+    "bundle/bundle.json": "bdf3ddf7bde89e086c172d386df0f45f7cb22324362a04e091c374adf640f3d4",
+    "bundle/front_x3_r1440_720.yaml": "a9313470985853f93b397ed1d40a65eb79cfbbe9e78bac7c52ca4c5ec7e6d152",
+    "bundle/kiwi_fuse3s.py": "8bbde91fe9d48c3950dc99761ed72b8d4b90f1751d8a1678a22ea9c6230145c3",
+    "bundle/calibration_r1440.json": "839fd277d850fd1b0e7460a49126304d2ed8515e381b5e49f11ac6b9b8cabef2"
+  }
+}

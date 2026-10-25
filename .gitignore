@@ -10,3 +10,5 @@ scenes/**/maps/
 scenes/**/runs/
 scenes/**/results
 .scene.lock
+.registry.lock
+scenes/**/archive/

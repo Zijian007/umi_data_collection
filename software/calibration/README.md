@@ -110,9 +110,9 @@ CLI 负责将参数转换成请求，`models.py` 只定义数据。样例参考�
 运行方式不变：
 
 ```bash
-./umi-calib run recordings/IAQEB26097M4CP/calib_20261022
+./umi-calib run recordings/calibration/IAQEB26097M4CP/20261022/front
 # 查看 report.txt 后，手动启用：
-./umi-calib install recordings/IAQEB26097M4CP/calib_20261022/umi_calib_out
+./umi-calib install recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out
 ```
 
 `run` 默认不启用标定。原有显式 `--install` 选项保留，仅在检查通过时执行。

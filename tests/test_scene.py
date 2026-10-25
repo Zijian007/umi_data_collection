@@ -13,9 +13,9 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software import config
+from software import config, registry
 from software.scene import engine, fusion, geometry, mapping, models, results, synchronization, workflow
-from software.scene.storage import write_json, write_yaml
+from software.storage import write_json, write_yaml
 from software.trajectory import calibration_assets, selection
 from software.trajectory.models import LensVideo, MapAtlas
 from software.viewer.data import RecordingCatalog, ViewerDataError
@@ -128,13 +128,18 @@ class SceneWorkflowTests(unittest.TestCase):
         self.videos = {arm: self.source / (arm+'.insv') for arm in models.ARMS}
         for arm, video in self.videos.items():
             video.write_bytes(arm.encode())
-        write_yaml(self.scene_path, dict(schema_version=1, name='lab', mode='shared_front', reference_arm='left',
-                   mapping=dict(left=str(self.videos['left'])), rear_calibrations={}))
+        self.device_pins = {f'SERIAL_{arm}': dict(calibration='test', gripper='test', gripper_version='test') for arm in models.ARMS}
+        write_yaml(self.scene_path, dict(schema_version=2, name='lab', mode='shared_front', reference_arm='left',
+                   mapping=dict(left=self.ref('left')), devices=self.device_pins))
         self.scene = models.read_scene(self.scene_path)
-        self.episode_path = self.scene.root / 'episodes/take_001/episode.yaml'
-        write_yaml(self.episode_path, dict(schema_version=1, scene=str(self.scene.path),
-                   recordings={arm: str(video) for arm, video in self.videos.items()},
+        self.session_path = self.scene.root / 'sessions/20261025_001/session.yaml'
+        write_yaml(self.session_path, dict(schema_version=1, scene=str(self.scene.path),
+                   map=dict(version='pending', manifest_sha256='0'*64), devices=self.device_pins))
+        self.episode_path = self.session_path.parent / 'episodes/take_001/episode.yaml'
+        write_yaml(self.episode_path, dict(schema_version=2, session=str(self.session_path),
+                   recordings={arm: self.ref(arm) for arm in self.videos},
                    synchronization=dict(method='manual', offsets_s=dict(left=0., right=.15))))
+        self.rear_files = {}
         self.cameras = {}
         self.recordings = {}
         self.raw = {}
@@ -162,7 +167,7 @@ class SceneWorkflowTests(unittest.TestCase):
             self.recordings[self.videos[arm]] = engine.PreparedRecording(camera,
                 SimpleNamespace(parameters=self.scene.trajectory.values), None,
                 (LensVideo('front', encoded, asset_dir / 'settings.yaml', None),), times, imu)
-        self.patches = [patch('software.scene.workflow.select_camera', side_effect=lambda video, scene: self.cameras[video]),
+        self.patches = [patch('software.scene.models.registry.rear_path', side_effect=lambda serial, version: self.rear_files[serial]), patch('software.scene.workflow.select_camera', side_effect=lambda video, scene: self.cameras[video]),
             patch('software.scene.workflow.runtime.validate_engines', return_value=(self.root, self.root)),
             patch('software.scene.workflow.config.engine_identity', return_value=dict(orb_library='fixture')),
             patch('software.scene.engine.prepare', side_effect=lambda video, *args, **kwargs: self.recordings[video]),
@@ -174,6 +179,20 @@ class SceneWorkflowTests(unittest.TestCase):
                 rotation=np.eye(3).tolist(), translation=[0., 0., 0.], rmse_m=0., source='fixed_scene')))]
         for item in self.patches:
             item.start(); self.addCleanup(item.stop)
+
+    def ref(self, arm):
+        video = self.videos[arm]
+        return dict(path=str(video), serial='SERIAL_'+arm, sha256=registry.sha256_file(video))
+
+    def build_scene(self, **kwargs):
+        built = workflow.build_scene(self.scene_path, **kwargs)
+        if built['status'] != 'planned':
+            data = models.read_yaml(self.session_path)
+            if data['map']['version'] == 'pending':
+                directory = self.scene.root / 'maps/versions' / built['version']
+                data['map'] = dict(version=built['version'], manifest_sha256=config.file_hash(directory / 'manifest.json'))
+                write_yaml(self.session_path, data)
+        return built
 
     def build(self, recording, lens, directory):
         directory.mkdir(parents=True)
@@ -193,7 +212,7 @@ class SceneWorkflowTests(unittest.TestCase):
 
     def test_dual_scene_builds_three_maps_and_keeps_both_hands_in_rear_frame(self):
         data = models.read_yaml(self.scene_path)
-        data.update(mode='dual', mapping={arm: str(video) for arm, video in self.videos.items()})
+        data.update(mode='dual', mapping={arm: self.ref(arm) for arm in self.videos})
         rear_transform = geometry.transform(Rotation.from_euler('y', np.pi).as_matrix(), [0., 0., -.03])
         for video, camera in list(self.cameras.items()):
             rear_file = camera.files['front'].parent / 'rear.json'
@@ -203,7 +222,8 @@ class SceneWorkflowTests(unittest.TestCase):
             payload['T_imu_cam'] = [dict(px=0., py=0., pz=-.03, qx=float(q[0]), qy=float(q[1]), qz=float(q[2]), qw=float(q[3]))]
             measured.update(kind='umi_rear_calibration', camera_serial=camera.serial, lens='rear', validation=dict(verdict='PASS'))
             write_json(rear_file, measured)
-            data['rear_calibrations'][camera.serial] = str(rear_file)
+            data['devices'][camera.serial]['rear_calibration'] = 'rear_test'
+            self.rear_files[camera.serial] = rear_file
             camera = replace(camera, measurements=dict(camera.measurements, rear=calibration_assets.read_basalt(rear_file)),
                              files=dict(camera.files, rear=rear_file))
             self.cameras[video] = camera
@@ -211,7 +231,10 @@ class SceneWorkflowTests(unittest.TestCase):
             rear_video = LensVideo('rear', rec.videos[0].path, rec.videos[0].settings, None)
             self.recordings[video] = replace(rec, camera=camera, videos=(*rec.videos, rear_video))
         write_yaml(self.scene_path, data)
-        built = workflow.build_scene(self.scene_path)
+        session_data = models.read_yaml(self.session_path)
+        session_data['devices'] = data['devices']
+        write_yaml(self.session_path, session_data)
+        built = self.build_scene()
         _, manifest = workflow.load_published(models.read_scene(self.scene_path))
         self.assertEqual(set(manifest['maps']), {'shared_rear', 'left_front', 'right_front'})
         self.assertEqual(engine.build.call_count, 3)
@@ -227,7 +250,7 @@ class SceneWorkflowTests(unittest.TestCase):
         random = np.random.default_rng(4)
         signal = random.normal(size=8000)
         params = replace(episode.scene.parameters, audio_sample_rate=1000, audio_minimum_overlap_s=1.)
-        episode = replace(episode, scene=replace(episode.scene, parameters=params))
+        episode = replace(episode, session=replace(episode.session, scene=replace(episode.scene, parameters=params)))
         with patch('software.scene.synchronization.decode_audio', side_effect=[signal, signal[350:]]):
             synchronization.synchronize(episode, audio_to_video=dict(left=.1, right=.2))
         synced = models.read_episode(self.episode_path)
@@ -257,9 +280,9 @@ class SceneWorkflowTests(unittest.TestCase):
             self.assertIn('rear', selected.measurements)
 
     def test_multitask_bimanual_metric_world_and_reuse(self):
-        built = workflow.build_scene(self.scene_path)
+        built = self.build_scene()
         self.assertEqual(built['status'], 'ok')
-        self.assertEqual(workflow.build_scene(self.scene_path)['status'], 'skipped')
+        self.assertEqual(self.build_scene()['status'], 'skipped')
         first = workflow.run_episode(self.episode_path)
         output = self.episode_path.parent / 'results'
         metadata = json.loads((output / 'episode.json').read_text())
@@ -273,7 +296,7 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertGreater(left[0, 1], 2.)
         self.assertGreater(left[0, 0], .09)
         # 同场景第二个任务沿用原地图，原始 .osa 哈希和版本始终不变。
-        second_path = self.scene.root / 'episodes/take_002/episode.yaml'
+        second_path = self.session_path.parent / 'episodes/take_002/episode.yaml'
         write_yaml(second_path, models.read_yaml(self.episode_path))
         second = workflow.run_episode(second_path)
         self.assertEqual(first['frame_id'], second['frame_id'])
@@ -294,7 +317,7 @@ class SceneWorkflowTests(unittest.TestCase):
                                              loaded['tracks']['tcp']['position'][5]), .6, delta=.002)
 
     def test_failed_run_preserves_success_and_rejects_tampered_map(self):
-        workflow.build_scene(self.scene_path)
+        self.build_scene()
         workflow.run_episode(self.episode_path)
         output = self.episode_path.parent / 'results'
         previous = output.resolve()
@@ -314,7 +337,7 @@ class SceneWorkflowTests(unittest.TestCase):
         write_yaml(self.episode_path, data)
         with self.assertRaisesRegex(ValueError, '偏移未确认'):
             workflow.run_episode(self.episode_path, dry_run=True)
-        result = workflow.build_scene(self.scene_path, dry_run=True)
+        result = self.build_scene(dry_run=True)
         self.assertEqual(result['status'], 'planned')
         self.assertFalse((self.scene.root / 'maps').exists())
         override = self.root / 'bad.yaml'
@@ -326,22 +349,23 @@ class SceneWorkflowTests(unittest.TestCase):
             models.load_parameters(override)
 
     def test_scene_parameter_changes_require_explicit_build(self):
-        first = workflow.build_scene(self.scene_path)
+        first = self.build_scene()
         overrides = self.root / 'params.yaml'
         write_yaml(overrides, dict(placement_position_sigma_m=.02))
         data = models.read_yaml(self.scene_path)
         data['parameters'] = str(overrides)
         write_yaml(self.scene_path, data)
         with self.assertRaisesRegex(ValueError, '建图配置已变化'):
-            workflow.run_episode(self.episode_path)
-        second = workflow.build_scene(self.scene_path)
+            workflow.load_published(models.read_scene(self.scene_path))
+        self.assertEqual(workflow.run_episode(self.episode_path)['frame_id'], first['frame_id'])
+        second = self.build_scene()
         self.assertNotEqual(first['frame_id'], second['frame_id'])
         write_yaml(overrides, dict(placement_position_sigma_m=.02, audio_sample_rate=12000))
         _, published = workflow.load_published(models.read_scene(self.scene_path))
         self.assertEqual(published['version'], second['version'])
 
     def test_viewer_rejects_different_frames_and_path_escape(self):
-        workflow.build_scene(self.scene_path)
+        self.build_scene()
         workflow.run_episode(self.episode_path)
         output = self.episode_path.parent / 'results'
         summary_path = output / 'right/details/summary.json'

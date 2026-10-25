@@ -1,4 +1,4 @@
-"""Device registry: one camera serial -> one calibration bundle + one gripper asset set.
+"""Global device registry: immutable calibration and gripper versions; defaults only guide new sessions.
 
 ``umi-traj`` looks up the serial in the recording's INSV trailer. Missing serial, missing record,
 retired device, or hash mismatch is a refusal -- never a silent fall-back to the lab sample.
@@ -13,7 +13,11 @@ import json
 import os
 import re
 import shutil
+import tempfile
+
 from pathlib import Path
+
+from software.storage import locked, write_json
 
 from software.trajectory import calibration_assets as tcal
 
@@ -36,42 +40,92 @@ class UnknownCameraError(RegistryError):
 
 
 def sha256_file(path: Path) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    with Path(path).open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def _rel(path: Path) -> str:
-    path = Path(path).resolve()
-    try:
-        return str(path.relative_to(ROOT.resolve()))
-    except ValueError:
-        return str(path)
+def validate_id(value: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise RegistryError(f"设备、夹爪或版本 ID 无效：{value!r}")
+    return value
 
 
 def load_index() -> dict:
     if not INDEX.is_file():
-        raise RegistryError(f"设备档案索引不存在：{INDEX}；请检查项目是否完整")
+        raise RegistryError(f"设备档案索引不存在：{INDEX}")
     idx = json.loads(INDEX.read_text(encoding="utf-8"))
-    if idx.get("kind") != "umi_device_registry":
-        raise RegistryError(f"设备档案索引格式无效：{INDEX}")
-    idx.setdefault("devices", {})
-    idx.setdefault("default_gripper", DEFAULT_GRIPPER)
+    if idx.get("kind") != "umi_device_registry" or idx.get("version") != 2:
+        raise RegistryError(f"设备档案需要 version: 2：{INDEX}")
     return idx
 
 
 def save_index(idx: dict) -> None:
-    ROOT.mkdir(parents=True, exist_ok=True)
-    tmp = INDEX.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(idx, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
-    tmp.replace(INDEX)
+    write_json(INDEX, idx)
 
 
-def gripper_paths(gripper_id: str) -> dict:
-    d = GRIPPERS / gripper_id
-    tcp, mask = d / "t_tcp_camera.json", d / "front_hand_mask.png"
-    if not tcp.is_file() or not mask.is_file():
-        raise RegistryError(f"夹爪 {gripper_id!r} 配置不完整：{d}；需要 t_tcp_camera.json 和 front_hand_mask.png")
-    return {"id": gripper_id, "dir": str(d), "tcp_json": str(tcp), "mask": str(mask),
-            "tcp_sha256": sha256_file(tcp), "mask_sha256": sha256_file(mask)}
+def version_assets(directory: Path) -> dict:
+    """版本中的测量和几何只读；每次选择都核对完整资产哈希。"""
+    manifest = json.loads((directory / 'manifest.json').read_text())
+    if manifest.get('version') != directory.name:
+        raise RegistryError(f'版本目录与清单身份不一致：{directory}')
+    if not isinstance(manifest.get('assets'), dict) or not manifest['assets']:
+        raise RegistryError(f'资产清单为空：{directory}')
+    for name, digest in manifest['assets'].items():
+        target = (directory / name).resolve()
+        if not target.is_relative_to(directory.resolve()) or not target.is_file() or sha256_file(target) != digest:
+            raise RegistryError(f'资产缺失或哈希不一致：{directory / name}')
+    return manifest
+
+
+def store_version(parent: Path, version: str, files: dict[str, Path], **metadata) -> Path:
+    """先在临时目录完整复制，再发布新版本；已有版本永不覆盖。"""
+    directory = parent / validate_id(version)
+    wanted = {name: sha256_file(source) for name, source in files.items()}
+    if directory.exists():
+        existing = version_assets(directory)
+        if any(existing.get(key) != value for key, value in metadata.items() if key != 'note'):
+            raise RegistryError(f'已有版本身份不匹配：{directory}')
+        if any(existing['assets'].get(name) != digest for name, digest in wanted.items()):
+            raise RegistryError(f'同名版本内容不同，拒绝覆盖：{directory}')
+        return directory
+    parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix='.install-', dir=parent))
+    try:
+        for name, source in files.items():
+            target = temporary / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        if any(sha256_file(temporary / name) != digest for name, digest in wanted.items()):
+            raise RegistryError('安装期间源资产发生变化，拒绝发布')
+        write_json(temporary / 'manifest.json', dict(version=version, assets=wanted, **metadata))
+        temporary.rename(directory)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    return directory
+
+
+def gripper_paths(gripper_id: str, version: str | None = None) -> dict:
+    parent = GRIPPERS / validate_id(gripper_id)
+    if version is None:
+        version = json.loads((parent / 'current.json').read_text())['version']
+    directory = parent / 'versions' / validate_id(version)
+    manifest = version_assets(directory)
+    if manifest.get('kind') != 'umi_gripper' or manifest.get('gripper') != gripper_id:
+        raise RegistryError(f'夹爪版本身份不一致：{directory}')
+    tcp, mask = directory / 't_tcp_camera.json', directory / 'front_hand_mask.png'
+    return dict(id=gripper_id, version=version, dir=str(directory), tcp_json=str(tcp), mask=str(mask),
+                tcp_sha256=sha256_file(tcp), mask_sha256=sha256_file(mask))
+
+
+def register_gripper(gripper_id: str, source: Path) -> dict:
+    files = {name: source / name for name in ('t_tcp_camera.json', 'front_hand_mask.png')}
+    digest = hashlib.sha256(''.join(sha256_file(files[name]) for name in sorted(files)).encode()).hexdigest()[:12]
+    with locked(ROOT, '.registry.lock'):
+        store_version(GRIPPERS / validate_id(gripper_id) / 'versions', digest, files,
+                      kind='umi_gripper', gripper=gripper_id)
+        write_json(GRIPPERS / gripper_id / 'current.json', dict(version=digest))
+    return gripper_paths(gripper_id, digest)
 
 
 def bundle_sha256(bundle_dir: Path) -> str:
@@ -97,44 +151,70 @@ def read_insv_serial(path: Path) -> str:
     return read_insv_identity(path)["serial"]
 
 
-def _record_view(serial: str, rec: dict) -> dict:
-    if rec.get("status") == "retired":
-        raise RegistryError(f"相机 {serial} 已在设备档案中停用")
-    status = rec.get("status")
-    if status not in STATUSES:
-        raise RegistryError(f"相机 {serial} 的档案状态无效：{status!r}")
-    bundle = ROOT / rec["camera_bundle"] if not Path(rec["camera_bundle"]).is_absolute() else Path(rec["camera_bundle"])
-    try:
-        cal = tcal.describe(bundle, "registry")
-    except tcal.CalibrationError as e:
-        raise RegistryError(f"相机 {serial} 的标定包不可用：{e}") from e
-    got = bundle_sha256(bundle)
-    want = rec.get("camera_bundle_sha256")
-    if want and got != want:
-        raise RegistryError(f"相机 {serial} 的标定哈希 {got[:12]} 与档案记录 {want[:12]} 不一致；"
-                            f"请重新执行 ./umi-calib install，或核对 registry/index.json")
-    grip = gripper_paths(rec.get("gripper") or load_index().get("default_gripper") or DEFAULT_GRIPPER)
-    if rec.get("tcp_sha256") and rec["tcp_sha256"] != grip["tcp_sha256"]:
-        raise RegistryError(f"相机 {serial} 的夹爪 TCP 文件哈希与档案记录不一致")
-    if rec.get("mask_sha256") and rec["mask_sha256"] != grip["mask_sha256"]:
-        raise RegistryError(f"相机 {serial} 的遮手图哈希与档案记录不一致")
-    cal.update(source="registry", serial=serial, status=status, note=rec.get("note"),
-               gripper=grip["id"], tcp_json=grip["tcp_json"], mask=grip["mask"],
-               bundle_sha256=got, tcp_sha256=grip["tcp_sha256"], mask_sha256=grip["mask_sha256"],
-               gripper_dir=grip["dir"])
+def _record_view(serial: str, rec: dict, *, calibration: str | None = None,
+                 gripper: str | None = None, gripper_version: str | None = None) -> dict:
+    if rec.get('status') == 'retired':
+        raise RegistryError(f'相机 {serial} 已在设备档案中停用')
+    if rec.get('status') not in STATUSES:
+        raise RegistryError(f'相机 {serial} 的档案状态无效')
+    version = validate_id(calibration or rec['calibration'])
+    # adopt-sample 明确记录测量来源；场景模式仍拒绝样例替代。
+    owner = rec.get('calibration_owner', serial)
+    directory = CAMERAS / validate_id(owner) / 'calibrations' / version
+    manifest = version_assets(directory)
+    if manifest.get('kind') != 'umi_camera_calibration' or manifest.get('serial') != owner:
+        raise RegistryError(f'相机标定版本身份不一致：{directory}')
+    bundle = directory / 'bundle'
+    cal = tcal.describe(bundle, 'registry')
+    grip = gripper_paths(gripper or rec['gripper'], gripper_version)
+    cal.update(source='registry', serial=serial, status=rec['status'], note=rec.get('note'),
+               calibration_version=version, calibration_owner=owner,
+               gripper=grip['id'], gripper_version=grip['version'], tcp_json=grip['tcp_json'], mask=grip['mask'],
+               bundle_sha256=bundle_sha256(bundle), tcp_sha256=grip['tcp_sha256'], mask_sha256=grip['mask_sha256'],
+               gripper_dir=grip['dir'])
     return cal
 
 
-def get(serial: str) -> dict:
+def get(serial: str, *, calibration: str | None = None, gripper: str | None = None,
+        gripper_version: str | None = None) -> dict:
     idx = load_index()
-    rec = (idx.get("devices") or {}).get(serial)
+    rec = idx['devices'].get(serial)
     if rec is None:
-        raise UnknownCameraError(
-            f"相机 {serial!r} 尚未登记；"
-            f"请录制 A/B/C/D，执行 ./umi-calib run，验收通过后执行 ./umi-calib install。"
-            f"查看设备档案：./umi-calib devices"
-        )
-    return _record_view(serial, rec)
+        raise UnknownCameraError(f'相机 {serial!r} 尚未登记；标定验收后执行 ./umi-calib install。')
+    try:
+        return _record_view(serial, rec, calibration=calibration, gripper=gripper, gripper_version=gripper_version)
+    except (OSError, KeyError, ValueError, tcal.CalibrationError) as error:
+        raise RegistryError(f'相机 {serial} 的设备资产不可用：{error}') from error
+
+
+def pin(serial: str) -> dict:
+    record = get(serial)
+    if record['status'] != 'active' or record['calibration_owner'] != serial:
+        raise RegistryError(f'场景采集需要 {serial} 自身的已启用实测标定')
+    return dict(
+        calibration=record['calibration_version'], gripper=record['gripper'], gripper_version=record['gripper_version'])
+
+
+def register_rear(source: Path) -> dict:
+    data = json.loads(source.read_text())
+    serial = validate_id(data.get('camera_serial'))
+    get(serial)
+    if data.get('kind') != 'umi_rear_calibration' or data.get('lens') != 'rear' or not str(data.get('validation', {}).get('verdict', '')).startswith('PASS'):
+        raise RegistryError('后镜头标定需要匹配序列号、lens: rear 和通过的验收证据')
+    tcal.read_basalt(source)
+    version = 'rear_'+sha256_file(source)[:12]
+    with locked(ROOT, '.registry.lock'):
+        store_version(CAMERAS / serial / 'calibrations', version, {'rear_calibration.json': source},
+                      kind='umi_rear_calibration', serial=serial)
+    return dict(serial=serial, version=version)
+
+
+def rear_path(serial: str, version: str) -> Path:
+    directory = CAMERAS / validate_id(serial) / 'calibrations' / validate_id(version)
+    metadata = version_assets(directory)
+    if metadata.get('kind') != 'umi_rear_calibration' or metadata.get('serial') != serial:
+        raise RegistryError('后镜头标定版本身份不匹配')
+    return directory / 'rear_calibration.json'
 
 
 def sample() -> dict:
@@ -147,7 +227,7 @@ def attach_gripper(cal: dict, gripper_id: str | None = None) -> dict:
     out = dict(cal)
     out.setdefault("serial", None)
     out.setdefault("status", "override")
-    out.update(gripper=grip["id"], tcp_json=grip["tcp_json"], mask=grip["mask"],
+    out.update(gripper_version=grip["version"], gripper=grip["id"], tcp_json=grip["tcp_json"], mask=grip["mask"],
                tcp_sha256=grip["tcp_sha256"], mask_sha256=grip["mask_sha256"], gripper_dir=grip["dir"])
     return out
 
@@ -182,83 +262,58 @@ def list_devices() -> list[dict]:
     rows = []
     for serial, rec in sorted((idx.get("devices") or {}).items()):
         try:
-            view = _record_view(serial, rec)
+            view = get(serial)
             rows.append({"serial": serial, "status": rec.get("status"), "calib_id": view["id"],
-                         "bundle": rec.get("camera_bundle"), "gripper": rec.get("gripper"),
+                         "bundle": rec.get("calibration"), "gripper": rec.get("gripper"),
                          "note": rec.get("note"), "ok": True})
         except RegistryError as e:
             rows.append({"serial": serial, "status": rec.get("status"), "ok": False, "error": str(e),
-                         "bundle": rec.get("camera_bundle"), "gripper": rec.get("gripper"),
+                         "bundle": rec.get("calibration"), "gripper": rec.get("gripper"),
                          "note": rec.get("note")})
     return rows
 
 
 def register(serial: str, bundle_dir: Path, *, gripper: str | None = None, status: str = "active",
              note: str | None = None) -> dict:
-    """Copy a umi-traj bundle under cameras/<serial>/ and point the index at it."""
-    serial = str(serial).strip()
-    if not serial or serial == SAMPLE_SERIAL:
-        raise RegistryError("需要新相机的序列号，不能覆盖样例设备；沿用样例请使用 adopt-sample")
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", serial):
-        raise RegistryError(f"相机序列号 {serial!r} 无效；仅允许字母、数字、点、下划线和连字符")
-    if status not in STATUSES or status == "sample":
-        raise RegistryError(f"状态应为 active 或 retired，实际为 {status!r}")
-    gripper = gripper or load_index().get("default_gripper") or DEFAULT_GRIPPER
-    grip = gripper_paths(gripper)
-    src = Path(bundle_dir)
-    tcal.describe(src, "registry")
-    dest = CAMERAS / serial / "bundle"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.copytree(src, dest)
-    (CAMERAS / serial / "device.json").write_text(json.dumps(
-        {"serial": serial, "status": status, "gripper": gripper, "note": note}, indent=1, ensure_ascii=False) + "\n",
-        encoding="utf-8")
-    idx = load_index()
-    idx.setdefault("devices", {})[serial] = {
-        "serial": serial, "status": status, "note": note,
-        "camera_bundle": _rel(dest), "camera_bundle_sha256": bundle_sha256(dest),
-        "gripper": gripper, "tcp_sha256": grip["tcp_sha256"], "mask_sha256": grip["mask_sha256"],
-    }
-    save_index(idx)
+    serial = validate_id(serial.strip())
+    if serial == SAMPLE_SERIAL or status not in ('active', 'retired'):
+        raise RegistryError('不能覆盖样例设备，状态应为 active 或 retired')
+    tcal.describe(bundle_dir, 'registry')
+    version = bundle_sha256(bundle_dir)[:12]
+    grip = gripper_paths(gripper or load_index()['default_gripper'])
+    files = {'bundle/'+path.name: path for path in bundle_dir.iterdir() if path.is_file()}
+    with locked(ROOT, '.registry.lock'):
+        store_version(CAMERAS / serial / 'calibrations', version, files,
+                      kind='umi_camera_calibration', serial=serial, note=note)
+        idx = load_index()
+        idx['devices'][serial] = dict(serial=serial, status=status, note=note, calibration=version,
+                                     gripper=grip['id'])
+        save_index(idx)
     return get(serial)
 
 
 def adopt_sample(serial: str, *, gripper: str | None = None, note: str | None = None) -> dict:
-    """Register ``serial`` as using the sample camera-IMU bundle (after verify PASS on this camera)."""
-    serial = str(serial).strip()
-    if not serial or serial == SAMPLE_SERIAL:
-        raise RegistryError("adopt-sample 需要新相机的序列号，不能使用 sample")
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", serial):
-        raise RegistryError(f"相机序列号 {serial!r} 无效；仅允许字母、数字、点、下划线和连字符")
-    idx = load_index()
-    sample_rec = (idx.get("devices") or {}).get(SAMPLE_SERIAL)
-    if not sample_rec:
-        raise RegistryError("设备档案中缺少样例相机")
-    gripper = gripper or sample_rec.get("gripper") or idx.get("default_gripper") or DEFAULT_GRIPPER
-    grip = gripper_paths(gripper)
-    idx.setdefault("devices", {})[serial] = {
-        "serial": serial, "status": "active",
-        "note": note or "adopted sample camera-IMU bundle after umi-calib verify PASS",
-        "camera_bundle": sample_rec["camera_bundle"],
-        "camera_bundle_sha256": sample_rec["camera_bundle_sha256"],
-        "gripper": gripper, "tcp_sha256": grip["tcp_sha256"], "mask_sha256": grip["mask_sha256"],
-    }
-    (CAMERAS / serial).mkdir(parents=True, exist_ok=True)
-    (CAMERAS / serial / "device.json").write_text(json.dumps(
-        {"serial": serial, "status": "active", "gripper": gripper, "uses_bundle": sample_rec["camera_bundle"],
-         "note": idx["devices"][serial]["note"]}, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
-    save_index(idx)
+    serial = validate_id(serial.strip())
+    if serial == SAMPLE_SERIAL:
+        raise RegistryError('不能覆盖样例相机')
+    sample_record = sample()
+    grip = gripper_paths(gripper or sample_record['gripper'])
+    with locked(ROOT, '.registry.lock'):
+        idx = load_index()
+        idx['devices'][serial] = dict(serial=serial, status='active', note=note or 'adopted sample after verify PASS',
+            calibration=sample_record['calibration_version'], calibration_owner=SAMPLE_SERIAL,
+            gripper=grip['id'])
+        save_index(idx)
     return get(serial)
 
 
 def retire(serial: str) -> None:
-    idx = load_index()
-    rec = (idx.get("devices") or {}).get(serial)
-    if rec is None:
-        raise UnknownCameraError(f"相机 {serial} 尚未登记")
-    if serial == SAMPLE_SERIAL:
-        raise RegistryError("不能停用样例相机")
-    rec["status"] = "retired"
-    save_index(idx)
+    with locked(ROOT, '.registry.lock'):
+        idx = load_index()
+        rec = idx['devices'].get(serial)
+        if rec is None:
+            raise UnknownCameraError(f"相机 {serial} 尚未登记")
+        if serial == SAMPLE_SERIAL:
+            raise RegistryError("不能停用样例相机")
+        rec['status'] = 'retired'
+        save_index(idx)

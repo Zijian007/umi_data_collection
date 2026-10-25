@@ -16,8 +16,8 @@
 先只读检查本次输入、设备选择和完整生效参数，不启动求解器、不创建输出、不安装组件。已有结果即使同时指定 `--force` 也保留。
 
 ```bash
-./umi-calib run recordings/M4CP/calib_20261022 --dry-run
-./umi-traj recordings/M4CP/tasks/VID_20261022_225713_00_005.insv --dry-run
+./umi-calib run recordings/calibration/IAQEB26097M4CP/20261022/front --dry-run
+./umi-traj recordings/scenes/supermarket_demo/20261022_001/episodes/take_001/IAQEB26097M4CP/VID_20261022_225713_00_005.insv --dry-run
 ```
 
 调整默认配置会影响以后使用默认配置的运行。做实验时，另写一份只包含变更项的覆盖文件：
@@ -34,7 +34,7 @@ notes:
   minimum_full_fraction: 0.8
 YAML
 
-./umi-traj recordings/M4CP/tasks/VID_20261022_225713_00_005.insv --config /tmp/umi-traj-tuning.yaml --dry-run
+./umi-traj recordings/scenes/supermarket_demo/20261022_001/episodes/take_001/IAQEB26097M4CP/VID_20261022_225713_00_005.insv --config /tmp/umi-traj-tuning.yaml --dry-run
 ```
 
 去掉 `--dry-run` 执行处理。优先级为 **项目默认 YAML → 显式 `--config` → 显式 CLI 选项**。例如 `--max-tries 1` 会覆盖文件中的 `retry.max_tries`；不传时保留文件的值。不会隐式搜索当前目录或用户主目录中的配置。默认文件和覆盖文件统一使用 YAML；此前自定义的 TOML 覆盖需改为 YAML，历史结果中的 JSON 快照仍可读取。
@@ -106,7 +106,7 @@ video:
 **标定**：`run` 仍按原规则保护已有输出，需要重算时显式 `--force`。只有验收规则变化时，可以单独重新验收：
 
 ```bash
-./umi-calib recheck recordings/M4CP/calib_20261022/umi_calib_out --config /tmp/umi-calib-checks.yaml
+./umi-calib recheck recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out --config /tmp/umi-calib-checks.yaml
 ```
 
 这里的覆盖文件需自行准备。`recheck` 校验算法设置与原运行一致，仅修改验收项、结论和报告，记录旧结论/规则 ID。若原运行用了算法覆盖，重验时需包含相同的算法覆盖。缺少完整原始指标、旧报告没有配置记录，或执行曾中断/失败时，会保留原报告并要求重跑；不会以舍入后的展示值替代原始指标。`recheck` 不启用设备标定。

@@ -11,7 +11,7 @@ import numpy as np
 from scipy.signal import correlate, correlation_lags
 
 from software.scene.models import Episode, Parameters, read_yaml
-from software.scene.storage import write_yaml
+from software.storage import write_yaml
 
 
 def audio_offset(reference: np.ndarray, other: np.ndarray, p: Parameters) -> tuple[float, dict]:

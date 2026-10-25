@@ -1,0 +1,13 @@
+{
+  "kind": "umi_camera_calibration",
+  "serial": "sample",
+  "version": "e3ef0e5b79eb",
+  "note": "lab X3 camera-IMU, 2026-09-04. umi-traj will not use this unless the recording serial is 'sample' or this serial was adopted.",
+  "assets": {
+    "provenance/device.json": "5a42dc54357ee849c298745f640c79e098e7bb7d8b0ee2ea300e6bf46f0cf1f0",
+    "bundle/bundle.json": "f62b699bf195266acf93d614764ece32433e9b2a766dcb51a2f8275f0c4e0566",
+    "bundle/front_x3_r1440_720.yaml": "4fb8845b93459ae93dc9e943b27a6f8e386af5226c0a32e9745331a87e6c4366",
+    "bundle/kiwi_fuse3s.py": "3dfb5efd392488775936a2d7c245acbad0136f680003b486ad0deac001e0a615",
+    "bundle/calibration_r1440.json": "e3ef0e5b79ebd8f9fecc164b6fa75a68ccb9dca960979d2e5295e0a87c090ae6"
+  }
+}

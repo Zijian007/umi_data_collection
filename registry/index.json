@@ -1,27 +1,21 @@
 {
- "kind": "umi_device_registry",
- "version": 1,
- "default_gripper": "handheld_v1",
- "devices": {
-  "sample": {
-   "serial": "sample",
-   "status": "sample",
-   "note": "lab X3 camera-IMU, 2026-09-04. umi-traj will not use this unless the recording serial is 'sample' or this serial was adopted.",
-   "camera_bundle": "cameras/sample/bundle",
-   "camera_bundle_sha256": "e3ef0e5b79ebd8f9fecc164b6fa75a68ccb9dca960979d2e5295e0a87c090ae6",
-   "gripper": "handheld_v1",
-   "tcp_sha256": "1e17a28aed1c84ba967eded53f7798fa1f233ac0212c9cce808dae03e2b74b5d",
-   "mask_sha256": "1d1232bb462455344b4318fa1803deef39da2c299e965529d23e4568895840b2"
-  },
-  "IAQEB26097M4CP": {
-   "serial": "IAQEB26097M4CP",
-   "status": "active",
-   "note": "umi-calib install from /home/zijianwang/umi_data_collection/recordings/M4CP/calib_20261022/umi_calib_out",
-   "camera_bundle": "cameras/IAQEB26097M4CP/bundle",
-   "camera_bundle_sha256": "839fd277d850fd1b0e7460a49126304d2ed8515e381b5e49f11ac6b9b8cabef2",
-   "gripper": "handheld_v1",
-   "tcp_sha256": "1e17a28aed1c84ba967eded53f7798fa1f233ac0212c9cce808dae03e2b74b5d",
-   "mask_sha256": "1d1232bb462455344b4318fa1803deef39da2c299e965529d23e4568895840b2"
+  "kind": "umi_device_registry",
+  "version": 2,
+  "default_gripper": "handheld_v1",
+  "devices": {
+    "sample": {
+      "serial": "sample",
+      "status": "sample",
+      "note": "lab X3 camera-IMU, 2026-09-04. umi-traj will not use this unless the recording serial is 'sample' or this serial was adopted.",
+      "calibration": "e3ef0e5b79eb",
+      "gripper": "handheld_v1"
+    },
+    "IAQEB26097M4CP": {
+      "serial": "IAQEB26097M4CP",
+      "status": "active",
+      "note": "前镜头实测标定；来源 recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out",
+      "calibration": "839fd277d850",
+      "gripper": "handheld_v1"
+    }
   }
- }
 }

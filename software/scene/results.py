@@ -12,7 +12,7 @@ from scipy.spatial.transform import Rotation, Slerp
 
 from software.scene import engine, fusion
 from software.scene.geometry import camera_to_imu, validate_transform
-from software.scene.storage import write_json
+from software.storage import write_json
 from software.trajectory.algorithms import postprocess
 
 

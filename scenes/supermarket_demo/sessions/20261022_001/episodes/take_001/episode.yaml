@@ -1,0 +1,15 @@
+schema_version: 2
+session: ../../session.yaml
+
+# 左右手由此处指定；序列号和 SHA256 必须与原片一致。
+recordings:
+  left:
+    serial: IAQEB26097M4CP
+    sha256: 26cc208cd9fed14c585f4d7aec68f156cef86cf934c1f6eac2cc29390ba0853d
+    path: ../../../../../../recordings/scenes/supermarket_demo/20261022_001/episodes/take_001/IAQEB26097M4CP/VID_20261022_225713_00_005.insv
+
+# 单手使用自身视频时间原点；双手需要显式确认偏移。
+synchronization:
+  method: manual
+  offsets_s:
+    left: 0.0

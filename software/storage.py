@@ -1,4 +1,4 @@
-"""场景/任务发布：先完成新版本再切换入口；旧版本和失败证据都保留。"""
+"""场景和设备档案共用的原子文件、写入锁与结果版本指针。"""
 from __future__ import annotations
 
 import fcntl
@@ -20,6 +20,7 @@ def write_yaml(path: Path, data: dict) -> None:
     writer = YAML()
     writer.default_flow_style = False
     writer.allow_unicode = True
+    writer.width = 4096
     with atomic_file(path) as temporary, temporary.open('w', encoding='utf-8') as stream:
         writer.dump(data, stream)
 
@@ -38,13 +39,13 @@ def atomic_file(path: Path):
 
 
 @contextmanager
-def locked(directory: Path):
+def locked(directory: Path, name: str = '.scene.lock'):
     directory.mkdir(parents=True, exist_ok=True)
-    with (directory / '.scene.lock').open('a') as stream:
+    with (directory / name).open('a') as stream:
         try:
             fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            raise ValueError(f'已有场景操作正在运行：{directory}') from error
+            raise ValueError(f'已有写入操作正在运行：{directory}') from error
         try:
             yield
         finally:

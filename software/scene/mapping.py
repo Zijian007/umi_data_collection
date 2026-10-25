@@ -21,6 +21,7 @@ def definition(scene: Scene) -> dict:
     f = scene.trajectory.values.fusion
     return dict(name=scene.name, mode=scene.mode, reference_arm=scene.reference_arm,
         mapping={arm: str(path) for arm, path in scene.recordings.items()},
+        devices=scene.devices,
         rear_calibrations={serial: config.file_hash(path) for serial, path in scene.rear_calibrations.items()},
         parameters={key: value for key, value in params.items() if key.startswith(names) or key == 'huber'},
         video=asdict(scene.trajectory.values.video), orb=asdict(scene.trajectory.values.orb),

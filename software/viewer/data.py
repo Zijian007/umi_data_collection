@@ -108,7 +108,7 @@ class RecordingCatalog:
             directory = Path(current)
             children[:] = sorted(name for name in children if name not in {
                 '.git', '.deps', 'node_modules', 'details', 'debug', 'diagnostics', 'work', 'bundle', 'umi_calib_out', '__pycache__',
-                'runs', 'versions',
+                'runs', 'versions', 'archive',
             } and not name.startswith('.'))
             # 任务的 results 是原子发布的版本指针；只展示当前版本，不遍历历史 runs。
             episode = directory / 'results' if 'episode.yaml' in files else directory
@@ -122,7 +122,9 @@ class RecordingCatalog:
                     for path in arms.values():
                         directories[recording_key(path)] = path
                     interval = metadata['common_interval_s']
-                    entries.append(dict(id=key, name=metadata.get('name', directory.name), path=str(episode.relative_to(self.root)),
+                    session = metadata.get('session')
+                    label = '/'.join(filter(None, (metadata.get('scene', {}).get('name'), session, metadata.get('name', directory.name))))
+                    entries.append(dict(id=key, name=label, path=str(episode.relative_to(self.root)),
                         serial='双手场景' if len(arms) == 2 else '场景任务', status='ok', duration=interval[1]-interval[0],
                         rows=metadata.get('rows'), calibration=metadata['scene']['version']))
                 except (ViewerDataError, OSError, ValueError, KeyError):

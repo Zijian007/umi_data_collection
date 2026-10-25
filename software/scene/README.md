@@ -16,8 +16,8 @@
 
 ./umi-scene run episode.yaml
   cli.main() → workflow.run_episode()
-    models.read_episode() / offsets()      显式绑定左右手和时间偏移
-    workflow.load_published()              校验地图版本、资产和引擎
+    models.read_episode() / read_session() / offsets()      显式绑定左右手和时间偏移
+    workflow.load_published()              校验批次固定的地图版本、资产和引擎
     engine.prepare() / localize()          只查询已有地图，不重新建图
     Observations.transformed()             转成固定场景系的视觉位姿
     fusion.fuse()                          每只手的 IMU 图，共享固定场景位姿约束
@@ -30,7 +30,8 @@
 | 文件 | 负责什么 |
 |---|---|
 | `cli.py` | 参数与命令分发，创建人可读清单 |
-| `models.py` | 场景、任务、设备资产、参数与只读校验 |
+| `models.py` | 场景、采集批次、任务、设备资产、参数与只读校验 |
+| `recordings.py` | 按场景、批次和序列号导入原片，保留命名并校验哈希 |
 | `workflow.py` | 执行顺序、版本复用、失败收尾与发布 |
 | `engine.py` | X3 准备、ORB 建图/定位与地图导出边界 |
 | `mapping.py` | 地图选择、米制对齐、场景放置和资产冻结 |
@@ -38,10 +39,17 @@
 | `fusion.py` | 固定场景系中的单手 GTSAM 联合优化 |
 | `synchronization.py` | 音频相关性、音视频延迟换算和时间证据 |
 | `results.py` | 轨迹、帧约束、双手对齐表、报告 |
-| `storage.py` | 原子文件、进程锁和版本指针 |
 | `rear_calibration.py` | 复用现有 A/B/D 和独立 C 验收，生成后镜头测量 |
 
 场景数学与融合参考 KIWI 公开参考实现，具体来源、修改和许可证见 [NOTICE.md](NOTICE.md)。本项目运行时不依赖本机的另一个 `KIWI_software` 仓库；所需数值代码已适配在本模块内。
+
+原子文件、写入锁和版本指针由公共模块 `software/storage.py` 提供，场景与全局设备档案共用。
+
+## 数据组织
+
+`init → build → session → episode → sync → run`。场景和任务使用 schema 2，不保留旧清单读取分支。`registry` 是全局资产库；场景固定建图设备版本，批次固定任务设备版本和地图清单 SHA256。任务的实际序列号必须与 INSV 一致。新默认标定、几何和新发布地图不会改变已有批次。
+
+原片在 `recordings/scenes/<场景>/<批次>/`，结果在 `scenes/<场景>/sessions/<批次>/episodes/<任务>/`。`tests/test_scene_management.py` 验证跨场景交错采集、默认值变化、版本固定和导入冲突。
 
 ## 坐标和时间
 

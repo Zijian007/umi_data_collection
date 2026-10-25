@@ -244,7 +244,7 @@ class ConfigTests(unittest.TestCase):
             calibration_assets.describe(bundle, 'user')
 
     def test_legacy_bundle_is_read_only_and_never_executes_its_script(self):
-        source = registry.CAMERAS / 'sample/bundle'
+        source = Path(registry.sample()['dir'])
         target = self.root / 'legacy'
         shutil.copytree(source, target)
         script = target / 'kiwi_fuse3s.py'

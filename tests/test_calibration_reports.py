@@ -13,14 +13,13 @@ from software.trajectory import calibration_assets as calibration
 
 
 class ResultReportTests(unittest.TestCase):
-    def test_registry_always_checks_camera_and_gripper_hashes(self):
-        sample = registry.load_index()['devices']['sample']
-        for field in ('camera_bundle_sha256', 'tcp_sha256', 'mask_sha256'):
-            with self.subTest(field=field):
-                index = dict(devices={'camera': dict(sample, **{field: '0' * 64})})
-                with patch.object(registry, 'load_index', return_value=index):
-                    with self.assertRaisesRegex(registry.RegistryError, '哈希'):
-                        registry.get('camera')
+    def test_registry_always_checks_version_assets(self):
+        sample = registry.sample()
+        for path in (Path(sample['json']), Path(sample['tcp_json']), Path(sample['mask'])):
+            original = registry.sha256_file
+            with self.subTest(path=path), patch.object(registry, 'sha256_file', side_effect=lambda value: '0'*64 if Path(value) == path else original(value)):
+                with self.assertRaisesRegex(registry.RegistryError, '哈希'):
+                    registry.sample()
 
     def test_terminal_distinguishes_acceptance_failure_from_execution_failure(self):
         output = Path('/results/calibration')
@@ -69,7 +68,7 @@ class ResultReportTests(unittest.TestCase):
                 out.mkdir()
                 target = root / 'registry'
                 target.mkdir()
-                (target / 'index.json').write_text(json.dumps(dict(kind='umi_device_registry', devices={})))
+                (target / 'index.json').write_text(json.dumps(dict(kind='umi_device_registry', version=2, devices={}, default_gripper='handheld_v1')))
                 with patch.multiple(registry, ROOT=target, INDEX=target / 'index.json', CAMERAS=target / 'cameras'):
                     bundle = calibration.make_bundle(calibration.FACTORY_JSON, out / 'bundle')
                     report = dict(kind='umi_calib_report', serial='camera', verdict='PASS', checks=[],
@@ -86,7 +85,7 @@ class ResultReportTests(unittest.TestCase):
                     self.assertEqual(refreshed['activation']['state'], 'active')
                     self.assertFalse((out / 'report.json').exists())
                     self.assertIn('已设为该设备默认标定', (out / 'report.txt').read_text())
-                    self.assertEqual((out / 'report.txt').read_bytes(), (target / 'cameras/camera/report.txt').read_bytes())
+                    self.assertEqual((out / 'report.txt').read_bytes(), (Path(registry.get('camera')['dir']).parent / 'report.txt').read_bytes())
 
     def test_text_report_includes_camera_errors_and_scale_interpretation(self):
         result = dict(status='ok', ate_se3_rmse_mm=5.423, ate_se3_p95_mm=10.695,

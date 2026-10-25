@@ -1,0 +1,9 @@
+{
+  "version": "b29b429c0fcc",
+  "kind": "umi_gripper",
+  "gripper": "handheld_v1",
+  "assets": {
+    "front_hand_mask.png": "1d1232bb462455344b4318fa1803deef39da2c299e965529d23e4568895840b2",
+    "t_tcp_camera.json": "1e17a28aed1c84ba967eded53f7798fa1f233ac0212c9cce808dae03e2b74b5d"
+  }
+}

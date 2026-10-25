@@ -1,0 +1,23 @@
+schema_version: 2
+name: supermarket_demo
+description: 模拟商超：货架取放流程的目录与算法示例；原片来自既有实验录像，并非商超实拍。单相机、同片建图与回放，仅验证组织和处理流程。
+mode: shared_front
+reference_arm: left
+
+# 建图与回放暂时复用同一实验录像，不复制第二份原片。
+mapping:
+  left:
+    serial: IAQEB26097M4CP
+    sha256: 26cc208cd9fed14c585f4d7aec68f156cef86cf934c1f6eac2cc29390ba0853d
+    path: ../../recordings/scenes/supermarket_demo/20261022_001/episodes/take_001/IAQEB26097M4CP/VID_20261022_225713_00_005.insv
+
+# 固定建图时的设备版本；新默认标定不会改写这里。
+devices:
+  IAQEB26097M4CP:
+    calibration: 839fd277d850
+    gripper: handheld_v1
+    gripper_version: b29b429c0fcc
+
+# 留空使用项目默认算法参数。
+trajectory_config:
+parameters:

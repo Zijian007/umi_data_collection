@@ -47,7 +47,7 @@ function renderLibrary() {
   const list = $('recording-list'); list.replaceChildren();
   if (!entries.length) {
     const empty = document.createElement('p'); empty.className = 'empty-list';
-    empty.textContent = filter ? '没有匹配的录像。' : '还没有可查看的轨迹。先运行 umi-traj 抽取轨迹，再刷新此列表。'; list.append(empty); return;
+    empty.textContent = filter ? '没有匹配的录像。' : '还没有可查看的轨迹。先运行 umi-scene run 处理任务，再刷新此列表。'; list.append(empty); return;
   }
   for (const [index, entry] of entries.entries()) {
     const button = document.createElement('button'); button.className = `recording-item${state.data?.id === entry.id ? ' active' : ''}`;

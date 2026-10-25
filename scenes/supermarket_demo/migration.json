@@ -1,0 +1,360 @@
+{
+  "kind": "umi_data_migration",
+  "schema_version": 1,
+  "date": "2026-10-25",
+  "scene": "supermarket_demo",
+  "description": "模拟商超组织示例，原片为既有实验录像；保留所有原有资产内容。旧报告中的绝对路径保留作历史记录。",
+  "original_files": 58,
+  "verified_files": 58,
+  "verified_bytes": 4818534083,
+  "assets": [
+    {
+      "source": "recordings/M4CP/calib_20261022/A/VID_20261022_205544_00_001.insv",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/A/VID_20261022_205544_00_001.insv",
+      "bytes": 988281843,
+      "sha256": "2e5d7eee40d10bdcedfc0566b0b192e4b07d93f5402015ae42f529d620459c25"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/B/VID_20261022_205824_00_002.insv",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/B/VID_20261022_205824_00_002.insv",
+      "bytes": 1156285091,
+      "sha256": "868a4470697483b0b79d90a43ad1826aef703a70c8bb865a9d51afaa9d2869ea"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/C/VID_20261022_210045_00_003.insv",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/C/VID_20261022_210045_00_003.insv",
+      "bytes": 840970996,
+      "sha256": "6cf723a809e88d6bd2474a7f7bc50791156947b386d8582d59d69836eb0d75bd"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/D/VID_20261022_210232_00_004.insv",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/D/VID_20261022_210232_00_004.insv",
+      "bytes": 1324398917,
+      "sha256": "aa1902a9322b9cdf86c636039eddc7a3078c7e88a957eb551d51cb47be2a4210"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/bundle/bundle.json",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/bundle/bundle.json",
+      "bytes": 1054,
+      "sha256": "bdf3ddf7bde89e086c172d386df0f45f7cb22324362a04e091c374adf640f3d4"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/bundle/calibration_r1440.json",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/bundle/calibration_r1440.json",
+      "bytes": 11836,
+      "sha256": "839fd277d850fd1b0e7460a49126304d2ed8515e381b5e49f11ac6b9b8cabef2"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/bundle/front_x3_r1440_720.yaml",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/bundle/front_x3_r1440_720.yaml",
+      "bytes": 1520,
+      "sha256": "a9313470985853f93b397ed1d40a65eb79cfbbe9e78bac7c52ca4c5ec7e6d152"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/bundle/kiwi_fuse3s.py",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/bundle/kiwi_fuse3s.py",
+      "bytes": 42152,
+      "sha256": "8bbde91fe9d48c3950dc99761ed72b8d4b90f1751d8a1678a22ea9c6230145c3"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/diagnostics/D_physical_check/imu_calib_physical_check.json",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/diagnostics/D_physical_check/imu_calib_physical_check.json",
+      "bytes": 148027,
+      "sha256": "cb12fe94e953f96bcebe09cd6bdd1059ad26918e9b6c5ef5257b42c036a7f875"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/diagnostics/aprilgrid.json",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/diagnostics/aprilgrid.json",
+      "bytes": 71,
+      "sha256": "a4e732a4070f01a1cd5b0d24f04cee318d02cd0012ce16b2295884df9a99c79c"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/diagnostics/basalt_cam/calibration.json",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/diagnostics/basalt_cam/calibration.json",
+      "bytes": 11600,
+      "sha256": "20fe201f49f165745695080e261b5e210dcaa1d6f5994b6c433c55b110ed6d01"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/diagnostics/basalt_cam/vingette_0.png",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/diagnostics/basalt_cam/vingette_0.png",
+      "bytes": 2241516,
+      "sha256": "1fbcc2114310ff8f9f06b3fb4419cb92a2ac4718004a66d5a58c671d167f42eb"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/diagnostics/logs/A_to_bag.log",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/diagnostics/logs/A_to_bag.log",
+      "bytes": 588,
+      "sha256": "596e829204aa4791ade428238fe33adb50fa9ff8736a8ba4adf695f058089e41"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/diagnostics/logs/B_to_bag.log",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/diagnostics/logs/B_to_bag.log",
+      "bytes": 588,
+      "sha256": "a54b466fce00b334072f1af2d6c4300496fbdb8d9d380131cd2a6936f77c21af"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/diagnostics/logs/C_umi_traj_factory.log",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/diagnostics/logs/C_umi_traj_factory.log",
+      "bytes": 1742,
+      "sha256": "194ad56b590e75de2e4c442058df689052abe5dc82720fd52e15309ebd5fe477"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/diagnostics/logs/C_umi_traj_new.log",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/diagnostics/logs/C_umi_traj_new.log",
+      "bytes": 1758,
+      "sha256": "2c32697532fde6bef8ed648d153f93924d6aafa36beb555466a36053025f27b5"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/diagnostics/logs/D_physical_check.log",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/diagnostics/logs/D_physical_check.log",
+      "bytes": 739,
+      "sha256": "6405e843fb47fe1d470eb62702012fedfa1e422f4081907d56c5e6da4d64b828"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/diagnostics/logs/calibrate_cam.log",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/diagnostics/logs/calibrate_cam.log",
+      "bytes": 8732,
+      "sha256": "e913adf2c1cd8f1c084b58993cc49e3a96808998c9dc8a6308d58f7b49c4f24c"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/diagnostics/logs/calibrate_imu.log",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/diagnostics/logs/calibrate_imu.log",
+      "bytes": 33270,
+      "sha256": "bf78be009309a5c30c68949c7300dc8427246e5f2287201c4e64ed1c2a6ed67b"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/diagnostics/report.json",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/diagnostics/report.json",
+      "bytes": 7736,
+      "sha256": "3ffdb0cdfa43dae8b7f6561951585c0cfcab6efd60998005e81050dac1670f77"
+    },
+    {
+      "source": "recordings/M4CP/calib_20261022/umi_calib_out/report.txt",
+      "target": "recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out/report.txt",
+      "bytes": 4268,
+      "sha256": "144f11ea4b2ba57f33729606d55b37c76ec113e8fb7ebd2d052b60540c6419cb"
+    },
+    {
+      "source": "recordings/M4CP/tasks/VID_20261022_225713_00_005.insv",
+      "target": "recordings/scenes/supermarket_demo/20261022_001/episodes/take_001/IAQEB26097M4CP/VID_20261022_225713_00_005.insv",
+      "bytes": 357626195,
+      "sha256": "26cc208cd9fed14c585f4d7aec68f156cef86cf934c1f6eac2cc29390ba0853d"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/debug/dataset/mav0/cam0/data.csv",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/debug/dataset/mav0/cam0/data.csv",
+      "bytes": 28633,
+      "sha256": "602cff5530a6cd98cca5f3d61e21d6539927e4e11442735494ff3b849ba2da1d"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/debug/dataset/mav0/imu0/data.csv",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/debug/dataset/mav0/imu0/data.csv",
+      "bytes": 2571851,
+      "sha256": "10ce89f1348bcbb55a0d128422523072786f74f84720cd13c56a17edfdce318a"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/debug/logs/front_loc_frames.csv",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/debug/logs/front_loc_frames.csv",
+      "bytes": 116985,
+      "sha256": "98fa8932629753b4fbe4333013408da16ba57e8c6fd463d4e59562f14834eee1"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/debug/logs/front_map_log.txt",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/debug/logs/front_map_log.txt",
+      "bytes": 3713,
+      "sha256": "69392365df8fa4f136f1afd6b52e0fb56ecbd17e6fd4eec2284a3fb8f271e360"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/debug/logs/fuse_info.json",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/debug/logs/fuse_info.json",
+      "bytes": 1919,
+      "sha256": "cf878707b4276e742da37088878297dbb8a3c00e6eb1957982430e9a58df7c4b"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/debug/logs/run.txt",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/debug/logs/run.txt",
+      "bytes": 676,
+      "sha256": "034f629a2e1245fffc39dda2413542a3a31491602d34435223d3d45d5d84df20"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/debug/reconstruction/try_1/front/front.mp4",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/debug/reconstruction/try_1/front/front.mp4",
+      "bytes": 63876026,
+      "sha256": "594c609d46bb2cb0b79d6d1bf9fbafdd1065948026eb54ba3df8b734f931aa61"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/debug/reconstruction/try_1/front/front_manifest.json",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/debug/reconstruction/try_1/front/front_manifest.json",
+      "bytes": 369,
+      "sha256": "30766c7950f0d3b64df3e8365629751803e6e772e01b79530d767bf9b76b6e99"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/debug/reconstruction/try_1/front/loc_m0/frames.csv",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/debug/reconstruction/try_1/front/loc_m0/frames.csv",
+      "bytes": 112816,
+      "sha256": "fd6033f13436069ef0a284722690a382dd95db6cc1e004ff21a31b6afb9f8500"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/debug/reconstruction/try_1/front/loc_m0/log.txt",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/debug/reconstruction/try_1/front/loc_m0/log.txt",
+      "bytes": 1930,
+      "sha256": "3625b863dfb391a67427d3c29f6d1115ca2c30daa6216368b10dfe77418ea12a"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/debug/reconstruction/try_1/front/map/frames.csv",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/debug/reconstruction/try_1/front/map/frames.csv",
+      "bytes": 108539,
+      "sha256": "2251bfe641ac04d8783eee0693fe62d2626990b0b91405899cae9ae0076158bc"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/debug/reconstruction/try_1/front/map/map.osa",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/debug/reconstruction/try_1/front/map/map.osa",
+      "bytes": 16890827,
+      "sha256": "82994409ba381b3b6c3522e969da0a4591b284ca26e7338b4f4875026ec30093"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/debug/reconstruction/try_1/fuse/state.csv",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/debug/reconstruction/try_1/fuse/state.csv",
+      "bytes": 287916,
+      "sha256": "17417f7da897b4836a55d460bc301493543f42cd6343c5c6b159236f8f96b1db"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/details/frames.csv",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/details/frames.csv",
+      "bytes": 26198,
+      "sha256": "4f7ae8bb26a0cb4169818868f213b23204962b769430ad453ca4b5c8ec923a4c"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/details/run_settings.json",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/details/run_settings.json",
+      "bytes": 6651,
+      "sha256": "7ffd383adf4073b8ac8db3936b1e7c3dd1ddd393ab9432a0bb0605fe48d2cece"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/details/summary.json",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/details/summary.json",
+      "bytes": 3375,
+      "sha256": "42be1273e340a6dc4b69753b4eed9b559e0ac4243397a3c82a6b3cec591ecf9f"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/details/traj_camera.txt",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/details/traj_camera.txt",
+      "bytes": 91873,
+      "sha256": "615ca69368588c873a94e526c2a5a30c68885c1ef5242ddcdf5f515c37ec4a6c"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/details/traj_imu.txt",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/details/traj_imu.txt",
+      "bytes": 90813,
+      "sha256": "6ed7c9ecfbb99bfb3bbbe4ca292fa6878bf2c0bf467989204f0325cdffc9013f"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/front.mp4",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/front.mp4",
+      "bytes": 63876026,
+      "sha256": "594c609d46bb2cb0b79d6d1bf9fbafdd1065948026eb54ba3df8b734f931aa61"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/report.txt",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/report.txt",
+      "bytes": 844,
+      "sha256": "23d1e575949e9507ae20f032e8a3a89cfc9fe6b037e3862082fa5fe608ed2092"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/traj_tcp.txt",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/traj_tcp.txt",
+      "bytes": 91947,
+      "sha256": "51818b0d052f199da2ecd04b4caf11b3e8864eabaeba7c004960532b3f162b05"
+    },
+    {
+      "source": "recordings/M4CP/tasks/umi_traj_out/VID_20261022_225713_00_005/trajectory.png",
+      "target": "scenes/supermarket_demo/archive/independent/VID_20261022_225713_00_005/trajectory.png",
+      "bytes": 137295,
+      "sha256": "c15f6e32bc05ddf07d7e8a59bb8722d2d6e474925984b7456f4ea89a21ba8642"
+    },
+    {
+      "source": "registry/cameras/IAQEB26097M4CP/bundle/bundle.json",
+      "target": "registry/cameras/IAQEB26097M4CP/calibrations/839fd277d850/bundle/bundle.json",
+      "bytes": 1054,
+      "sha256": "bdf3ddf7bde89e086c172d386df0f45f7cb22324362a04e091c374adf640f3d4"
+    },
+    {
+      "source": "registry/cameras/IAQEB26097M4CP/bundle/calibration_r1440.json",
+      "target": "registry/cameras/IAQEB26097M4CP/calibrations/839fd277d850/bundle/calibration_r1440.json",
+      "bytes": 11836,
+      "sha256": "839fd277d850fd1b0e7460a49126304d2ed8515e381b5e49f11ac6b9b8cabef2"
+    },
+    {
+      "source": "registry/cameras/IAQEB26097M4CP/bundle/front_x3_r1440_720.yaml",
+      "target": "registry/cameras/IAQEB26097M4CP/calibrations/839fd277d850/bundle/front_x3_r1440_720.yaml",
+      "bytes": 1520,
+      "sha256": "a9313470985853f93b397ed1d40a65eb79cfbbe9e78bac7c52ca4c5ec7e6d152"
+    },
+    {
+      "source": "registry/cameras/IAQEB26097M4CP/bundle/kiwi_fuse3s.py",
+      "target": "registry/cameras/IAQEB26097M4CP/calibrations/839fd277d850/bundle/kiwi_fuse3s.py",
+      "bytes": 42152,
+      "sha256": "8bbde91fe9d48c3950dc99761ed72b8d4b90f1751d8a1678a22ea9c6230145c3"
+    },
+    {
+      "source": "registry/cameras/IAQEB26097M4CP/device.json",
+      "target": "registry/cameras/IAQEB26097M4CP/calibrations/839fd277d850/provenance/device.json",
+      "bytes": 197,
+      "sha256": "54b2b6fd449300eb162778a6b136776ecbf53bdbe9f3ecdeacf9834879c6b014"
+    },
+    {
+      "source": "registry/cameras/IAQEB26097M4CP/report.txt",
+      "target": "registry/cameras/IAQEB26097M4CP/calibrations/839fd277d850/report.txt",
+      "bytes": 3169,
+      "sha256": "3268ffbfb0c6b27bbb72c08c1749516e2bc1d1a9c4b14f18e9883ca4f4d05e39"
+    },
+    {
+      "source": "registry/cameras/sample/bundle/bundle.json",
+      "target": "registry/cameras/sample/calibrations/e3ef0e5b79eb/bundle/bundle.json",
+      "bytes": 936,
+      "sha256": "f62b699bf195266acf93d614764ece32433e9b2a766dcb51a2f8275f0c4e0566"
+    },
+    {
+      "source": "registry/cameras/sample/bundle/calibration_r1440.json",
+      "target": "registry/cameras/sample/calibrations/e3ef0e5b79eb/bundle/calibration_r1440.json",
+      "bytes": 11816,
+      "sha256": "e3ef0e5b79ebd8f9fecc164b6fa75a68ccb9dca960979d2e5295e0a87c090ae6"
+    },
+    {
+      "source": "registry/cameras/sample/bundle/front_x3_r1440_720.yaml",
+      "target": "registry/cameras/sample/calibrations/e3ef0e5b79eb/bundle/front_x3_r1440_720.yaml",
+      "bytes": 1519,
+      "sha256": "4fb8845b93459ae93dc9e943b27a6f8e386af5226c0a32e9745331a87e6c4366"
+    },
+    {
+      "source": "registry/cameras/sample/bundle/kiwi_fuse3s.py",
+      "target": "registry/cameras/sample/calibrations/e3ef0e5b79eb/bundle/kiwi_fuse3s.py",
+      "bytes": 42147,
+      "sha256": "3dfb5efd392488775936a2d7c245acbad0136f680003b486ad0deac001e0a615"
+    },
+    {
+      "source": "registry/cameras/sample/device.json",
+      "target": "registry/cameras/sample/calibrations/e3ef0e5b79eb/provenance/device.json",
+      "bytes": 139,
+      "sha256": "5a42dc54357ee849c298745f640c79e098e7bb7d8b0ee2ea300e6bf46f0cf1f0"
+    },
+    {
+      "source": "registry/grippers/handheld_v1/front_hand_mask.png",
+      "target": "registry/grippers/handheld_v1/versions/b29b429c0fcc/front_hand_mask.png",
+      "bytes": 3387,
+      "sha256": "1d1232bb462455344b4318fa1803deef39da2c299e965529d23e4568895840b2"
+    },
+    {
+      "source": "registry/grippers/handheld_v1/t_tcp_camera.json",
+      "target": "registry/grippers/handheld_v1/versions/b29b429c0fcc/t_tcp_camera.json",
+      "bytes": 5557,
+      "sha256": "1e17a28aed1c84ba967eded53f7798fa1f233ac0212c9cce808dae03e2b74b5d"
+    },
+    {
+      "source": "registry/index.json",
+      "target": "scenes/supermarket_demo/archive/migration/registry-index-v1.json",
+      "bytes": 1193,
+      "sha256": "76bd979706554be2c97a5cad3e3b97d13acb5e1aba7f2617c15a6a7bcd7a3c75"
+    }
+  ]
+}

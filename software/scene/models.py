@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from ruamel.yaml import YAML
@@ -44,17 +44,25 @@ def validate_name(value: str) -> str:
     return value
 
 
-def read_recordings(base: Path, data: dict) -> dict[str, Path]:
+def read_recordings(base: Path, data: dict) -> tuple[dict[str, Path], dict[str, str]]:
     require_keys(data, set(ARMS), set(), 'recordings')
     if not data:
         raise ValueError('至少需要一只手的录像')
-    videos = {arm: resolve_path(base, value) for arm, value in data.items()}
-    if len(set(videos.values())) != len(videos):
-        raise ValueError('左右手不能引用同一个录像文件')
-    for path in videos.values():
+    videos, serials = {}, {}
+    for arm, item in data.items():
+        require_keys(item, {'serial', 'path', 'sha256'}, {'serial', 'path', 'sha256'}, '录像引用')
+        serials[arm] = registry.validate_id(item['serial'])
+        path = resolve_path(base, item['path'])
         if not path.is_file() or path.suffix.lower() != '.insv':
             raise ValueError(f'需要原始 .insv 文件：{path}')
-    return videos
+        if not isinstance(item['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', item['sha256']):
+            raise ValueError('录像引用需要完整 SHA256')
+        if registry.sha256_file(path) != item['sha256']:
+            raise ValueError(f'录像已变化：SHA256 与导入记录不一致：{path}')
+        videos[arm] = path
+    if len(set(videos.values())) != len(videos) or len(set(serials.values())) != len(serials):
+        raise ValueError('左右手必须使用不同设备的不同录像')
+    return videos, serials
 
 
 @dataclass(frozen=True)
@@ -125,6 +133,8 @@ class Scene:
     rear_calibrations: dict[str, Path]
     trajectory: config.Configuration
     parameters: Parameters
+    devices: dict[str, dict] = field(default_factory=dict)
+    recording_serials: dict[str, str] = field(default_factory=dict)
 
     @property
     def root(self) -> Path:
@@ -134,39 +144,92 @@ class Scene:
         return 'shared_front' if self.mode == 'shared_front' else ('shared_rear' if lens == 'rear' else f'{arm}_front')
 
 
+def read_devices(data: dict) -> dict[str, dict]:
+    if not isinstance(data, dict) or not data:
+        raise ValueError('devices 需要按完整序列号固定设备版本')
+    for serial, pin in data.items():
+        registry.validate_id(serial)
+        require_keys(pin, {'calibration', 'gripper', 'gripper_version', 'rear_calibration'},
+                     {'calibration', 'gripper', 'gripper_version'}, '设备版本')
+        for value in pin.values():
+            registry.validate_id(value)
+    return data
+
+
+def rear_files(devices: dict[str, dict]) -> dict[str, Path]:
+    return {serial: registry.rear_path(serial, pin['rear_calibration'])
+            for serial, pin in devices.items() if 'rear_calibration' in pin}
+
+
 def read_scene(path: Path) -> Scene:
     path = path.expanduser().resolve()
     if path.is_dir():
         path /= 'scene.yaml'
     data = read_yaml(path)
-    require_keys(data, {'schema_version', 'name', 'mode', 'reference_arm', 'mapping', 'rear_calibrations',
-                        'trajectory_config', 'parameters'},
-                 {'schema_version', 'name', 'mode', 'reference_arm', 'mapping'}, 'scene')
-    if type(data['schema_version']) is not int or data['schema_version'] != 1:
-        raise ValueError('不支持的场景清单版本')
+    require_keys(data, {'schema_version', 'name', 'mode', 'reference_arm', 'mapping', 'devices',
+                        'trajectory_config', 'parameters', 'description'},
+                 {'schema_version', 'name', 'mode', 'reference_arm', 'mapping', 'devices'}, 'scene')
+    if type(data['schema_version']) is not int or data['schema_version'] != 2:
+        raise ValueError('场景清单需要 schema_version: 2')
     if data['mode'] not in ('shared_front', 'dual'):
         raise ValueError('场景 mode 必须为 shared_front 或 dual')
-    videos = read_recordings(path.parent, data['mapping'])
+    videos, serials = read_recordings(path.parent, data['mapping'])
     if data['mode'] == 'dual' and set(videos) != set(ARMS):
         raise ValueError('dual 场景需要左右手两段建图录像；单相机验证可使用 shared_front')
     if not isinstance(data['reference_arm'], str) or data['reference_arm'] not in videos:
         raise ValueError('reference_arm 必须指向一段建图录像')
-    rear = data.get('rear_calibrations', {})
-    if not isinstance(rear, dict) or any(not isinstance(serial, str) for serial in rear):
-        raise ValueError('rear_calibrations 必须按完整相机序列号配置')
+    devices = read_devices(data['devices'])
+    if set(serials.values()) - devices.keys():
+        raise ValueError('建图录像设备未登记到场景 devices')
     optional = lambda name: resolve_path(path.parent, data[name]) if data.get(name) else None
     trajectory = config.load('trajectory', optional('trajectory_config'))
     return Scene(path, validate_name(data['name']), data['mode'], data['reference_arm'], videos,
-                 {serial: resolve_path(path.parent, value) for serial, value in rear.items()},
-                 trajectory, load_parameters(optional('parameters')))
+                 rear_files(devices), trajectory, load_parameters(optional('parameters')), devices, serials)
+
+
+@dataclass(frozen=True)
+class Session:
+    path: Path
+    scene: Scene
+    map_version: str
+    map_manifest_sha256: str
+    devices: dict[str, dict]
+
+    @property
+    def name(self) -> str:
+        return self.path.parent.name
+
+
+def read_session(path: Path) -> Session:
+    path = path.expanduser().resolve()
+    if path.is_dir():
+        path /= 'session.yaml'
+    data = read_yaml(path)
+    require_keys(data, {'schema_version', 'scene', 'map', 'devices', 'description'},
+                 {'schema_version', 'scene', 'map', 'devices'}, 'session')
+    if type(data['schema_version']) is not int or data['schema_version'] != 1:
+        raise ValueError('采集批次需要 schema_version: 1')
+    scene = read_scene(resolve_path(path.parent, data['scene']))
+    if path.parent.parent != scene.root / 'sessions':
+        raise ValueError('采集批次必须位于 scenes/<场景>/sessions/<批次>/')
+    require_keys(data['map'], {'version', 'manifest_sha256'}, {'version', 'manifest_sha256'}, '批次地图')
+    registry.validate_id(data['map']['version'])
+    if not isinstance(data['map']['manifest_sha256'], str) or not re.fullmatch('[0-9a-f]{64}', data['map']['manifest_sha256']):
+        raise ValueError('批次地图需要完整 SHA256')
+    return Session(path, scene, data['map']['version'], data['map']['manifest_sha256'], read_devices(data['devices']))
 
 
 @dataclass(frozen=True)
 class Episode:
     path: Path
-    scene: Scene
+    session: Session
     recordings: dict[str, Path]
+    serials: dict[str, str]
     synchronization: dict
+
+    @property
+    def scene(self) -> Scene:
+        return self.session.scene
 
     @property
     def output(self) -> Path:
@@ -202,12 +265,17 @@ def read_episode(path: Path) -> Episode:
     if path.is_dir():
         path /= 'episode.yaml'
     data = read_yaml(path)
-    require_keys(data, {'schema_version', 'scene', 'recordings', 'synchronization'},
-                 {'schema_version', 'scene', 'recordings', 'synchronization'}, 'episode')
-    if type(data['schema_version']) is not int or data['schema_version'] != 1:
-        raise ValueError('不支持的任务清单版本')
-    scene = read_scene(resolve_path(path.parent, data['scene']))
-    return Episode(path, scene, read_recordings(path.parent, data['recordings']), data['synchronization'])
+    require_keys(data, {'schema_version', 'session', 'recordings', 'synchronization'},
+                 {'schema_version', 'session', 'recordings', 'synchronization'}, 'episode')
+    if type(data['schema_version']) is not int or data['schema_version'] != 2:
+        raise ValueError('任务清单需要 schema_version: 2')
+    session = read_session(resolve_path(path.parent, data['session']))
+    if path.parent.parent != session.path.parent / 'episodes':
+        raise ValueError('任务必须位于采集批次的 episodes/<任务>/')
+    videos, serials = read_recordings(path.parent, data['recordings'])
+    if set(serials.values()) - session.devices.keys():
+        raise ValueError('任务录像设备未登记到本采集批次')
+    return Episode(path, session, videos, serials, data['synchronization'])
 
 
 @dataclass(frozen=True)
@@ -224,10 +292,14 @@ class Camera:
 
 def select_camera(video: Path, scene: Scene) -> Camera:
     # 场景路径不接受工程样例/跨设备覆盖；身份始终由原始录像决定。
-    record = registry.get(registry.read_insv_serial(video))
+    serial = registry.read_insv_serial(video)
+    if serial not in scene.devices:
+        raise ValueError(f'相机 {serial} 未登记到场景/采集批次的设备清单')
+    pin = scene.devices[serial]
+    record = registry.get(serial, **{key: pin[key] for key in ('calibration', 'gripper', 'gripper_version')})
     if not re.fullmatch(r'[A-Za-z0-9_-]+', record['serial']):
         raise ValueError('相机序列号包含非法路径字符')
-    if record['status'] != 'active':
+    if record['status'] != 'active' or record.get('calibration_owner', serial) != serial:
         raise ValueError('共享场景需要已启用的实测相机标定，不能使用 sample')
     assets = selection.CalibrationAssets(Path(record['json']), Path(record['tcp_json']), Path(record['mask']))
     selected = selection.SelectedCalibration(assets, Path(record['dir']), record['id'], record['serial'],
@@ -237,7 +309,7 @@ def select_camera(video: Path, scene: Scene) -> Camera:
     if scene.mode == 'dual':
         rear = scene.rear_calibrations.get(record['serial'])
         if rear is None:
-            raise ValueError(f"相机 {record['serial']} 缺少后镜头实测标定；在 rear_calibrations 中指定 rear_calibration.json，不能使用 rear_sample.json")
+            raise ValueError(f"相机 {record['serial']} 缺少后镜头实测标定；先安装后镜头标定，再在设备清单指定 rear_calibration 版本")
         metadata = json.loads(rear.read_text())
         if not isinstance(metadata, dict):
             raise ValueError(f'{rear} 的后镜头测量必须为 JSON 对象')

@@ -33,9 +33,31 @@ def install_bundle(output: Path, force: bool, camera_serial: str | None = None, 
         runtime.console.write(str(error), state="失败")
         return 2
     reports.write_report(output, report)
-    shutil.copyfile(output / "report.txt", Path(device["dir"]).parent / "report.txt")
+    archived_report = Path(device["dir"]).parent / "report.txt"
+    if not archived_report.exists():
+        shutil.copyfile(output / "report.txt", archived_report)
     runtime.console.write(f"已启用标定：相机 {device['serial']}；标定 {device['id']}；"
                           f"夹爪 {device['gripper']}；目录：{device['dir']}", state="完成")
+    return 0
+
+
+def install_rear(measurement: Path) -> int:
+    try:
+        result = registry.register_rear(measurement)
+    except (OSError, ValueError, KeyError, registry.RegistryError) as error:
+        runtime.console.write(str(error), state="失败")
+        return 2
+    runtime.console.write(f"已登记后镜头标定：相机 {result['serial']}；版本 {result['version']}", state="完成")
+    return 0
+
+
+def install_gripper(gripper_id: str, directory: Path) -> int:
+    try:
+        result = registry.register_gripper(gripper_id, directory)
+    except (OSError, ValueError, KeyError, registry.RegistryError) as error:
+        runtime.console.write(str(error), state="失败")
+        return 2
+    runtime.console.write(f"已登记夹爪几何：{gripper_id}；版本 {result['version']}", state="完成")
     return 0
 
 
