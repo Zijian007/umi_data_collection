@@ -57,7 +57,7 @@ def read_frames(path: Path, times: list[float]) -> tuple[list[dict], list[str]]:
                 index = int(row['row'])
                 if index < 0 or index >= len(times) or index in seen:
                     raise ValueError('row')
-                time = float(row['t_video_s'])
+                time = float(row.get('t_scene_s') or row['t_video_s'])
                 if not math.isfinite(time) or abs(time - times[index]) > 1e-4:
                     raise ValueError('time')
                 constraint = row['constraint']
@@ -108,7 +108,26 @@ class RecordingCatalog:
             directory = Path(current)
             children[:] = sorted(name for name in children if name not in {
                 '.git', '.deps', 'node_modules', 'details', 'debug', 'diagnostics', 'work', 'bundle', 'umi_calib_out', '__pycache__',
+                'runs', 'versions',
             } and not name.startswith('.'))
+            # 任务的 results 是原子发布的版本指针；只展示当前版本，不遍历历史 runs。
+            episode = directory / 'results' if 'episode.yaml' in files else directory
+            if (episode / 'episode.json').is_file():
+                from software.viewer.episodes import read_episode, recording_key
+                children[:] = []
+                try:
+                    metadata, arms = read_episode(episode, self.contains)
+                    key = recording_key(episode)
+                    directories[key] = episode.resolve()
+                    for path in arms.values():
+                        directories[recording_key(path)] = path
+                    interval = metadata['common_interval_s']
+                    entries.append(dict(id=key, name=metadata.get('name', directory.name), path=str(episode.relative_to(self.root)),
+                        serial='双手场景' if len(arms) == 2 else '场景任务', status='ok', duration=interval[1]-interval[0],
+                        rows=metadata.get('rows'), calibration=metadata['scene']['version']))
+                except (ViewerDataError, OSError, ValueError, KeyError):
+                    continue
+                continue
             if 'traj_tcp.txt' not in files:
                 continue
             children[:] = []
@@ -137,6 +156,10 @@ class RecordingCatalog:
 
     def video_path(self, key: str) -> Path | None:
         directory = self.directory(key)
+        if (directory / 'episode.json').is_file():
+            from software.viewer.episodes import read_episode
+            _, arms = read_episode(directory, self.contains)
+            directory = arms.get('left', next(iter(arms.values())))
         try:
             summary = self.summary(directory)
         except (OSError, ValueError, TypeError):
@@ -144,8 +167,20 @@ class RecordingCatalog:
         path = front_video_path(directory, summary)
         return path if path is not None and self.contains(path) else None
 
+    def map_data(self, key: str) -> dict:
+        from software.viewer import maps
+        directory = self.directory(key)
+        if (directory / 'episode.json').is_file():
+            from software.viewer.episodes import read_episode
+            _, arms = read_episode(directory, self.contains)
+            directory = arms.get('left', next(iter(arms.values())))
+        return maps.load(directory, self.summary(directory))
+
     def load(self, key: str) -> dict:
         directory = self.directory(key)
+        if (directory / 'episode.json').is_file():
+            from software.viewer.episodes import load_episode
+            return load_episode(self, key, directory)
         summary = self.summary(directory)
         tcp_path = directory / 'traj_tcp.txt'
         if not self.contains(tcp_path):
@@ -172,8 +207,15 @@ class RecordingCatalog:
             except (OSError, ViewerDataError) as error:
                 notes.append(f'{name} 轨迹未加载：{error}')
         video = self.video_path(key)
+        from software.viewer.media import cached_preview, video_version
+        version = video_version(video) if video else None
+        preview = cached_preview(video) if video else None
         return dict(id=key, name=directory.name, path=str(directory), summary=summary, times=times,
                     tracks=tracks, frames=frames, notes=notes + list(summary.get('notes') or []),
-                    video_url=f'/api/recordings/{key}/video' if video else None,
+                    video_url=f'/api/recordings/{key}/video?v={version}' if video else None,
+                    poster_url=f'/api/recordings/{key}/frame?t=0&v={version}' if video else None,
+                    preview_url=f'/api/recordings/{key}/preview' if video else None,
+                    preview_video_url=f'/api/recordings/{key}/preview/video?v={preview.stem}' if preview else None,
                     frame_url=f'/api/recordings/{key}/frame' if video else None,
+                    video_time_offset_s=summary.get('video_time_offset_s', times[0]),
                     video_note='前镜头裁切视频 · 与轨迹使用同一视频时钟' if video else '未保留前镜头视频，仍可独立回放三维轨迹。')

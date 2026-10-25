@@ -77,7 +77,8 @@ class ResultLayoutTests(unittest.TestCase):
         old = self.root / 'diagnostics'
         old.mkdir()
         for name in (*results.AUXILIARY_RESULTS, 'logs', 'work'):
-            shutil.move(str(self.root / name), old / name)
+            if (self.root / name).exists():
+                shutil.move(str(self.root / name), old / name)
         (old / 'extra.bin').write_bytes(b'unique legacy evidence')
         results.finalize_result(self.root, summary)
         self.assertFalse(old.exists())

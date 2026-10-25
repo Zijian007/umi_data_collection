@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from software.viewer.data import RecordingCatalog, ViewerDataError
-from software.viewer.media import decode_frame
+from software.viewer.media import decode_frame, preview_file, preview_status, video_version
 
 STATIC = Path(__file__).resolve().parent / 'static'
 DEFAULT_ROOT = Path(__file__).resolve().parents[2] / 'recordings'
@@ -42,9 +42,11 @@ def make_handler(catalog: RecordingCatalog):
         def send_content_headers(self, status, content_type, length, extra=None):
             self.send_response(status)
             self.send_header('Content-Type', content_type)
-            self.send_header('Content-Length', str(length))
+            if status != 304:
+                self.send_header('Content-Length', str(length))
             self.send_header('X-Content-Type-Options', 'nosniff')
-            self.send_header('Cache-Control', 'no-cache')
+            if 'Cache-Control' not in (extra or {}):
+                self.send_header('Cache-Control', 'no-cache')
             for key, value in (extra or {}).items():
                 self.send_header(key, str(value))
             self.end_headers()
@@ -55,24 +57,29 @@ def make_handler(catalog: RecordingCatalog):
             if self.command != 'HEAD':
                 self.wfile.write(content)
 
-        def file(self, path, video=False):
+        def file(self, path, video=False, immutable=False):
             with path.open('rb') as source:
                 stat = os.fstat(source.fileno())
                 size, start, end, status = stat.st_size, 0, stat.st_size - 1, 200
                 extra = {}
+                content_type = mimetypes.guess_type(path.name)[0] or 'application/octet-stream'
                 if video:
                     etag = f'"{stat.st_mtime_ns:x}-{size:x}"'
                     extra.update({'Accept-Ranges': 'bytes', 'ETag': etag})
+                    if immutable:
+                        extra['Cache-Control'] = 'private, max-age=86400, immutable'
                     requested = self.headers.get('Range')
+                    if not requested and self.headers.get('If-None-Match') == etag:
+                        self.send_content_headers(304, content_type, 0, extra)
+                        return
                     if requested and self.headers.get('If-Range', etag) == etag:
                         try:
                             start, end = byte_range(requested, size)
                         except ValueError:
-                            self.send_content_headers(416, 'video/mp4', 0, {'Content-Range': f'bytes */{size}'})
+                            self.send_content_headers(416, content_type, 0, {'Content-Range': f'bytes */{size}'})
                             return
                         status = 206
                         extra['Content-Range'] = f'bytes {start}-{end}/{size}'
-                content_type = 'video/mp4' if video else mimetypes.guess_type(path.name)[0] or 'application/octet-stream'
                 if path.suffix == '.mjs':
                     content_type = 'text/javascript'
                 self.send_content_headers(status, content_type, max(0, end - start + 1), extra)
@@ -95,17 +102,31 @@ def make_handler(catalog: RecordingCatalog):
                 route = unquote(urlsplit(self.path).path)
                 if route == '/api/recordings':
                     self.json(catalog.scan())
-                elif match := re.fullmatch(r'/api/recordings/([0-9a-f]{20})(/video|/frame)?', route):
+                elif match := re.fullmatch(r'/api/recordings/([0-9a-f]{20})(/video|/frame|/map|/preview|/preview/video)?', route):
                     key, media = match.groups()
-                    if media:
+                    if media == '/map':
+                        self.json(catalog.map_data(key))
+                    elif media:
                         path = catalog.video_path(key)
                         if path is None:
                             self.json({'error': '未找到前镜头视频'}, 404)
+                        elif media == '/preview':
+                            status = preview_status(path)
+                            if status['status'] == 'ready':
+                                status['url'] = f'/api/recordings/{key}/preview/video?v={status["version"]}'
+                            self.json(status)
+                        elif media == '/preview/video':
+                            query = parse_qs(urlsplit(self.path).query)
+                            self.file(preview_file(path, query.get('v', [''])[0]), video=True, immutable=True)
                         elif media == '/frame':
                             query = parse_qs(urlsplit(self.path).query)
                             seconds = float(query.get('t', ['0'])[0])
+                            version = query.get('v', [None])[0]
+                            if version is not None and version != video_version(path):
+                                raise ViewerDataError('原视频已更新，请重新选择录像。')
                             image = decode_frame(path, seconds)
-                            self.send_content_headers(200, 'image/jpeg', len(image))
+                            headers = {'Cache-Control': 'private, max-age=86400, immutable'} if version else None
+                            self.send_content_headers(200, 'image/jpeg', len(image), headers)
                             if self.command != 'HEAD':
                                 self.wfile.write(image)
                         else:

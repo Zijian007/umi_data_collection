@@ -47,7 +47,7 @@ def rot_angle_deg(qa, qb) -> float:
     from scipy.spatial.transform import Rotation as Rot
     return float(np.degrees((Rot.from_quat(qa).inv() * Rot.from_quat(qb)).magnitude()))
 
-def assess_intrinsics(result: IntrinsicsResult, reference: dict, parameters: config.CheckParameters) -> list[dict]:
+def assess_intrinsics(result: IntrinsicsResult, reference: dict | None, parameters: config.CheckParameters) -> list[dict]:
     p = parameters
     checks = []
     kb4, fac = result.kb4, reference
@@ -60,6 +60,8 @@ def assess_intrinsics(result: IntrinsicsResult, reference: dict, parameters: con
     item(checks, "A 段：能认出标定板的帧占比；相机到板的距离 (m)", f"{ab['board_pose_fraction']}；{ab['board_distance_m']}", None, "仅供参考")
     mr = result.solver_metrics["mean_reprojection_px"]
     item(checks, "内参：平均重投影误差 (px)", mr, mr is not None and mr <= p.intrinsics_reprojection_px, f"<= {p.intrinsics_reprojection_px:g}")
+    if reference is None:
+        return checks
     df = abs(kb4[0] / fac["fx"] - 1)
     item(checks, "内参：焦距与样例标定相差", round(df, 4), df <= p.focal_warn_fraction, f"<= {100*p.focal_warn_fraction:g} %（同型号相机应接近；> {100*p.focal_fail_fraction:g} % 判失败）", failure=("FAIL" if df > p.focal_fail_fraction else "WARN"))
     dc = float(np.hypot(kb4[2] - fac["cx"], kb4[3] - fac["cy"]))
@@ -67,7 +69,7 @@ def assess_intrinsics(result: IntrinsicsResult, reference: dict, parameters: con
 
     return checks
 
-def assess_camera_imu(result: CameraImuResult, imu_metrics: dict, reference: dict, parameters: config.CheckParameters) -> list[dict]:
+def assess_camera_imu(result: CameraImuResult, imu_metrics: dict, reference: dict | None, parameters: config.CheckParameters) -> list[dict]:
     p = parameters
     checks = []
     new, fac = result.parameters, reference
@@ -79,6 +81,8 @@ def assess_camera_imu(result: CameraImuResult, imu_metrics: dict, reference: dic
     item(checks, "B 段：能认出标定板的帧占比；相机到板的距离 (m)", f"{bb['board_pose_fraction']}；{bb['board_distance_m']}", None, "仅供参考")
     mr = result.solver_metrics["mean_reprojection_px"]
     item(checks, "相机–IMU：平均重投影误差 (px)", mr, mr is not None and mr <= p.camera_imu_reprojection_px, f"<= {p.camera_imu_reprojection_px:g}")
+    if reference is None:
+        return checks
     dp = float(np.linalg.norm(np.array(new["p"]) - np.array(fac["p"])) * 1e3)
     item(checks, "相机–IMU：平移与样例标定相差 (mm)", round(dp, 2), dp <= p.translation_warn_mm, f"<= {p.translation_warn_mm:g}（同型号相机应接近；> {p.translation_fail_mm:g} 判失败）", failure=("FAIL" if dp > p.translation_fail_mm else "WARN"))
     dr = rot_angle_deg(new["q_xyzw"], fac["q_xyzw"])

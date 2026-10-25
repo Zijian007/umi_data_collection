@@ -53,13 +53,16 @@ def prepare(video: Path, paths: RecordingPaths, request: TrajectoryRequest) -> R
     return RecordingData(manifest, imu_csv, times_csv)
 
 
-def prepare_lens_videos(video: Path, context: ReconstructionContext) -> tuple[LensVideo, ...]:
+def prepare_lens_videos(video: Path, context: ReconstructionContext, *, lenses: tuple[str, ...] | None = None) -> tuple[LensVideo, ...]:
     """解码和裁切原片一次。所有建图/定位重试共用这些视频，不重复处理 INSV。"""
     paths, settings = context.paths, context.settings
     if context.request.mode not in ('handheld', 'dual'):
         raise ReconstructionError('准备镜头视频', f'未知处理模式：{context.request.mode}')
     paths.lens_videos.mkdir(parents=True, exist_ok=True)
-    lenses = ('front', 'rear') if context.request.mode == 'dual' else ('front',)
+    if lenses is None:
+        lenses = ('front', 'rear') if context.request.mode == 'dual' else ('front',)
+    if not lenses or len(set(lenses)) != len(lenses) or set(lenses) - {'front', 'rear'}:
+        raise ReconstructionError('准备镜头视频', '镜头列表必须由不重复的 front/rear 组成')
     prepared = []
     for lens in lenses:
         stage = f'准备镜头视频（{lens}）'

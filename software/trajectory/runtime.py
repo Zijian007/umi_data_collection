@@ -116,6 +116,8 @@ def check() -> int:
     voc = Path(os.environ.get("ORB3_VOCAB", orb / "Vocabulary" / "ORBvoc.txt"))
     line(exe.is_file(), "x3_mono_slam", str(exe))
     line(voc.is_file(), "ORB 词袋", str(voc))
+    map_exporter = orb / 'Examples/Monocular-Inertial/umi_export_atlas'
+    line(map_exporter.is_file(), '地图读取程序', str(map_exporter))
     if exe.is_file():
         environment = dict(os.environ)
         environment["LD_LIBRARY_PATH"] = ":".join([str(orb / "lib"), str(orb / "Thirdparty/DBoW2/lib"), str(orb / "Thirdparty/g2o/lib"),

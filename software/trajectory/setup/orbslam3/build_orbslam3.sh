@@ -103,9 +103,14 @@ if [ ! -f "$O/Thirdparty/g2o/lib/libg2o.so" ]; then
   cmake --build "$O/Thirdparty/g2o/build" -j "$JOBS"
 fi
 echo "[orbslam3] library + x3_mono_slam"
+# 独立的只读图集导出器；同步源文件，已安装环境重跑时也能增加此目标。
+cp "$HERE/export_atlas.cc" "$O/Examples/Monocular/export_atlas.cc"
+if ! grep -q 'add_executable(umi_export_atlas' "$O/CMakeLists.txt"; then
+  printf '\nadd_executable(umi_export_atlas Examples/Monocular/export_atlas.cc)\ntarget_link_libraries(umi_export_atlas ${PROJECT_NAME})\n' >> "$O/CMakeLists.txt"
+fi
 cmake -S "$O" -B "$O/build" "${CMAKE_COMMON[@]}" -DOpenCV_DIR="$ENV/lib/cmake/opencv4" \
   -DEigen3_DIR="$ENV/share/eigen3/cmake" -DPangolin_DIR="$DEPS/pangolin/lib/cmake/Pangolin"
-cmake --build "$O/build" -j "$JOBS" --target ORB_SLAM3 x3_mono_slam
+cmake --build "$O/build" -j "$JOBS" --target ORB_SLAM3 x3_mono_slam umi_export_atlas
 
 if [ ! -f "$O/Vocabulary/ORBvoc.txt" ]; then
   echo "[orbslam3] vocabulary"

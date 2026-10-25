@@ -49,6 +49,8 @@ def write_result_report(output: Path, summary: dict) -> None:
         size_px = configuration.get('values', {}).get('video', {}).get('size_px') if configuration else None
         dimensions = f'{size_px}×{size_px}，' if size_px else ''
         lines += ['', f'前镜头视频：front.mp4（{dimensions}保留鱼眼畸变）']
+    if (output / 'details/map.json').is_file():
+        lines.append('环境地图：details/map.json（前镜头稀疏点云与关键帧，umi-view 可查看）')
     lines += ['', '辅助轨迹、逐帧信息、完整配置和摘要：details/', '运行日志：debug/logs/']
     if summary.get('debug_retained'):
         lines.append('中间数据：debug/（已保留）')

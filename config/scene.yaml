@@ -1,0 +1,68 @@
+# 共享场景的算法参数；每次建图/任务结果保存完整快照与内容指纹。
+# 可在 scene.yaml 的 parameters 中指定一份 YAML 覆盖，未知字段会被拒绝。
+schema_version: 1
+
+# 用间隔约 0.25 秒的视觉节点估计尺度、重力和加速度计零偏。
+alignment_node_dt_s: 0.25
+
+# 超过此长度的视觉中断不参与连续三节点的惯性对齐，单位秒。
+alignment_max_gap_s: 0.15
+
+# 对齐至少需要的视觉节点数；更多节点也必须有足够运动激励。
+minimum_alignment_nodes: 12
+
+# 线性对齐设计矩阵的最大条件数；静止、匀速等退化运动会被拒绝。
+maximum_alignment_condition: 100000000.0
+
+# 米制尺度的相对标准差上限，0.2 即 20%。
+maximum_scale_relative_std: 0.2
+
+# 自由估计重力大小与轨迹配置重力常数的允许差值，单位 m/s²。
+gravity_tolerance_m_s2: 0.5
+
+# 对齐位置方程的 RMS 上限，单位米。
+maximum_alignment_rms_m: 0.05
+
+# 对齐得到的加速度计零偏各分量绝对值上限，单位 m/s²。
+maximum_acc_bias_m_s2: 2.0
+
+# 同时看到前、后地图时，用于确定前地图场景放置的最少位姿对。
+minimum_pose_pairs: 10
+
+# 前地图到后地图的刚体放置优化使用的位置/朝向噪声。
+placement_position_sigma_m: 0.015
+placement_rotation_sigma_deg: 1.0
+
+# 放置完成后允许的位姿对 RMS，超出则拒绝发布共享场景。
+maximum_placement_rms_m: 0.05
+maximum_placement_rotation_deg: 5.0
+
+# 每只手至少有多少比例的帧获得前或后地图位置约束，0.5 即 50%。
+minimum_localization_fraction: 0.5
+
+# 最长连续无视觉位置约束时长，包含开头和结尾，单位秒。
+# 放宽会允许更长 IMU 衔接，不代表该片段仍有可靠位置精度。
+maximum_visual_gap_s: 2.0
+
+# 场景融合中的视觉位置噪声，单位米；旋转噪声单位度。
+front_position_sigma_m: 0.015
+rear_position_sigma_m: 0.020
+visual_rotation_sigma_deg: 1.0
+
+# 视觉与放置残差的 Huber 阈值，减轻离群观测影响。
+huber: 2.5
+
+# 音频同步：解码为单声道采样，限制时长以控制内存与 FFT 开销。
+audio_sample_rate: 8000
+audio_duration_s: 120.0
+
+# 左右手最大搜索偏移、最少重叠时长，单位秒。
+audio_maximum_offset_s: 30.0
+audio_minimum_overlap_s: 3.0
+
+# 最大归一化相关性下限、主峰与次峰之比；静音/重复声音会被拒绝。
+audio_minimum_correlation: 0.3
+audio_minimum_peak_ratio: 1.15
+
+# 次峰搜索排除主峰附近的时间范围，单位秒。
+audio_peak_exclusion_s: 0.2

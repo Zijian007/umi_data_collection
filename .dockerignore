@@ -2,6 +2,9 @@
 *
 !install.sh
 !umi-traj
+!umi-scene
+!umi-view
+!config
 !software
 !registry
 **/__pycache__

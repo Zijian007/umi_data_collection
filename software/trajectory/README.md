@@ -2,6 +2,10 @@
 
 先看 `workflow.py`。CLI 只解析参数，显式调用 `workflow.run_batch()`；批处理找到录像后调用 `run_recording()`，后者按执行顺序写出单段流程。
 
+算法概念与 KIWI 官方实现的对照集中在 [原理与验证](../../docs/轨迹/原理.md)。本页对应本项目当前调用链；`algorithms/kiwi_fuse3s.py` 是本项目独立实现的融合程序。
+
+共享场景的编排位于独立的 [scene 模块](../scene/README.md)，复用本模块的录像准备、`build_maps()`、`localize_map()` 与 `run_orb()`。单段 workflow 保持独立，不按场景标志分支。
+
 ```text
 ./umi-traj <录像或目录>
   cli.main()
@@ -19,6 +23,7 @@
             relocalize_all_maps()     第二轮视觉计算：逐图定位并合并
             fuse_visual_imu()         视觉 + IMU -> IMU 世界位姿
         postprocess.export_trajectories()      IMU 位姿 -> 相机/TCP 轨迹
+        map_data.export_attempt()      导出前镜头轻量地图，拟合展示变换
         results.finalize_result()      发布视频、辅助结果、摘要与 TXT 报告
         results.cleanup_debug()        成功后按配置清理临时数据
 ```
@@ -36,12 +41,13 @@ software/trajectory/
 ├── calibration_assets.py  标定测量、旧包读取、生成 SLAM 输入
 ├── recording_data.py      查找录像、时间戳/IMU 提取与镜头视频准备
 ├── reconstruction.py      建图、逐图定位、IMU 融合、质量评估与重试
+├── map_data.py            图集导出与地图展示对齐
 ├── reuse.py               输入指纹与成功结果复用规则
 ├── results.py             产物布局、日志归档、重复文件清理
 ├── reports.py             TXT 报告、终端摘要
 ├── runtime.py             依赖检查、运行路径、日志
 ├── algorithms/
-│   ├── kiwi_fuse3s.py     原有 GTSAM 数值融合
+│   ├── kiwi_fuse3s.py     本项目的离线 GTSAM 融合
 │   └── postprocess.py     位姿转换、轨迹与指标、预览图
 ├── tools/
 │   ├── make_lens_video.py   生成镜头视频
@@ -62,9 +68,11 @@ software/trajectory/
 
 `reconstruction.run_attempts()` 管理重试；`run_attempt()` 是每轮重建的阅读入口，直接列出：
 
-1. `build_maps()`：每个镜头独立建图，前镜头建图时使用遮手图，返回 `MapAtlas`。
-2. `relocalize_all_maps()`：加载完整图集，逐图重放同一视频；定位不遮手。根据地图关键帧数优先级合并每帧定位，返回 `LensLocalization`。
-3. `fuse_visual_imu()`：将逐帧视觉定位、IMU 和相机–IMU 时差送入现有 GTSAM 算法，返回 `FusionResult`，得到米制、重力对齐的 IMU 位姿。
+1. `build_maps()`：每个镜头使用 ORB-SLAM3 `MONOCULAR` 纯视觉建图，前镜头使用遮手图，返回 `MapAtlas`。
+2. `relocalize_all_maps()`：加载完整图集，逐图重放同一视频并开启 `localization_only`，不新增关键帧、不遮手。当前来源仍有效时保持来源，失效后按关键帧数优先级切换，返回 `LensLocalization`。
+3. `fuse_visual_imu()`：将逐帧视觉定位、原始 IMU、相机–IMU 外参与时差送入 `algorithms/kiwi_fuse3s.py`，返回 `FusionResult`，得到米制、重力对齐的 IMU 位姿。
+
+前两步的 C++ 入口见 [x3_mono_slam.cc](setup/orbslam3/x3_mono_slam.cc)：只传图像和时间，不传 IMU。IMU 在第三步参与尺度与重力估计、运动约束和联合优化；融合不重新提取图像特征，也不修改 ORB 地图点。
 
 双镜头模式先分别建好前后镜头的地图，再各自定位，最后共同融合；两个镜头的地图互相独立。地图列表由现有 ORB-SLAM3 日志接口提供，`read_atlas_maps()` 集中将其解析成带索引和关键帧数的 `AtlasMap`。
 
@@ -93,7 +101,8 @@ umi_traj_out/<录像名>/
 │   ├── traj_imu.txt
 │   ├── frames.csv
 │   ├── run_settings.json
-│   └── summary.json
+│   ├── summary.json
+│   └── map.json                前镜头地图展示数据（导出成功时）
 └── debug/
     ├── logs/                  默认保留运行日志
     ├── dataset/               --keep-work、失败或迁移旧结果时保留
@@ -105,6 +114,8 @@ umi_traj_out/<录像名>/
 默认新运行成功后保留根目录结果、`details/` 和 `debug/logs/`，清理数据集、共享镜头视频和重建中间文件。`front.mp4` 发布为独立文件，清理后 viewer 仍能播放；文件系统支持时使用硬链接，不额外占用一份视频空间。
 
 `--keep-work` 保留所有轮次的数据集、地图、镜头视频、逐帧定位和融合内部状态；失败或中断也保留。轨迹数值和重试策略不变。
+
+`map_data.export_attempt()` 在轨迹生成后导出选中轮次的前镜头图集，并以逐帧定位和最终相机轨迹拟合展示变换。`details/map.json` 在默认清理后保留，查看地图无需 `--keep-work`；只有保留完整原始图集才需要该选项。地图导出失败写提醒与独立日志，成功轨迹仍正常发布。原始坐标的子地图不会强行与米制轨迹叠加。
 
 `results.result_path()` 同时支持 `details/`、旧 `diagnostics/` 与平铺结果，标定 C 验证和 viewer 使用同一读取入口。复用旧结果时自动迁移布局，迁移只搬文件、发布选中轮次的视频并修复引用，不删除已有独有中间数据。
 

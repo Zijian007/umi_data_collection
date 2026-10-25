@@ -1,3 +1,37 @@
+// Prepare native browser playback without blocking the current video or frames.
+export class VideoPreview {
+  constructor(onReady, onError, {fetcher = (...args) => fetch(...args)} = {}) {
+    this.onReady = onReady; this.onError = onError; this.fetcher = fetcher; this.generation = 0;
+  }
+  reset(url = null) {
+    this.generation++; this.controller?.abort(); clearTimeout(this.timer);
+    this.url = url;
+    if (url) return this.poll();
+  }
+  async poll() {
+    const generation = this.generation, url = this.url;
+    if (!url) return;
+    this.controller = new AbortController();
+    try {
+      const response = await this.fetcher(url, {signal: this.controller.signal, cache: 'no-store'});
+      const data = await response.json();
+      if (generation !== this.generation) return;
+      if (!response.ok || data.status === 'failed') throw new Error(data.note || data.error || '预览暂不可用');
+      if (data.status === 'ready' && data.url) {
+        this.url = null; this.onReady(data.url);
+      } else if (data.status === 'preparing') {
+        this.timer = setTimeout(() => this.poll(), 750);
+      } else {
+        throw new Error('预览状态无效');
+      }
+    } catch (error) {
+      if (generation === this.generation && error.name !== 'AbortError') {
+        this.url = null; this.onError(error);
+      }
+    }
+  }
+}
+
 // Single-flight JPEG preview for browsers without native video codec support.
 // While decoding, coalesce requests to the latest desired time rather than queue
 // every trajectory frame. Present each image together with its matching pose.

@@ -6,3 +6,7 @@ __pycache__/
 *.insv
 *.lrv
 umi_traj_out/
+scenes/**/maps/
+scenes/**/runs/
+scenes/**/results
+.scene.lock

@@ -1,11 +1,12 @@
 # 算法参数
 
-标定和轨迹抽取共用 [software/config.py](../software/config.py) 加载配置。默认数值只写在两份 YAML 中；日常命令不用加参数，保持现有默认行为。
+标定和单段轨迹抽取共用 [software/config.py](../software/config.py) 加载配置。场景流程另由 `software/scene/models.py` 加载场景参数，并复用轨迹配置。数值默认值集中在下面的 YAML 中。
 
 | 内容 | 管理位置 | 生效范围 |
 |---|---|---|
 | [calibration.yaml](calibration.yaml) | 标定算法、板检测、D 静止窗口、验收规则 | `umi-calib run / verify / recheck` |
 | [trajectory.yaml](trajectory.yaml) | 视频尺寸与编码、ORB、重建重试、IMU 融合、ZUPT、质量提醒 | `umi-traj`，以及标定的 C 段轨迹验证 |
+| [scene.yaml](scene.yaml) | 场景尺度/放置验收、固定坐标融合的视觉噪声、音频同步 | `umi-scene`；操作和覆盖方式见 [场景指南](../docs/场景.md) |
 | 相机实测参数、时间差、TCP、遮手图 | `registry/` 中的相机与夹爪资产 | 按录像内部序列号选择，继续手动 `install` |
 | 输入/输出路径、CPU、并行数、保留中间文件 | 命令行请求 | 只影响执行方式，不写入算法配置 |
 | 原片尺寸、标定裁切、帧对应及像素缩放约定 | `software/camera/x3/frame.py` | 相机图像规格；在结果中记录 |

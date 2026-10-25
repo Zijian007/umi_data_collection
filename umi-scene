@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# 共享场景：先 build，再对同场景的单手/双手 episode 执行 run。
+set -e
+ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+DEPS=${UMI_DEPS:-$ROOT/.deps}
+if [ ! -f "$DEPS/env.sh" ]; then
+  echo "还没安装：先运行 bash $ROOT/install.sh" >&2
+  exit 2
+fi
+source "$DEPS/env.sh"
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+SCENE_PYTHON="$KIWI_PY"
+if [ "${1:-}" = calibrate-rear ]; then
+  SCENE_PYTHON="$DEPS/calib_env/bin/python"
+  if [ ! -x "$SCENE_PYTHON" ]; then
+    echo "缺少标定环境：先运行 ./umi-calib check 安装标定组件。" >&2
+    exit 2
+  fi
+fi
+exec "$SCENE_PYTHON" -m software.scene "$@"

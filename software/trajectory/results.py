@@ -7,11 +7,12 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from software.trajectory import reports
-from software.trajectory.models import RecordingPaths
+if TYPE_CHECKING:
+    from software.trajectory.models import RecordingPaths
 
-AUXILIARY_RESULTS = ('traj_camera.txt', 'traj_imu.txt', 'frames.csv', 'run_settings.json', 'summary.json')
+AUXILIARY_RESULTS = ('traj_camera.txt', 'traj_imu.txt', 'frames.csv', 'run_settings.json', 'summary.json', 'map.json')
 
 
 def result_path(output: Path, name: str) -> Path:
@@ -131,6 +132,8 @@ def _publish_video(output: Path, summary: dict) -> None:
 
 def finalize_result(output: Path, summary: dict) -> None:
     """发布视频、details 和报告。迁移旧结果时保留所有独有中间数据。"""
+    from software.trajectory import reports
+
     output = output.resolve()
     for name in ('details', 'debug', 'diagnostics'):
         if not (output / name).resolve().is_relative_to(output):

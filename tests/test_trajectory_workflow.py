@@ -185,6 +185,15 @@ class WorkflowTests(RecordingFixture):
         self.assertEqual(self.run_recording()['status'], 'ok')
         self.assertEqual(self.run_recording(TrajectoryRequest(force=True))['status'], 'ok')
 
+    def test_display_map_survives_successful_debug_cleanup(self):
+        display = dict(kind='umi_map_view', schema_version=1, maps=[])
+        with patch('software.trajectory.map_data.export_attempt', return_value=display):
+            result = self.run_recording()
+        self.assertEqual(result['status'], 'ok')
+        self.assertFalse((self.output/'debug/reconstruction').exists())
+        self.assertEqual(json.loads((self.output/'details/map.json').read_text()), display)
+        self.assertEqual(result['map_visualization'], 'details/map.json')
+
     def test_invalid_selection_preserves_existing_output(self):
         self.successful_result()
         before = (self.output / 'summary.json').read_bytes()

@@ -15,7 +15,7 @@ from functools import partial
 from pathlib import Path
 
 from software import config, registry
-from software.trajectory import recording_data, reconstruction, reports, results, reuse, runtime, selection
+from software.trajectory import map_data, recording_data, reconstruction, reports, results, reuse, runtime, selection
 from software.trajectory.algorithms import postprocess
 from software.trajectory.models import RecordingPaths, ReconstructionContext, ReconstructionError, TrajectoryRequest
 
@@ -131,7 +131,7 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
 
         # 4. 用本次选中的相机与夹爪几何，将融合结果转换为相机/TCP 轨迹。
         stage = "生成轨迹产物"
-        runtime.console.write("生成相机和 TCP 轨迹、视频与报告", recording=recording_name, step=(4, 4))
+        runtime.console.write("生成相机和 TCP 轨迹、地图、视频与报告", recording=recording_name, step=(4, 4))
         calibration_record = selected.as_postprocess_dict(fingerprint["calibration"]["assets"])
         calibration_record.update(yaml=str(settings.front_settings), rear_yaml=str(settings.rear_settings),
                                   mask=str(settings.front_mask), source_mask=str(selected.assets.front_mask))
@@ -143,6 +143,15 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
             "device": request.device or None, "gripper": request.gripper or None, "serial": selected.camera_serial,
         })
         summary.update(metrics)
+        # 轻量展示地图独立于 .osa；清理中间数据后仍可在查看器中显示。
+        # 地图展示失败只记录提醒，不把已成功的轨迹抽取判为失败。
+        try:
+            display_map = map_data.export_attempt(attempt.directory, paths.output)
+            (paths.output / 'map.json').write_text(json.dumps(display_map, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+            summary['map_visualization'] = 'details/map.json'
+        except (OSError, ValueError) as error:
+            summary.setdefault('notes', []).append(f'地图展示数据未生成：{error}')
+            runtime.write_error_log(paths.logs / 'map_export_error.log', error)
         summary["status"] = "ok"
     except Exception as error:
         summary.update(reason=str(error), failed_stage=error.stage if isinstance(error, ReconstructionError) else stage)

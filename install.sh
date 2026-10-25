@@ -83,7 +83,7 @@ fi
 
 step "4/5 编译 Pangolin + ORB-SLAM3（10-30 分钟）"
 O=$DEPS/src/ORB_SLAM3
-if [ ! -x "$O/Examples/Monocular-Inertial/x3_mono_slam" ] || [ ! -f "$O/Vocabulary/ORBvoc.txt" ]; then
+if [ ! -x "$O/Examples/Monocular-Inertial/x3_mono_slam" ] || [ ! -f "$O/Vocabulary/ORBvoc.txt" ] || [ ! -x "$O/Examples/Monocular-Inertial/umi_export_atlas" ]; then
   echo "日志：$DEPS/logs/4_build.log"
   JOBS=$JOBS run_logged "$DEPS/logs/4_build.log" "$MM" run -p "$ENV" bash "$T/setup/orbslam3/build_orbslam3.sh" "$DEPS"
 fi

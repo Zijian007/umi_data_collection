@@ -1,7 +1,7 @@
-"""One X3 360 4K60 recording -> EuRoC folder for calibration (timestamps, IMU and, optionally, the front-lens frames).
+"""One X3 360 4K60 recording -> EuRoC folder for calibration (timestamps, IMU and optional lens frames).
 
   * timestamps + IMU: software.camera.x3.extraction;
-  * frames: every 2nd decoded frame, front lens = the right-half crop from software.camera.x3.frame, written as <t_ns>.png.
+  * frames: every 2nd decoded frame, default front/right; rear/left is explicit, written as <t_ns>.png.
     The grey image is the decoder's luma (Y) plane, read directly. frame.to_ndarray(format="gray") rescales on newer
     libswscale, so the pixels would change with the PyAV version.
     PNG encoding is the slow part (about 0.12 s a frame on one core), so the files are written by a few threads; the
@@ -23,7 +23,6 @@ import numpy as np
 from software.camera.x3.frame import SRC_H, SRC_W, STEP, T0_S, crop_xywh
 from software.camera.x3 import extraction
 
-CROP_X0, CROP_Y0, CROP_W, CROP_H = crop_xywh("right")
 LUMA_FORMATS = ("yuvj420p", "yuv420p")       # 8-bit planar, plane 0 = luma
 
 
@@ -40,9 +39,12 @@ def n_workers() -> int:
     return max(1, min(8, n - 1))
 
 
-def build(insv: Path, out: Path, with_images: bool = True) -> None:
+def build(insv: Path, out: Path, with_images: bool = True, *, lens: str = 'front') -> None:
     """Writes <out>/mav0/{cam0/data.csv, imu0/data.csv[, cam0/data/*.png]} and preserves the extraction manifest."""
     insv, out = Path(insv), Path(out)
+    if lens not in ('front', 'rear'):
+        raise ValueError('lens 必须为 front 或 rear')
+    crop_x, crop_y, crop_w, crop_h = crop_xywh('right' if lens == 'front' else 'left')
     extraction.extract(insv, out, with_sha256=True)           # raises software.camera.x3.extraction.Refused with the reason
     if not with_images:
         return
@@ -70,7 +72,7 @@ def build(insv: Path, out: Path, with_images: bool = True) -> None:
             if fr.format.name not in LUMA_FORMATS:
                 raise RuntimeError(f"{insv.name} 的像素格式为 {fr.format.name}，需要 {LUMA_FORMATS} 之一（4K60 全景录像）")
             y = fr.planes[0]
-            g = np.frombuffer(y, np.uint8).reshape(y.height, y.line_size)[CROP_Y0:CROP_Y0 + CROP_H, CROP_X0:CROP_X0 + CROP_W].copy()
+            g = np.frombuffer(y, np.uint8).reshape(y.height, y.line_size)[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w].copy()
             pending.append(pool.submit(_write_png, img_dir / name, g))
             if len(pending) >= 4 * nw:        # bounded backlog: wait for the oldest half (re-raises a write error)
                 for f in pending[: 2 * nw]:

@@ -94,7 +94,7 @@ def build_maps(videos: tuple[LensVideo, ...], context: ReconstructionContext,
         current = replace(video, path=linked_video)
         output = lens_dir / 'map'
         archive = output / 'map.osa'
-        _run_orb(current, output, context, directory, stage=f'建图（{video.lens}）', extra=[
+        run_orb(current, output, context, directory, stage=f'建图（{video.lens}）', extra=[
             '--save_map', str(archive), '--output_trajectory_csv', str(output / 'kf_traj.csv'),
         ], mask=video.mask)
         if not archive.is_file() or archive.stat().st_size == 0:
@@ -111,12 +111,12 @@ def relocalize_all_maps(atlases: tuple[MapAtlas, ...], context: ReconstructionCo
     for atlas in atlases:
         lens_dir = directory / atlas.video.lens
         first = lens_dir / 'loc_m0'
-        _localize_map(atlas, 0, first, context, directory)
+        localize_map(atlas, 0, first, context, directory)
         # 引擎在首次加载图集时输出地图元数据；解析集中在一个边界函数中。
         maps = read_atlas_maps(first / 'log.txt', lens=atlas.video.lens)
         for item in maps:
             if item.index != 0:
-                _localize_map(atlas, item.index, lens_dir / f'loc_m{item.index}', context, directory)
+                localize_map(atlas, item.index, lens_dir / f'loc_m{item.index}', context, directory)
         merged = lens_dir / 'loc/frames.csv'
         merged.parent.mkdir()
         command = [context.settings.tools_python, str(runtime.TOOLS / 'merge_frames.py'), '--out', str(merged)]
@@ -159,16 +159,16 @@ def read_atlas_maps(log: Path, *, lens: str) -> tuple[AtlasMap, ...]:
     return items
 
 
-def _localize_map(atlas: MapAtlas, index: int, output: Path,
+def localize_map(atlas: MapAtlas, index: int, output: Path,
                   context: ReconstructionContext, directory: Path) -> None:
-    _run_orb(atlas.video, output, context, directory, stage=f'定位（{atlas.video.lens}，地图 {index}）',
+    run_orb(atlas.video, output, context, directory, stage=f'定位（{atlas.video.lens}，地图 {index}）',
              extra=['--load_map', str(atlas.archive), '--localization_only'], map_index=index)
     if not (output / 'frames.csv').is_file():
         raise ReconstructionError(f'定位（{atlas.video.lens}，地图 {index}）',
                                   f'未生成逐帧定位结果；日志：{output / "log.txt"}')
 
 
-def _run_orb(video: LensVideo, output: Path, context: ReconstructionContext, directory: Path, *,
+def run_orb(video: LensVideo, output: Path, context: ReconstructionContext, directory: Path, *,
              stage: str, extra: list[str], mask: Path | None = None, map_index: int = 0) -> None:
     output.mkdir(parents=True)
     settings = context.settings

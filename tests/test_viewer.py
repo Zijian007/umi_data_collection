@@ -127,11 +127,27 @@ class HTTPContractTests(unittest.TestCase):
             status, body = request('/api/recordings')
             self.assertEqual(status['status'], 200)
             self.assertEqual(len(json.loads(body)['recordings']), 1)
+            with patch.object(catalog, 'map_data', return_value={'maps': []}) as read_map:
+                status, body = request(f'/api/recordings/{key}/map')
+                self.assertEqual((status['status'], json.loads(body)), (200, {'maps': []}))
+                read_map.assert_called_once_with(key)
             status, body = request(f'/api/recordings/{key}/video', {'Range': 'bytes=2-5'})
             self.assertEqual((status['status'], body), (206, b'2345'))
             self.assertEqual(status['extra']['Content-Range'], 'bytes 2-5/10')
             status, body = request(f'/api/recordings/{key}/video', head=True)
             self.assertEqual((status['length'], body), (10, b''))
+            etag = status['extra']['ETag']
+            status, body = request(f'/api/recordings/{key}/video', {'If-None-Match': etag})
+            self.assertEqual((status['status'], body), (304, b''))
+            with patch('software.viewer.server.preview_status', return_value={'status': 'ready', 'version': 'test'}):
+                status, body = request(f'/api/recordings/{key}/preview')
+                self.assertEqual(json.loads(body)['url'], f'/api/recordings/{key}/preview/video?v=test')
+            cached = root/'preview.webm'
+            cached.write_bytes(b'\x1aE\xdf\xa3preview')
+            with patch('software.viewer.server.preview_file', return_value=cached):
+                status, body = request(f'/api/recordings/{key}/preview/video?v=test', {'Range': 'bytes=0-3'})
+                self.assertEqual((status['status'], status['content_type'], body), (206, 'video/webm', b'\x1aE\xdf\xa3'))
+                self.assertIn('immutable', status['extra']['Cache-Control'])
             with patch('software.viewer.server.decode_frame', return_value=b'\xff\xd8jpeg') as decode:
                 status, body = request(f'/api/recordings/{key}/frame?t=0.5')
                 self.assertEqual((status['status'], status['content_type'], body), (200, 'image/jpeg', b'\xff\xd8jpeg'))
@@ -145,6 +161,15 @@ class HTTPContractTests(unittest.TestCase):
 
 
 class FrameDecodeTests(unittest.TestCase):
+    def setUp(self):
+        from software.viewer import media
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        environment = patch.dict('os.environ', {'UMI_VIEW_CACHE': self.temp.name})
+        environment.start(); self.addCleanup(environment.stop)
+        media._decode_cached.cache_clear()
+        self.addCleanup(media._decode_cached.cache_clear)
+
     def test_invalid_times_are_rejected_before_starting_decoder(self):
         for seconds in (-1, float('nan'), float('inf'), 86401):
             with patch('software.viewer.media.subprocess.run') as execute:
