@@ -3,13 +3,31 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from typing import TypedDict
+
 import numpy as np
 
 from software.gripper_width import series
 
 
-def sample(directory: Path, manifest: dict, arms: dict, query: np.ndarray, max_gap_s: float) -> tuple[dict, dict]:
-    arrays, reasons, measurements = {}, [], {}
+class GripperMeasurement(TypedDict):
+    calibration: dict
+    inputs: dict
+    valid_fraction: float
+    sources: dict[str, int]
+
+
+class GripperReadiness(TypedDict):
+    training_ready: bool
+    missing_channels: list[str]
+    not_ready_reasons: list[str]
+    measurements: dict[str, GripperMeasurement]
+
+
+def sample(directory: Path, manifest: dict, arms: dict, query: np.ndarray, max_gap_s: float) -> tuple[dict[str, np.ndarray], GripperReadiness]:
+    arrays: dict[str, np.ndarray] = {}
+    reasons: list[str] = []
+    measurements: dict[str, GripperMeasurement] = {}
     missing = False
     for arm, trajectory in arms.items():
         report = manifest.get('gripper_width', {}).get(arm)

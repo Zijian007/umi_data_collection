@@ -8,12 +8,35 @@
 
 场景包含套件，套件包含采集批次，批次包含任务；场景地图由各套件复用，设备实测资产全局共享。每个套件只有一个 `kit.yaml`，批次自动保存当时的设备与测量快照。一套设备允许只有左手、只有右手或双手。任务支持人工核验的双手固定时间偏移；未配置时保留未经确认的零偏移假设。训练中间包由独立入口 `umi-dataset` 导出，见 [训练数据指南](docs/训练数据.md)。
 
-## 1. 安装与设备标定
+## 架构与心智模型
+
+系统解构为自上而下的四层物理实体，所有物理标定与几何参数均带哈希版本快照：
+
+```mermaid
+graph TD
+    Registry["全局设备资产 registry/<br/>相机内参/外参/IMU + 夹爪TCP几何 + 夹爪开合标定"]
+    Scene["共享场景 scenes/&lt;场景&gt;/<br/>固定的物理环境"]
+    Map["共享场景地图 maps/<br/>单相机一次录制建图，米制尺度与重力对齐"]
+    Kit["套件 kits/&lt;套件&gt;/kit.yaml<br/>左右手绑定的具体设备/标定"]
+    Session["采集批次 sessions/&lt;批次&gt;/<br/>自动快照冻结当时的 Kit 与 Map 版本"]
+    Episode["单次任务 &lt;任务&gt;/<br/>左右手各一段原片，输出轨迹与开合"]
+
+    Registry -. 资产绑定 .- Kit
+    Scene --> Map
+    Scene --> Kit
+    Kit --> Session
+    Session --> Episode
+```
+
+处理流水线分四阶段：**录制入库对齐 → 共享地图定位与 IMU 因子图融合 → 前镜头指尖 ArUco 视觉测距 → 训练中间包标准化导出 (`umi-dataset`)**。
+
+## 1. 安装、验证与设备标定
 
 从项目根目录执行：
 
 ```bash
 bash install.sh
+./test.sh       # 一键运行全部主测试、历史测试与前端测试
 ./umi-traj check
 ./umi-calib check
 

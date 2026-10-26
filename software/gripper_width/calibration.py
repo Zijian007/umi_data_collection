@@ -5,10 +5,28 @@ import json
 import math
 from pathlib import Path
 
+from typing import TypedDict
+
 import numpy as np
 
 
-def read(path: Path) -> dict:
+class Anchor(TypedDict):
+    x: float
+    mm: float
+
+
+class WidthCalibration(TypedDict):
+    anchors: list[Anchor]
+    open_width_mm: float
+    closed_threshold_mm: float
+    max_gap_s: float
+    verified: bool
+    status: str
+    detector: str
+    method: str
+
+
+def read(path: Path) -> WidthCalibration:
     data = json.loads(path.read_text(encoding='utf-8'))
     if not isinstance(data, dict):
         raise ValueError('夹爪宽度标定必须为 JSON 对象')

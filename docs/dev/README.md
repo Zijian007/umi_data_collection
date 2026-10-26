@@ -28,13 +28,21 @@
 
 ## 验证
 
-完成[安装](../安装.md)与标定组件安装后，从项目根目录执行：
+完成[安装](../安装.md)与标定组件安装后，可直接通过根目录的统一脚本一键测试：
+
+```bash
+./test.sh        # 一键测试：主单元测试 (unittest) + 夹爪历史测试 (pytest) + 前端测试 (node)
+./test.sh --all  # 包含 CLI check 运行时检查
+```
+
+也可分项执行各环境原生命令：
 
 ```bash
 .deps/calib_env/bin/python -m unittest discover -s tests -q
+.deps/env/bin/python -m pytest -q -p no:cacheprovider software/gripper_width/legacy/tests
+node --test tests/js/viewer.test.mjs
 ./umi-calib check
 ./umi-traj check
-node --test tests/js/viewer.test.mjs
 ```
 
 Node 只用于查看器前端测试，运行查看器不需要 Node。Python 测试覆盖输入、标定验收、流程、复用、重建协议、产物布局与查看器；涉及求解器和 SLAM 的单元测试使用替代引擎。真实录像端到端回归和独立误差评估需另外记录输入、设备标定、版本及结果。
