@@ -121,6 +121,7 @@ def build_parser():
     for arm in ARMS:
         kit.add_argument('--'+arm, help='完整相机序列号')
         kit.add_argument('--rear-'+arm, help='已登记的后镜头标定版本')
+        kit.add_argument('--width-'+arm, type=Path, help='该相机/夹爪安装对应的宽度标定 JSON')
     kits = commands.add_parser('kits', help='列出场景下的当前套件配置')
     kits.add_argument('scene', type=Path)
     session = commands.add_parser('session', help='保存本批次设备快照和预期使用手，不要求已有地图')
@@ -189,7 +190,8 @@ def main(argv=None):
             result = dict(scene=str(initialize_scene(args)))
         elif args.command == 'kit':
             result = capture_config.register_kit(args.scene, args.name, {arm: getattr(args, arm) for arm in ARMS if getattr(args, arm)},
-                rear={arm: getattr(args, 'rear_'+arm) for arm in ARMS if getattr(args, 'rear_'+arm)}, description=args.description)
+                rear={arm: getattr(args, 'rear_'+arm) for arm in ARMS if getattr(args, 'rear_'+arm)},
+                width={arm: getattr(args, 'width_'+arm) for arm in ARMS if getattr(args, 'width_'+arm)}, description=args.description)
         elif args.command == 'kits':
             result = capture_config.list_kits(args.scene)
         elif args.command == 'session':

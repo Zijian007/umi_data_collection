@@ -14,7 +14,7 @@ from software.dataset.export import build
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='umi-dataset', description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    export = commands.add_parser('build', help='导出指令、同步视频与实测 TCP；当前缺夹爪通道')
+    export = commands.add_parser('build', help='导出指令、同步视频、实测 TCP 和已配置的夹爪宽度')
     export.add_argument('paths', nargs='+', type=Path, help='场景、套件、批次或任务目录')
     export.add_argument('--out', required=True, type=Path)
     export.add_argument('--fps', type=float, default=30.)

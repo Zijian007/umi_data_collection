@@ -101,7 +101,7 @@ def read_devices(data: dict) -> dict[str, dict]:
         raise ValueError('devices 需要按完整序列号固定设备版本')
     for serial, device_binding in data.items():
         registry.validate_id(serial)
-        require_keys(device_binding, {'calibration', 'gripper', 'gripper_version', 'rear_calibration'},
+        require_keys(device_binding, {'calibration', 'gripper', 'gripper_version', 'rear_calibration', 'width_calibration'},
                      {'calibration', 'gripper', 'gripper_version'}, '设备版本')
         for value in device_binding.values():
             registry.validate_id(value)
@@ -155,7 +155,7 @@ def validate_kit(data: dict) -> dict:
         raise ValueError('套件至少配置一只手：left 或 right')
     serials = []
     for item in data['arms'].values():
-        require_keys(item, {'serial', 'calibration', 'gripper', 'gripper_version', 'rear_calibration'},
+        require_keys(item, {'serial', 'calibration', 'gripper', 'gripper_version', 'rear_calibration', 'width_calibration'},
                      {'serial', 'calibration', 'gripper', 'gripper_version'}, '套件设备')
         for value in item.values():
             registry.validate_id(value)
@@ -265,6 +265,9 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
     calibration_selection = selection.SelectedCalibration(assets, Path(device_record['dir']), device_record['id'], device_record['serial'],
         device_record['gripper'], device_record['source'], 'scene_registry', device_record['status'], int(device_record['cam_time_offset_ns']))
     asset_paths = dict(front=assets.camera_json, tcp=assets.tcp_geometry, mask=assets.front_mask)
+    if 'width_calibration' in device_binding:
+        asset_paths['width'] = registry.width_path(serial, device_binding['width_calibration'],
+            gripper=device_binding['gripper'], gripper_version=device_binding['gripper_version'])
     lens_calibrations = dict(front=calibration_assets.read_basalt(assets.camera_json))
     if scene.mode == 'dual':
         rear_calibration_path = scene.rear_calibrations.get(device_record['serial'])
@@ -284,7 +287,7 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
 
 def camera_identity(camera: CalibratedCamera) -> dict:
     return dict(serial=camera.serial, gripper=camera.selected.gripper_id,
-                assets={name: config.file_hash(path) for name, path in sorted(camera.files.items())})
+                assets={name: config.file_hash(path) for name, path in sorted(camera.files.items()) if name != 'width'})
 
 
 def recording_identity(path: Path) -> dict:
@@ -322,11 +325,16 @@ def algorithm_identity() -> dict:
 
 
 def episode_inputs(episode, cameras, map_manifest) -> dict:
+    from software.gripper_width import pipeline as width_pipeline
+
+    widths = {arm: dict(version=camera.files['width'].parent.name, sha256=config.file_hash(camera.files['width']))
+              for arm, camera in cameras.items() if 'width' in camera.files}
     return dict(map_mode=map_manifest['mode'], scene_version=map_manifest['version'], frame_id=map_manifest['frame_id'], scene_assets=map_manifest['assets'],
         session=episode.session.name, session_manifest_sha256=config.file_hash(episode.session.path),
         episode_manifest_sha256=config.file_hash(episode.path), scene_manifest_sha256=config.file_hash(episode.scene.path),
         recordings={arm: recording_identity(video) for arm, video in episode.recordings.items()},
         cameras={arm: camera_identity(camera) for arm, camera in cameras.items()}, synchronization=episode.synchronization,
+        gripper_width=widths, gripper_width_code=width_pipeline.identity() if widths else {},
         parameters={key: value for key, value in asdict(episode.scene.parameters).items()
                     if not key.startswith(('recording_', 'pairing_'))}, trajectory_parameters=episode.scene.trajectory.snapshot()['values'],
         code=algorithm_identity(), trajectory_code=config.code_identity('trajectory'), engines=config.engine_identity('trajectory'))

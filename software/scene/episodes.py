@@ -147,6 +147,8 @@ def export(paths: list[Path], export_dir: Path, *, with_video=False) -> dict:
             if len(run_manifest['arms']) == 2:
                 files.append('bimanual.csv')
             files += [f'{arm}/traj_tcp.txt' for arm in run_manifest['arms']]
+            files += [f'{arm}/{name}' for arm in run_manifest.get('gripper_width', {})
+                      for name in ('gripper_width.csv', 'details/gripper_width.json', 'details/gripper_width_frames.csv')]
             if with_video:
                 files += [f'{arm}/front.mp4' for arm in run_manifest['arms']]
             exported_file_hashes = {}

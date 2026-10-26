@@ -11,10 +11,10 @@ import numpy as np
 
 from software import config
 from software.storage import locked, write_json
-from software.dataset import sampling, source
+from software.dataset import gripper, sampling, source
 
 FORMAT = 'umi_training_dataset'
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float = .25) -> dict:
@@ -39,6 +39,8 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
                 offsets = item.manifest['synchronization']['offsets_s']
                 arms = {arm: sampling.read_arm(item.run / arm, offsets[arm]) for arm in item.manifest['arms']}
                 arrays, quality = sampling.sample(arms, fps, max_gap_s)
+                width_arrays, readiness = gripper.sample(item.run, item.manifest, arms, arrays['t_episode_s'], max_gap_s)
+                arrays.update(width_arrays)
                 np.savez_compressed(target / 'samples.npz', **arrays)
                 tcp_geometry = {}
                 for arm in arms:
@@ -56,7 +58,8 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
                     tcp_geometry=tcp_geometry, actual_error=item.manifest['actual_error'],
                     pose_representation='T_scene_tcp', position_unit='m', fps=fps,
                     rows=len(arrays['t_episode_s']), quality=quality,
-                    training_ready=False, missing_channels=['gripper'],
+                    training_ready=readiness['training_ready'], missing_channels=readiness['missing_channels'],
+                    not_ready_reasons=readiness['not_ready_reasons'], gripper_width=readiness['measurements'],
                     review=item.review, source=dict(episode_id=str(item.name), run_id=item.run.name,
                         result_sha256=item.result_sha256, inputs=item.manifest['inputs']),
                     arrays={name: dict(shape=list(value.shape), dtype=str(value.dtype)) for name, value in arrays.items()},
@@ -64,14 +67,18 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
                 write_json(target / 'episode.json', metadata)
                 hashes = {str(p.relative_to(target)): config.file_hash(p) for p in sorted(target.rglob('*')) if p.is_file()}
                 entries.append(dict(path=str(target.relative_to(staging)), rows=metadata['rows'], files=hashes,
-                                    training_ready=False, missing_channels=['gripper']))
+                                    training_ready=metadata['training_ready'], missing_channels=metadata['missing_channels'],
+                                    not_ready_reasons=metadata['not_ready_reasons']))
             for item in selected:
                 source.verify_current(item)
+            missing_channels = sorted({name for entry in entries for name in entry['missing_channels']})
+            ready = all(entry['training_ready'] for entry in entries)
             manifest = dict(kind=FORMAT, schema_version=SCHEMA_VERSION, fps=fps, max_gap_s=max_gap_s,
-                training_ready=False, missing_channels=['gripper'], episodes=entries)
+                training_ready=ready, missing_channels=missing_channels, episodes=entries)
             write_json(staging / 'export_report.json', dict(episodes=len(entries), rows=sum(e['rows'] for e in entries),
-                training_ready=False, missing_channels=['gripper'],
-                note='中间包保留实测 TCP 与图像；未接入夹爪开合，不生成完整动作标签。'))
+                training_ready=ready, missing_channels=missing_channels,
+                not_ready=[dict(path=entry['path'], reasons=entry['not_ready_reasons']) for entry in entries if not entry['training_ready']],
+                note='training_ready 仅表示基础观测通道齐全、宽度已核验且采样有效；模型动作切片与部署需另行适配。'))
             write_json(staging / 'manifest.json', manifest)
             if output.exists():
                 raise ValueError('导出期间目标目录已被创建，拒绝覆盖')
@@ -80,14 +87,14 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
             if staging.exists():
                 shutil.rmtree(staging)
     return dict(output=str(output), episodes=len(entries), rows=sum(e['rows'] for e in entries),
-                training_ready=False, missing_channels=['gripper'])
+                training_ready=ready, missing_channels=missing_channels)
 
 
 def load_episode(dataset: Path, episode_path: str, *, require_training_ready=False) -> tuple[dict, dict[str, np.ndarray]]:
     """仅使用包内文件读取已登记任务并验证哈希，无原片/注册表依赖。"""
     dataset = dataset.resolve()
     manifest = json.loads((dataset / 'manifest.json').read_text())
-    if manifest.get('kind') != FORMAT or manifest.get('schema_version') != SCHEMA_VERSION:
+    if manifest.get('kind') != FORMAT or manifest.get('schema_version') not in (1, SCHEMA_VERSION):
         raise ValueError('不支持的数据集格式版本')
     matches = [entry for entry in manifest['episodes'] if entry['path'] == episode_path]
     if len(matches) != 1:
@@ -102,13 +109,19 @@ def load_episode(dataset: Path, episode_path: str, *, require_training_ready=Fal
             raise ValueError(f'数据集文件缺失、越界或哈希变化：{name}')
     metadata = json.loads((directory / 'episode.json').read_text())
     if require_training_ready and not metadata['training_ready']:
-        raise ValueError('任务尚不可用于完整训练，缺少通道：'+', '.join(metadata['missing_channels']))
+        raise ValueError('任务尚不满足训练数据条件：'+', '.join(metadata.get('not_ready_reasons', metadata['missing_channels'])))
     with np.load(directory / 'samples.npz', allow_pickle=False) as stored:
         arrays = {key: stored[key] for key in stored.files}
     if set(arrays) != set(metadata['arrays']):
         raise ValueError('样本字段与任务清单不一致')
     for name, value in arrays.items():
         spec = metadata['arrays'][name]
-        if list(value.shape) != spec['shape'] or str(value.dtype) != spec['dtype'] or not np.isfinite(value).all():
+        finite = np.isfinite(value).all()
+        for suffix in ('_gripper_width_m', '_gripper_close_01'):
+            if name.endswith(suffix):
+                valid = arrays[name[:-len(suffix)]+'_gripper_valid']
+                finite = (valid.dtype == np.dtype(bool) and valid.shape == value.shape
+                          and np.isfinite(value[valid]).all() and np.isnan(value[~valid]).all())
+        if list(value.shape) != spec['shape'] or str(value.dtype) != spec['dtype'] or not finite:
             raise ValueError(f'样本形状、类型或数值无效：{name}')
     return metadata, arrays

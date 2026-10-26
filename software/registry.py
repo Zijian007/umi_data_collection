@@ -217,6 +217,31 @@ def rear_path(serial: str, version: str) -> Path:
     return directory / 'rear_calibration.json'
 
 
+def register_width(serial: str, source: Path, *, gripper: str, gripper_version: str) -> str:
+    """宽度标定绑定相机与夹爪安装版本；不覆盖默认几何或已有批次。"""
+    from software.gripper_width import calibration as width_calibration
+    from software.config import canonical_hash
+
+    width_calibration.read(source)
+    validate_id(serial)
+    get(serial, gripper=gripper, gripper_version=gripper_version)
+    binding = dict(kind='umi_gripper_width', serial=serial, gripper=gripper, gripper_version=gripper_version)
+    version = 'width_'+canonical_hash(dict(binding=binding, sha256=sha256_file(source)))[:12]
+    with locked(ROOT, '.registry.lock'):
+        store_version(CAMERAS / serial / 'gripper_width', version,
+                      {'width_calibration.json': source}, **binding)
+    return version
+
+
+def width_path(serial: str, version: str, *, gripper: str, gripper_version: str) -> Path:
+    directory = CAMERAS / validate_id(serial) / 'gripper_width' / validate_id(version)
+    metadata = version_assets(directory)
+    binding = dict(kind='umi_gripper_width', serial=serial, gripper=gripper, gripper_version=gripper_version)
+    if any(metadata.get(key) != value for key, value in binding.items()):
+        raise RegistryError('宽度标定与相机或夹爪安装版本不匹配')
+    return directory / 'width_calibration.json'
+
+
 def sample() -> dict:
     return get(SAMPLE_SERIAL)
 

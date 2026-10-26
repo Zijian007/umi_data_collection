@@ -24,6 +24,7 @@ from software.scene import episodes, fusion, inputs, mapping, recording_checks, 
 from software.scene.geometry import VisualObservations
 from software.camera.timing import video_to_imu_seconds
 from software.camera.geometry import imu_from_camera
+from software.gripper_width import pipeline as width_pipeline
 from software.scene.models import CalibratedCamera, Episode, PreparedRecording, Scene
 from software.storage import locked, publish_link, write_json, write_yaml
 from software.vision import runtime
@@ -270,17 +271,23 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             display_map_path = map_dir / 'map.json'
             scene_metadata = dict(name=scene.name, version=map_manifest['version'], frame_id=map_manifest['frame_id'], session=episode.session.name)
             tracks = {}
+            widths = {}
             for arm, recording in prepared_recordings.items():
                 console.write(f'{arm}：已有场景地图定位 → 固定场景系融合', recording=name, step=(2, 3))
                 fusion_result = reconstruct_arm_in_scene(episode, arm, recording, map_dir, map_manifest)
                 tracks[arm] = results.write_arm(arm, recording, fusion_result, video_offsets_s[arm], scene_metadata, display_map_path, run_dir / arm)
+                if 'width' in recording.camera.files:
+                    console.write(f'{arm}：提取指尖标记开合宽度', recording=name)
+                    widths[arm] = width_pipeline.process(episode.recordings[arm], recording.camera.files['width'],
+                        recording.video_times_s, video_offsets_s[arm], run_dir / arm,
+                        episode.path.parent / 'cache/gripper_width', episode.recording_refs[arm]['sha256'])
             console.write('写入轨迹、报告并发布结果', recording=name, step=(3, 3))
             common_interval_s = results.write_bimanual(tracks, run_dir)
             if input_identity != inputs.episode_inputs(episode, inputs.select_cameras(episode.recordings, device_scene, episode.serials), map_manifest):
                 raise ValueError('任务期间录像或标定发生变化，拒绝发布')
             results.write_episode(episode, tracks, run_dir, common_interval_s=common_interval_s,
                                   scene_record=scene_metadata, input_identity=input_identity,
-                                  video_offsets_s=video_offsets_s, elapsed_s=time.monotonic()-started)
+                                  video_offsets_s=video_offsets_s, elapsed_s=time.monotonic()-started, gripper_width=widths)
             publish_link(run_dir, episode.output)
             episodes.record_attempt(episode, 'ok', run_dir)
         except Exception as error:

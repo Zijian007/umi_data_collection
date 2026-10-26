@@ -10,11 +10,14 @@ from software.scene.models import ARMS
 from software.storage import locked, write_yaml
 
 
-def register_kit(scene_path: Path, name: str, arms: dict[str, str], *, rear: dict[str, str] | None = None, description='') -> dict:
+def register_kit(scene_path: Path, name: str, arms: dict[str, str], *, rear: dict[str, str] | None = None,
+                 width: dict[str, Path] | None = None, description='') -> dict:
     """更新当前配置；已有批次使用自己的设备快照，不受此处修改影响。"""
     scene = inputs.read_scene(scene_path)
     name = inputs.validate_name(name)
     inputs.read_arms(list(arms))
+    if width and width.keys()-arms.keys():
+        raise ValueError('宽度标定必须属于本套件已声明的手')
     if len(set(arms.values())) != len(arms):
         raise ValueError('左右手不能使用同一台相机')
     device_bindings = {}
@@ -26,6 +29,9 @@ def register_kit(scene_path: Path, name: str, arms: dict[str, str], *, rear: dic
         if rear and arm in rear:
             registry.rear_path(serial, rear[arm])
             device_binding['rear_calibration'] = rear[arm]
+        if width and arm in width:
+            device_binding['width_calibration'] = registry.register_width(serial, width[arm],
+                gripper=device_binding['gripper'], gripper_version=device_binding['gripper_version'])
         device_bindings[arm] = dict(serial=serial, **device_binding)
     kit_config = inputs.validate_kit(dict(id=name, description=description, arms=device_bindings))
     with locked(scene.root / 'kits'):
@@ -49,6 +55,9 @@ def create_session(scene_path: Path, name: str, *, kit: str,
         registry.get(item['serial'], **{key: item[key] for key in ('calibration', 'gripper', 'gripper_version')})
         if 'rear_calibration' in item:
             registry.rear_path(item['serial'], item['rear_calibration'])
+        if 'width_calibration' in item:
+            registry.width_path(item['serial'], item['width_calibration'],
+                gripper=item['gripper'], gripper_version=item['gripper_version'])
     session_dir = scene.root / 'kits' / kit_snapshot['id'] / 'sessions' / inputs.validate_name(name)
     session_path = session_dir / 'session.yaml'
     with locked(session_dir):

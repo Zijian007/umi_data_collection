@@ -98,13 +98,14 @@ def write_bimanual(tracks: dict[str, ArmTrajectory], directory: Path) -> list[fl
 
 def write_episode(episode: Episode, tracks: dict[str, ArmTrajectory], directory: Path, *,
                   common_interval_s: list[float], scene_record: dict, input_identity: dict,
-                  video_offsets_s: dict[str, float], elapsed_s: float) -> None:
+                  video_offsets_s: dict[str, float], elapsed_s: float, gripper_width: dict | None = None) -> None:
     """写任务报告与资产清单；不更新 results 指针或人工验收状态。"""
     (directory / 'report.txt').write_text(f'场景任务：{episode.path.parent.name}\n采集批次：{episode.session.name}\n坐标：{scene_record["frame_id"]}\n'
         f'操作指令：{episode.instruction or "未填写"}\n'
         f'手：{", ".join(tracks)}\n共同有效时间：{common_interval_s[0]:.6f}–{common_interval_s[1]:.6f} s\n'
         f'同步：{episode.synchronization["method"]}；offsets_s={video_offsets_s}\n'
         f'同步确认：{episode.synchronization["confirmed"]}；依据：{episode.synchronization["note"]}\n'
+        f'夹爪宽度：{", ".join(gripper_width or {}) or "未配置标定"}\n'
         '轨迹共享米制坐标；左右手分别融合。\n实际误差：未测量；TCP 使用 CAD 名义几何。\n'
         '各手指标见 left/report.txt、right/report.txt（以实际存在的手为准）。\n', encoding='utf-8')
     assets = inputs.artifact_hashes(directory, tuple(tracks))
@@ -116,6 +117,7 @@ def write_episode(episode: Episode, tracks: dict[str, ArmTrajectory], directory:
         frame_id=scene_record['frame_id'], arms={arm: arm for arm in tracks}, common_interval_s=common_interval_s,
         rows=int(np.count_nonzero((primary_times >= common_interval_s[0]) & (primary_times <= common_interval_s[1]))),
         instruction=episode.instruction, synchronization=episode.synchronization,
+        gripper_width=gripper_width or {},
         inputs=input_identity, assets=assets, elapsed_s=elapsed_s, actual_error='not_measured',
         tcp_frames={arm: track.tcp_frame for arm, track in tracks.items()})
     write_json(directory / 'episode.json', metadata)

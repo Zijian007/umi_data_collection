@@ -40,7 +40,7 @@ ingest / episode → ingest.py               唯一配对或显式登记
 
 目录层次为 `scenes/<场景>/kits/<套件>/sessions/<批次>/<任务>/`。输入读取校验目录与清单身份一致；查看器标签和导出路径都包含套件。
 
-每个套件只有一个 kit.yaml；`inputs.read_kit()` 读取当前配置，`validate_kit()` 校验当前配置与批次快照的共同结构。创建批次时核对实际测量并把配置保存到 session.yaml（schema 4），处理已有批次只读快照。套件没有独立版本目录或指针文件，相机标定、夹爪与地图继续使用各自的固定资产版本。
+每个套件只有一个 kit.yaml；`inputs.read_kit()` 读取当前配置，`validate_kit()` 校验当前配置与批次快照的共同结构。创建批次时核对实际测量并把配置保存到 session.yaml（schema 4），处理已有批次只读快照。套件没有独立版本目录或指针文件，相机标定、夹爪与地图继续使用各自的固定资产版本。套件可额外指定每手 width_calibration，绑定相机和夹爪版本并随批次冻结。
 
 新任务清单 schema 5 保存 instruction 和 synchronization；兼容读取 schema 4，双手默认零偏移但未经确认。单手不要求跨设备同步确认。批次与任务分别保留 expected_arms，缺片任务不会隐式降为单手。
 
@@ -74,6 +74,7 @@ run → workflow.run_episode()
             VisualObservations.placed()  显式转入固定场景系
             fusion.fuse()                输出 T_scene_imu
         results.write_arm()              换算相机/TCP、写该手结果
+        gripper_width.pipeline.process() 有宽度标定时检测原片指尖、对齐时间并写宽度
     results.write_bimanual()              校验同一场景、共同时间区间与双手表
     inputs.episode_inputs()               发布前重新核对输入
     results.write_episode()               报告、资产哈希与任务元数据
@@ -122,6 +123,8 @@ run → workflow.run_episode()
 时间转换统一调用 `software/camera/timing.py`；EuRoC 文件的人工 +1 秒在读入准备数据时去掉，算法中不混入文件时钟。双手 CSV 的历史字段 `t_scene_s` 表示任务时间，不是另一个物理时钟。
 
 任务锁、地图绑定、缓存复用、失败证据与发布顺序保留在 `run_episode()`；结果模块只写产物，不能更新成功指针或验收状态。第二只手求解或结果写入失败时，不发布部分成功结果。
+
+宽度模块复用 main 的检测器和毫米映射；原片检测独立缓存，固定偏移仅在输出时应用。宽度资产不进入相机几何身份，另在 episode_inputs.gripper_width 中记录版本/哈希与检测代码身份。参考 [宽度模块](../gripper_width/README.md)。
 
 ## 验证
 
