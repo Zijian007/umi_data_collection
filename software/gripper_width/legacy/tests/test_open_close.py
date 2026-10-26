@@ -10,8 +10,8 @@ import numpy as np
 HERE = Path(__file__).resolve().parents[1]
 
 
-def load(name: str):
-    spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
+def load(name: str, base: Path = HERE):
+    spec = importlib.util.spec_from_file_location(name, base / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -19,7 +19,7 @@ def load(name: str):
 
 pilot = load("pilot")
 split_tasks = load("split_tasks")
-width = load("width_4k60")
+width = load("width_4k60", HERE.parent)  # width_4k60 留在正式包，供 pipeline 复用
 
 
 def test_width_clamps_closed_and_extrapolates_past_open():

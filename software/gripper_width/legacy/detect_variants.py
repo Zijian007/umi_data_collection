@@ -16,7 +16,7 @@ Variants (all DICT_4X4_50, ID0 / ID1, sub-pixel corners; coordinates mapped back
   band_x2_p  2x plus looser parameters (adaptiveThreshWinSizeMin 3, step 4, polygonalApproxAccuracyRate 0.05,
              minCornerDistanceRate 0.02, minDistanceToBorder 1)
 
-    python software/gripper_width/detect_variants.py INSV --every 10 --band 450 1450 1150 1450 --out OUT.json [--first N]
+    python software/gripper_width/legacy/detect_variants.py INSV --every 10 --band 450 1450 1150 1450 --out OUT.json [--first N]
 """
 
 from __future__ import annotations

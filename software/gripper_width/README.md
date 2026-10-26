@@ -1,6 +1,14 @@
 # 夹爪开合宽度
 
-本目录的 `width_4k60.py`、`tags_4k60.py`、`apply_width.py`、`detect_variants.py`、`pilot.py`、`split_tasks.py`、`run_io.py` 及原测试来自 main 的 `f331ad9`，保持原脚本内容。其上游记录为 `umi/dev_Zijian@1910dca36093ce06f75b064628678e543ea5f098`。
+`width_4k60.py` 及 `legacy/` 下的 `tags_4k60.py`、`apply_width.py`、`detect_variants.py`、`pilot.py`、`split_tasks.py`、`run_io.py` 和 `legacy/tests/` 来自 main 的 `f331ad9`，除 `legacy/` 用法注释中的路径和测试加载 `width_4k60` 的位置外保持原脚本内容。其上游记录为 `umi/dev_Zijian@1910dca36093ce06f75b064628678e543ea5f098`。
+
+```text
+software/gripper_width/
+├── calibration.py / pipeline.py / series.py   场景流程接入（正式代码）
+├── width_4k60.py                             main 原脚本；pipeline 复用其检测器与毫米映射
+└── legacy/                                   main 原脚本中的独立分析工具，不被场景流程导入
+    └── tests/test_open_close.py              pytest：.deps/env/bin/python -m pytest -q software/gripper_width/legacy/tests
+```
 
 场景流程复用 `width_4k60.py` 的双 ArUco 检测器和分段线性像素—毫米映射，不重新实现检测算法。使用原片前镜头的完整 1920×1920 半幅，标记字典为 `DICT_4X4_50`，ID 为 0 和 1；不使用缩小/裁切后的 `front.mp4` 估计毫米宽度。
 
@@ -12,6 +20,6 @@
 
 无标定的任务继续只输出轨迹；已配置的标定缺失、身份不符或检测出错时任务失败，保留上次成功入口。没有找到标记会保存缺失值，不会当作闭合。超出最大标定开口的结果不作为有效测量，不用短缺口插值掩盖。
 
-`apply_width.py` 的同日单标记拟合，以及 `pilot.py` / `split_tasks.py` 的糖果取放标记与切分规则保留为独立分析工具，不自动应用到通用场景。`apply_width.py` 需要额外的 pandas；场景双标记主流程使用已有 OpenCV/ArUco、PyAV 和 NumPy，不依赖 pandas。
+`legacy/apply_width.py` 的同日单标记拟合，以及 `legacy/pilot.py` / `legacy/split_tasks.py` 的糖果取放标记与切分规则保留为独立分析工具，不自动应用到通用场景。`apply_width.py` 需要额外的 pandas；场景双标记主流程使用已有 OpenCV/ArUco、PyAV 和 NumPy，不依赖 pandas。
 
 配置、标定格式、产物和训练字段见 [训练数据指南](../../docs/训练数据.md#夹爪宽度标定与接入)。主流程不使用历史脚本按固定 FPS 推算任务时间，也不把原片 `2*k` 帧号当成生成视频的帧号。

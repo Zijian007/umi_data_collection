@@ -15,7 +15,7 @@
 4. Per trajectory row k (= video frame 2k): median over frames 2k-1..2k+1, two-tag frames preferred over one-tag frames;
    gaps of at most --max-gap-rows rows are interpolated, longer gaps stay empty.
 
-    python software/gripper_width/apply_width.py --calib-frames 029/frames.csv --sept plateaus.json --day 072=072/frames.csv ... --out DIR
+    python software/gripper_width/legacy/apply_width.py --calib-frames 029/frames.csv --sept plateaus.json --day 072=072/frames.csv ... --out DIR
 """
 
 from __future__ import annotations

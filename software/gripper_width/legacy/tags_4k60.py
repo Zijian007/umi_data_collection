@@ -13,7 +13,7 @@ Per frame and tag: the first scale of (1, 2, 3) that finds the tag; centre in na
 (native = (scaled + 0.5) / scale - 0.5 + band offset).  Same parameters at every scale as in September
 (adaptiveThreshWinSizeMax 53, minMarkerPerimeterRate 0.005, sub-pixel corners).
 
-    python software/gripper_width/tags_4k60.py INSV --out frames.csv [--band 520 1380 1200 1420]
+    python software/gripper_width/legacy/tags_4k60.py INSV --out frames.csv [--band 520 1380 1200 1420]
 """
 
 from __future__ import annotations

@@ -10,7 +10,7 @@ marker's close completes to the end, keeping about 1 s of the final rest.
 
 Per recording WORK/<tail>/:
   runs/u1..u3/<stem>/   three runs of the trajectory tool (umi-traj, dev tree with kiwi_fuse3t --gap_init_gyro)
-  ../width/<tail>_rows.csv   gripper opening per trajectory row (software/gripper_width/apply_width.py)
+  ../width/<tail>_rows.csv   gripper opening per trajectory row (software/gripper_width/legacy/apply_width.py)
 What is checked:
   * every run status ok; share of rows pinned by the camera map; gaps without a map position;
   * run-to-run: each pair of runs aligned rigidly on the rows both support; disagreement over the whole recording and
