@@ -16,7 +16,7 @@ from software.calibration import recording_data
 from software.calibration.models import CalibrationInputs, CameraImuResult, GravityResult, IntrinsicsResult, SegmentPaths
 from software.scene import rear_calibration
 from software.storage import write_json
-from software.trajectory.models import LensVideo
+from software.vision.models import LensVideo
 import test_scene as scene_fixtures
 
 
@@ -25,7 +25,7 @@ class RearCalibrationTests(unittest.TestCase):
         self.fixture = scene_fixtures.SceneWorkflowTests('test_multitask_bimanual_metric_world_and_reuse')
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
-        self.video = self.fixture.videos['left']
+        self.video = self.fixture.recording_paths['left']
         self.front = self.fixture.cameras[self.video]
         recordings = SegmentPaths(self.video, self.video, self.video, self.video)
         self.inputs = CalibrationInputs(recordings, self.front.serial, dict(tagCols=6, tagRows=6, tagSize=.024, tagSpacing=.3))
@@ -45,8 +45,8 @@ class RearCalibrationTests(unittest.TestCase):
                     board_pose_fraction=1., board_distance_m=[.2, .5])
 
     def prepare(self, video, camera, *args, **kwargs):
-        rec = self.fixture.recordings[video]
-        return replace(rec, camera=camera, videos=(LensVideo('rear', rec.videos[0].path, rec.videos[0].settings, None),))
+        rec = self.fixture.prepared_recordings[video]
+        return replace(rec, camera=camera, lens_videos=(LensVideo('rear', rec.lens_videos[0].path, rec.lens_videos[0].settings, None),))
 
     def run_rear(self, scale):
         output = self.fixture.root / 'rear_output'
@@ -55,15 +55,15 @@ class RearCalibrationTests(unittest.TestCase):
         a = IntrinsicsResult(self.front.files['front'], [350., 350., 720., 720., 0., 0., 0., 0.], self.metrics(), self.coverage())
         reference = dict(idx=np.arange(len(self.poses)), p=scale*self.poses[:, :3, 3], n_frames=len(self.poses), reproj_deg_med=[])
         with patch.object(rear_calibration.registry, 'pin', return_value=self.fixture.device_pins[self.front.serial]), \
-             patch.object(rear_calibration.inputs, 'prepare_inputs', return_value=self.inputs), \
-             patch.object(rear_calibration, 'select_camera', return_value=self.front), \
+             patch.object(rear_calibration.calibration_inputs, 'prepare_inputs', return_value=self.inputs), \
+             patch.object(rear_calibration.inputs, 'select_camera', return_value=self.front), \
              patch.object(rear_calibration.runtime, 'prepare', return_value=True), \
              patch.object(rear_calibration.recording_data, 'build', side_effect=dataset) as build, \
              patch.object(rear_calibration.recording_data, 'imu_stats', return_value=dict(gyro_norm_p95_rad_s=1.)), \
              patch.object(rear_calibration.intrinsics, 'solve_intrinsics', return_value=a), \
              patch.object(rear_calibration.camera_imu, 'solve_camera_imu', side_effect=self.solve_b), \
              patch.object(rear_calibration.validation, 'validate_gravity', return_value=GravityResult('CONSISTENT', 6, 6, .01)), \
-             patch.object(rear_calibration.engine, 'prepare', side_effect=self.prepare), \
+             patch.object(rear_calibration.recordings, 'prepare_recording', side_effect=self.prepare), \
              patch.object(rear_calibration.board_pnp, 'detect_all', return_value={}), \
              patch.object(rear_calibration.board_pnp, 'board_reference', return_value=reference):
             result = rear_calibration.run(self.fixture.source, output=output)

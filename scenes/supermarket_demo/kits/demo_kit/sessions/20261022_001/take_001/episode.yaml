@@ -1,0 +1,10 @@
+schema_version: 4
+session: ../session.yaml
+expected_arms:
+- left
+instruction: 历史实验录像的单手场景流程验证
+recordings:
+  left:
+    serial: IAQEB26097M4CP
+    sha256: 26cc208cd9fed14c585f4d7aec68f156cef86cf934c1f6eac2cc29390ba0853d
+    path: ../../../../../../../recordings/scenes/supermarket_demo/demo_kit/20261022_001/IAQEB26097M4CP/VID_20261022_225713_00_005.insv

@@ -39,11 +39,11 @@ def atomic_file(path: Path):
 
 
 @contextmanager
-def locked(directory: Path, name: str = '.scene.lock'):
+def locked(directory: Path, name: str = '.scene.lock', *, blocking: bool = False):
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / name).open('a') as stream:
         try:
-            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(stream, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         except BlockingIOError as error:
             raise ValueError(f'已有写入操作正在运行：{directory}') from error
         try:

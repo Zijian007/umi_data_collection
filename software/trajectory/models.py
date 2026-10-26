@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from software import config
+from software.vision.models import RecordingPaths as VisualPaths, VisualSettings, VisualContext
 
 
 @dataclass(frozen=True)
@@ -26,55 +27,25 @@ class TrajectoryRequest:
 
 
 @dataclass(frozen=True)
-class RecordingPaths:
-    output: Path
-
-    @property
-    def debug(self) -> Path:
-        return self.output / "debug"
-
-    @property
-    def logs(self) -> Path:
-        return self.debug / "logs"
-
-    @property
-    def dataset(self) -> Path:
-        return self.debug / "dataset"
-
+class RecordingPaths(VisualPaths):
     @property
     def reconstruction(self) -> Path:
-        return self.debug / "reconstruction"
-
-    @property
-    def lens_videos(self) -> Path:
-        return self.debug / "lens_videos"
+        return self.debug / 'reconstruction'
 
     def attempt(self, number: int) -> Path:
-        return self.reconstruction / f"try_{number}"
+        return self.reconstruction / f'try_{number}'
 
 
 @dataclass(frozen=True)
-class RecordingData:
-    manifest: dict
-    imu_csv: Path
-    times_csv: Path | None = None
+class ReconstructionSettings(VisualSettings):
+    """独立轨迹额外使用的离线融合设置。"""
 
-
-@dataclass(frozen=True)
-class ReconstructionSettings:
-    environment: dict[str, str]
-    tools_python: str
     fusion_python: str
-    orb_directory: Path
-    vocabulary: Path
-    front_settings: Path
-    front_mask: Path
     fusion_script: Path
     time_offset_ns: str
     rear_q_ic: str
     rear_lever: str
     camera_json: Path
-    rear_settings: Path
     parameters_file: Path
 
 
@@ -90,34 +61,12 @@ class ReconstructionContext:
             raise ValueError("重建上下文需要 workflow 已解析的参数")
 
     @property
+    def visual(self) -> VisualContext:
+        return VisualContext(self.paths, self.settings, self.parameters, self.frame_count, self.request.cores)
+
+    @property
     def parameters(self) -> config.TrajectoryParameters:
         return self.request.configuration.values
-
-
-@dataclass(frozen=True)
-class LensVideo:
-    lens: str
-    path: Path
-    settings: Path
-    mask: Path | None
-
-
-@dataclass(frozen=True)
-class MapAtlas:
-    video: LensVideo
-    archive: Path
-
-
-@dataclass(frozen=True)
-class AtlasMap:
-    index: int
-    keyframes: int
-
-
-@dataclass(frozen=True)
-class LensLocalization:
-    lens: str
-    frames_csv: Path
 
 
 @dataclass(frozen=True)
@@ -133,14 +82,5 @@ class AttemptResult:
     directory: Path | None
     reason: str | None = None
     failed_stage: str | None = None
-
-
-class ReconstructionError(RuntimeError):
-    """阶段名和退出码供重试与报告使用；原因中保留具体日志位置。"""
-
-    def __init__(self, stage: str, reason: str, *, return_code: int = 1):
-        super().__init__(reason)
-        self.stage = stage
-        self.return_code = return_code
 
 

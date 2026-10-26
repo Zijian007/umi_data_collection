@@ -1,5 +1,23 @@
 #!/usr/bin/env bash
+# umi-view：启动本地网页查看器，联动查看视频、TCP 轨迹、环境地图与坐标轴。
+#
+# 常用命令：
+#   ./umi-view                              # 扫描项目的 scenes/ 目录
+#   ./umi-view scenes/supermarket_demo       # 查看某个场景的任务结果
+#   ./umi-view /path/to/trajectory/result    # 查看一个轨迹结果目录
+#   ./umi-view --host 0.0.0.0 --port 9091   # 指定监听地址和端口
+#   ./umi-view --help
+# 启动后按终端提示访问网页，默认 http://127.0.0.1:9091；Ctrl+C 停止服务。
+# 先用 umi-scene run 或 umi-traj 生成结果，再用此入口查看。
+# 查看器按需加载结果与视频；视频播放所需的缓存由服务端管理。
+#
+# 代码阅读：本脚本 → software/viewer/__main__.py → server.py。
+# 数据查找与读取在 software/viewer/data.py，网页交互在 static/。
+# UMI_VIEW_PYTHON 可指定解释器，默认 python3；查看器无需载入 SLAM 运行环境。
 set -euo pipefail
+
+# 以脚本所在目录定位项目，使 Python 能从其他工作目录导入 software。
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+# 原样转交参数；用服务进程替换 shell，保留退出码和中断信号。
 exec "${UMI_VIEW_PYTHON:-python3}" -m software.viewer "$@"

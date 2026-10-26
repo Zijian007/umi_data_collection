@@ -77,7 +77,7 @@ def reuse_decision(output: Path, fingerprint: dict, *, notes: config.NoteParamet
         try:
             import json
             settings = json.loads(result_path(output, 'run_settings.json').read_text())
-            from software.trajectory.algorithms.postprocess import evaluate_notes
+            from software.trajectory.quality import evaluate_notes
             # Validate the full evidence shape before accepting reuse; missing raw
             # measurements must trigger a rerun rather than a partial report.
             evaluate_notes(summary, notes)

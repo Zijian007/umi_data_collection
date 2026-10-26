@@ -1,0 +1,127 @@
+{
+  "kind": "t_tcp_camera_nominal_cad",
+  "status": "NOMINAL_CAD_CANDIDATE_UNVERIFIED",
+  "version": 4,
+  "date": "2026-10-26",
+  "units": "metres; rotation matrix rows; quaternion xyzw (w>=0)",
+  "optical_center_depth_mm": 2.5,
+  "tcp_frame": {
+    "convention": "genie_omnipicker_axes_v1",
+    "origin": "closed-fingertip contact midpoint",
+    "axes": {
+      "x": "outer finger to inner finger (front image left)",
+      "y": "right-handed completion: z cross x",
+      "z": "gripper body toward fingertips"
+    },
+    "handedness": "right-handed"
+  },
+  "frames": {
+    "TCP": "closed-fingertip contact midpoint; +x outer->inner finger (front image left), +z body->fingertips, +y = +z cross +x; Genie omnipicker mechanical axis convention",
+    "CAM0_OPTICAL": "lens-0 dome rotation axis (CAD-exact: both dome spheres on-axis to <1e-4 mm); origin 2.5 mm behind bare outer lens vertex; z out of lens, x image-right, y image-down (roll convention vs real image readout: +y=image-down supported by fingers-at-image-bottom in real footage; x sign to be pinned by one frame check)"
+  },
+  "matrix_direction": {
+    "T_tcp_camera": "maps points FROM CAM0_OPTICAL frame TO TCP frame: p_tcp = R @ p_cam + t (= pose of camera frame expressed in TCP frame)",
+    "T_camera_tcp": "inverse: p_cam = R' @ p_tcp + t'"
+  },
+  "T_camera_tcp": {
+    "R_rows": [
+      [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        -0.93041756788223,
+        -0.36650122697764065
+      ],
+      [
+        0.0,
+        -0.36650122697764065,
+        0.93041756788223
+      ]
+    ],
+    "t_m": [
+      -0.0001815,
+      0.0369877,
+      0.1650461
+    ]
+  },
+  "T_tcp_camera": {
+    "R_rows": [
+      [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        -0.93041756788223,
+        -0.36650122697764065
+      ],
+      [
+        0.0,
+        -0.36650122697764065,
+        0.93041756788223
+      ]
+    ],
+    "t_m": [
+      -0.0001815,
+      0.09490360403343193,
+      -0.14000575351736644
+    ],
+    "q_xyzw": [
+      0.0,
+      -0.18652403614249033,
+      0.9824503977001154,
+      0.0
+    ]
+  },
+  "lever_arm_mm": 169.14,
+  "origin_geometry": {
+    "path": "registry/grippers/handheld_v1/versions/b29b429c0fcc/t_tcp_camera.json",
+    "sha256": "1e17a28aed1c84ba967eded53f7798fa1f233ac0212c9cce808dae03e2b74b5d",
+    "note": "TCP origin in the camera frame is retained exactly from this CAD asset; only the TCP basis is redefined. No new physical calibration."
+  },
+  "method": "Keep the original X3-specific CAD fingertip position; use the CAD body-to-fingertip axis as +Z and choose the opening-axis sign so +X points from outer to inner finger. This is an axis convention change, not a new calibration.",
+  "uncertainty": {
+    "optical_centre_depth_along_cam_z_mm": "+/- ~1.0 (was +/-2.0): caliper T +/-0.2, factory-baseline parameterization spread +/-0.25, front/back symmetry assumption +/-0.5, effective-viewpoint non-uniqueness (pupil walk) +/-0.75 conservative",
+    "camera_roll_convention": "x sign vs image readout to be pinned with one recorded frame (y=image-down already supported)",
+    "tcp_axis_convention": "Robot-compatible mechanical axis convention declared; +X sign set by user inner-finger-left observation. Tilt and position remain nominal CAD, not independently calibrated.",
+    "verification_required": "fingertip jig + AprilGrid or hand-eye+pivot before any 'verified' status; formal training gate unchanged"
+  },
+  "axis_alignment": {
+    "robot_reference": {
+      "file": "genie_robot_description/urdf/G2_t2_crs/G2_t2_crs_omnipicker.urdf",
+      "sha256": "bc9b980a1085b326ff2f5bb04726a0a57a5c3e79a6020e6520da27a2bb55be36",
+      "tcp_links": [
+        "gripper_l_center_link",
+        "gripper_r_center_link"
+      ],
+      "note": "URDF camera_link is a mechanical link, not the X3 optical frame. Its Rz(-90 deg) TCP relation is not used as the optical-to-TCP transform."
+    },
+    "sign_observation": {
+      "source": "User confirmation in this session, 2026-10-26 Asia/Shanghai",
+      "inner_finger_in_front_video": "left"
+    },
+    "R_cad_tcp_robot_tcp": [
+      [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "nominal_camera_fingertip_angle_deg": 21.5,
+    "note": "Legacy CAD rotation projected to SO(3) to remove decimal rounding error; retain its +Z, reverse its X/Y signs."
+  }
+}

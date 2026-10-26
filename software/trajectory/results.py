@@ -29,22 +29,23 @@ def load_summary(output: Path) -> dict:
     return json.loads(result_path(output, 'summary.json').read_text(encoding='utf-8'))
 
 
+def attempt_paths(output: Path, summary: dict) -> tuple[Path, ...]:
+    """选中重建轮次的当前及历史路径，按读取优先级排列。"""
+    chosen = summary.get('chosen_try', 1)
+    if type(chosen) is not int or chosen < 1:
+        raise ValueError('摘要中的重建轮次无效')
+    legacy = 'kiwi' if chosen == 1 else f'kiwi_try{chosen}'
+    return (output / 'debug/reconstruction' / f'try_{chosen}',
+            output / 'diagnostics/work' / legacy, output / 'work' / legacy)
+
+
 def front_video_path(output: Path, summary: dict) -> Path | None:
-    """找到发布的视频，或旧结果中选中轮次的视频；不把其他轮次当作本次结果。"""
-    try:
-        chosen = int(summary.get('chosen_try', 1))
-    except (ValueError, TypeError):
-        chosen = 1
-    attempt = 'kiwi' if chosen == 1 else f'kiwi_try{chosen}'
-    for path in (
-        output / 'front.mp4',
-        output / 'debug' / 'reconstruction' / f'try_{chosen}' / 'front/front.mp4',
-        output / 'diagnostics/work' / attempt / 'front/front.mp4',
-        output / 'work' / attempt / 'front/front.mp4',
-    ):
-        if path.is_file():
-            return path
-    return None
+    """优先发布的视频，再查选中轮次；不混入其他轮次的视频。"""
+    published = output / 'front.mp4'
+    if published.is_file():
+        return published
+    return next((path / 'front/front.mp4' for path in attempt_paths(output, summary)
+                 if (path / 'front/front.mp4').is_file()), None)
 
 
 def _legacy_moves(output: Path) -> list[tuple[Path, Path]]:
@@ -162,13 +163,15 @@ def cleanup_debug(paths: RecordingPaths) -> None:
     (paths.debug / 'times.csv').unlink(missing_ok=True)
 
 
-def publish_logs(kiwi_dir: Path, logs: Path) -> None:
+def publish_logs(reconstruction_dir: Path, logs: Path) -> None:
     for src, dest in (
-        (kiwi_dir / 'logs/run.txt', logs / 'run.txt'),
-        (kiwi_dir / 'logs/fuse.log', logs / 'fuse.log'),
-        (kiwi_dir / 'fuse/fuse_info.json', logs / 'fuse_info.json'),
-        (kiwi_dir / 'front/map/log.txt', logs / 'front_map_log.txt'),
-        (kiwi_dir / 'front/loc/frames.csv', logs / 'front_loc_frames.csv'),
+        (reconstruction_dir / 'logs/run.txt', logs / 'run.txt'),
+        (reconstruction_dir / 'logs/run.json', logs / 'run.json'),
+        (reconstruction_dir / 'logs/tracking.json', logs / 'tracking.json'),
+        (reconstruction_dir / 'logs/fuse.log', logs / 'fuse.log'),
+        (reconstruction_dir / 'fuse/fuse_info.json', logs / 'fuse_info.json'),
+        (reconstruction_dir / 'front/map/log.txt', logs / 'front_map_log.txt'),
+        (reconstruction_dir / 'front/loc/frames.csv', logs / 'front_loc_frames.csv'),
     ):
         if src.is_file():
             shutil.copy(src, dest)

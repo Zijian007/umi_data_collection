@@ -1,65 +1,130 @@
 # 场景代码阅读指南
 
-用户操作见 [共享场景与双手任务](../../docs/场景.md)。保留 `umi-traj` 的单段流程，场景流程由本模块单独编排。
+从 `cli.py` 找命令入口，再读 `workflow.py` 的 `build_scene()` 或 `run_episode()`。用户操作见 [场景指南](../../docs/场景.md)。
+
+## 文件职责
 
 ```text
-./umi-scene build scene.yaml
-  cli.main() → workflow.build_scene()
-    models.read_scene() / select_camera()   预检清单与实际设备测量
-    engine.prepare()                       共用 X3 时间戳、IMU 和镜头视频工具
-    mapping.build_maps()
-      engine.build() / atlas_candidates()  纯视觉建图、逐图定位
-      geometry.metric_alignment()          恢复尺度、重力并验收可观测性
-      geometry.place_front()               前地图放入共享后地图坐标
-    mapping.freeze_maps()                  固定地图、测量、场景变换
-    storage.write_json(current.json)       全部完成后才发布版本
-
-./umi-scene run episode.yaml
-  cli.main() → workflow.run_episode()
-    models.read_episode() / read_session() / offsets()      显式绑定左右手和时间偏移
-    workflow.load_published()              校验批次固定的地图版本、资产和引擎
-    engine.prepare() / localize()          只查询已有地图，不重新建图
-    Observations.transformed()             转成固定场景系的视觉位姿
-    fusion.fuse()                          每只手的 IMU 图，共享固定场景位姿约束
-    results.write_arm() / write_bimanual()  同坐标 TUM、共同时间上的双手表
-    storage.publish_link(results)          发布当前成功结果
+software/scene/
+├── cli.py                 参数与直接分发
+├── workflow.py            建图、抽取、缓存与失败收尾
+├── models.py              参数、清单和阶段数据结构
+├── inputs.py              清单读取、资产选择、输入指纹与校验
+├── capture_config.py      场景下的套件与批次配置
+├── ingest.py              原片配对、任务登记
+├── recordings.py          原片归档、时间戳/IMU/镜头视频准备
+├── recording_checks.py    原片和任务完整性检查
+├── slam.py                ORB 建图、定位、图集导出
+├── mapping.py             地图选择、米制对齐、场景放置与资产冻结
+├── geometry.py            坐标变换、惯性对齐与几何计算
+├── fusion.py              视觉与 IMU 融合、初始陀螺仪零偏
+├── episodes.py            任务状态、人工验收、导出
+├── results.py             轨迹、双手表、算法报告
+└── rear_calibration.py    后镜头标定与独立 C 验收
 ```
 
-## 模块边界
+`models.py` 不读取 YAML、设备资产或文件哈希。读取逻辑统一在 `inputs.py`，`workflow.py` 和 `episodes.py` 直接使用它；验收模块不导入 workflow。公共原子文件和锁由 `software/storage.py` 提供，设备实测资产由 `software/registry.py` 管理。
 
-| 文件 | 负责什么 |
-|---|---|
-| `cli.py` | 参数与命令分发，创建人可读清单 |
-| `models.py` | 场景、采集批次、任务、设备资产、参数与只读校验 |
-| `recordings.py` | 按场景、批次和序列号导入原片，保留命名并校验哈希 |
-| `workflow.py` | 执行顺序、版本复用、失败收尾与发布 |
-| `engine.py` | X3 准备、ORB 建图/定位与地图导出边界 |
-| `mapping.py` | 地图选择、米制对齐、场景放置和资产冻结 |
-| `geometry.py` | 显式方向的 SE(3)/尺度运算、惯性对齐、放置优化 |
-| `fusion.py` | 固定场景系中的单手 GTSAM 联合优化 |
-| `synchronization.py` | 音频相关性、音视频延迟换算和时间证据 |
-| `results.py` | 轨迹、帧约束、双手对齐表、报告 |
-| `rear_calibration.py` | 复用现有 A/B/D 和独立 C 验收，生成后镜头测量 |
+## 采集管理
 
-场景数学与融合参考 KIWI 公开参考实现，具体来源、修改和许可证见 [NOTICE.md](NOTICE.md)。本项目运行时不依赖本机的另一个 `KIWI_software` 仓库；所需数值代码已适配在本模块内。
+```text
+kit / session → capture_config.py          更新当前套件、保存批次设备快照
+    inputs.read_scene() / read_kit()
+    registry.pin() / version_assets()     读取全局实测资产
 
-原子文件、写入锁和版本指针由公共模块 `software/storage.py` 提供，场景与全局设备档案共用。
+ingest / episode → ingest.py               唯一配对或显式登记
+    recordings.inspect() / import_video() 原片身份、哈希、保留原名归档
+    inputs.read_episode()                 手、序列号与输入完整性
+    ingest._write_episode()               有变化才更新清单和任务状态
+```
 
-## 数据组织
+目录层次为 `scenes/<场景>/kits/<套件>/sessions/<批次>/<任务>/`。输入读取校验目录与清单身份一致；查看器标签和导出路径都包含套件。
 
-`init → build → session → episode → sync → run`。场景和任务使用 schema 2，不保留旧清单读取分支。`registry` 是全局资产库；场景固定建图设备版本，批次固定任务设备版本和地图清单 SHA256。任务的实际序列号必须与 INSV 一致。新默认标定、几何和新发布地图不会改变已有批次。
+每个套件只有一个 kit.yaml；`inputs.read_kit()` 读取当前配置，`validate_kit()` 校验当前配置与批次快照的共同结构。创建批次时核对实际测量并把配置保存到 session.yaml（schema 4），处理已有批次只读快照。套件没有独立版本目录或指针文件，相机标定、夹爪与地图继续使用各自的固定资产版本。
 
-原片在 `recordings/scenes/<场景>/<批次>/`，结果在 `scenes/<场景>/sessions/<批次>/episodes/<任务>/`。`tests/test_scene_management.py` 验证跨场景交错采集、默认值变化、版本固定和导入冲突。
+新任务清单 schema 5 保存 instruction 和 synchronization；兼容读取 schema 4，双手默认零偏移但未经确认。单手不要求跨设备同步确认。批次与任务分别保留 expected_arms，缺片任务不会隐式降为单手。
 
-## 坐标和时间
+指令进入结果 episode.json 和导出清单；修改指令或同步沿用清单哈希失效机制，需重新 run 和验收。训练格式由独立 [dataset 模块](../dataset/README.md) 负责，scene 不承担训练采样。
 
-- `camera_to_imu()` 返回 Basalt `T_imu_cam`；融合输入外参取其逆 `T_cam_imu`。
-- 地图放置保存尺度 `s` 和刚体 `T_scene_metric_map`：`p_scene = R (s p_map) + t`。相机–IMU 的物理杆臂不乘视觉地图尺度。
-- `Observations.times` 在本机 IMU 时钟：`t_video + cam_time_offset_ns / 1e9`。读取 EuRoC 时移除容器工具人为加的 1 秒。
-- 输出时间为 `t_episode = t_video + offset_s`。跨相机同步只改变输出时间，不混入本机惯性积分。
-- 融合使用场景中的绝对视觉位姿约束，不加入每段起点置零或地图重放置变量。没有可靠地图锚定时直接失败。
-- ORB 的建图与定位只使用图像；原始 IMU 由对齐和融合阶段读取。
+`state.json` 只保存 attempt/review，身份与完整性从清单读取；attempt.preflight_report 指向运行目录中的报告。录制检查在算法执行前落盘，算法失败仍有原始检查证据。
+
+## 算法执行
+
+```text
+build → workflow.build_scene()
+    inputs.read_scene() / select_cameras() 固定建图输入与测量
+    recordings.prepare_recording()        调用 vision 准备时间戳、IMU、镜头视频
+    mapping.build_maps()
+        slam.build() / atlas_candidates() 纯视觉建图、逐图定位
+        geometry.metric_alignment()       米制尺度、重力与零偏
+        geometry.place_front()            前地图放入共享场景
+    mapping.freeze_maps()                 地图与测量资产冻结
+    storage.write_json(current.json)      全部成功后发布地图
+
+run → workflow.run_episode()
+    inputs.read_episode()                 批次、录像、预期使用手
+    recording_checks.check_episode()      录制质量与完整性
+    workflow.bind_map()                   固定本批次地图
+    workflow.prepare_episode_recordings() 准备各手录像、检查时间重叠
+        workflow.prepare_cached()
+            recordings.prepare_recording()
+    每只手独立执行：
+        workflow.reconstruct_arm_in_scene()
+            workflow.localize_cached() → slam.localize()
+            VisualObservations.placed()  显式转入固定场景系
+            fusion.fuse()                输出 T_scene_imu
+        results.write_arm()              换算相机/TCP、写该手结果
+    results.write_bimanual()              校验同一场景、共同时间区间与双手表
+    inputs.episode_inputs()               发布前重新核对输入
+    results.write_episode()               报告、资产哈希与任务元数据
+    storage.publish_link(results)         全部成功后更新结果入口
+    episodes.record_attempt()             更新状态与验收有效性
+```
+
+`run_episodes()` 只负责任务并发、逐任务失败隔离与汇总。地图绑定在批次锁内直接读取和固定，不递归；只读预检走同一输入准备路径，不落盘。
+
+场景与独立轨迹通过 `vision.runtime.visual_settings()` 共用镜头 YAML 写入、遮手图准备与视觉运行设置。调用方先明确选择各镜头标定：场景只传实测镜头，独立模式仍显式使用其样例后镜头配置。
+
+场景录像准备直接构造 `vision.models.VisualContext`，包含已解析参数、帧数与 CPU 设置；不构造 `TrajectoryRequest`。共用的视觉设置为 `VisualSettings`，独立 `umi-traj` 的融合设置由 `ReconstructionSettings` 扩展；场景融合直接接收已解析参数，不生成单段融合脚本的配置文件。
+
+任务准备和定位数据保存在 `cache/`；`run` 不提供 `--keep-work`。建图、后镜头标定仍可保留求解中间文件。进度写 stderr，结构化 JSON 写 stdout。
+
+地图清单的建图定义只存于 `inputs.definition`，读取旧清单也使用此字段。地图成功导出后移除原始展示 JSON 和空日志，保留有内容的日志及失败现场；已发布版本不因整理而改写。
+
+`results.write_arm()` 接收共享展示地图路径，在每只手的 summary.map 中记录相对路径与内容哈希；不读取或写入地图点副本。它返回 `ArmTrajectory`，直接携带任务时间、`T_scene_tcp`、场景坐标 ID 和 TCP 轴向定义。双手表与任务元数据消费这个对象，不重新读取刚写出的摘要。查看器校验地图路径、版本、固定坐标与内容身份后直接加载共享文件。
+
+## 命名和时间
+
+- `SceneParameters` 是场景算法参数，`CalibratedCamera` 是已选择实测资产的相机。
+- `recording_paths` 表示 INSV 路径；`PreparedRecording.lens_videos` 表示生成的镜头视频。
+- `episode` 表示一次任务录制；`instruction` 表示操作描述，CLI 使用 `--instruction`。
+- `RawVideoInfo.started_at_unix_s` 是从文件名解析的 Unix 秒，仅用于配对候选；`duration_s` 是视频时长。
+- `PreparedRecording.video_times_s` 使用原片视频时钟；`VisualObservations.imu_times_s` 使用本机 IMU 时钟，不混入跨相机偏移。
+- `VisualObservations.T_reference_camera` 的参考系由 `reference_frame` 显式标明为 `visual_map`、`metric_map` 或 `scene`；只有原始视觉地图观测可施加尺度，融合只接受场景观测。
+- `FusionResult.T_scene_imu` 是固定场景中的 IMU 位姿，不是相机或 TCP 位姿。
+- 新地图版本格式为 `YYYYMMDD_HHMMSS-随机8位`，前缀取本机建图开始时间，使用本地时区；复用地图时版本保持不变。
+
+相机–IMU 和相机–TCP 外参、SE(3) 校验和位姿插值由 `software/camera/geometry.py` 提供；场景模块保留地图尺度与场景放置。通用 TUM 读写直接使用 `software/pose_io.py`，不依赖独立轨迹后处理模块。
+
+外参函数遵守“目标系_from_来源系”：`imu_from_camera()` 返回 `T_imu_cam`，`camera_from_tcp()` 返回 `T_cam_tcp`。ORB 只使用图像，IMU 用于米制对齐和离线融合。地图放置为 `p_scene = R (s p_map) + t`，物理杆臂不乘视觉尺度。双手输出使用任务配置的固定偏移；固定场景不按任务重新置零。
+
+## 双手坐标与时间的阅读入口
+
+从 `workflow.reconstruct_arm_in_scene()` 看单手求解。两手各调用一次，没有双手联合优化；共享坐标来自建图时冻结的地图放置，而不是把两段轨迹事后各自平移到原点。
+
+1. `Scene.role(arm, lens)` 选择固定地图：`shared_front` 两手使用同一前地图；`dual` 使用各自前地图与共享后地图。
+2. `VisualObservations.placed(..., reference_frame='scene')` 把 `T_map_cam` 转入场景系：位置为 `R (s p_map) + t`，朝向为 `R R_map_cam`。
+3. `fusion.fuse()` 使用各镜头 `T_cam_imu` 与原始 IMU 求 `T_scene_imu`；物理杆臂不乘地图尺度，不按任务重新置零。
+4. `results.write_arm()` 输出 `T_scene_cam = T_scene_imu T_imu_cam` 和 `T_scene_tcp = T_scene_cam T_cam_tcp`。
+
+求解节点时间为 `t_video + cam_time_offset`，处于该相机本机 IMU 时钟；输出时间为 `t_video + 跨相机偏移`，后者来自任务同步配置，旧任务默认零偏移且未经确认。`write_bimanual()` 只裁取已经应用偏移后的共同区间并插值，不自动估计双机时差。所有输出的 `frame_id` 来自同一固定地图版本。
+
+时间转换统一调用 `software/camera/timing.py`；EuRoC 文件的人工 +1 秒在读入准备数据时去掉，算法中不混入文件时钟。双手 CSV 的历史字段 `t_scene_s` 表示任务时间，不是另一个物理时钟。
+
+任务锁、地图绑定、缓存复用、失败证据与发布顺序保留在 `run_episode()`；结果模块只写产物，不能更新成功指针或验收状态。第二只手求解或结果写入失败时，不发布部分成功结果。
 
 ## 验证
 
-`tests/test_scene.py` 包含尺度、重力退化、物理杆臂、固定坐标融合、三地图双手、非零同步偏移、多任务复用、资产变化和失败发布测试。数值融合测试使用真实 GTSAM；流程中的 ORB 使用可控替代引擎，真实录像验证另行记录。
+`test_capture_config.py`、`test_ingest.py`、`test_recording_checks.py`、`test_episodes.py` 覆盖配置、入库、检查、验收与导出；`test_scene.py` 使用真实 GTSAM 验证尺度、重力、杆臂和固定坐标融合，ORB 在流程测试中使用替代程序。真实录像证据见 [PROVENANCE](../../docs/dev/PROVENANCE.md)。
+
+KIWI 方法来源和许可证见 [NOTICE.md](NOTICE.md)，运行时不依赖本机另一个 KIWI 仓库。

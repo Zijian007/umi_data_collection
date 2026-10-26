@@ -6,9 +6,12 @@ __pycache__/
 *.insv
 *.lrv
 umi_traj_out/
+datasets/
 scenes/**/maps/
 scenes/**/runs/
 scenes/**/results
 .scene.lock
 .registry.lock
 scenes/**/archive/
+scenes/**/cache/
+scenes/**/imports/

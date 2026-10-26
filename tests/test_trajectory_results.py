@@ -12,7 +12,7 @@ from software.calibration import runtime, validation as calibration_validation
 from software.calibration.algorithms import board_pnp
 from software import config
 from software.calibration.models import RunPaths, StageContext
-from software.trajectory import results
+from software.trajectory import map_data, results
 from software.trajectory.models import RecordingPaths
 from software.trajectory.reuse import REQUIRED_OUTPUTS, reuse_decision
 
@@ -36,6 +36,32 @@ class ResultLayoutTests(unittest.TestCase):
             (self.root / name).mkdir()
             (self.root / name / 'unique.dat').write_bytes(name.encode())
         return summary
+
+    def test_map_and_video_use_the_same_selected_attempt_and_layout_priority(self):
+        summary = {'chosen_try': 2}
+        candidates = results.attempt_paths(self.root, summary)
+        for attempt in reversed(candidates):
+            video = attempt / 'front/front.mp4'
+            video.parent.mkdir(parents=True)
+            video.write_bytes(str(attempt).encode())
+            self.assertEqual(results.front_video_path(self.root, summary), video)
+            self.assertEqual(map_data.attempt_directory(self.root, summary), attempt)
+        self.assertIsNone(results.front_video_path(self.root, {'chosen_try': 1}))
+        self.assertIsNone(map_data.attempt_directory(self.root, {'chosen_try': 1}))
+        published = self.root / 'front.mp4'
+        published.write_bytes(b'published')
+        self.assertEqual(results.front_video_path(self.root, summary), published)
+
+    def test_invalid_attempt_cannot_fall_back_to_another_recording_result(self):
+        video = self.root / 'work/kiwi/front/front.mp4'
+        video.parent.mkdir(parents=True)
+        video.write_bytes(b'first attempt')
+        for chosen in (None, True, 0, -1, '2', 1.5):
+            with self.subTest(chosen=chosen):
+                with self.assertRaisesRegex(ValueError, '重建轮次无效'):
+                    results.front_video_path(self.root, {'chosen_try': chosen})
+                with self.assertRaisesRegex(map_data.MapDataError, '重建轮次无效'):
+                    map_data.attempt_directory(self.root, {'chosen_try': chosen})
 
     def test_compaction_preserves_artifacts_and_reuse(self):
         summary = self.flat_result()

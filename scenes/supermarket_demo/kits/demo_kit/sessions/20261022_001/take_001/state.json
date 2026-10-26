@@ -1,0 +1,10 @@
+{
+  "attempt": {
+    "status": "skipped",
+    "run": "runs/2cceae1c451b47e19b4803d9bb63f32e",
+    "reason": "",
+    "manifest_sha256": "578f135595250bc32cd4ab8e2826449e57039d30715258d75f80a6fc25675ff8",
+    "session_sha256": "7515e0c7783a12a41f6b2998812602ed1e98413f58ef53af30197853bf7640ca",
+    "preflight_report": "runs/2cceae1c451b47e19b4803d9bb63f32e/preflight_report.json"
+  }
+}

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import json
 import math
 import os
 from pathlib import Path
@@ -108,8 +107,26 @@ class RecordingCatalog:
             directory = Path(current)
             children[:] = sorted(name for name in children if name not in {
                 '.git', '.deps', 'node_modules', 'details', 'debug', 'diagnostics', 'work', 'bundle', 'umi_calib_out', '__pycache__',
-                'runs', 'versions', 'archive',
+                'runs', 'versions', 'archive', 'cache', 'imports',
             } and not name.startswith('.'))
+            capture = {}
+            if 'episode.yaml' in files and self.contains(directory / 'episode.yaml'):
+                try:
+                    from software.viewer.episodes import capture_status
+                    if (directory / 'state.json').exists() and not self.contains(directory / 'state.json'):
+                        raise ViewerDataError('任务状态超出查看目录')
+                    capture = capture_status(directory)
+                except (OSError, ValueError, TypeError, KeyError, IndexError):
+                    capture = dict(status='pending')
+                if 'scene' in capture and not (directory / 'results/episode.json').is_file():
+                    key = hashlib.sha256(str(directory.resolve()).encode()).hexdigest()[:20]
+                    label = '/'.join(str(capture.get(name, directory.name)) for name in ('scene', 'kit', 'session', 'name'))
+                    entries.append(dict(id=key, name=label, path=str(directory.relative_to(self.root)),
+                        status=capture['status'], review=capture.get('review', {}).get('decision', 'unreviewed'),
+                        available=False, serial=', '.join(capture.get('expected_arms', [])),
+                        reason=capture.get('attempt', {}).get('reason', '')))
+                    children[:] = []
+                    continue
             # 任务的 results 是原子发布的版本指针；只展示当前版本，不遍历历史 runs。
             episode = directory / 'results' if 'episode.yaml' in files else directory
             if (episode / 'episode.json').is_file():
@@ -123,9 +140,11 @@ class RecordingCatalog:
                         directories[recording_key(path)] = path
                     interval = metadata['common_interval_s']
                     session = metadata.get('session')
-                    label = '/'.join(filter(None, (metadata.get('scene', {}).get('name'), session, metadata.get('name', directory.name))))
+                    kit = capture.get('kit') or metadata.get('kit', {}).get('id')
+                    label = '/'.join(filter(None, (metadata.get('scene', {}).get('name'), kit, session, metadata.get('name', directory.name))))
                     entries.append(dict(id=key, name=label, path=str(episode.relative_to(self.root)),
-                        serial='双手场景' if len(arms) == 2 else '场景任务', status='ok', duration=interval[1]-interval[0],
+                        serial='双手场景' if len(arms) == 2 else '场景任务', status=capture.get('status', 'ok'),
+                        review=capture.get('review', {}).get('decision', 'unreviewed'), available=True, duration=interval[1]-interval[0],
                         rows=metadata.get('rows'), calibration=metadata['scene']['version']))
                 except (ViewerDataError, OSError, ValueError, KeyError):
                     continue
@@ -147,7 +166,7 @@ class RecordingCatalog:
                                 duration=summary.get('duration_s'), rows=summary.get('rows'),
                                 calibration=selection.get('id')))
         self.directories = directories
-        entries.sort(key=lambda entry: entry['name'], reverse=True)
+        entries.sort(key=lambda entry: (entry.get('available', True), entry['name']), reverse=True)
         return dict(root=str(self.root), recordings=entries)
 
     def directory(self, key: str) -> Path:

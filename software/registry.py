@@ -152,8 +152,8 @@ def read_insv_serial(path: Path) -> str:
 
 
 def _record_view(serial: str, rec: dict, *, calibration: str | None = None,
-                 gripper: str | None = None, gripper_version: str | None = None) -> dict:
-    if rec.get('status') == 'retired':
+                 gripper: str | None = None, gripper_version: str | None = None, allow_retired: bool = False) -> dict:
+    if rec.get('status') == 'retired' and not allow_retired:
         raise RegistryError(f'相机 {serial} 已在设备档案中停用')
     if rec.get('status') not in STATUSES:
         raise RegistryError(f'相机 {serial} 的档案状态无效')
@@ -176,13 +176,13 @@ def _record_view(serial: str, rec: dict, *, calibration: str | None = None,
 
 
 def get(serial: str, *, calibration: str | None = None, gripper: str | None = None,
-        gripper_version: str | None = None) -> dict:
+        gripper_version: str | None = None, allow_retired: bool = False) -> dict:
     idx = load_index()
     rec = idx['devices'].get(serial)
     if rec is None:
         raise UnknownCameraError(f'相机 {serial!r} 尚未登记；标定验收后执行 ./umi-calib install。')
     try:
-        return _record_view(serial, rec, calibration=calibration, gripper=gripper, gripper_version=gripper_version)
+        return _record_view(serial, rec, calibration=calibration, gripper=gripper, gripper_version=gripper_version, allow_retired=allow_retired)
     except (OSError, KeyError, ValueError, tcal.CalibrationError) as error:
         raise RegistryError(f'相机 {serial} 的设备资产不可用：{error}') from error
 

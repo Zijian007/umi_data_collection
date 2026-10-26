@@ -66,8 +66,8 @@ class FakeEngines:
             if self.failures.get('merge'):
                 return SimpleNamespace(returncode=self.failures['merge'])
             return REAL_RUN(command, **kwargs)
-        if any(Path(arg).name in ('fusion.py', 'kiwi_fuse3s.py') for arg in command):
-            pos = next(i for i, arg in enumerate(command) if Path(arg).name in ('fusion.py', 'kiwi_fuse3s.py'))
+        if any(Path(arg).name in ('fusion_cli.py', 'fusion.py', 'kiwi_fuse3s.py') for arg in command):
+            pos = next(i for i, arg in enumerate(command) if Path(arg).name in ('fusion_cli.py', 'fusion.py', 'kiwi_fuse3s.py'))
             directory = Path(command[pos + 6])
             self.calls.append(('fuse', command, kwargs))
             code = self.failures.get('fuse', 0)

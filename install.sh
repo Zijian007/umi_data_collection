@@ -94,7 +94,7 @@ cat > "$DEPS/env.sh" <<EOF
 # 由 install.sh 生成；umi-traj 会自动 source。
 export UMI_DEPS="$DEPS"
 export PATH="$ENV/bin:\$PATH"
-export KIWI_PY="$ENV/bin/python"
+export UMI_PY="\${UMI_PY:-$ENV/bin/python}"
 export ORB3_DIR="$O"
 export ORB3_VOCAB="$O/Vocabulary/ORBvoc.txt"
 export ORB3_EXTRA_LD="$ENV/lib:$DEPS/pangolin/lib"

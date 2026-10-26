@@ -1,70 +1,65 @@
 # UMI 相机标定与轨迹采集
 
-从 Insta360 X3 原始 `.insv` 录像生成夹爪 TCP 位姿。场景采集的工作顺序是：
+从 Insta360 X3 原始 `.insv` 录像生成夹爪 TCP 位姿。日常流程是：
 
-**安装 → 各设备标定并手动登记 → 场景建图 → 建立采集批次 → 导入任务、同步 → 抽取与查看。**
+**登记设备 → 登记场景及其套件 → 建立采集批次 → 导入原片 → 离线建图与抽取 → 查看、验收与导出。**
 
-场景地图由多个批次、多个任务复用。设备档案全局管理，批次固定地图、标定和夹爪版本，同一设备可以在多个场景交错采集。[模拟商超示例](scenes/supermarket_demo/README.md) 已将现有录像迁入这套结构。
+首次操作请按 [双手采集操作手册](docs/操作手册.md) 执行，其中逐步列出上传文件、接收目录、处理命令和产出位置。
 
-## 1. 安装
+场景包含套件，套件包含采集批次，批次包含任务；场景地图由各套件复用，设备实测资产全局共享。每个套件只有一个 `kit.yaml`，批次自动保存当时的设备与测量快照。一套设备允许只有左手、只有右手或双手。任务支持人工核验的双手固定时间偏移；未配置时保留未经确认的零偏移假设。训练中间包由独立入口 `umi-dataset` 导出，见 [训练数据指南](docs/训练数据.md)。
 
-Linux x86_64，从项目根目录执行：
+## 1. 安装与设备标定
+
+从项目根目录执行：
 
 ```bash
 bash install.sh
 ./umi-traj check
 ./umi-calib check
-```
 
-机器要求与 Docker 用法见 [安装指南](docs/安装.md)。
-
-## 2. 每台设备标定并手动登记
-
-```text
-recordings/calibration/<完整序列号>/<标定批次>/front/
-├── A/原始文件名.insv
-├── B/原始文件名.insv
-├── C/原始文件名.insv
-└── D/原始文件名.insv
-```
-
-```bash
 ./umi-calib run recordings/calibration/IAQEB26097M4CP/20261022/front --tag-size-mm 24.0
-# 检查 umi_calib_out/report.txt 后手动登记：
+# 阅读 umi_calib_out/report.txt 后手动登记
 ./umi-calib install recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out
 ```
 
-日期、序列号和板尺寸按实际替换。安装新标定保留旧版本。四段录法见 [标定指南](docs/标定/说明.md)，版本与目录规则见 [设备与目录](docs/设备与目录.md)。
+A/B/C/D 分别放在 `front/A/` 到 `front/D/`，保留原始文件名。按实际替换序列号、日期和标定板尺寸。安装新标定保留旧版本，已有套件不会自动改用新标定。
 
-## 3. 场景建图、分批采集
+[安装指南](docs/安装.md) · [标定指南](docs/标定/说明.md)
 
-相机使用 **360 视频、4K60**，锁定曝光，快门 1/240 秒或更快；保留原始 INSV。建图需覆盖工作区并包含有效平移、加速度变化和旋转。具体录法见 [任务录制](docs/轨迹/录制.md)。
+## 2. 一次登记，按批次采集
 
-```bash
-./umi-scene init scenes/supermarket_shelf \
-  --mapping-session 20261025_001 --mapping-left /media/sd/VID_mapping.insv
-./umi-scene build scenes/supermarket_shelf
-
-./umi-scene session scenes/supermarket_shelf --name 20261025_001
-./umi-scene episode scenes/supermarket_shelf/sessions/20261025_001 \
-  --name take_001 --left /media/sd/VID_task.insv
-
-./umi-scene run scenes/supermarket_shelf/sessions/20261025_001
-./umi-view scenes/supermarket_shelf
-```
-
-导入命令读取实际序列号，保留文件名并校验复制；SD 卡原片保留。默认 `shared_front` 使用一张共享前地图；`dual` 支持左右前地图加共享后地图，需要各相机前后镜头实测标定。双手任务还需显式确认时间偏移。完整操作见 [场景与双手任务](docs/场景.md)。
-
-## 4. 查看与使用结果
-
-任务当前成功结果在 `scenes/<场景>/sessions/<批次>/episodes/<任务>/results/`。先读 `report.txt`，各手 `traj_tcp.txt` 为固定场景系中的 TCP 位姿，双手任务另有 `bimanual.csv`。
+下面使用已有的左手设备演示；双手套件在 `kit` 命令中增加 `--right <完整序列号>`。
 
 ```bash
-./umi-view
+./umi-scene init scenes/shelf
+./umi-scene kit scenes/shelf kit_001 --left IAQEB26097M4CP
+
+./umi-scene session scenes/shelf --name 20261025_001 --kit kit_001
+
+./umi-scene ingest /media/sd/this_session --session scenes/shelf/kits/kit_001/sessions/20261025_001
 ```
 
-浏览器打开 **http://127.0.0.1:9091**，默认扫描 `scenes/`，同步查看轨迹、稀疏地图和前镜头视频。默认视频 720×720、保留鱼眼畸变。TCP 几何来自 CAD 名义值，内部一致性指标不能代替独立精度测量。
+每个导入目录应对应本批次的采集活动。同一套设备跨多个场景录制时，需要先明确各场景对应哪些原片。系统无法仅凭相机和时间推断场景。
 
-查看说明见 [三维查看](docs/查看.md)。原有 `umi-traj <录像.insv>` 保留用于单段独立实验，按当前默认标定处理、每段独立建图；操作与算法区别见 [轨迹抽取](docs/轨迹/使用.md) 和 [原理与验证](docs/轨迹/原理.md)。
+左右身份来自套件。双手任务缺一只手时保留待补齐，配对有歧义时保留原片待确认。双手套件录单手任务需明确传 `--arms left` 或 `--arms right`。[完整操作与配对规则](docs/场景.md)
 
-[文档导航](docs/README.md) · [参数管理](config/README.md) · [代码维护](docs/dev/README.md)
+## 3. 离线处理与查看
+
+场景尚无地图时，用该场景的建图录像发布地图；批次可以提前建立，首次实际处理时固定所用地图版本。
+
+```bash
+./umi-scene build scenes/shelf --mapping /media/sd/VID_mapping.insv
+./umi-scene run scenes/shelf/kits/kit_001/sessions/20261025_001
+./umi-scene status scenes/shelf
+./umi-view scenes/shelf
+```
+
+重复导入不会重复建任务，成功结果可以复用；失败重试保留已有成功结果。`run scenes --jobs 2` 可跨场景批处理，按机器资源设置并行数。默认 `shared_front` 使用共享前地图；`dual` 使用左右前地图和共享后地图，要求对应设备的实测后镜头标定。
+
+任务结果入口为 `scenes/<场景>/kits/<套件>/sessions/<批次>/<任务>/results/`。先读 `report.txt`，各手 `traj_tcp.txt` 为固定场景系中的 TCP 位姿，双手任务另有 `bimanual.csv`。人工验收通过后，可用 `review`、`export` 导出合格任务，命令见 [场景指南](docs/场景.md)。
+
+查看器默认地址 **http://127.0.0.1:9091**，支持轨迹、稀疏地图和前镜头视频。默认视频 720×720、保留鱼眼畸变。内部一致性指标不能代替独立精度测量；现有 [模拟商超示例](scenes/supermarket_demo/README.md) 使用历史实验室单相机录像。
+
+`umi-traj <录像.insv>` 保留用于独立实验：按当前默认标定处理，每段独立建图，不提供跨任务共享坐标。
+
+[文档导航](docs/README.md) · [设备与目录](docs/设备与目录.md) · [参数管理](config/README.md) · [代码维护](docs/dev/README.md)

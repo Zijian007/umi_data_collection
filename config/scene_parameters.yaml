@@ -1,5 +1,6 @@
-# 共享场景的算法参数；每次建图/任务结果保存完整快照与内容指纹。
-# 可在 scene.yaml 的 parameters 中指定一份 YAML 覆盖，未知字段会被拒绝。
+# 共享场景的默认算法参数；每次建图/任务结果保存完整快照与内容指纹。
+# 场景定义位于 scenes/<场景>/scene.yaml，可通过其中的 parameters 指定覆盖文件。
+# 覆盖文件只需写变更项；未知字段会被拒绝。
 schema_version: 1
 
 # 用间隔约 0.25 秒的视觉节点估计尺度、重力和加速度计零偏。
@@ -52,17 +53,20 @@ visual_rotation_sigma_deg: 1.0
 # 视觉与放置残差的 Huber 阈值，减轻离群观测影响。
 huber: 2.5
 
-# 音频同步：解码为单声道采样，限制时长以控制内存与 FFT 开销。
-audio_sample_rate: 8000
-audio_duration_s: 120.0
+# 入库配对只在同一套装内进行；文件名时间为候选依据，不用于估计时钟偏移。
+# 相机命名以秒计时，允许少量启动和停止操作差异。超出时保留为待确认。
+pairing_start_tolerance_s: 2.0
+pairing_duration_tolerance_s: 1.0
 
-# 左右手最大搜索偏移、最少重叠时长，单位秒。
-audio_maximum_offset_s: 30.0
-audio_minimum_overlap_s: 3.0
+# 原片检查的最短有效时长，单位秒。
+recording_min_duration_s: 3.0
 
-# 最大归一化相关性下限、主峰与次峰之比；静音/重复声音会被拒绝。
-audio_minimum_correlation: 0.3
-audio_minimum_peak_ratio: 1.15
+# 记录开头静止质量的窗口；不满足时提醒，不拒绝固定地图中的任务。
+recording_static_window_s: 2.0
+recording_max_static_gyro_rad_s: 1.0
+recording_max_static_acc_dev_m_s2: 2.0
+recording_max_static_acc_std_m_s2: 0.8
 
-# 次峰搜索排除主峰附近的时间范围，单位秒。
-audio_peak_exclusion_s: 0.2
+# 快门和曝光波动检查。曝光记录缺失时记为 UNKNOWN，不宣称通过。
+recording_max_shutter_s: 0.020
+recording_max_exposure_cv: 0.25

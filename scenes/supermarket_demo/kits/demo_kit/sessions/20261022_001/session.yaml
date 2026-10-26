@@ -1,0 +1,16 @@
+schema_version: 4
+scene: ../../../../scene.yaml
+description: 历史单机实验迁入模拟商超组织。
+kit:
+  id: demo_kit
+  arms:
+    left:
+      serial: IAQEB26097M4CP
+      calibration: 839fd277d850
+      gripper: handheld_v1
+      gripper_version: b29b429c0fcc
+expected_arms:
+- left
+map:
+  version: f4991ea43a3a-65d192ef
+  manifest_sha256: cd6b56caf7613bb618b4329ea7567cb046aa52c326954f374a3c66f46252f4b1

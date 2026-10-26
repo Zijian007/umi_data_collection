@@ -6,10 +6,10 @@ import os
 import re
 from functools import wraps
 import subprocess
-import traceback
 from pathlib import Path
 
 from software.console import Console
+from software.vision.runtime import write_error_log
 from software.calibration.models import RunPaths, StageError
 
 HERE = Path(__file__).resolve().parent
@@ -32,11 +32,6 @@ def run_logged(command: list, log: Path, environment: dict | None = None, cwd: P
         output.write("$ " + " ".join(map(str, command)) + "\n")
         output.flush()
         return subprocess.run(list(map(str, command)), stdout=output, stderr=subprocess.STDOUT, env=environment, cwd=cwd).returncode
-
-
-def write_error_log(path: Path, error: BaseException) -> None:
-    """Preserve the exception and its cause chain, including failures outside stage functions."""
-    path.write_text(''.join(traceback.format_exception(error)), encoding='utf-8')
 
 
 def pin_cores(cores: str | None) -> bool:

@@ -1202,7 +1202,37 @@ pre {
 
 }
 
+/* Keep key measurements readable on lab displays. */
+.panel-title h2 {
+  font-size:13px
+}
+
+.record-details>div {
+  font-size:10px
+}
+
+.record-details code {
+  font-size:10px
+}
+
+.pose-readout strong {
+  font-size:14px
+}
+
+.scene-toolbar button {
+  font-size:11px
+}
+
+.recording-item small {
+  font-size:11px
+}
+
+.scene-legend {
+  font-size:10px
+}
+
 @media(max-width:620px) {
+
   .app-header {
     height:64px;
     padding:0 16px
@@ -1256,7 +1286,8 @@ pre {
   }
 
   .recording-item small {
-    margin-top:4px
+    margin-top:4px;
+    font-size:10px
   }
 
   .recording-item strong {
@@ -1322,34 +1353,43 @@ pre {
 
   .playback-bar {
     height:85px;
-    gap:9px;
+    gap:6px 8px;
     padding:0 10px;
-    flex-wrap:wrap;
-    justify-content:space-between;
-    align-content:center
+    align-content:center;
+    display:grid;
+    grid-template-columns:auto 1fr auto;
+    grid-template-rows:34px 27px;
+    justify-content:space-between
   }
 
   .transport {
-    gap:4px
+    gap:0;
+    grid-column:1
   }
 
   .play-button {
-    width:32px;
-    height:32px
+    width:30px;
+    height:30px
   }
 
   .playback-options {
-    gap:6px
+    gap:2px;
+    grid-column:3
   }
 
   .time-display {
-    min-width:130px
+    min-width:0;
+    grid-column:2;
+    font-size:9px;
+    justify-content:center;
+    gap:4px
   }
 
   .timeline-wrap {
     order:4;
-    flex-basis:100%;
-    padding-top:4px
+    grid-column:1/-1;
+    grid-row:2;
+    padding:1px 4px 0
   }
 
   .timeline-labels {
@@ -1357,7 +1397,7 @@ pre {
   }
 
   .timeline-labels span:last-child {
-    display:block;
+    display:none;
     font-size:7px
   }
 
@@ -1375,73 +1415,9 @@ pre {
     line-height:1.5
   }
 
-}
-
-/* Keep key measurements readable on lab displays. */
-.panel-title h2 {
-  font-size:13px
-}
-
-.record-details>div {
-  font-size:10px
-}
-
-.record-details code {
-  font-size:10px
-}
-
-.pose-readout strong {
-  font-size:14px
-}
-
-.scene-toolbar button {
-  font-size:11px
-}
-
-.recording-item small {
-  font-size:11px
-}
-
-.scene-legend {
-  font-size:10px
-}
-
-@media(max-width:620px) {
-  .playback-bar {
-    display:grid;
-    grid-template-columns:auto 1fr auto;
-    grid-template-rows:34px 27px;
-    gap:6px 8px;
-    height:85px;
-    align-content:center
-  }
-
-  .transport {
-    grid-column:1;
-    gap:0
-  }
-
   .transport .icon-button {
     min-width:23px;
     font-size:12px
-  }
-
-  .play-button {
-    width:30px;
-    height:30px
-  }
-
-  .time-display {
-    grid-column:2;
-    min-width:0;
-    font-size:9px;
-    justify-content:center;
-    gap:4px
-  }
-
-  .playback-options {
-    grid-column:3;
-    gap:2px
   }
 
   .playback-options label {
@@ -1459,34 +1435,8 @@ pre {
     padding:4px
   }
 
-  .timeline-wrap {
-    grid-column:1/-1;
-    grid-row:2;
-    padding:1px 4px 0
-  }
-
-  .timeline-labels {
-    margin-top:7px
-  }
-
-  .timeline-labels span:last-child {
-    display:none
-  }
-
-  .pose-readout strong {
-    font-size:10px
-  }
-
   .scene-legend {
     font-size:8px
-  }
-
-  .recording-item small {
-    font-size:10px
-  }
-
-  .record-details code {
-    font-size:10px
   }
 
 }

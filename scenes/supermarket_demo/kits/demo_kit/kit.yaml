@@ -1,0 +1,8 @@
+id: demo_kit
+arms:
+  left:
+    serial: IAQEB26097M4CP
+    calibration: 839fd277d850
+    gripper: handheld_v1
+    gripper_version: b29b429c0fcc
+description: 已有单机实验录像的设备配置；左手角色沿用商超组织示例

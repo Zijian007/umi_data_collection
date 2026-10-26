@@ -1,5 +1,7 @@
 """地图导出、相似变换和目录边界；不运行 SLAM。"""
 import json
+import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +12,58 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from software.trajectory import map_data
+from software.scene import slam
 from software.viewer import maps
+
+
+class SharedMapTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.scene = self.root / 'scene'
+        self.directory = self.scene / 'tasks/take/left'
+        self.directory.mkdir(parents=True)
+        (self.scene / 'scene.yaml').write_text('name: lab\n')
+        self.path = self.scene / 'maps/versions/abcdef-12345678/map.json'
+        self.path.parent.mkdir(parents=True)
+        self.data = dict(kind='umi_map_view', schema_version=1, maps=[])
+        self.path.write_text(json.dumps(self.data))
+        digest = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        self.summary = dict(mode='scene', scene=dict(name='lab', version=self.path.parent.name,
+            frame_id='lab/'+self.path.parent.name), map=dict(path=os.path.relpath(self.path, self.directory), sha256=digest))
+        self.manifest = dict(kind='umi_scene', name='lab', version=self.path.parent.name,
+            frame_id=self.summary['scene']['frame_id'], assets={'map.json': digest})
+        (self.path.parent / 'manifest.json').write_text(json.dumps(self.manifest))
+
+    def test_shared_map_loads_without_a_copy_or_exporter(self):
+        with patch.object(maps, '_convert') as convert:
+            self.assertEqual(maps.load(self.directory, self.summary), self.data)
+        convert.assert_not_called()
+        self.assertFalse((self.directory / 'details/map.json').exists())
+
+    def test_shared_map_hash_change_is_rejected(self):
+        self.path.write_text(json.dumps(self.data)+'\n')
+        with self.assertRaisesRegex(ValueError, '内容已变化'):
+            maps.load(self.directory, self.summary)
+
+    def test_shared_map_frame_mismatch_is_rejected(self):
+        self.summary['scene']['frame_id'] = 'other/frame'
+        with self.assertRaisesRegex(ValueError, '坐标系'):
+            maps.load(self.directory, self.summary)
+
+    def test_shared_map_outside_current_scene_is_rejected(self):
+        self.summary['map']['path'] = os.path.relpath(self.root / 'other/maps/versions/abcdef-12345678/map.json', self.directory)
+        with self.assertRaisesRegex(ValueError, '越界'):
+            maps.load(self.directory, self.summary)
+
+    def test_shared_map_symlink_cannot_leave_scene(self):
+        outside = self.root / 'outside.json'
+        outside.write_text(json.dumps(self.data))
+        self.path.unlink()
+        self.path.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, '越界'):
+            maps.load(self.directory, self.summary)
 
 
 class SimilarityTests(unittest.TestCase):
@@ -84,6 +137,34 @@ class MapExportTests(unittest.TestCase):
         item = self.export()['maps'][0]
         self.assertEqual(item['coordinates'], 'map')
         np.testing.assert_allclose(item['points'], self.points, atol=1e-7)
+
+    def test_scene_export_removes_empty_log_and_preserves_diagnostics(self):
+        placement = dict(scale=2., T_scene_metric_map=np.eye(4).tolist(), evidence=dict(rms_m=0.))
+        for message in ('', 'export diagnostic\n'):
+            with self.subTest(message=message):
+                directory = self.root / ('empty_log' if not message else 'diagnostic_log')
+                directory.mkdir()
+                def run(command, log, **kwargs):
+                    Path(command[-1]).write_text(json.dumps(self.raw))
+                    log.write_text(message)
+                with patch.object(map_data, 'exporter_paths', return_value=(self.executable, self.vocabulary)), \
+                        patch.object(slam.runtime, 'run_logged', side_effect=run):
+                    exported = slam.export_map(self.archive, 0, placement, directory)
+                np.testing.assert_allclose(exported['points'], self.points*2, atol=1e-7)
+                self.assertFalse((directory / 'raw_atlas.json').exists())
+                self.assertEqual((directory / 'export.log').exists(), bool(message))
+                if message:
+                    self.assertEqual((directory / 'export.log').read_text(), message)
+        self.assertEqual(self.archive.read_bytes(), b'original atlas')
+
+    def test_failed_scene_export_keeps_log(self):
+        def run(command, log, **kwargs):
+            log.write_text('export failed\n')
+            raise RuntimeError('export failed')
+        with patch.object(map_data, 'exporter_paths', return_value=(self.executable, self.vocabulary)), \
+                patch.object(slam.runtime, 'run_logged', side_effect=run), self.assertRaisesRegex(RuntimeError, 'export failed'):
+            slam.export_map(self.archive, 0, {}, self.root)
+        self.assertEqual((self.root / 'export.log').read_text(), 'export failed\n')
 
     def test_only_selected_attempt_is_read(self):
         self.assertEqual(map_data.attempt_directory(self.output, {'chosen_try': 2}), self.attempt)

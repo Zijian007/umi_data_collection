@@ -1,12 +1,20 @@
-"""原片导入：以 INSV 序列号归档，保留原始文件名，拒绝同名覆盖。"""
+"""原片归档与算法数据准备：身份、时间戳、IMU 和镜头视频。"""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
 from pathlib import Path
 
+import numpy as np
+
+from software.camera.timing import euroc_ns_to_seconds
 from software import registry
+from software.scene.models import CalibratedCamera, PreparedRecording, Scene
+from software.trajectory import calibration_assets
+from software.vision import recordings as recording_data, runtime
+from software.vision.models import LensVideo, RecordingData, RecordingPaths, VisualContext
 
 ROOT = Path(__file__).resolve().parents[2] / 'recordings' / 'scenes'
 
@@ -44,3 +52,29 @@ def import_video(video: Path, directory: Path, *, metadata: dict) -> Path:
     finally:
         temporary.unlink(missing_ok=True)
     return target
+
+
+def prepare_recording(recording_path: Path, camera: CalibratedCamera, scene: Scene, cache_dir: Path, *, cores: str = '', reuse: bool = False) -> PreparedRecording:
+    paths = RecordingPaths(cache_dir)
+    paths.logs.mkdir(parents=True, exist_ok=True)
+    if reuse:
+        extracted_data = RecordingData(json.loads((paths.dataset / 'extract_manifest.json').read_text()), paths.dataset / 'mav0/imu0/data.csv')
+    else:
+        extracted_data = recording_data.prepare(recording_path, paths, allow_irregular=False)
+    if extracted_data.manifest['source']['serial'] != camera.serial:
+        raise ValueError('录像设备身份在处理期间发生变化')
+    settings = runtime.visual_settings(dict(os.environ),
+        lens_settings={lens: calibration_assets.slam_settings_text(measured, scene.trajectory.values)
+                       for lens, measured in camera.measurements.items()},
+        front_mask=camera.selected.assets.front_mask, output=cache_dir / 'settings',
+        parameters=scene.trajectory.values)
+    context = VisualContext(paths, settings, scene.trajectory.values, extracted_data.manifest['frames']['n_frames_used'], cores)
+    lens_videos = tuple(LensVideo(lens, paths.lens_videos / f'{lens}.mp4', settings.front_settings if lens == 'front' else settings.rear_settings,
+                             settings.front_mask if lens == 'front' else None)
+                   for lens in camera.measurements) if reuse else recording_data.prepare_lens_videos(recording_path, context, lenses=tuple(camera.measurements))
+    frame_times_s = euroc_ns_to_seconds(np.loadtxt(paths.dataset / 'mav0/cam0/data.csv', delimiter=',', comments='#', usecols=0))
+    imu = np.loadtxt(extracted_data.imu_csv, delimiter=',', comments='#')
+    imu[:, 0] = euroc_ns_to_seconds(imu[:, 0])
+    if len(imu) < 2 or not np.isfinite(imu).all() or not np.all(np.diff(imu[:, 0]) > 0):
+        raise ValueError('IMU 数据无效、重复或非递增')
+    return PreparedRecording(camera, context, lens_videos, frame_times_s, imu)

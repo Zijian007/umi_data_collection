@@ -4,7 +4,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr
 from unittest.mock import patch
 
 from software import registry
@@ -31,7 +31,7 @@ class ResultReportTests(unittest.TestCase):
              '[失败]', '阶段：C 标定板检测；原因：板检测失败'),
         ]
         for report, state, detail in cases:
-            with self.subTest(report=report), redirect_stdout(io.StringIO()) as terminal:
+            with self.subTest(report=report), redirect_stderr(io.StringIO()) as terminal:
                 reports.show_conclusion(output, report)
                 text = terminal.getvalue()
                 self.assertIn(f'[标定]{state}', text)
@@ -70,7 +70,7 @@ class ResultReportTests(unittest.TestCase):
                 target.mkdir()
                 (target / 'index.json').write_text(json.dumps(dict(kind='umi_device_registry', version=2, devices={}, default_gripper='handheld_v1')))
                 with patch.multiple(registry, ROOT=target, INDEX=target / 'index.json', CAMERAS=target / 'cameras'):
-                    bundle = calibration.make_bundle(calibration.FACTORY_JSON, out / 'bundle')
+                    bundle = calibration.make_bundle(calibration.SAMPLE_CAMERA_JSON, out / 'bundle')
                     report = dict(kind='umi_calib_report', serial='camera', verdict='PASS', checks=[],
                                   bundle=dict(id=bundle['id']), segments=dict(A='A.insv'), tag_size_mm=24.0)
                     if legacy:
@@ -114,7 +114,7 @@ class ResultReportTests(unittest.TestCase):
             reports.write_report(out, report)
             self.assertNotIn('手动启用', (out / 'report.txt').read_text())
             with patch.object(registry, 'register') as register:
-                calibration.make_bundle(calibration.FACTORY_JSON, out / 'bundle')
+                calibration.make_bundle(calibration.SAMPLE_CAMERA_JSON, out / 'bundle')
                 self.assertEqual(devices.install_bundle(out, force=False), 1)
                 register.assert_not_called()
 

@@ -8,52 +8,38 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation, Slerp
 
-from software.scene.models import Parameters
-
-
-def transform(rotation, translation) -> np.ndarray:
-    result = np.eye(4)
-    result[:3, :3], result[:3, 3] = rotation, translation
-    return result
-
-
-def camera_to_imu(measured: dict) -> np.ndarray:
-    """Basalt 的 T_imu_cam：p_imu = T_imu_cam @ p_cam。"""
-    return transform(Rotation.from_quat(measured['q_xyzw']).as_matrix(), measured['p'])
-
-
-def validate_transform(value) -> np.ndarray:
-    matrix = np.asarray(value, float)
-    if (matrix.shape != (4, 4) or not np.isfinite(matrix).all()
-            or not np.allclose(matrix[3], [0, 0, 0, 1], atol=1e-8)
-            or not np.allclose(matrix[:3, :3].T @ matrix[:3, :3], np.eye(3), atol=1e-6)
-            or not np.isclose(np.linalg.det(matrix[:3, :3]), 1, atol=1e-6)):
-        raise ValueError('需要有限、右手、正交的 SE(3) 变换')
-    return matrix
+from software.camera.timing import video_to_imu_seconds
+from software.scene.models import SceneParameters
+from software.camera.geometry import transform, validate_transform
 
 
 @dataclass(frozen=True)
-class Observations:
-    times: np.ndarray  # 相机帧时间 + 该镜头 cam_time_offset，处于本机 IMU 时钟
-    poses: np.ndarray  # T_map_cam 或已变换的 T_scene_cam
+class VisualObservations:
+    imu_times_s: np.ndarray  # 相机帧时间 + 该镜头 cam_time_offset，处于本机 IMU 时钟
+    T_reference_camera: np.ndarray  # T_reference_camera；方向由 reference_frame 明确指定
     indices: np.ndarray  # 原镜头视频的帧索引；丢失帧不在本表中
+    reference_frame: Literal['visual_map', 'metric_map', 'scene']
 
-    def transformed(self, placement: dict) -> Observations:
+    def placed(self, placement: dict, *, reference_frame: Literal['metric_map', 'scene']) -> VisualObservations:
+        """原始视觉地图 → 指定的米制坐标；拒绝重复施加尺度。"""
+        if self.reference_frame != 'visual_map':
+            raise ValueError('只能放置原始视觉地图观测，不能重复施加地图尺度')
         scale = placement['scale']
         rigid = validate_transform(placement['T_scene_metric_map'])
         if type(scale) not in (int, float) or not np.isfinite(scale) or scale <= 0:
             raise ValueError('地图尺度必须是有限正数')
-        result = self.poses.copy()
+        result = self.T_reference_camera.copy()
         result[:, :3, 3] *= scale
-        return Observations(self.times, rigid @ result, self.indices)
+        return VisualObservations(self.imu_times_s, rigid @ result, self.indices, reference_frame)
 
 
-def read_observations(path: Path, video_times: np.ndarray, offset_ns: int) -> Observations:
+def read_visual_observations(path: Path, video_times: np.ndarray, offset_ns: int) -> VisualObservations:
     times, poses, indices = [], [], []
     seen = set()
     with path.open() as stream:
@@ -69,10 +55,10 @@ def read_observations(path: Path, video_times: np.ndarray, offset_ns: int) -> Ob
             if not np.isfinite(np.r_[p, q]).all() or not .9 < np.linalg.norm(q) < 1.1:
                 raise ValueError(f'定位文件含无效位姿：{path}')
             indices.append(index)
-            times.append(video_times[index] + offset_ns/1e9)
+            times.append(video_to_imu_seconds(video_times[index], offset_ns))
             poses.append(transform(Rotation.from_quat(q).as_matrix(), p))
     order = np.argsort(indices)
-    return Observations(np.asarray(times)[order], np.asarray(poses).reshape(-1, 4, 4)[order], np.asarray(indices, int)[order])
+    return VisualObservations(np.asarray(times)[order], np.asarray(poses).reshape(-1, 4, 4)[order], np.asarray(indices, int)[order], 'visual_map')
 
 
 def integrate_samples(imu: np.ndarray, start: float, end: float):
@@ -114,18 +100,20 @@ def gravity_rotation(gravity: np.ndarray) -> np.ndarray:
     return Rotation.from_rotvec(cross/length*np.arctan2(length, direction @ down)).as_matrix()
 
 
-def metric_alignment(obs: Observations, T_cam_imu: np.ndarray, imu: np.ndarray,
-                     gyro_bias: np.ndarray, gravity: float, p: Parameters) -> dict:
+def metric_alignment(obs: VisualObservations, T_cam_imu: np.ndarray, imu: np.ndarray,
+                     gyro_bias: np.ndarray, gravity: float, scene_parameters: SceneParameters) -> dict:
     """三帧消去速度，求尺度/重力/加速度计 bias；只在同一连续跟踪段内建方程。"""
-    if len(obs.times) < p.minimum_alignment_nodes:
+    if obs.reference_frame != 'visual_map':
+        raise ValueError('米制尺度对齐需要原始视觉地图观测')
+    if len(obs.imu_times_s) < scene_parameters.minimum_alignment_nodes:
         raise ValueError('地图有效定位太少，无法估计米制尺度')
-    runs = np.r_[0, np.cumsum(np.diff(obs.times) > p.alignment_max_gap_s)]
+    runs = np.r_[0, np.cumsum(np.diff(obs.imu_times_s) > scene_parameters.alignment_max_gap_s)]
     selected = [0]
-    for i in range(1, len(obs.times)):
-        if runs[i] != runs[selected[-1]] or obs.times[i]-obs.times[selected[-1]] >= p.alignment_node_dt_s:
+    for i in range(1, len(obs.imu_times_s)):
+        if runs[i] != runs[selected[-1]] or obs.imu_times_s[i]-obs.imu_times_s[selected[-1]] >= scene_parameters.alignment_node_dt_s:
             selected.append(i)
-    t, T, run = obs.times[selected], obs.poses[selected], runs[selected]
-    if len(t) < p.minimum_alignment_nodes:
+    t, T, run = obs.imu_times_s[selected], obs.T_reference_camera[selected], runs[selected]
+    if len(t) < scene_parameters.minimum_alignment_nodes:
         raise ValueError('有效连续视觉运动不足，无法估计米制尺度')
     R = T[:, :3, :3] @ T_cam_imu[:3, :3]
     lever = T[:, :3, :3] @ T_cam_imu[:3, 3]
@@ -145,51 +133,53 @@ def metric_alignment(obs: Observations, T_cam_imu: np.ndarray, imu: np.ndarray,
         matrices.append(np.column_stack([delta, -.5*dt2*(dt1+dt2)*np.eye(3), bias]))
         vectors.append(R[i] @ b1*dt2-ratio*R[i] @ a1+R[i+1] @ a2
                        -(lever[i+2]-lever[i+1]-ratio*(lever[i+1]-lever[i])))
-    if len(matrices) < p.minimum_alignment_nodes-2:
+    if len(matrices) < scene_parameters.minimum_alignment_nodes-2:
         raise ValueError('视觉跟踪中断过多，没有足够连续三节点')
     A, b = np.vstack(matrices), np.concatenate(vectors)
     solution, _, rank, singular = np.linalg.lstsq(A, b, rcond=None)
     # 无旋转时重力和 bias 可能不能分开，不能把偶然的正尺度当作可信结果。
     condition = singular[0]/max(singular[-1], np.finfo(float).eps)
-    if rank < 7 or condition > p.maximum_alignment_condition:
+    if rank < 7 or condition > scene_parameters.maximum_alignment_condition:
         raise ValueError('建图运动退化，尺度/重力/零偏不可观测；请增加多方向平移、加速度变化和转动')
     free_gravity = np.linalg.norm(solution[1:4])
-    if abs(free_gravity-gravity) > p.gravity_tolerance_m_s2:
+    if abs(free_gravity-gravity) > scene_parameters.gravity_tolerance_m_s2:
         raise ValueError(f'建图重力估计异常：{free_gravity:.3f} m/s²')
     noise = np.sum((A @ solution-b)**2)/max(1, len(b)-7)
     scale_std = np.sqrt(max(0, (np.linalg.pinv(A.T @ A)*noise)[0, 0]))
-    if solution[0] <= 0 or scale_std/solution[0] > p.maximum_scale_relative_std:
+    if solution[0] <= 0 or scale_std/solution[0] > scene_parameters.maximum_scale_relative_std:
         raise ValueError('建图尺度为负或不确定度过大；不能发布共享地图')
     # 约束重力模长，稳健优化尺度、重力方向和加速度计零偏。
     initial = np.r_[np.log(solution[0]), solution[1:4]/free_gravity, solution[4:7]]
     def unpack(x):
         return np.r_[np.exp(x[0]), gravity*x[1:4]/np.linalg.norm(x[1:4]), x[4:7]]
     result = least_squares(lambda x: A @ unpack(x)-b, initial, loss='huber',
-                           f_scale=p.maximum_alignment_rms_m, max_nfev=500)
+                           f_scale=scene_parameters.maximum_alignment_rms_m, max_nfev=500)
     values = unpack(result.x)
     rms = float(np.sqrt(np.mean((A @ values-b)**2)))
-    if not result.success or rms > p.maximum_alignment_rms_m or np.max(np.abs(values[4:7])) > p.maximum_acc_bias_m_s2:
+    if not result.success or rms > scene_parameters.maximum_alignment_rms_m or np.max(np.abs(values[4:7])) > scene_parameters.maximum_acc_bias_m_s2:
         raise ValueError(f'建图惯性对齐未通过验收：位置方程 RMS {rms:.4f} m')
     return dict(scale=float(values[0]), T_scene_metric_map=transform(gravity_rotation(values[1:4]), np.zeros(3)).tolist(),
                 evidence=dict(rms_m=rms, relative_scale_std=float(scale_std/solution[0]), gravity_free_m_s2=float(free_gravity),
                               acc_bias_m_s2=values[4:7].tolist(), pairs=len(matrices), condition=float(condition)))
 
 
-def place_front(front: Observations, rear: Observations, T_rear_front: np.ndarray, p: Parameters) -> tuple[np.ndarray, dict]:
+def place_front(front: VisualObservations, rear: VisualObservations, T_rear_front: np.ndarray, scene_parameters: SceneParameters) -> tuple[np.ndarray, dict]:
     """求固定 G：G T_front(t) = T_scene_rear(t) T_rear_front。"""
-    if len(front.times) < p.minimum_pose_pairs or len(rear.times) < p.minimum_pose_pairs:
+    if front.reference_frame != 'metric_map' or rear.reference_frame != 'scene':
+        raise ValueError('前地图放置需要米制前地图和固定场景中的后镜头观测')
+    if len(front.imu_times_s) < scene_parameters.minimum_pose_pairs or len(rear.imu_times_s) < scene_parameters.minimum_pose_pairs:
         raise ValueError('前后镜头共同定位不足，无法统一场景坐标')
-    j = np.clip(np.searchsorted(rear.times, front.times), 1, len(rear.times)-1)
-    keep = ((front.times >= rear.times[0]) & (front.times <= rear.times[-1])
-            & (rear.times[j]-rear.times[j-1] <= p.alignment_max_gap_s))
-    if keep.sum() < p.minimum_pose_pairs:
+    j = np.clip(np.searchsorted(rear.imu_times_s, front.imu_times_s), 1, len(rear.imu_times_s)-1)
+    keep = ((front.imu_times_s >= rear.imu_times_s[0]) & (front.imu_times_s <= rear.imu_times_s[-1])
+            & (rear.imu_times_s[j]-rear.imu_times_s[j-1] <= scene_parameters.alignment_max_gap_s))
+    if keep.sum() < scene_parameters.minimum_pose_pairs:
         raise ValueError('前后镜头没有足够的同时有效定位')
-    t = front.times[keep]
+    t = front.imu_times_s[keep]
     reference = np.tile(np.eye(4), (len(t), 1, 1))
-    reference[:, :3, :3] = Slerp(rear.times, Rotation.from_matrix(rear.poses[:, :3, :3]))(t).as_matrix()
-    reference[:, :3, 3] = np.column_stack([np.interp(t, rear.times, rear.poses[:, k, 3]) for k in range(3)])
+    reference[:, :3, :3] = Slerp(rear.imu_times_s, Rotation.from_matrix(rear.T_reference_camera[:, :3, :3]))(t).as_matrix()
+    reference[:, :3, 3] = np.column_stack([np.interp(t, rear.imu_times_s, rear.T_reference_camera[:, k, 3]) for k in range(3)])
     reference = reference @ validate_transform(T_rear_front)
-    source = front.poses[keep]
+    source = front.T_reference_camera[keep]
     candidates = reference @ np.linalg.inv(source)
     rotation = Rotation.from_matrix(candidates[:, :3, :3]).mean()
     translation = np.median(candidates[:, :3, 3], axis=0)
@@ -197,12 +187,12 @@ def place_front(front: Observations, rear: Observations, T_rear_front: np.ndarra
         r = Rotation.from_rotvec(x[:3])*rotation
         dr = (Rotation.from_matrix(reference[:, :3, :3]).inv()*r*Rotation.from_matrix(source[:, :3, :3])).as_rotvec()
         dp = r.apply(source[:, :3, 3])+x[3:]-reference[:, :3, 3]
-        return np.r_[dr.ravel()/np.radians(p.placement_rotation_sigma_deg), dp.ravel()/p.placement_position_sigma_m]
-    result = least_squares(residual, np.r_[np.zeros(3), translation], loss='huber', f_scale=p.huber)
+        return np.r_[dr.ravel()/np.radians(scene_parameters.placement_rotation_sigma_deg), dp.ravel()/scene_parameters.placement_position_sigma_m]
+    result = least_squares(residual, np.r_[np.zeros(3), translation], loss='huber', f_scale=scene_parameters.huber)
     G = transform((Rotation.from_rotvec(result.x[:3])*rotation).as_matrix(), result.x[3:])
     error = np.linalg.inv(reference) @ (G @ source)
     position_rms = float(np.sqrt(np.mean(np.sum(error[:, :3, 3]**2, axis=1))))
     rotation_rms = float(np.degrees(np.sqrt(np.mean(np.sum(Rotation.from_matrix(error[:, :3, :3]).as_rotvec()**2, axis=1)))))
-    if not result.success or position_rms > p.maximum_placement_rms_m or rotation_rms > p.maximum_placement_rotation_deg:
+    if not result.success or position_rms > scene_parameters.maximum_placement_rms_m or rotation_rms > scene_parameters.maximum_placement_rotation_deg:
         raise ValueError(f'前后地图场景放置不一致：{position_rms:.4f} m，{rotation_rms:.2f}°')
     return G, dict(pairs=int(keep.sum()), position_rms_m=position_rms, rotation_rms_deg=rotation_rms)

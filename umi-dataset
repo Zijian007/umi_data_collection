@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# 训练中间包导出；不启动场景算法，不加载 wholebody。
+set -e
+ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+DEPS=${UMI_DEPS:-$ROOT/.deps}
+if [ ! -f "$DEPS/env.sh" ]; then
+  echo "还没安装：先运行 bash $ROOT/install.sh" >&2
+  exit 2
+fi
+source "$DEPS/env.sh"
+export UMI_PY="${UMI_PY:-${KIWI_PY:-}}"
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec "$UMI_PY" -m software.dataset "$@"

@@ -1,5 +1,5 @@
 /**
- * x3_mono_slam.cc -- visual-only (MONOCULAR) driver for the UMI ORB-SLAM3 fork, for the KIWI reproduction.
+ * x3_mono_slam.cc -- visual-only (MONOCULAR) driver for the UMI ORB-SLAM3 fork.
  * Derived from Examples/Monocular-Inertial/gopro_slam.cc (GPL-3.0, ORB-SLAM3 authors / Cheng Chi).
  *
  * Differences from gopro_slam:

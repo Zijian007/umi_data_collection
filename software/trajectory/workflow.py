@@ -15,9 +15,12 @@ from functools import partial
 from pathlib import Path
 
 from software import config, registry
+from software.vision import recordings as visual_recordings, runtime as visual_runtime
 from software.trajectory import map_data, recording_data, reconstruction, reports, results, reuse, runtime, selection
+from software.trajectory.quality import evaluate_notes
 from software.trajectory.algorithms import postprocess
-from software.trajectory.models import RecordingPaths, ReconstructionContext, ReconstructionError, TrajectoryRequest
+from software.trajectory.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
+from software.vision.models import ProcessingError
 
 
 def run_batch(input_paths: list[str], output: Path | None, request: TrajectoryRequest, *, jobs: int = 1) -> int:
@@ -58,10 +61,10 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
         request = config.resolve_trajectory_request(request)
         selected = selection.select_calibration(video, device=request.device, gripper=request.gripper)
         if not request.dry_run:
-            runtime.validate_engines(dict(os.environ))
+            visual_runtime.validate_engines(dict(os.environ))
         fingerprint = reuse.run_fingerprint(video, selected, request)
         previous = None if request.force or request.dry_run else reuse.reuse_decision(paths.output, fingerprint, notes=request.configuration.values.notes)
-    except (registry.RegistryError, ReconstructionError, OSError, ValueError) as error:
+    except (registry.RegistryError, ProcessingError, OSError, ValueError) as error:
         summary.update(reason=str(error), failed_stage="选择标定与检查复用")
         reports.show_recording(summary)
         return summary
@@ -76,7 +79,7 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
         if previous.summary['run_fingerprint'].get('evaluation_hash') != fingerprint['evaluation_hash']:
             old = previous.summary
             old['notes'] = [note for note in old.get('notes', []) if note not in old['quality_notes']]
-            old['quality_notes'] = postprocess.evaluate_notes(old, request.configuration.values.notes)
+            old['quality_notes'] = evaluate_notes(old, request.configuration.values.notes)
             old['notes'] += old['quality_notes']
             old['run_fingerprint'] = fingerprint
             old['parameters'] = provenance
@@ -106,7 +109,7 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
     try:
         # 1. 读取容器帧时间和尾部 IMU，不解码图像；此处检查丢帧策略。
         runtime.console.write("读取录像时间戳和 IMU", recording=recording_name, step=(1, 4))
-        data = recording_data.prepare(video, paths, request)
+        data = visual_recordings.prepare(video, paths, allow_irregular=request.allow_irregular)
         frames = data.manifest["frames"]
         runtime.console.write(f"{frames['n_frames_used']} 帧；时长 {frames['duration_s']:.1f} 秒", recording=recording_name)
 
@@ -117,7 +120,7 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
                                                     front_mask=selected.assets.front_mask,
                                                     output=paths.debug / "settings", parameters=request.configuration.values)
         context = ReconstructionContext(paths, request, settings, frames['n_frames_used'])
-        videos = recording_data.prepare_lens_videos(video, context)
+        videos = visual_recordings.prepare_lens_videos(video, context.visual, lenses=('front', 'rear') if request.mode == 'dual' else ('front',))
 
         # 3. 重试一整轮“建图 → 定位 → 融合”，依据融合质量选择最佳尝试。
         stage = "轨迹重建"
@@ -125,7 +128,7 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
         attempt = reconstruction.run_attempts(videos, data, context, recording_name=video.name)
         summary["tries"] = attempt.attempts
         if attempt.reason:
-            raise ReconstructionError(attempt.failed_stage or stage, attempt.reason)
+            raise ProcessingError(attempt.failed_stage or stage, attempt.reason)
         summary["chosen_try"] = attempt.chosen
         results.publish_logs(attempt.directory, paths.logs)
 
@@ -154,7 +157,7 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
             runtime.write_error_log(paths.logs / 'map_export_error.log', error)
         summary["status"] = "ok"
     except Exception as error:
-        summary.update(reason=str(error), failed_stage=error.stage if isinstance(error, ReconstructionError) else stage)
+        summary.update(reason=str(error), failed_stage=error.stage if isinstance(error, ProcessingError) else stage)
         runtime.write_error_log(paths.logs / "stage_error.log", error)
     except (KeyboardInterrupt, SystemExit):
         summary.update(reason="处理已中断", failed_stage=stage)

@@ -51,13 +51,14 @@ function renderLibrary() {
   }
   for (const [index, entry] of entries.entries()) {
     const button = document.createElement('button'); button.className = `recording-item${state.data?.id === entry.id ? ' active' : ''}`;
-    button.setAttribute('aria-current', state.data?.id === entry.id ? 'true' : 'false'); button.title = entry.path;
+    button.setAttribute('aria-current', state.data?.id === entry.id ? 'true' : 'false'); button.title = entry.reason || entry.path; button.disabled = entry.available === false;
     const top = document.createElement('span'); top.className = 'record-index';
     const title = document.createElement('span'); title.textContent = `TAKE ${String(index + 1).padStart(2, '0')}`;
-    const status = document.createElement('i'); status.className = `item-status${entry.status === 'failed' ? ' failed' : ''}`;
+    const status = document.createElement('i'); status.className = `item-status${['failed', 'rejected_preflight', 'incomplete'].includes(entry.status) ? ' failed' : ''}`;
     top.append(title, status);
     const name = document.createElement('strong'); name.textContent = recordingLabel(entry.name);
-    const sub = document.createElement('small'); sub.textContent = `${entry.serial?.slice(-4) || '设备未知'}  /  ${Number.isFinite(entry.duration) ? entry.duration.toFixed(1) + ' s' : '时长未知'}  /  ${entry.rows ?? '—'} 帧`;
+    const labels = {pending:'待处理', incomplete:'待补齐', failed:'处理失败', rejected_preflight:'原片检查未通过', ok:'已完成', skipped:'已完成'};
+    const sub = document.createElement('small'); sub.textContent = `${entry.serial?.slice(-4) || '设备未知'}  /  ${Number.isFinite(entry.duration) ? entry.duration.toFixed(1) + ' s' : '时长未知'}  /  ${entry.rows ?? '—'} 帧 / ${labels[entry.status] || entry.status}${entry.review === 'accepted' ? ' · 已接收' : entry.review === 'rejected' ? ' · 已拒收' : ''}`;
     button.append(top, name, sub); button.addEventListener('click', () => load(entry.id)); list.append(button);
   }
 }
@@ -69,8 +70,9 @@ async function refresh(initial = false) {
     renderLibrary();
     if (initial && catalog.recordings.length) {
       const requested = new URL(location.href).searchParams.get('recording');
-      const entry = catalog.recordings.find(item => item.id === requested) || catalog.recordings.find(item => item.status === 'ok') || catalog.recordings[0];
-      await load(entry.id);
+      const available = catalog.recordings.filter(item => item.available !== false);
+      const entry = available.find(item => item.id === requested) || available[0];
+      if (entry) await load(entry.id);
     }
   } catch (error) { message(error.message, true); }
   finally { $('refresh').disabled = false; }

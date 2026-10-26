@@ -7,11 +7,11 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from software.vision import recordings as visual_recordings, runtime as visual_runtime, slam as visual_slam
 from software import config
 from software.trajectory import calibration_assets, recording_data, reconstruction, runtime
-from software.trajectory.models import (
-    FusionResult, RecordingData, RecordingPaths, ReconstructionContext, ReconstructionError, TrajectoryRequest,
-)
+from software.trajectory.models import FusionResult, RecordingPaths, ReconstructionContext, TrajectoryRequest
+from software.vision.models import RecordingData, ProcessingError
 from trajectory_fakes import FakeEngines
 
 
@@ -23,10 +23,8 @@ class ReconstructionTests(unittest.TestCase):
         self.engines = FakeEngines(self.root)
         self.paths = RecordingPaths(self.root / 'output')
         self.paths.logs.mkdir(parents=True)
-        environment = dict(os.environ, **self.engines.environment,
-                           KIWI_FRONT_SETTING=str(calibration_assets.FACTORY_YAML),
-                           KIWI_FUSER=str(calibration_assets.FACTORY_FUSER))
-        self.settings = runtime.reconstruction_settings(environment, camera_json=calibration_assets.FACTORY_JSON,
+        environment = dict(os.environ, **self.engines.environment)
+        self.settings = runtime.reconstruction_settings(environment, camera_json=calibration_assets.SAMPLE_CAMERA_JSON,
                                                         front_mask=runtime.HERE / "assets/config/front_hand_mask.png",
                                                         output=self.paths.debug / "settings", parameters=config.load("trajectory").values)
         self.context = ReconstructionContext(self.paths, config.resolve_trajectory_request(TrajectoryRequest()), self.settings, 100)
@@ -43,7 +41,7 @@ class ReconstructionTests(unittest.TestCase):
 
     def run_stages(self, context=None, data=None):
         context = context or self.context
-        videos = recording_data.prepare_lens_videos(self.video, context)
+        videos = visual_recordings.prepare_lens_videos(self.video, context.visual, lenses=('front', 'rear') if context.request.mode == 'dual' else ('front',))
         return reconstruction.run_attempts(videos, data or self.data, context, recording_name=self.video.name)
 
     def test_explicit_stage_order_and_forwarded_data(self):
@@ -60,27 +58,43 @@ class ReconstructionTests(unittest.TestCase):
         self.assertIn(str(self.paths.attempt(1) / 'front/loc/frames.csv'), fusion)
         self.assertIn(str(self.data.imu_csv), fusion)
         self.assertEqual(json.loads(self.settings.parameters_file.read_text())['input']['mode'], 'handheld')
-        self.assertIn('kiwi_fuse3s.py ', (result.directory / 'logs/run.txt').read_text())
+        self.assertIn('fusion_cli.py ', (result.directory / 'logs/run.txt').read_text())
+
+    def test_measured_lens_settings_are_preserved_without_sample_rear_fallback(self):
+        front = calibration_assets.read_basalt(calibration_assets.SAMPLE_CAMERA_JSON)
+        rear = dict(front, fx=front['fx']+40., p=[.01, .02, .03])
+        texts = {lens: calibration_assets.slam_settings_text(camera, self.context.parameters)
+                 for lens, camera in dict(front=front, rear=rear).items()}
+        output = self.root/'measured-settings'
+        settings = visual_runtime.visual_settings({**os.environ, **self.engines.environment, 'KIWI_PY_TOOLS': '/tools/python'},
+            lens_settings=texts, front_mask=runtime.HERE/'assets/config/front_hand_mask.png',
+            output=output, parameters=self.context.parameters)
+        self.assertEqual(settings.front_settings.read_text(), texts['front'])
+        self.assertEqual(settings.rear_settings.read_text(), texts['rear'])
+        self.assertNotEqual(settings.front_settings.read_text(), settings.rear_settings.read_text())
+        self.assertEqual(settings.tools_python, '/tools/python')
+        self.assertFalse((output/'parameters.json').exists())
+        self.assertEqual(settings.environment['KIWI_PY_TOOLS'], '/tools/python')
 
     def test_output_size_reaches_video_slam_mask_and_run_record(self):
         import cv2
-        from software.trajectory.algorithms import postprocess
+        from software.trajectory import run_metadata
         from software.trajectory import reports
 
         configuration = config.load('trajectory', overrides={'video': {'size_px': 960}})
         request = config.resolve_trajectory_request(TrajectoryRequest(configuration=configuration, mode='handheld'))
         settings = runtime.reconstruction_settings(dict(os.environ, **self.engines.environment),
-            camera_json=calibration_assets.FACTORY_JSON,
+            camera_json=calibration_assets.SAMPLE_CAMERA_JSON,
             front_mask=runtime.HERE / 'assets/config/front_hand_mask.png',
             output=self.paths.debug / 'settings-960', parameters=configuration.values)
         context = replace(self.context, request=request, settings=settings)
-        videos = recording_data.prepare_lens_videos(self.video, context)
+        videos = visual_recordings.prepare_lens_videos(self.video, context.visual, lenses=('front', 'rear') if context.request.mode == 'dual' else ('front',))
         video_command = self.engines.calls[0][1]
         self.assertEqual(video_command[video_command.index('--size-px')+1], '960')
         self.assertEqual(cv2.imread(str(videos[0].mask), 0).shape, (960, 960))
         self.assertEqual(videos[0].settings, settings.front_settings)
 
-        record = postprocess.collect_run_settings(self.paths.output, {}, 'handheld', 'VID.insv',
+        record = run_metadata.collect_run_settings(self.paths.output, {}, 'handheld', 'VID.insv',
             calib=dict(yaml=str(settings.front_settings), mask=str(settings.front_mask),
                        source_mask=str(runtime.HERE / 'assets/config/front_hand_mask.png')),
             command=dict(parameters={'configuration': configuration.snapshot()}))
@@ -129,10 +143,29 @@ class ReconstructionTests(unittest.TestCase):
         result = self.run_stages()
         self.assertEqual(result.chosen, 1)
         self.assertIn('map: rc=139 TRACKED', (result.directory / 'logs/run.txt').read_text())
+        execution = json.loads((result.directory/'front/map/execution.json').read_text())
+        self.assertTrue(execution['compatibility_exit'])
+        self.assertTrue(execution['accepted'])
+        self.assertEqual(json.loads((result.directory/'logs/run.json').read_text())['status'], 'ok')
+
+    def test_timeout_with_written_artifacts_is_rejected(self):
+        self.engines.map_returncode = 124
+        result = self.run_stages(replace(self.context, request=config.resolve_trajectory_request(TrajectoryRequest(max_tries=1))))
+        self.assertIsNone(result.chosen)
+        self.assertEqual(result.attempts[0]['rc'], 124)
+        record = json.loads((self.paths.attempt(1)/'front/map/execution.json').read_text())
+        self.assertFalse(record['accepted'])
+        self.assertFalse(record['compatibility_exit'])
+
+    def test_partial_frame_table_is_rejected_even_with_a_zero_exit(self):
+        self.engines.frames = 50  # 上下文预期 100 帧，模拟视频提前结束。
+        result = self.run_stages(replace(self.context, request=config.resolve_trajectory_request(TrajectoryRequest(max_tries=1))))
+        self.assertIsNone(result.chosen)
+        self.assertIn('完整帧数', result.reason)
 
     def test_video_failure_stops_before_any_mapping_attempt(self):
         self.engines.failures['video'] = 9
-        with self.assertRaises(ReconstructionError) as caught:
+        with self.assertRaises(ProcessingError) as caught:
             self.run_stages()
         self.assertEqual(caught.exception.stage, '准备镜头视频（front）')
         self.assertEqual([kind for kind, *_ in self.engines.calls], ['video'])
@@ -172,7 +205,7 @@ class ReconstructionTests(unittest.TestCase):
             with self.subTest(content=content):
                 if content is not None:
                     info.write_text(content)
-                with self.assertRaises(ReconstructionError) as caught:
+                with self.assertRaises(ProcessingError) as caught:
                     reconstruction.assess_try(FusionResult(self.root / 'traj_tum.txt', info))
                 self.assertEqual(caught.exception.stage, '重建质量检查')
                 self.assertEqual(caught.exception.return_code, 1)
@@ -182,7 +215,7 @@ class ReconstructionTests(unittest.TestCase):
     def test_real_atlas_log_protocol_is_parsed_into_map_records(self):
         log = self.root / 'map.log'
         log.write_text('noise\natlas_map index 0 id 23 keyframes 81 mappoints 2492\natlas_map index 1 id 42 keyframes 16 mappoints 520\natlas_map selected index 0\n')
-        maps = reconstruction.read_atlas_maps(log, lens='front')
+        maps = visual_slam.read_atlas_maps(log, lens='front')
         self.assertEqual([(item.index, item.keyframes) for item in maps], [(0, 81), (1, 16)])
 
     def test_irregular_times_cpu_pinning_and_fusion_parameters_are_preserved(self):

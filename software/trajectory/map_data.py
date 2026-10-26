@@ -4,12 +4,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import subprocess
 import tempfile
 from pathlib import Path
 
-from software.trajectory.results import load_summary, result_path
+from software.vision.paths import exporter_paths
+from software.trajectory.results import attempt_paths, load_summary, result_path
 
 ROOT = Path(__file__).resolve().parents[2]
 MAX_POINTS = 50000  # 每张子地图的浏览器绘制预算；完整点云仍在 .osa 中。
@@ -21,11 +21,11 @@ class MapDataError(ValueError):
 
 def attempt_directory(output: Path, summary: dict) -> Path | None:
     """只选摘要采用的轮次，兼容旧布局；不会把其他轮次的地图混进结果。"""
-    chosen = summary.get('chosen_try', 1)
-    if type(chosen) is not int or chosen < 1:
-        raise MapDataError('摘要中的重建轮次无效')
-    old = 'kiwi' if chosen == 1 else f'kiwi_try{chosen}'
-    for path in (output / f'debug/reconstruction/try_{chosen}', output / f'diagnostics/work/{old}', output / f'work/{old}'):
+    try:
+        candidates = attempt_paths(output, summary)
+    except ValueError as error:
+        raise MapDataError(str(error)) from error
+    for path in candidates:
         if path.is_dir():
             require_local(path, output)
             return path
@@ -35,12 +35,6 @@ def attempt_directory(output: Path, summary: dict) -> Path | None:
 def require_local(path: Path, output: Path) -> None:
     if not path.resolve().is_relative_to(output.resolve()):
         raise MapDataError('地图数据路径超出当前结果目录')
-
-
-def exporter_paths() -> tuple[Path, Path]:
-    deps = Path(os.environ.get('UMI_DEPS') or ROOT / '.deps')
-    orb = Path(os.environ.get('ORB3_DIR') or deps / 'src/ORB_SLAM3')
-    return orb / 'Examples/Monocular-Inertial/umi_export_atlas', Path(os.environ.get('ORB3_VOCAB') or orb / 'Vocabulary/ORBvoc.txt')
 
 
 def fit_similarity(source, target) -> dict:

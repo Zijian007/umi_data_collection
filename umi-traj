@@ -1,16 +1,38 @@
 #!/usr/bin/env bash
-# umi-traj -- X3 录像 -> 夹爪轨迹。先运行一次 install.sh。
-#   ./umi-traj <录像.insv | 放录像的文件夹> [--out 结果目录] [--jobs N] [--mode handheld|dual] [--force] [--keep-work]
-#                                         [--device 序列号] [--gripper handheld_v1]
-#   ./umi-traj check          # 检查安装
-#   ./umi-traj --help
+# umi-traj：逐段处理 X3 录像，为每段独立建图并抽取夹爪 TCP 轨迹。
+#
+# 常用命令：
+#   ./umi-traj /path/to/video.insv
+#   ./umi-traj /path/to/folder --jobs 2
+#   ./umi-traj check          # 检查轨迹运行环境
+#   ./umi-traj --help         # 查看完整参数
+#   首次使用先运行 bash install.sh。
+#
+# 输入：一段或多段 .insv，也可传入直接包含 .insv 的目录。
+# 流程：读取时间戳/IMU → 提取镜头视频 → 纯视觉建图 → 地图定位 → IMU 融合。
+# 标定：默认按 INSV 中的相机序列号查询 registry；可用 --device / --gripper 指定。
+# 模式：handheld 使用前镜头和 IMU；dual 同时使用后镜头。
+# 输出：默认在第一项输入旁的 umi_traj_out/<录像名>/，--out 可指定输出根目录。
+#   traj_tcp.txt、front.mp4、trajectory.png、report.txt；辅助产物在 details/。
+#   --keep-work 保留 debug/ 中间数据；--force 在已有结果时重新处理。
+#   录像、标定与处理选项一致时复用已有成功结果。
+#
+# 多段任务需要复用同一场景地图、共享坐标系时，使用 umi-scene build / run。
+# 代码阅读：本脚本 → software/trajectory/__main__.py → cli.py → workflow.py。
+# 本脚本只准备运行环境，具体参数与算法由 Python 模块处理。
+
+# 以脚本真实位置定位项目；UMI_DEPS 可覆盖默认的 .deps 目录。
 ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 DEPS=${UMI_DEPS:-$ROOT/.deps}
 if [ ! -f "$DEPS/env.sh" ]; then
   echo "还没安装：先运行  bash $ROOT/install.sh" >&2
   exit 2
 fi
+# env.sh 由 install.sh 生成，提供 UMI_PY 及算法依赖路径。
 # shellcheck disable=SC1091
 source "$DEPS/env.sh"
+# 新变量优先；现有安装生成的旧环境文件无需重装。
+export UMI_PY="${UMI_PY:-${KIWI_PY:-}}"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-exec "$KIWI_PY" -m software.trajectory "$@"
+# 原样转交参数；用 Python 进程替换 shell，保留退出码和中断信号。
+exec "$UMI_PY" -m software.trajectory "$@"

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from software import config, registry
 from software.calibration import (
-    camera_imu, checks, cli, devices, inputs, intrinsics, recording_data, reports, runtime, validation, workflow,
+    checks, cli, devices, inputs, recording_data, reports, runtime, validation, workflow,
 )
 from software.calibration.algorithms import board_pnp
 from software.trajectory import calibration_assets as tcal
@@ -71,7 +71,7 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(checks.verdict(rows), "PASS")
 
     def test_intrinsics_focal_deviation_severity(self):
-        reference = tcal.read_basalt(tcal.FACTORY_JSON)
+        reference = tcal.read_basalt(tcal.SAMPLE_CAMERA_JSON)
         board = dict(reach_r_p99=0.7, board_pose_fraction=1, board_distance_m=[0.3, 0.5],
                      frames_reaching_r0p5_by_direction=dict(right=10, left=10, down=10, up=10))
         for deviation, expected in [(0.02, 'PASS'), (0.05, 'PASS（有提醒，见报告）'), (0.11, 'FAIL')]:
@@ -82,7 +82,7 @@ class AcceptanceTests(unittest.TestCase):
                 self.assertEqual(checks.verdict(checks.assess_intrinsics(result, reference, parameters=config.load('calibration').values.checks)), expected)
 
     def test_camera_imu_translation_deviation_severity(self):
-        reference = tcal.read_basalt(tcal.FACTORY_JSON)
+        reference = tcal.read_basalt(tcal.SAMPLE_CAMERA_JSON)
         for deviation_mm, expected in [(9, 'PASS'), (11, 'PASS（有提醒，见报告）'), (51, 'FAIL')]:
             with self.subTest(deviation_mm=deviation_mm):
                 values = copy.deepcopy(reference)
@@ -167,7 +167,7 @@ class FullWorkflowTests(unittest.TestCase):
                 return 1
             if "--result-path" in command:
                 destination = Path(command[command.index("--result-path") + 1])
-                (destination / "calibration.json").write_bytes(tcal.FACTORY_JSON.read_bytes())
+                (destination / "calibration.json").write_bytes(tcal.SAMPLE_CAMERA_JSON.read_bytes())
                 (destination / "corners.cereal").touch()
             if "--max-gravity-residual" in command:
                 destination = Path(command[command.index("--out") + 1])

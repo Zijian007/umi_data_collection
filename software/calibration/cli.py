@@ -17,9 +17,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
-from software.calibration import devices, inputs, runtime, workflow
+from software.calibration import devices, inputs, migration, runtime, workflow
 
 
 def main(argv=None) -> int:
@@ -51,8 +52,17 @@ def main(argv=None) -> int:
         return devices.list_devices()
     if args.cmd == "retire":
         return devices.retire(args.serial)
-    if args.cmd == "uninstall":
-        return devices.uninstall_legacy()
+    if args.cmd in ("migrate-legacy", "uninstall"):
+        return devices.migrate_legacy()
+    if args.cmd in ('upgrade-device', 'activate-calibration'):
+        try:
+            result = (migration.upgrade_device(args.serial, dry_run=args.dry_run) if args.cmd == 'upgrade-device'
+                      else migration.activate_calibration(args.serial, args.version))
+        except (OSError, ValueError, RuntimeError, KeyError) as error:
+            runtime.console.write(str(error), state='失败')
+            return 2
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
     if args.cmd == "check":
         return runtime.check()
     parser.print_help()
@@ -102,10 +112,16 @@ def build_parser() -> argparse.ArgumentParser:
     sample_parser.add_argument("--from-video", help="从这段 .insv 读序列号")
     sample_parser.add_argument("--gripper", help="夹爪 id")
     sample_parser.add_argument("--note", help="写进档案的备注")
+    upgrade = commands.add_parser('upgrade-device', help='把该设备旧标定包保存为 v2 新版本，不自动启用')
+    upgrade.add_argument('serial')
+    upgrade.add_argument('--dry-run', action='store_true', help='只校验来源并显示升级计划，不创建文件')
+    activate = commands.add_parser('activate-calibration', help='显式启用设备标定版本；历史批次不改变')
+    activate.add_argument('serial')
+    activate.add_argument('version')
     commands.add_parser("devices", help="列出设备档案")
     retire_parser = commands.add_parser("retire", help="停用一台相机")
     retire_parser.add_argument("serial")
-    commands.add_parser("uninstall", help="去掉旧的 calibration_user/ 整机默认目录")
+    commands.add_parser("migrate-legacy", aliases=["uninstall"], help="备份迁出旧 calibration_user/ 目录；uninstall 为旧别名")
     commands.add_parser("status", help="列出设备档案")
     commands.add_parser("check", help="检查标定组件是否装好")
     return parser

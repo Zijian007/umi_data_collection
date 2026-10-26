@@ -5,7 +5,7 @@
 #     结果在 /path/to/videos/umi_traj_out/<录像名>/
 #   Linux 上加 --user "$(id -u):$(id -g)"，结果文件就归你自己而不是 root。
 #
-# 编译默认 -march=native（与验证用的 lab0 一致）：镜像在哪台机器 build，就在那台（或同代 CPU）上跑。
+# 编译默认 -march=native：镜像在哪台机器 build，就在那台（或同代 CPU）上跑。
 # 要把镜像拷到别的机器用，build 时加 --build-arg ORB3_MARCH=x86-64-v2。
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8

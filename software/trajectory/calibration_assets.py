@@ -21,9 +21,9 @@ from software.camera.x3.frame import CROP, scale_intrinsics, validate_video_size
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-FACTORY_JSON = HERE / "assets" / "calib" / "calibration_r1440.json"
-FACTORY_YAML = HERE / "assets" / "config" / "front_x3_r1440_720.yaml"
-FACTORY_FUSER = HERE / "algorithms" / "kiwi_fuse3s.py"
+SAMPLE_CAMERA_JSON = HERE / "assets" / "calib" / "calibration_r1440.json"
+FRONT_SETTINGS_TEMPLATE = HERE / "assets" / "config" / "front_x3_r1440_720.yaml"
+FUSION_SCRIPT = HERE / "algorithms" / "fusion_cli.py"
 USER_DIR = REPO / "calibration_user"
 
 
@@ -78,7 +78,7 @@ def _image_size(text: str) -> int:
 
 def yaml_text(c: dict, *, size_px: int | None = None) -> str:
     """实测标定 → 指定尺寸的 SLAM 内参；省略尺寸仅用于核对旧包的模板规格。"""
-    txt = FACTORY_YAML.read_text(encoding="utf-8")
+    txt = FRONT_SETTINGS_TEMPLATE.read_text(encoding="utf-8")
     size_px = _image_size(txt) if size_px is None else size_px
     validate_video_size(size_px)
     T = np.eye(4)
@@ -144,7 +144,7 @@ def _check_legacy(d: Path, c: dict) -> None:
 
 
 def describe(d: Path, source: str) -> dict:
-    j = FACTORY_JSON if source == 'factory' else d / 'calibration_r1440.json'
+    j = SAMPLE_CAMERA_JSON if source == 'factory' else d / 'calibration_r1440.json'
     c = read_basalt(j)
     version = 2
     if source != 'factory':
@@ -162,7 +162,7 @@ def describe(d: Path, source: str) -> dict:
         except (OSError, ValueError, KeyError) as error:
             raise CalibrationError(f'无法读取标定包 {d}：{error}') from error
     return {'source': source, 'dir': str(d), 'json': str(j),
-            'yaml': str(FACTORY_YAML), 'fuser': str(FACTORY_FUSER), 'id': _sha12(j),
+            'yaml': str(FRONT_SETTINGS_TEMPLATE), 'fuser': str(FUSION_SCRIPT), 'id': _sha12(j),
             'bundle_schema_version': version,
             'cam_time_offset_ns': c['cam_time_offset_ns'], 'T_imu_cam': {'p': c['p'], 'q_xyzw': c['q_xyzw']}}
 
@@ -188,19 +188,6 @@ def slam_settings_text(c: dict, parameters, *, rear: bool = False) -> str:
     return txt + '\n' + '\n'.join(f'{key}: {value}' for key, value in knobs.items()) + '\n'
 
 
-def prepare_mask(source: Path, output: Path, size_px: int) -> Path:
-    """按同一视野缩放遮手图；最近邻保留遮挡类别，原始设备资产只读。"""
-    import cv2
-
-    mask = cv2.imread(str(source), cv2.IMREAD_GRAYSCALE)
-    if mask is None or mask.shape[0] != mask.shape[1]:
-        raise CalibrationError(f'遮手图必须是可读取的正方形图像：{source}')
-    if mask.shape == (size_px, size_px):
-        return source
-    resized = cv2.resize(mask, (size_px, size_px), interpolation=cv2.INTER_NEAREST)
-    if not cv2.imwrite(str(output), resized):
-        raise CalibrationError(f'无法写入本次运行的遮手图：{output}')
-    return output
 
 
 def active() -> dict:

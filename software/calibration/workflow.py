@@ -41,7 +41,7 @@ def run(request: CalibrationRequest) -> int:
         output = request.output or (request.folder or calibration_inputs.recordings.a.parent) / 'umi_calib_out'
         paths = RunPaths(output)
         # 样例参数用于 A/B 的健全性检查；C 段的位置参考来自标定板。
-        sample_parameters = trajectory_calibration.read_basalt(trajectory_calibration.FACTORY_JSON)
+        sample_parameters = trajectory_calibration.read_basalt(trajectory_calibration.SAMPLE_CAMERA_JSON)
         provenance = parameter_record(configuration, trajectory_configuration)
         provenance['options'] = dict(compare_sample=request.compare_sample)
         provenance['measurements'] = dict(grid=calibration_inputs.grid, sample_camera=sample_parameters,

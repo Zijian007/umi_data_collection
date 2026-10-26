@@ -8,8 +8,10 @@ import tempfile
 import unittest
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
+from software.camera.images import prepare_mask
 from unittest.mock import patch
 
+from software.vision import recordings as visual_recordings, runtime as visual_runtime, slam as visual_slam
 from software import config, registry
 from software.calibration import inputs, reports, workflow as calibration_workflow
 from software.calibration.models import CalibrationRequest, SegmentPaths
@@ -154,7 +156,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_slam_generation_uses_both_measurement_and_algorithm_config(self):
         p = config.load('trajectory', self.overlay("orb:\n  features: 777\n  initial_fast: 21")).values
-        camera = calibration_assets.read_basalt(calibration_assets.FACTORY_JSON)
+        camera = calibration_assets.read_basalt(calibration_assets.SAMPLE_CAMERA_JSON)
         yaml = calibration_assets.slam_settings_text(camera, p)
         self.assertIn('ORBextractor.nFeatures: 777', yaml)
         self.assertIn('ORBextractor.iniThFAST: 21', yaml)
@@ -165,7 +167,7 @@ class ConfigTests(unittest.TestCase):
         import cv2
         from software.camera.x3.frame import scale_intrinsics
 
-        camera = calibration_assets.read_basalt(calibration_assets.FACTORY_JSON)
+        camera = calibration_assets.read_basalt(calibration_assets.SAMPLE_CAMERA_JSON)
         for rear in (False, True):
             baseline = cv2.FileStorage(calibration_assets.slam_settings_text(
                 camera, config.load('trajectory').values, rear=rear), cv2.FILE_STORAGE_READ | cv2.FILE_STORAGE_MEMORY)
@@ -196,7 +198,7 @@ class ConfigTests(unittest.TestCase):
         source_bytes = original.read_bytes()
         for size in (360, 720, 960, 1440):
             with self.subTest(size=size):
-                output = calibration_assets.prepare_mask(original, self.root / f'mask-{size}.png', size)
+                output = prepare_mask(original, self.root / f'mask-{size}.png', size)
                 resized = cv2.imread(str(output), cv2.IMREAD_GRAYSCALE)
                 self.assertEqual(resized.shape, (size, size))
                 self.assertEqual(set(np.unique(resized)), {0, 255})
@@ -206,7 +208,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_child_physical_check_uses_explicit_values_without_reloading_defaults(self):
         from software.calibration.tools import imu_calib_physical_check as physical
-        argv = ['--calib', str(calibration_assets.FACTORY_JSON), '--euroc', str(self.root/'dataset'),
+        argv = ['--calib', str(calibration_assets.SAMPLE_CAMERA_JSON), '--euroc', str(self.root/'dataset'),
                 '--out', str(self.root/'check'), '--window-s', '.7', '--gyro-max-dps', '3',
                 '--acc-std-max', '.06', '--min-window-samples', '25', '--gravity', '9.81',
                 '--distinct-dir-cos', '.9', '--min-window-span-fraction', '.85']
@@ -217,7 +219,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_child_video_tool_uses_explicit_values_without_reloading_defaults(self):
         from types import SimpleNamespace
-        from software.trajectory.tools import make_lens_video
+        from software.vision.tools import make_lens_video
         cam = self.root/'mav0/cam0'
         cam.mkdir(parents=True)
         (cam/'data.csv').write_text('#timestamp,filename\n1000000000,frame.png\n')
@@ -234,10 +236,10 @@ class ConfigTests(unittest.TestCase):
 
     def test_v2_bundle_has_only_measurement_and_provenance(self):
         bundle = self.root / 'bundle'
-        description = calibration_assets.make_bundle(calibration_assets.FACTORY_JSON, bundle)
+        description = calibration_assets.make_bundle(calibration_assets.SAMPLE_CAMERA_JSON, bundle)
         self.assertEqual({p.name for p in bundle.iterdir()}, {'calibration_r1440.json', 'bundle.json'})
         self.assertEqual(description['bundle_schema_version'], 2)
-        self.assertEqual(Path(description['fuser']), calibration_assets.FACTORY_FUSER)
+        self.assertEqual(Path(description['fuser']), calibration_assets.FUSION_SCRIPT)
         camera = bundle / 'calibration_r1440.json'
         camera.write_text(camera.read_text()+' ')
         with self.assertRaises(calibration_assets.CalibrationError):
@@ -252,7 +254,7 @@ class ConfigTests(unittest.TestCase):
         before = {p.name: p.read_bytes() for p in target.iterdir()}
         record = calibration_assets.describe(target, 'user')
         self.assertEqual(record['bundle_schema_version'], 1)
-        self.assertEqual(Path(record['fuser']), calibration_assets.FACTORY_FUSER)
+        self.assertEqual(Path(record['fuser']), calibration_assets.FUSION_SCRIPT)
         self.assertEqual(before, {p.name: p.read_bytes() for p in target.iterdir()})
 
 
@@ -269,7 +271,7 @@ class SafetyTests(trajectory_tests.RecordingFixture):
         self.assertEqual(before, {p.name:p.read_bytes() for p in self.output.iterdir()})
 
     def test_dry_run_with_force_creates_no_output_and_does_not_run_engines(self):
-        with patch.object(selection, 'select_calibration', return_value=self.selected), patch.object(runtime, 'run_logged') as execute, contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(selection, 'select_calibration', return_value=self.selected), patch.object(visual_runtime, 'run_logged') as execute, contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(workflow.run_batch([str(self.video)], self.output.parent,
                              TrajectoryRequest(force=True, dry_run=True)), 0)
         execute.assert_not_called()

@@ -1,0 +1,93 @@
+{
+  "kind": "t_tcp_camera_nominal_cad",
+  "status": "NOMINAL_CAD_CANDIDATE_UNVERIFIED",
+  "version": 3,
+  "date": "2026-10-26",
+  "units": "metres; rotation matrix rows; quaternion xyzw (w>=0)",
+  "optical_center_depth_mm": 2.5,
+  "tcp_frame": {
+    "convention": "front_optical_parallel_v1",
+    "origin": "closed-fingertip contact midpoint",
+    "axes": {
+      "x": "front image right",
+      "y": "front image down",
+      "z": "front optical forward"
+    },
+    "handedness": "right-handed"
+  },
+  "frames": {
+    "TCP": "closed-fingertip contact midpoint; axes parallel to the front optical frame: +x image-right, +y image-down, +z optical-forward",
+    "CAM0_OPTICAL": "lens-0 dome rotation axis (CAD-exact: both dome spheres on-axis to <1e-4 mm); origin 2.5 mm behind bare outer lens vertex; z out of lens, x image-right, y image-down (roll convention vs real image readout: +y=image-down supported by fingers-at-image-bottom in real footage; x sign to be pinned by one frame check)"
+  },
+  "matrix_direction": {
+    "T_tcp_camera": "maps points FROM CAM0_OPTICAL frame TO TCP frame: p_tcp = R @ p_cam + t (= pose of camera frame expressed in TCP frame)",
+    "T_camera_tcp": "inverse: p_cam = R' @ p_tcp + t'"
+  },
+  "T_camera_tcp": {
+    "R_rows": [
+      [
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "t_m": [
+      -0.0001815,
+      0.0369877,
+      0.1650461
+    ]
+  },
+  "T_tcp_camera": {
+    "R_rows": [
+      [
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "t_m": [
+      0.0001815,
+      -0.0369877,
+      -0.1650461
+    ],
+    "q_xyzw": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "lever_arm_mm": 169.14,
+  "origin_geometry": {
+    "path": "registry/grippers/handheld_v1/versions/b29b429c0fcc/t_tcp_camera.json",
+    "sha256": "1e17a28aed1c84ba967eded53f7798fa1f233ac0212c9cce808dae03e2b74b5d",
+    "note": "TCP origin in the camera frame is retained exactly from this CAD asset; only the TCP basis is redefined. No new physical calibration."
+  },
+  "method": "Original UMI axis convention: TCP orientation equals front camera orientation; retain the X3-specific camera-to-fingertip translation.",
+  "uncertainty": {
+    "optical_centre_depth_along_cam_z_mm": "+/- ~1.0 (was +/-2.0): caliper T +/-0.2, factory-baseline parameterization spread +/-0.25, front/back symmetry assumption +/-0.5, effective-viewpoint non-uniqueness (pupil walk) +/-0.75 conservative",
+    "camera_roll_convention": "x sign vs image readout to be pinned with one recorded frame (y=image-down already supported)",
+    "tcp_axis_convention": "Defined by front_optical_parallel_v1; no mechanical jaw-axis sign is needed.",
+    "verification_required": "fingertip jig + AprilGrid or hand-eye+pivot before any 'verified' status; formal training gate unchanged"
+  }
+}

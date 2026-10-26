@@ -1,8 +1,32 @@
 #!/usr/bin/env bash
-# umi-calib -- 每台新 X3 默认全套标定。怎么录、怎么用见 docs/标定/说明.md。
-#   ./umi-calib run <放着 A B C D 四段录像的文件夹> [--tag-size-mm 24.0] [--install]
-#   ./umi-calib install <结果目录> | devices | retire | uninstall | check
-#   ./umi-calib verify / adopt-sample   # 可选，不是默认入库
+# umi-calib：按相机序列号求解、验收并手动登记前镜头标定。
+#
+# 常用命令：
+#   ./umi-calib run /path/to/calibration --tag-size-mm 24.0
+#   ./umi-calib install /path/to/calibration/umi_calib_out
+#   ./umi-calib devices              # 查询设备及当前标定
+#   ./umi-calib retire <完整序列号>   # 停用设备
+#   ./umi-calib check                # 检查标定运行环境
+#   ./umi-calib <命令> --help        # 查看该命令的参数
+#
+# 输入：同一相机的 A/B/C/D 四段录像。
+#   推荐各放入 A/、B/、C/、D/ 子目录；平铺四段时按文件名排序识别。
+#   也可用 run --a A.insv --b B.insv --c C.insv --d D.insv 显式指定。
+# 流程按 A → B → D → C 执行：
+#   A 求内参；B 求相机–IMU 外参和时间差；D 检查六朝向重力一致性；
+#   C 用新标定抽取轨迹，与标定板 PnP 位姿比较，最后汇总验收报告。
+# 输出：默认 <标定录像目录>/umi_calib_out/，--out 可指定目录。
+#   report.txt 供阅读，其他报告、标定资产和中间数据由工作流统一管理。
+# 启用：run 默认只生成和验收；手动 install 后写入 registry/cameras/<序列号>/。
+#   也可显式传 run --install，在验收通过后登记；后续新处理按设备档案选用标定。
+# 可选：verify 检查现有标定；recheck 按当前验收规则重评已有完整报告。
+#
+# 录像要求与操作说明：docs/标定/说明.md。
+# 代码阅读：本脚本 → software/calibration/__main__.py → cli.py。
+#   run / verify / recheck → workflow.py；设备登记与查询 → devices.py。
+# 本脚本只选择运行环境，必要时安装标定组件；求解流程在 Python 模块中。
+
+# 以脚本真实位置定位项目；UMI_DEPS 可覆盖默认的 .deps 目录。
 ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 DEPS=${UMI_DEPS:-$ROOT/.deps}
 if [ ! -f "$DEPS/env.sh" ]; then
@@ -10,9 +34,10 @@ if [ ! -f "$DEPS/env.sh" ]; then
   exit 2
 fi
 CMD=${1:-}
-# registry listing / install / adopt do not need Basalt or the calib venv
+# 设备管理、报告重评、帮助与只读预检无需启动求解器，使用基础轨迹环境。
+# 其他命令使用 calib_env；环境或 Basalt 缺失时先调用标定组件安装脚本。
 NEED_CALIB=1
-case "$CMD" in devices|status|retire|adopt-sample|install|uninstall|recheck) NEED_CALIB=0 ;; esac
+case "$CMD" in devices|status|retire|adopt-sample|install|upgrade-device|activate-calibration|migrate-legacy|uninstall|recheck) NEED_CALIB=0 ;; esac
 for ARG in "$@"; do
   case "$ARG" in --dry-run|--help|-h) NEED_CALIB=0 ;; esac
 done
@@ -22,11 +47,15 @@ if [ "$NEED_CALIB" = 1 ]; then
     bash "$ROOT/software/calibration/setup/install.sh" >&2 || exit 2
   fi
 fi
+# env.sh 提供基础 Python 和算法依赖路径，PYTHONPATH 指向本项目。
 # shellcheck disable=SC1091
 source "$DEPS/env.sh"
+# 新变量优先；现有安装生成的旧环境文件无需重装。
+export UMI_PY="${UMI_PY:-${KIWI_PY:-}}"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+# exec 原样转交参数，让 Python 接收中断信号并直接返回退出码。
 if [ "$NEED_CALIB" = 1 ]; then
   exec "$DEPS/calib_env/bin/python" -m software.calibration "$@"
 else
-  exec "$KIWI_PY" -m software.calibration "$@"
+  exec "$UMI_PY" -m software.calibration "$@"
 fi

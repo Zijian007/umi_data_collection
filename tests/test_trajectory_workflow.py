@@ -7,11 +7,13 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from software.vision import recordings as visual_recordings, runtime as visual_runtime, slam as visual_slam
 from software import config, registry
 from software.trajectory import calibration_assets
 from software.trajectory import cli, recording_data, reconstruction, results, runtime, selection, workflow
 from software.camera.x3 import extraction
-from software.trajectory.models import RecordingData, RecordingPaths, ReconstructionContext, TrajectoryRequest
+from software.trajectory.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
+from software.vision.models import RecordingData
 from software.trajectory.reuse import REQUIRED_OUTPUTS, reuse_decision, run_fingerprint
 from software.trajectory.selection import CalibrationAssets, SelectedCalibration
 from trajectory_fakes import FakeEngines
@@ -33,7 +35,7 @@ class RecordingFixture(unittest.TestCase):
             path = self.root / name
             path.write_text(name)
             paths.append(path)
-        paths[0].write_bytes(calibration_assets.FACTORY_JSON.read_bytes())
+        paths[0].write_bytes(calibration_assets.SAMPLE_CAMERA_JSON.read_bytes())
         paths[2].write_bytes((runtime.HERE / 'assets/config/front_hand_mask.png').read_bytes())
         self.selected = SelectedCalibration(CalibrationAssets(*paths), self.root, 'calib-id',
                                             'camera', 'gripper', 'registry', 'registry', 'active', 100)
@@ -203,7 +205,7 @@ class WorkflowTests(RecordingFixture):
         self.assertEqual((self.output / 'summary.json').read_bytes(), before)
 
     def test_all_attempts_fail_and_record_diagnostics(self):
-        error = reconstruction.ReconstructionError('重建质量检查', 'invalid fusion metrics')
+        error = reconstruction.ProcessingError('重建质量检查', 'invalid fusion metrics')
         with patch.object(reconstruction, 'assess_try', side_effect=error):
             result = self.run_recording(TrajectoryRequest(max_tries=2))
         self.assertEqual(result['status'], 'failed')
@@ -212,7 +214,7 @@ class WorkflowTests(RecordingFixture):
         self.assertTrue((self.output / 'debug/logs/runner_try2.log').is_file())
         self.assertEqual(result['failed_stage'], '重建质量检查')
         self.assertIn('重建质量检查', (self.output / 'report.txt').read_text())
-        self.assertIn('ReconstructionError', (self.output / 'debug/logs/stage_error.log').read_text())
+        self.assertIn('ProcessingError', (self.output / 'debug/logs/stage_error.log').read_text())
 
     def test_reuse_reads_summary_once(self):
         self.assertEqual(self.run_recording()['status'], 'ok')
@@ -318,7 +320,7 @@ class WorkflowTests(RecordingFixture):
         times = paths.debug / 'times.csv'
         times.write_text('t_canonical_s\n1.0\n')
         with patch.object(runtime.subprocess, 'run', side_effect=self.fake_runner), patch.object(reconstruction, 'assess_try', side_effect=qualities), patch.object(runtime.console, 'write'):
-            videos = recording_data.prepare_lens_videos(self.video, context)
+            videos = visual_recordings.prepare_lens_videos(self.video, context.visual, lenses=('front', 'rear') if context.request.mode == 'dual' else ('front',))
             result = reconstruction.run_attempts(videos, RecordingData({}, paths.dataset / 'mav0/imu0/data.csv', times), context, recording_name=self.video.name)
         self.assertEqual(result.chosen, 2)
         self.assertEqual(result.directory.name, 'try_2')
@@ -389,7 +391,7 @@ class RecordingDataTests(RecordingFixture):
             return manifest
 
         with patch.object(extraction, 'extract', side_effect=extract):
-            data = recording_data.prepare(self.video, paths, TrajectoryRequest(allow_irregular=True))
+            data = visual_recordings.prepare(self.video, paths, allow_irregular=True)
         self.assertEqual(data.manifest, manifest)
         self.assertEqual(data.times_csv.read_text(), 't_canonical_s\n1.000000000\n1.066733333\n')
 

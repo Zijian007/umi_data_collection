@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from software.trajectory import runtime
+from software.camera.geometry import describe_tcp_frame
 from software.trajectory.selection import SelectedCalibration
 
 STATUS_LABELS = {"ok": "完成", "skipped": "跳过", "failed": "失败", "planned": "预检通过"}
@@ -33,6 +34,7 @@ def write_result_report(output: Path, summary: dict) -> None:
                   f"重建尝试：{len(summary.get('tries', []))} 次；采用第 {summary.get('chosen_try', '未知')} 次",
                   '', '主要结果：traj_tcp.txt（时间秒、位置米、姿态四元数 qx qy qz qw）',
                   '坐标：本段录像独立的世界坐标系，Z 轴朝上，原点和水平朝向由本次处理确定。',
+                  'TCP 自身坐标：' + describe_tcp_frame(summary.get('tcp_frame', {})),
                   '实际误差：本次抽取未与独立真值对照，未测量；地图约束比例不代表真实精度。']
         if (output / 'trajectory.png').is_file():
             lines.append('预览：trajectory.png')

@@ -101,7 +101,7 @@ def retire(camera_serial: str) -> int:
     return 0
 
 
-def uninstall_legacy() -> int:
+def migrate_legacy() -> int:
     if trajectory_calibration.USER_DIR.exists():
         backup_path = trajectory_calibration.USER_DIR.with_name("calibration_user.removed_" + time.strftime("%Y%m%d_%H%M%S"))
         trajectory_calibration.USER_DIR.rename(backup_path)

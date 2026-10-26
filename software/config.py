@@ -12,6 +12,8 @@ import math
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from functools import lru_cache
 from pathlib import Path
+
+from software.environment import python_executable
 from typing import get_type_hints
 
 from ruamel.yaml import YAML
@@ -413,8 +415,8 @@ def resolve_trajectory_request(request):
 
 def code_identity(domain: str) -> dict:
     """Content hashes cover uncommitted source too; never rely on Git HEAD alone."""
-    paths = [ROOT / 'software/config.py', ROOT / 'software/registry.py', ROOT / 'software/storage.py', *sorted((ROOT / 'software' / domain).rglob('*.py')),
-             *sorted((ROOT / 'software/camera').rglob('*.py'))]
+    paths = [ROOT / 'software/pose_io.py', ROOT / 'software/config.py', ROOT / 'software/registry.py', ROOT / 'software/storage.py', ROOT / 'software/environment.py', *sorted((ROOT / 'software' / domain).rglob('*.py')),
+             *sorted((ROOT / 'software/camera').rglob('*.py')), *sorted((ROOT / 'software/vision').rglob('*.py'))]
     if domain == 'trajectory':
         paths += sorted((ROOT / 'software/trajectory/assets/config').glob('*.yaml'))
     return {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
@@ -430,10 +432,11 @@ def engine_identity(domain: str) -> dict:
     import os
     import shutil
     import sys
+    from software.vision.paths import orb_directory, orb_executable
     paths = {}
     if domain == 'trajectory':
-        orb = Path(os.environ.get('ORB3_DIR', ROOT / '.deps/orbslam3'))
-        paths.update(orb_wrapper=orb / 'Examples/Monocular-Inertial/x3_mono_slam',
+        orb = orb_directory(os.environ)
+        paths.update(orb_wrapper=orb_executable(orb),
                      orb_library=orb / 'lib/libORB_SLAM3.so',
                      orb_vocabulary=Path(os.environ.get('ORB3_VOCAB') or orb / 'Vocabulary/ORBvoc.txt'))
     else:
@@ -447,7 +450,7 @@ def engine_identity(domain: str) -> dict:
         executable = shutil.which(name)
         if executable:
             paths[name] = Path(executable)
-    python = Path(os.environ.get('KIWI_PY') or sys.executable)
+    python = Path(python_executable(os.environ, default=sys.executable))
     paths['fusion_python'] = python
     # Package metadata identifies dependency versions without importing heavy modules.
     prefixes = {python.parent.parent, Path(sys.prefix)}

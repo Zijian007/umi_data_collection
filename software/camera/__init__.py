@@ -1,5 +1,4 @@
-"""X3 readers shared by calibration and trajectory: ``software.camera.x3``.
+"""共用相机能力：X3 原片读取、画面约定、外参几何与图像资产准备。
 
-Importing this package does not open a recording or choose a crop. The crop and frame step live in
-``software.camera.x3.frame``.
+导入包不打开录像、不选择裁剪。录制契约位于 camera.x3.frame。
 """

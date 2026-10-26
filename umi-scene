@@ -1,15 +1,64 @@
 #!/usr/bin/env bash
-# 共享场景：先 build，再对同场景的单手/双手 episode 执行 run。
+# umi-scene：以场景为单位管理采集，复用地图抽取单手或双手轨迹。
+#
+# 核心流程：
+#   建图录像 → build → 发布场景地图
+#   任务录像 → episode / ingest → run → 在已有地图中定位并融合 IMU → TCP 轨迹
+#
+# build：建立或更新地图。
+#   ./umi-scene build scenes/supermarket_demo --mapping-left /path/to/mapping.insv
+#   ./umi-scene build scenes/supermarket_demo   # 使用 scene.yaml 已登记的建图录像
+#   准备时间戳、IMU、镜头视频 → ORB 纯视觉建图 → 米制尺度与重力对齐 → 发布。
+#   地图保存在 scenes/<场景>/maps/versions/<版本>/，current.json 指向当前版本。
+#   新版本格式：YYYYMMDD_HHMMSS-随机8位，时间为本机建图开始时间。
+#   建图配置只存一份 inputs.definition；成功后清理 work/ 和空导出日志。
+#   --keep-work 保留 work/；已发布版本保持原样，供历史批次按哈希读取。
+#   输入与算法一致时复用已有地图；--force 强制构建新版本。
+#   shared_front 使用共享前镜头地图；dual 使用左右前地图和共享后地图。
+#   dual 需同时提供左右建图录像及 --rear-left / --rear-right 实测标定。
+#
+# run：处理已登记的任务，复用已发布地图。
+#   ./umi-scene run scenes/supermarket_demo
+#   也可传入场景下的套件、批次、任务目录，或 session.yaml / episode.yaml。
+#   检查原片 → 固定地图版本 → 准备录像 → 已有地图定位 → 视觉/IMU 融合 → 写轨迹。
+#   首次处理时将当前地图版本写入 session.yaml；之后沿用该版本。
+#   --map-version <版本> 可显式切换；新地图发布后，旧批次仍沿用已固定的版本。
+#   输出在各任务的 runs/<运行ID>/；results 链接指向最新成功结果。
+#   新任务只需 run；run 不重建场景地图。输入与算法一致时复用已有成功结果。
+#   --jobs N 控制任务并发；--force 重新生成结果，仍可复用有效的准备与定位缓存。
+#   build / run 均支持 --dry-run 只检查输入与计划、--cores 限制 CPU 核心。
+#
+# 采集组织：场景 → kits/<套件>/sessions/<批次>/<任务>。
+#   init / kit / session   登记场景、套件和批次，支持左手、右手或双手。
+#   kit 更新唯一的 kit.yaml；session 自动保存设备快照，之后独立于当前套件配置。
+#   episode / ingest       显式登记任务，或批量导入和配对原片。
+#   preflight / status     检查录制质量、任务完整性和处理状态。
+#   review / export        人工验收成功结果，再导出已接收的数据。
+#   calibrate-rear         后镜头 A/B/C/D 标定，使用独立标定环境。
+#   任务 schema 5 支持人工确认的固定同步偏移；旧任务默认零偏移、未经确认。
+#   指令使用 episode --instruction；训练中间包使用独立 ./umi-dataset。
+#
+# 参数详情：./umi-scene <命令> --help；完整操作：docs/场景.md。
+# 代码阅读：本脚本 → software/scene/__main__.py → cli.py → workflow.py。
+#   build → workflow.build_scene()；run → workflow.run_episodes() → run_episode()。
+# 本脚本只准备运行环境；命令解析、流程编排和算法均在 Python 模块中。
 set -e
+
+# 以脚本真实位置确定项目根目录，允许从其他工作目录启动。
+# UMI_DEPS 可覆盖默认依赖目录；env.sh 由根目录 install.sh 生成。
 ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 DEPS=${UMI_DEPS:-$ROOT/.deps}
 if [ ! -f "$DEPS/env.sh" ]; then
   echo "还没安装：先运行 bash $ROOT/install.sh" >&2
   exit 2
 fi
+# env.sh 提供 UMI_PY 及算法依赖路径；PYTHONPATH 使 Python 能导入本项目。
 source "$DEPS/env.sh"
+# 新变量优先；现有安装生成的旧环境文件无需重装。
+export UMI_PY="${UMI_PY:-${KIWI_PY:-}}"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-SCENE_PYTHON="$KIWI_PY"
+# 常规场景处理使用轨迹环境，只有后镜头标定需要 calib_env。
+SCENE_PYTHON="$UMI_PY"
 if [ "${1:-}" = calibrate-rear ]; then
   SCENE_PYTHON="$DEPS/calib_env/bin/python"
   if [ ! -x "$SCENE_PYTHON" ]; then
@@ -17,4 +66,5 @@ if [ "${1:-}" = calibrate-rear ]; then
     exit 2
   fi
 fi
+# 原样转交所有参数；exec 让 Python 接收中断信号，并将退出码返回终端。
 exec "$SCENE_PYTHON" -m software.scene "$@"

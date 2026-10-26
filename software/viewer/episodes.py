@@ -7,11 +7,48 @@ import json
 import math
 from pathlib import Path
 
+from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
+
 from software.viewer.data import ViewerDataError
 
 
 def recording_key(path: Path) -> str:
     return hashlib.sha256(str(path.resolve()).encode()).hexdigest()[:20]
+
+
+def capture_status(directory: Path) -> dict:
+    """从采集清单读取身份和完整性；状态只保存尝试与验收，查看无需算法环境。"""
+    def read_yaml(path):
+        try:
+            with path.open() as stream:
+                data = YAML(typ='safe', pure=True).load(stream)
+        except YAMLError as error:
+            raise ViewerDataError(f'采集清单格式无效：{path}') from error
+        if not isinstance(data, dict):
+            raise ViewerDataError('采集清单需要映射')
+        return data
+
+    session_dir = directory.parent
+    episode_path = directory / 'episode.yaml'
+    session_path = session_dir / 'session.yaml'
+    episode = read_yaml(episode_path)
+    session = read_yaml(session_path)
+    scene = read_yaml(session_dir.parents[3] / 'scene.yaml')
+    state_path = directory / 'state.json'
+    state = json.loads(state_path.read_text()) if state_path.is_file() else {}
+    attempt = state.get('attempt', {})
+    fresh = all(hashlib.sha256(path.read_bytes()).hexdigest() == attempt.get(key)
+                for path, key in ((episode_path, 'manifest_sha256'), (session_path, 'session_sha256')))
+    missing = set(episode['expected_arms']) - episode['recordings'].keys()
+    status = 'pending'
+    if missing:
+        status = 'incomplete'
+    elif fresh:
+        status = attempt.get('status', 'pending')
+    return dict(scene=scene['name'], kit=session['kit']['id'], session=session_dir.name, name=directory.name,
+        expected_arms=episode['expected_arms'], status=status, attempt=attempt,
+        review=state.get('review', {}) if status in ('ok', 'skipped') else {})
 
 
 def read_episode(directory: Path, contains) -> tuple[dict, dict[str, Path]]:

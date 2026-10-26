@@ -16,6 +16,8 @@ fail() { echo "ERROR: $*" >&2; exit 1; }
 [ -f "$DEPS/env.sh" ] || fail "还没装 umi-traj：先运行  bash $ROOT/install.sh"
 # shellcheck disable=SC1091
 source "$DEPS/env.sh"
+# 新变量优先；现有安装生成的旧环境文件无需重装。
+export UMI_PY="${UMI_PY:-${KIWI_PY:-}}"
 [ "$(uname -m)" = x86_64 ] || fail "自带的 Basalt 是 x86_64 Linux 版，当前机器是 $(uname -m)"
 mkdir -p "$DEPS/logs"
 
@@ -34,7 +36,7 @@ echo "  OK $B"
 
 echo "==== 2/3 Python 环境（OpenCV contrib、rosbags）===="
 ENV=$DEPS/calib_env
-[ -x "$ENV/bin/python" ] || "$KIWI_PY" -m venv --system-site-packages "$ENV"
+[ -x "$ENV/bin/python" ] || "$UMI_PY" -m venv --system-site-packages "$ENV"
 if ! "$ENV/bin/python" -c "import cv2, rosbags, lz4; assert hasattr(cv2, 'aruco')" 2>/dev/null; then
   "$ENV/bin/python" -m pip install --no-cache-dir -r "$HERE/requirements.txt" > "$DEPS/logs/calib_pip.log" 2>&1 \
     || fail "pip 安装失败，日志在 $DEPS/logs/calib_pip.log（网络问题可设置 PIP_INDEX_URL 换镜像后重跑）"

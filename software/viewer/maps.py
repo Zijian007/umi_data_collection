@@ -1,15 +1,19 @@
 """地图按需读取；优先使用轻量产物，旧 .osa 在独立进程中转换并缓存。"""
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import threading
 from functools import lru_cache
 from pathlib import Path
+
+from software.environment import python_executable
 
 from software.trajectory import map_data
 from software.trajectory.results import result_path
@@ -77,7 +81,7 @@ def _convert(directory: Path, identity: tuple) -> dict:
 def _export(directory: Path) -> dict:
     deps = Path(os.environ.get('UMI_DEPS') or map_data.ROOT / '.deps')
     project_python = deps / 'env/bin/python'
-    python = os.environ.get('KIWI_PY') or (str(project_python) if project_python.is_file() else sys.executable)
+    python = python_executable(os.environ, default=str(project_python) if project_python.is_file() else sys.executable)
     with tempfile.TemporaryDirectory(prefix='umi-view-map-') as temp:
         target = Path(temp) / 'map.json'
         try:
@@ -91,6 +95,8 @@ def _export(directory: Path) -> dict:
 
 
 def load(directory: Path, summary: dict) -> dict:
+    if summary.get('mode') == 'scene':
+        return load_shared(directory, summary)
     prepared = result_path(directory, 'map.json')
     map_data.require_local(prepared, directory)
     if prepared.is_file():
@@ -108,3 +114,37 @@ def load(directory: Path, summary: dict) -> dict:
                Path(map_data.__file__), Path(__file__), Path(cache.__file__)]
     identity = tuple(cache.file_identity(p) for p in inputs)
     return _convert(directory.resolve(), identity)
+
+
+def load_shared(directory: Path, summary: dict) -> dict:
+    """读取本场景固定版本的展示地图；允许单独打开任务，但不接受任意外部路径。"""
+    reference, scene = summary.get('map'), summary.get('scene', {})
+    if (not isinstance(reference, dict) or not isinstance(scene, dict) or not isinstance(reference.get('path'), str)
+            or Path(reference['path']).is_absolute()
+            or not isinstance(reference.get('sha256'), str)
+            or not re.fullmatch('[0-9a-f]{64}', reference['sha256'])
+            or not isinstance(scene.get('version'), str)
+            or not re.fullmatch('[0-9a-f_-]+', scene['version'])):
+        raise ValueError('场景地图引用无效')
+    # 先按引用的原始位置检查固定布局，再解析软链接，防止跨场景或目录越界。
+    path = Path(os.path.abspath(directory / reference['path']))
+    if len(path.parents) < 4:
+        raise ValueError('场景地图引用路径无效')
+    scene_root = path.parents[3]
+    expected = scene_root / 'maps/versions' / scene['version'] / 'map.json'
+    if (path != expected or not directory.resolve().is_relative_to(scene_root.resolve())
+            or not path.resolve().is_relative_to(scene_root.resolve())
+            or not (scene_root / 'scene.yaml').is_file()):
+        raise ValueError('场景地图引用越界或不属于当前场景')
+    manifest_path = path.parent / 'manifest.json'
+    map_data.require_local(manifest_path, scene_root)
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    if (manifest.get('kind') != 'umi_scene' or manifest.get('name') != scene.get('name')
+            or manifest.get('version') != scene['version']
+            or manifest.get('frame_id') != scene.get('frame_id')
+            or manifest.get('assets', {}).get('map.json') != reference['sha256']):
+        raise ValueError('场景地图版本、坐标系或内容身份不一致')
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != reference['sha256']:
+        raise ValueError('场景地图内容已变化')
+    return validate(json.loads(data))

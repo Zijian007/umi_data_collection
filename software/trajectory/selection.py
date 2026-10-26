@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from software.registry import RegistryError, resolve_insv
-from software.trajectory.calibration_assets import CalibrationError, FACTORY_FUSER
+from software.trajectory.calibration_assets import CalibrationError, FUSION_SCRIPT
 
 
 @dataclass(frozen=True)
@@ -51,7 +51,7 @@ class SelectedCalibration:
     def as_postprocess_dict(self, hashes: dict[str, str]) -> dict:
         """Compatibility adapter: numerical postprocessing keeps its established API."""
         return dict(self.summary(), json=str(self.assets.camera_json),
-                    fuser=str(FACTORY_FUSER),
+                    fuser=str(FUSION_SCRIPT),
                     tcp_json=str(self.assets.tcp_geometry), mask=str(self.assets.front_mask),
                     cam_time_offset_ns=self.time_offset_ns,
                     bundle_sha256=hashes['camera_json'])

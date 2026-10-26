@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 
@@ -26,4 +27,4 @@ class Console:
             labels.append(state)
         with _print_lock:
             print(time.strftime("%H:%M:%S ") + "".join(f"[{label}]" for label in labels)
-                  + " " + message, flush=True)
+                  + " " + message, file=sys.stderr, flush=True)

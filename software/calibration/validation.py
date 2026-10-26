@@ -7,6 +7,8 @@ import os
 import sys
 from pathlib import Path
 
+from software.environment import python_executable
+
 import numpy as np
 
 from software.calibration.algorithms import aprilgrid_detect, board_pnp
@@ -25,7 +27,7 @@ def trajectory_check(video: Path, detections: dict, context: StageContext, *,
     output = context.paths.work / ("C_traj_" + tag)
     log = context.paths.logs / f"C_umi_traj_{tag}.log"
     environment = dict(os.environ, UMI_TRAJ_CALIB=bundle, PYTHONPATH=str(runtime.REPO) + os.pathsep + os.environ.get("PYTHONPATH", ""))
-    trajectory_python = os.environ.get("KIWI_PY", sys.executable)
+    trajectory_python = python_executable(os.environ, default=sys.executable)
     command = [trajectory_python, "-m", "software.trajectory", str(video), "--out", str(output), "--force"]
     trajectory_config = context.paths.work / "trajectory.yaml"
     # Child CLI reads the exact resolved trajectory configuration, not ambient defaults.
@@ -84,7 +86,7 @@ def validate_trajectory(video: Path, dataset: Path, bundle: BundleResult,
     if compare_sample:
         runtime.console.write('额外对照：用样例标定抽取 C 段轨迹', step=(6, 6))
         try:
-            reference = trajectory_check(video, detections, context, calibration_json=trajectory_calibration.FACTORY_JSON,
+            reference = trajectory_check(video, detections, context, calibration_json=trajectory_calibration.SAMPLE_CAMERA_JSON,
                                          bundle='factory', tag='factory')
         except Exception as error:
             reference = {'status': 'comparison_failed', 'reason': str(error)}
