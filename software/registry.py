@@ -19,7 +19,8 @@ from pathlib import Path
 
 from software.storage import locked, write_json
 
-from software.trajectory import calibration_assets as tcal
+from software.trajectory import calibration_assets as traj_calib
+tcal = traj_calib  # 兼容测试 patch 与历史引用
 
 REPO = Path(__file__).resolve().parents[1]
 ROOT = REPO / "registry"
@@ -151,39 +152,43 @@ def read_insv_serial(path: Path) -> str:
     return read_insv_identity(path)["serial"]
 
 
-def _record_view(serial: str, rec: dict, *, calibration: str | None = None,
+def _record_view(serial: str, device_record: dict, *, calibration: str | None = None,
                  gripper: str | None = None, gripper_version: str | None = None, allow_retired: bool = False) -> dict:
-    if rec.get('status') == 'retired' and not allow_retired:
+    if device_record.get('status') == 'retired' and not allow_retired:
         raise RegistryError(f'相机 {serial} 已在设备档案中停用')
-    if rec.get('status') not in STATUSES:
+    if device_record.get('status') not in STATUSES:
         raise RegistryError(f'相机 {serial} 的档案状态无效')
-    version = validate_id(calibration or rec['calibration'])
+    version = validate_id(calibration or device_record['calibration'])
     # adopt-sample 明确记录测量来源；场景模式仍拒绝样例替代。
-    owner = rec.get('calibration_owner', serial)
+    owner = device_record.get('calibration_owner', serial)
     directory = CAMERAS / validate_id(owner) / 'calibrations' / version
     manifest = version_assets(directory)
     if manifest.get('kind') != 'umi_camera_calibration' or manifest.get('serial') != owner:
         raise RegistryError(f'相机标定版本身份不一致：{directory}')
     bundle = directory / 'bundle'
-    cal = tcal.describe(bundle, 'registry')
-    grip = gripper_paths(gripper or rec['gripper'], gripper_version)
-    cal.update(source='registry', serial=serial, status=rec['status'], note=rec.get('note'),
-               calibration_version=version, calibration_owner=owner,
-               gripper=grip['id'], gripper_version=grip['version'], tcp_json=grip['tcp_json'], mask=grip['mask'],
-               bundle_sha256=bundle_sha256(bundle), tcp_sha256=grip['tcp_sha256'], mask_sha256=grip['mask_sha256'],
-               gripper_dir=grip['dir'])
-    return cal
+    calibration_info = traj_calib.describe(bundle, 'registry')
+    gripper_info = gripper_paths(gripper or device_record['gripper'], gripper_version)
+    calibration_info.update(
+        source='registry', serial=serial, status=device_record['status'], note=device_record.get('note'),
+        calibration_version=version, calibration_owner=owner,
+        gripper=gripper_info['id'], gripper_version=gripper_info['version'],
+        tcp_json=gripper_info['tcp_json'], mask=gripper_info['mask'],
+        bundle_sha256=bundle_sha256(bundle), tcp_sha256=gripper_info['tcp_sha256'],
+        mask_sha256=gripper_info['mask_sha256'], gripper_dir=gripper_info['dir'],
+    )
+    return calibration_info
 
 
 def get(serial: str, *, calibration: str | None = None, gripper: str | None = None,
         gripper_version: str | None = None, allow_retired: bool = False) -> dict:
-    idx = load_index()
-    rec = idx['devices'].get(serial)
-    if rec is None:
+    index_data = load_index()
+    device_record = index_data['devices'].get(serial)
+    if device_record is None:
         raise UnknownCameraError(f'相机 {serial!r} 尚未登记；标定验收后执行 ./umi-calib install。')
     try:
-        return _record_view(serial, rec, calibration=calibration, gripper=gripper, gripper_version=gripper_version, allow_retired=allow_retired)
-    except (OSError, KeyError, ValueError, tcal.CalibrationError) as error:
+        return _record_view(serial, device_record, calibration=calibration, gripper=gripper,
+                            gripper_version=gripper_version, allow_retired=allow_retired)
+    except (OSError, KeyError, ValueError, traj_calib.CalibrationError) as error:
         raise RegistryError(f'相机 {serial} 的设备资产不可用：{error}') from error
 
 
@@ -201,7 +206,7 @@ def register_rear(source: Path) -> dict:
     get(serial)
     if data.get('kind') != 'umi_rear_calibration' or data.get('lens') != 'rear' or not str(data.get('validation', {}).get('verdict', '')).startswith('PASS'):
         raise RegistryError('后镜头标定需要匹配序列号、lens: rear 和通过的验收证据')
-    tcal.read_basalt(source)
+    traj_calib.read_basalt(source)
     version = 'rear_'+sha256_file(source)[:12]
     with locked(ROOT, '.registry.lock'):
         store_version(CAMERAS / serial / 'calibrations', version, {'rear_calibration.json': source},

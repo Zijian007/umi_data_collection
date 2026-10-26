@@ -22,35 +22,47 @@ class WidthSeries:
         return np.isin(self.source, [TWO_TAGS, INTERPOLATED]) & np.isfinite(self.width_mm)
 
 
-def resample(series: WidthSeries, query: np.ndarray, max_gap_s: float) -> WidthSeries:
-    right = np.clip(np.searchsorted(series.times_s, query), 0, len(series.times_s)-1)
-    left = np.maximum(right-1, 0)
-    exact = np.abs(series.times_s[right]-query) <= 1e-8
+def resample(width_series: WidthSeries, query: np.ndarray, max_gap_s: float) -> WidthSeries:
+    right = np.clip(np.searchsorted(width_series.times_s, query), 0, len(width_series.times_s) - 1)
+    left = np.maximum(right - 1, 0)
+    exact = np.abs(width_series.times_s[right] - query) <= 1e-8
     left = np.where(exact, right, left)
-    valid = ((query >= series.times_s[0]-1e-8) & (query <= series.times_s[-1]+1e-8)
-             & series.valid[left] & series.valid[right]
-             & (series.times_s[right]-series.times_s[left] <= max_gap_s+1e-8))
+    valid = (
+        (query >= width_series.times_s[0] - 1e-8)
+        & (query <= width_series.times_s[-1] + 1e-8)
+        & width_series.valid[left]
+        & width_series.valid[right]
+        & (width_series.times_s[right] - width_series.times_s[left] <= max_gap_s + 1e-8)
+    )
     width = np.full(len(query), np.nan)
     # CSV 时钟会舍入到纳秒；容差内命中有效帧时直接取值，避免混入相邻缺失帧。
     matched = valid & exact
-    width[matched] = series.width_mm[right[matched]]
+    width[matched] = width_series.width_mm[right[matched]]
     between = valid & ~exact
-    fraction = ((query[between]-series.times_s[left[between]])
-                / (series.times_s[right[between]]-series.times_s[left[between]]))
-    width[between] = (series.width_mm[left[between]]
-                      + fraction*(series.width_mm[right[between]]-series.width_mm[left[between]]))
+    fraction = (query[between] - width_series.times_s[left[between]]) / (
+        width_series.times_s[right[between]] - width_series.times_s[left[between]]
+    )
+    width[between] = (
+        width_series.width_mm[left[between]]
+        + fraction * (width_series.width_mm[right[between]] - width_series.width_mm[left[between]])
+    )
     source = np.full(len(query), MISSING, dtype=np.uint8)
-    source[valid] = np.where((series.source[left[valid]] == INTERPOLATED)
-                             | (series.source[right[valid]] == INTERPOLATED), INTERPOLATED, TWO_TAGS)
-    source[(series.source[left] == OUT_OF_RANGE) | (series.source[right] == OUT_OF_RANGE)] = OUT_OF_RANGE
+    source[valid] = np.where(
+        (width_series.source[left[valid]] == INTERPOLATED) | (width_series.source[right[valid]] == INTERPOLATED),
+        INTERPOLATED,
+        TWO_TAGS,
+    )
+    source[(width_series.source[left] == OUT_OF_RANGE) | (width_series.source[right] == OUT_OF_RANGE)] = OUT_OF_RANGE
     return WidthSeries(query, width, source)
 
 
-def write(path: Path, series: WidthSeries, calibration: dict, offset_s: float) -> None:
+def write(path: Path, width_series: WidthSeries, calibration: dict, offset_s: float) -> None:
     with path.open('w', newline='', encoding='utf-8') as stream:
         writer = csv.writer(stream)
         writer.writerow(['row', 't_video_s', 't_episode_s', 'width_mm', 'close_01', 'closed', 'valid', 'source'])
-        for k, (time, width, source, valid) in enumerate(zip(series.times_s, series.width_mm, series.source, series.valid)):
+        for k, (time, width, source, valid) in enumerate(
+            zip(width_series.times_s, width_series.width_mm, width_series.source, width_series.valid)
+        ):
             writer.writerow([k, f'{time:.9f}', f'{time+offset_s:.9f}', f'{width:.6f}' if valid else '',
                 f'{np.clip(1-width/calibration["open_width_mm"], 0, 1):.9f}' if valid else '',
                 int(width <= calibration['closed_threshold_mm']) if valid else '', int(valid), SOURCE_NAMES[int(source)]])

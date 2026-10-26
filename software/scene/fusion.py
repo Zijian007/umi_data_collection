@@ -41,7 +41,12 @@ def sample_observations(obs: VisualObservations, node_times: np.ndarray, maximum
 def longest_gap(times: np.ndarray, observed: np.ndarray) -> float:
     dt = float(np.median(np.diff(times)))
     edges = np.diff(np.r_[False, ~observed, False].astype(int))
-    return max((float(times[b-1]-times[a]+dt) for a, b in zip(np.where(edges == 1)[0], np.where(edges == -1)[0])), default=0.)
+    gap_starts = np.where(edges == 1)[0]
+    gap_ends = np.where(edges == -1)[0]
+    return max(
+        (float(times[gap_end - 1] - times[gap_start] + dt) for gap_start, gap_end in zip(gap_starts, gap_ends)),
+        default=0.0,
+    )
 
 
 @dataclass(frozen=True)
