@@ -26,6 +26,7 @@ cli.main() → workflow.run_batch() → workflow.run_recording()
 
 ## 文件职责
 
+```text
 software/trajectory/
 ├── cli.py                     参数解析与命令行入口
 ├── workflow.py                独立录像与批处理端到端编排
@@ -55,6 +56,7 @@ software/trajectory/
     ├── fusion_data.py         输入输出数据结构与文件边界
     ├── fusion_cli.py          独立求解 CLI
     └── postprocess.py         编排 IMU → 相机/TCP、指标与预览
+```
 
 `ReconstructionContext.visual` 将独立请求转换成不携带业务请求的 `VisualContext`。视觉程序、错误与路径由 `software/vision` 管理；外参和逐帧位姿右乘由 `software/camera/geometry.py` 管理；公共 TUM 读写位于 `software/pose_io.py`。
 

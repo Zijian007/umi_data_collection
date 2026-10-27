@@ -18,6 +18,6 @@
 | 查看视频、轨迹、地图 | [三维查看](查看.md) |
 | 理解算法与精度证据 | [原理与验证](轨迹/原理.md) |
 | 调整算法参数 | [参数管理](../config/README.md) |
-| 阅读代码与测试 | [代码维护](dev/README.md) · [场景代码](../software/scene/README.md) |
+| 阅读代码与测试 | [代码维护](dev/README.md) · [场景代码](../software/scene/README.md) · [轨迹代码](../software/trajectory/README.md) |
 
 使用说明在 `docs/`，模块阅读指南在对应 `software/` 目录。开发来源记录在 `docs/dev/`，历史方案在 `docs/dev/archive/`，其中旧同步命令等历史描述不代表当前操作入口。

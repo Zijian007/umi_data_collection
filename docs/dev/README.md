@@ -7,8 +7,8 @@
 | 流程 | 阅读入口 |
 |---|---|
 | 标定 | [标定代码指南](../../software/calibration/README.md)：`cli.main()` → `workflow.run()` / `verify()` |
-| 共享场景 | [场景代码指南](../../software/scene/README.md)：`cli.main()` → `workflow.build_scene()` / `run_episode()` |
-| 轨迹抽取 | [轨迹代码指南](../../software/trajectory/README.md)：`cli.main()` → `workflow.run_batch()` → `run_recording()` |
+| 共享场景 | [场景代码指南](../../software/scene/README.md)：`cli.main()` → `workflow.build_scene()` / `run_episode()`（架构子包：`management/`, `spatial/`, `pipeline/`） |
+| 轨迹抽取 | [轨迹代码指南](../../software/trajectory/README.md)：`cli.main()` → `workflow.run_batch()` → `run_recording()`（架构子包：`calibration/`, `pipeline/`, `reporting/`, `algorithms/`） |
 | 三维查看 | [查看器代码指南](../../software/viewer/README.md)：`server.main()` → `RecordingCatalog` → 浏览器播放状态 |
 | 共用视觉 | [视觉代码指南](../../software/vision/README.md)：录像准备、ORB 建图/定位、视觉上下文与执行验收 |
 | 相机数据 | [extraction.py](../../software/camera/x3/extraction.py) 提取时间戳和 IMU；[frame.py](../../software/camera/x3/frame.py) 定义录制几何、裁剪、帧率和时钟约定 |

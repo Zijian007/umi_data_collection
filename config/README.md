@@ -1,6 +1,6 @@
 # 算法参数
 
-标定和单段轨迹抽取共用 [software/config.py](../software/config.py) 加载配置。场景流程另由 `software/scene/inputs.py` 加载场景参数，并复用轨迹配置。数值默认值集中在下面的 YAML 中。
+标定和单段轨迹抽取共用 [software/config.py](../software/config.py) 加载配置。场景流程另由 `software/scene/management/inputs.py` 加载场景参数，并复用轨迹配置。数值默认值集中在下面的 YAML 中。
 
 | 内容 | 管理位置 | 生效范围 |
 |---|---|---|

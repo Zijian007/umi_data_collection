@@ -423,3 +423,21 @@ state.json 只保存 attempt/review，身份、使用手和完整性从清单读
 验证：最终 Python 全套回归 262 项通过，查看器 Node 测试通过，解析 Jacobian 自检 PASS（最大误差约 5.99e-7）。共用模块依赖边界、无执行副作用的导入、连续求解状态隔离、带负号向量的旧入口、异常退出/残片、迁移只读预览、版本保留和显式启用均有覆盖。
 
 真实验证使用既有 IAQEB26097M4CP 单相机原片 VID_20261022_225713_00_005.insv：公共视觉迁移后和完整融合拆分后各完成一次独立全流程，均为 1041 帧、约 34.7 秒、TCP 路程约 2.95 m、位置约束覆盖 100%。同一段真实视觉观测与 IMU 分别送入优化前脚本与新求解器，traj_tum.txt、state.csv、seg_placement.csv 逐字节一致，除耗时外的融合证据一致。另在 /tmp 中隔离复制已发布场景地图与清单，完成场景任务处理及共享地图查看验证。现有原片、已发布地图与注册表资产不迁移、不覆盖；回归产物在 /tmp，既有任务状态不变。以上是流程与一致性验证，没有新增真实双机数据，也没有独立物理精度结论。
+
+## 2026-10-27 场景与独立轨迹架构模块化及代码规范化
+
+1. **场景模块架构分层与子包化**：消除 `software/scene/` 原平铺的 14 个文件，顶层仅保留 `cli.py`（命令分发）、`workflow.py`（端到端编排）、`models.py`（强类型数据契约）。下设三大高内聚子包：
+   - `management/`：负责场景套件与批次管理、原片配对入库、任务状态与输入指纹（`capture_config.py`, `episodes.py`, `ingest.py`, `inputs.py`）。
+   - `spatial/`：负责视觉建图、多相机几何变换、前后地图放置与图优化融合（`mapping.py`, `geometry.py`, `fusion.py`, `slam.py`, `rear_calibration.py`）。
+   - `pipeline/`：负责原片归档解码、质量完整性预检与轨迹产物发布（`recordings.py`, `recording_checks.py`, `results.py`）。
+2. **独立轨迹模块架构分层与碎片整合**：
+   - 将原 29 行的 `recording_data.py` 升格重构为更规范的 `pipeline/inputs.py`；原 45 行的 `plots.py` 归集进 `reporting/` 产物交付子包；
+   - 划分为 `calibration/`（资产与设备选择）、`pipeline/`（多轮重建调度、复用与运行环境）、`reporting/`（结果布局、质量分析、元数据与展示地图）及底层的 `algorithms/`（图优化求解器内核）；
+   - 根目录下保留极简的门面入口 `cli.py`, `workflow.py`, `models.py` 与轻量兼容垫片。
+3. **100% 向后兼容与循环依赖解耦**：
+   - 在 `software/scene/__init__.py` 与 `software/trajectory/__init__.py` 中建立了完整的门面导出与 `sys.modules` 别名映射，老测试中的 `mock.patch` 与外部模块的历史 import 路径 100% 无缝兼容；
+   - 将 `selection.py` 与 `runtime.py` 对 `software.registry` 的依赖改为函数级延迟导入，彻底消除包初始化阶段的潜在循环依赖。
+4. **代码可读性与 PEP 8 命名规范化**：
+   - 解密了 `metadata.py`、`assets.py`、`fusion.py`、`workflow.py`、`dataset/` 等核心文件中的单字母（`p`, `s`, `c`, `d`, `ic`, `cad`, `cand`, `z`, `dur`）与压缩分号语句，代码符合 PEP 8 规范。
+5. **验证**：全量执行 `./test.sh --all`，主单元测试 293 项全部通过（Ran in 28.6s OK），夹爪历史测试 5 项全部通过，查看器前端 JS 测试 15 项全部通过，`umi-calib check` 与 `umi-traj check` 自检全部通过。
+
