@@ -441,3 +441,13 @@ state.json 只保存 attempt/review，身份、使用手和完整性从清单读
    - 解密了 `metadata.py`、`assets.py`、`fusion.py`、`workflow.py`、`dataset/` 等核心文件中的单字母（`p`, `s`, `c`, `d`, `ic`, `cad`, `cand`, `z`, `dur`）与压缩分号语句，代码符合 PEP 8 规范。
 5. **验证**：全量执行 `./test.sh --all`，主单元测试 293 项全部通过（Ran in 28.6s OK），夹爪历史测试 5 项全部通过，查看器前端 JS 测试 15 项全部通过，`umi-calib check` 与 `umi-traj check` 自检全部通过。
 
+## 2026-10-27 深度清理过度设计、过度防御与文件树优化
+
+1. **彻底移除动态 `git_commit` 与脆弱外部依赖**：移除 `trajectory` 与 `calibration` 运行时中直接拉起 `git rev-parse HEAD` 子进程的逻辑；清理测试套件中的相关 mock。
+2. **精简旧运行记录解析与超时收敛**：移除 `metadata.py` 中通过空格切分匹配旧版 `run.txt` 的过渡解析逻辑，收敛为读取规范结构化的 `run.json`；将 `--help` 与 `ffmpeg` 探测命令 60s/30s 超长超时收敛至 10s。
+3. **文件树瘦身与平台边界清晰化**：
+   - 清理未跟踪的本地 100MB+ 临时测试视频及缓存产物；
+   - 彻底移除 `Dockerfile` 与 `.dockerignore`，明确原生 Linux / WSL2 主机计算边界，消除在非 x86_64 / 轻薄设备上通过容器运行密集数值求解的性能误导；
+   - 更新 `install.sh` 与 `docs/安装.md`，为 Windows 用户提供标准的 WSL2 (Ubuntu 22.04) 指南。
+4. **验证**：全套测试通过（293 单元 + 5 夹爪 + 15 前端）。
+

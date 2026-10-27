@@ -41,7 +41,7 @@ run_logged() {  # <log> <cmd...>  日志照写，同时打到屏幕。用 script
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)  PLAT=linux-64;      MAMBA_SHA=366cd9cd8be14df1ab8ed50352a82111082a36686b2d389fdb79a92c3fafb3e3;;
   Linux-aarch64) PLAT=linux-aarch64; MAMBA_SHA=9f93b974adcb4d166996af969b6cd371287d1a3e52733704727884d9b74cb7a7;;
-  *) fail "只支持 Linux（x86_64 / aarch64）。Windows / macOS 请用 Docker（见 README）。";;
+  *) fail "只支持 Linux（x86_64 / aarch64）；Windows 用户推荐在 WSL2（Ubuntu 22.04）中运行。";;
 esac
 for c in curl tar; do command -v $c > /dev/null || fail "缺少系统命令 $c（Ubuntu: sudo apt install $c）"; done
 
