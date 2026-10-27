@@ -13,7 +13,9 @@ from software import config, registry
 from software.calibration import camera_imu, checks, inputs as calibration_inputs, intrinsics, recording_data, runtime, validation
 from software.calibration.algorithms import aprilgrid_detect, board_pnp
 from software.calibration.models import CalibrationRequest, RunPaths, StageContext, TrajectoryValidation
-from software.scene import inputs, recordings, slam, fusion, mapping
+from software.scene.management import inputs
+from software.scene.pipeline import recordings
+from . import fusion, mapping, slam
 from software.camera.timing import video_to_imu_seconds
 from software.camera.geometry import imu_from_camera
 from software.scene.models import Scene

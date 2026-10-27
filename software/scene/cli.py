@@ -11,9 +11,11 @@ from pathlib import Path
 from ruamel.yaml.error import YAMLError
 
 from software import registry
-from software.scene import inputs, capture_config, ingest, episodes, recording_checks, recordings, workflow
+from software.scene import workflow
+from software.scene.management import capture_config, episodes, ingest, inputs
+from software.scene.management.episodes import episode_paths
+from software.scene.pipeline import recording_checks, recordings
 from software.scene.models import ARMS
-from software.scene.episodes import episode_paths
 from software.storage import locked, write_yaml
 
 
@@ -254,7 +256,7 @@ def main(argv=None):
             directory, data = workflow.load_published(inputs.read_scene(args.scene))
             result = dict(directory=str(directory), name=data['name'], version=data['version'], frame_id=data['frame_id'], maps=data['maps'])
         else:
-            from software.scene.rear_calibration import run
+            from software.scene.spatial.rear_calibration import run
             result = run(args.folder, output=args.out, tag_size_mm=args.tag_size_mm, cores=args.cores,
                 keep_work=args.keep_work, config_path=args.config, dry_run=args.dry_run)
             print(json.dumps(result, ensure_ascii=False, indent=2))

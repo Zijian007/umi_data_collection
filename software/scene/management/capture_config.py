@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from software.scene import inputs
+from . import inputs
 from software import registry
 from software.scene.models import ARMS
 from software.storage import locked, write_yaml

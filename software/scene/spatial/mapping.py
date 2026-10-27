@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 
 from software import config
-from software.scene import fusion, slam
-from software.scene.geometry import metric_alignment, place_front
+from . import fusion, slam
+from .geometry import metric_alignment, place_front
 from software.camera.geometry import imu_from_camera
 from software.scene.models import PreparedRecording, CalibratedCamera, Scene
 

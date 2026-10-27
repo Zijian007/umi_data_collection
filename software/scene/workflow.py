@@ -39,8 +39,10 @@ class EpisodeRunResult(TypedDict, total=False):
 
 from software import config
 from software.console import Console
-from software.scene import episodes, fusion, inputs, mapping, recording_checks, recordings, results, slam
-from software.scene.geometry import VisualObservations
+from software.scene.management import episodes, inputs
+from software.scene.spatial import fusion, mapping, slam
+from software.scene.spatial.geometry import VisualObservations
+from software.scene.pipeline import recording_checks, recordings, results
 from software.camera.timing import video_to_imu_seconds
 from software.camera.geometry import imu_from_camera
 from software.gripper_width import pipeline as width_pipeline

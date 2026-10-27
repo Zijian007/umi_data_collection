@@ -10,7 +10,7 @@ import tempfile
 from datetime import datetime, timezone
 
 from software import config
-from software.scene import inputs
+from . import inputs
 from software.storage import locked, write_json
 
 

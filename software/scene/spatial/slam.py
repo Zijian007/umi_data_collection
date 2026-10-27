@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from software.scene.geometry import VisualObservations, read_visual_observations
+from .geometry import VisualObservations, read_visual_observations
 from software.scene.models import PreparedRecording
 from software.trajectory import map_data
 from software.vision import slam as visual_slam, runtime

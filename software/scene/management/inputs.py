@@ -13,7 +13,7 @@ from software import config, registry
 from software.scene.models import ARMS, CalibratedCamera, Episode, Scene, SceneParameters, Session
 from software.trajectory import calibration_assets, selection
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 INTERNAL_DIRECTORIES = frozenset({'archive', 'cache', 'runs', 'versions', 'maps', 'imports', 'results'})
 
 

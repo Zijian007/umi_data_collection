@@ -11,8 +11,9 @@ import uuid
 from contextlib import nullcontext
 
 from software.console import Console
-from software.scene import inputs, recordings
-from software.scene.episodes import record_capture
+from . import inputs
+from .episodes import record_capture
+from software.scene.pipeline import recordings
 from software.storage import locked, write_json, write_yaml
 
 console = Console('入库')

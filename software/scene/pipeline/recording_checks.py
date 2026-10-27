@@ -8,7 +8,7 @@ import struct
 import numpy as np
 
 from software.camera.x3 import frame, imu_reader, insv_reader
-from software.scene import inputs
+from software.scene.management import inputs
 from software.scene.models import SceneParameters
 
 

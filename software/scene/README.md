@@ -6,21 +6,24 @@
 
 ```text
 software/scene/
-├── cli.py                 参数与直接分发
-├── workflow.py            建图、抽取、缓存与失败收尾
-├── models.py              参数、清单和阶段数据结构
-├── inputs.py              清单读取、资产选择、输入指纹与校验
-├── capture_config.py      场景下的套件与批次配置
-├── ingest.py              原片配对、任务登记
-├── recordings.py          原片归档、时间戳/IMU/镜头视频准备
-├── recording_checks.py    原片和任务完整性检查
-├── slam.py                ORB 建图、定位、图集导出
-├── mapping.py             地图选择、米制对齐、场景放置与资产冻结
-├── geometry.py            坐标变换、惯性对齐与几何计算
-├── fusion.py              视觉与 IMU 融合、初始陀螺仪零偏
-├── episodes.py            任务状态、人工验收、导出
-├── results.py             轨迹、双手表、算法报告
-└── rear_calibration.py    后镜头标定与独立 C 验收
+├── cli.py                     参数与直接分发
+├── workflow.py                建图、抽取、缓存与失败收尾
+├── models.py                  参数、清单和阶段数据结构
+├── management/                采集配置与任务生命周期
+│   ├── capture_config.py      场景下的套件与批次配置
+│   ├── episodes.py            任务状态、人工验收、导出
+│   ├── ingest.py              原片配对、任务登记
+│   └── inputs.py              清单读取、资产选择、输入指纹与校验
+├── spatial/                   多相机空间几何、视觉定位与图优化融合
+│   ├── fusion.py              视觉与 IMU 融合、初始陀螺仪零偏
+│   ├── geometry.py            坐标变换、惯性对齐与几何计算
+│   ├── mapping.py             地图选择、米制对齐、场景放置与资产冻结
+│   ├── rear_calibration.py    后镜头标定与独立 C 验收
+│   └── slam.py                ORB 建图、定位、图集导出
+└── pipeline/                  原片预处理、质量预检与轨迹结果交付
+    ├── recording_checks.py    原片和任务完整性检查
+    ├── recordings.py          原片归档、时间戳/IMU/镜头视频准备
+    └── results.py             轨迹、双手表、算法报告
 ```
 
 `models.py` 不读取 YAML、设备资产或文件哈希。读取逻辑统一在 `inputs.py`，`workflow.py` 和 `episodes.py` 直接使用它；验收模块不导入 workflow。公共原子文件和锁由 `software/storage.py` 提供，设备实测资产由 `software/registry.py` 管理。

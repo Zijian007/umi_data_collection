@@ -16,7 +16,8 @@ from software.camera.geometry import (
     describe_tcp_frame, resample_pose_series,
 )
 from software.scene.models import Episode, PreparedRecording, ArmTrajectory
-from software.scene import fusion, inputs
+from software.scene.spatial import fusion
+from software.scene.management import inputs
 from software.storage import write_json
 from software.pose_io import write_tum
 

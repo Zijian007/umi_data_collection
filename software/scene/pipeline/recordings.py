@@ -16,7 +16,7 @@ from software.trajectory import calibration_assets
 from software.vision import recordings as recording_data, runtime
 from software.vision.models import LensVideo, RecordingData, RecordingPaths, VisualContext
 
-ROOT = Path(__file__).resolve().parents[2] / 'recordings' / 'scenes'
+ROOT = Path(__file__).resolve().parents[3] / 'recordings' / 'scenes'
 
 
 def inspect(video: Path) -> dict:

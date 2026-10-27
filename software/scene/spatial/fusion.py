@@ -10,7 +10,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
 from software import config
-from software.scene.geometry import VisualObservations, integrate_samples
+from .geometry import VisualObservations, integrate_samples
 from software.scene.models import PreparedRecording, SceneParameters
 
 
