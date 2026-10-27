@@ -19,7 +19,7 @@ from scipy.spatial.transform import Rotation as Rot
 
 from software.camera.x3.frame import CROP, scale_intrinsics, validate_video_size
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parents[1]
 REPO = HERE.parents[1]
 SAMPLE_CAMERA_JSON = HERE / "assets" / "calib" / "calibration_r1440.json"
 FRONT_SETTINGS_TEMPLATE = HERE / "assets" / "config" / "front_x3_r1440_720.yaml"

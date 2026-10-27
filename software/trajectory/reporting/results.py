@@ -133,7 +133,7 @@ def _publish_video(output: Path, summary: dict) -> None:
 
 def finalize_result(output: Path, summary: dict) -> None:
     """发布视频、details 和报告。迁移旧结果时保留所有独有中间数据。"""
-    from software.trajectory import reports
+    from . import reports
 
     output = output.resolve()
     for name in ('details', 'debug', 'diagnostics'):

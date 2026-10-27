@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 from software.camera.timing import canonical_to_video_seconds, euroc_ns_to_seconds, video_to_canonical_seconds
-from software.trajectory.calibration_assets import read_basalt
+from software.trajectory.calibration.assets import read_basalt
 
 
 @dataclass(frozen=True)

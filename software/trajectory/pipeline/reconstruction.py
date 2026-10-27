@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from software.storage import write_json
-from software.trajectory import runtime
+from . import runtime
 from software.vision import runtime as visual_runtime, slam
 from software.trajectory.models import AttemptResult, FusionResult, ReconstructionContext
 from software.vision.models import LensLocalization, LensVideo, RecordingData, ProcessingError

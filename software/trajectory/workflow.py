@@ -16,8 +16,10 @@ from pathlib import Path
 
 from software import config, registry
 from software.vision import recordings as visual_recordings, runtime as visual_runtime
-from software.trajectory import map_data, recording_data, reconstruction, reports, results, reuse, runtime, selection
-from software.trajectory.quality import evaluate_notes
+from software.trajectory.calibration import selection
+from software.trajectory.pipeline import inputs as recording_data, reconstruction, reuse, runtime
+from software.trajectory.reporting import map_data, reports, results
+from software.trajectory.reporting.quality import evaluate_notes
 from software.trajectory.algorithms import postprocess
 from software.trajectory.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
 from software.vision.models import ProcessingError

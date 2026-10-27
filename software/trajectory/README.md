@@ -26,22 +26,35 @@ cli.main() → workflow.run_batch() → workflow.run_recording()
 
 ## 文件职责
 
-| 文件 | 职责 |
-|---|---|
-| `workflow.py` | 独立录像与批处理的顺序、失败收尾 |
-| `models.py` | 独立重建请求、路径、上下文与尝试结果 |
-| `selection.py` | 设备注册表与处理流程的边界 |
-| `calibration_assets.py` | 标定包读取、测量到 SLAM 设置、旧包验证 |
-| `recording_data.py` | 独立 CLI 输入发现和默认输出目录 |
-| `reconstruction.py` | 重建重试、融合调用与质量检查 |
-| `runtime.py` | 独立融合配置和依赖诊断 |
-| `reuse.py` | 输入指纹、成功结果复用与提醒重评 |
-| `map_data.py` | 图集展示导出、展示坐标对齐 |
-| `results.py` | 结果布局、旧结果迁移、发布与清理 |
-| `reports.py` | 用户报告和终端摘要 |
-| `run_metadata.py` | 所用测量资产、外参和完整配置记录 |
-| `quality.py` | 跟踪统计、逐帧约束和可重评的质量提醒 |
-| `plots.py` | 轨迹预览图 |
+software/trajectory/
+├── cli.py                     参数解析与命令行入口
+├── workflow.py                独立录像与批处理端到端编排
+├── models.py                  强类型模型、请求与上下文契约
+├── calibration/               设备规格与实测标定资产管理
+│   ├── assets.py              标定包读取、测量到 SLAM 设置、旧包验证
+│   └── selection.py           设备注册表与处理流程的边界
+├── pipeline/                  重建调度与执行环境
+│   ├── inputs.py              独立 CLI 输入发现和默认输出目录
+│   ├── reconstruction.py      重建重试、融合调用与质量检查
+│   ├── reuse.py               输入指纹、成功结果复用与提醒重评
+│   └── runtime.py             独立融合配置和依赖诊断
+├── reporting/                 结果交付、分析与报告
+│   ├── map_data.py            图集展示导出、展示坐标对齐
+│   ├── metadata.py            所用测量资产、外参和完整配置记录
+│   ├── plots.py               轨迹预览图
+│   ├── quality.py             跟踪统计、逐帧约束和可重评的质量提醒
+│   ├── reports.py             用户报告和终端摘要
+│   └── results.py             结果布局、旧结果迁移、发布与清理
+└── algorithms/                图优化求解器内核
+    ├── fusion.py              四阶段顺序入口 solve(...)
+    ├── fusion_alignment.py    跟踪段细分、惯性尺度/重力对齐
+    ├── fusion_placement.py    地图段放置和分段
+    ├── fusion_graph.py        构建、优化因子图
+    ├── fusion_recovery.py     恢复全帧率状态
+    ├── fusion_factors.py      因子与解析 Jacobian
+    ├── fusion_data.py         输入输出数据结构与文件边界
+    ├── fusion_cli.py          独立求解 CLI
+    └── postprocess.py         编排 IMU → 相机/TCP、指标与预览
 
 `ReconstructionContext.visual` 将独立请求转换成不携带业务请求的 `VisualContext`。视觉程序、错误与路径由 `software/vision` 管理；外参和逐帧位姿右乘由 `software/camera/geometry.py` 管理；公共 TUM 读写位于 `software/pose_io.py`。
 

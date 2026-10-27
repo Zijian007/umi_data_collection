@@ -11,13 +11,12 @@ from pathlib import Path
 from software import config
 from software.environment import python_executable
 from software.console import Console
-from software.vision.runtime import write_error_log
-from software.trajectory import calibration_assets
-from software.registry import list_devices
+from software.trajectory.calibration import assets as calibration_assets
 from software.trajectory.models import ReconstructionSettings
 from software.vision import runtime as visual_runtime
+from software.vision.runtime import write_error_log
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parents[1]
 REPO = HERE.parents[1]
 console = Console("轨迹")
 
@@ -91,6 +90,7 @@ def check() -> int:
               HERE / "assets" / "config" / "front_x3_r1440_720.yaml", HERE / "assets" / "config" / "front_hand_mask.png"):
         line(path.is_file(), "配置文件 " + str(path.relative_to(REPO)))
     try:
+        from software.registry import list_devices
         rows = list_devices()
         line(bool(rows), "设备档案", "%d 台相机" % len(rows))
         for device in rows:

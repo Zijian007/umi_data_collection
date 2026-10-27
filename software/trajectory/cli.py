@@ -14,7 +14,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from software.trajectory import runtime, workflow
+from software.trajectory import workflow
+from software.trajectory.pipeline import runtime
 from software.trajectory.models import TrajectoryRequest
 
 

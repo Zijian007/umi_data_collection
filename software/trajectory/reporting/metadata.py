@@ -8,9 +8,9 @@ from pathlib import Path
 
 from software.camera.geometry import imu_from_camera, camera_from_tcp, tcp_frame_definition
 from software.camera.x3.frame import geometry_record
-from software.trajectory.calibration_assets import FUSION_SCRIPT, read_basalt
+from software.trajectory.calibration.assets import FUSION_SCRIPT, read_basalt
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parents[1]
 CALIB_IMU_CAM = HERE / 'assets/calib/calibration_r1440.json'
 CALIB_CAM_TCP = HERE / 'assets/calib/t_tcp_camera_nominal_cad.json'
 FRONT_MASK = HERE / 'assets/config/front_hand_mask.png'

@@ -14,9 +14,9 @@ from software.pose_io import read_tum, write_tum
 from software.camera.geometry import compose_pose_series
 from software.camera.timing import canonical_to_video_seconds
 from software.camera.x3.frame import FPS_USED
-from software.trajectory.run_metadata import CALIB_IMU_CAM, collect_run_settings, load_extrinsics
-from software.trajectory.quality import frame_constraints, front_tracked, tracked_counts, runs, evaluate_notes
-from software.trajectory.plots import plot
+from software.trajectory.reporting.metadata import CALIB_IMU_CAM, collect_run_settings, load_extrinsics
+from software.trajectory.reporting.quality import frame_constraints, front_tracked, tracked_counts, runs, evaluate_notes
+from software.trajectory.reporting.plots import plot
 
 
 def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_dir: Path, mode: str, name: str,

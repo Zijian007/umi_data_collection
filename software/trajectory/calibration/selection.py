@@ -10,8 +10,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from software.registry import RegistryError, resolve_insv
-from software.trajectory.calibration_assets import CalibrationError, FUSION_SCRIPT
+from .assets import CalibrationError, FUSION_SCRIPT
 
 
 @dataclass(frozen=True)
@@ -57,6 +56,7 @@ class SelectedCalibration:
                     bundle_sha256=hashes['camera_json'])
 
 def select_calibration(video: Path, *, device: str = "", gripper: str = "") -> SelectedCalibration:
+    from software.registry import RegistryError, resolve_insv
     try:
         record = resolve_insv(video, device=device or None, gripper=gripper or None)
         assets = CalibrationAssets(

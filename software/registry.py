@@ -19,7 +19,7 @@ from pathlib import Path
 
 from software.storage import locked, write_json
 
-from software.trajectory import calibration_assets as traj_calib
+from software.trajectory.calibration import assets as traj_calib
 tcal = traj_calib  # 兼容测试 patch 与历史引用
 
 REPO = Path(__file__).resolve().parents[1]

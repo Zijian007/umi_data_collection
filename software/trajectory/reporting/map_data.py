@@ -9,9 +9,9 @@ import tempfile
 from pathlib import Path
 
 from software.vision.paths import exporter_paths
-from software.trajectory.results import attempt_paths, load_summary, result_path
+from .results import attempt_paths, load_summary, result_path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 MAX_POINTS = 50000  # 每张子地图的浏览器绘制预算；完整点云仍在 .osa 中。
 
 

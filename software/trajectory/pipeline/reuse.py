@@ -12,8 +12,8 @@ from pathlib import Path
 
 from software import config
 from software.trajectory.models import TrajectoryRequest
-from software.trajectory.selection import SelectedCalibration
-from software.trajectory.results import load_summary, result_path
+from software.trajectory.calibration.selection import SelectedCalibration
+from software.trajectory.reporting.results import load_summary, result_path
 
 REQUIRED_OUTPUTS = ('traj_tcp.txt', 'traj_camera.txt', 'traj_imu.txt', 'frames.csv', 'run_settings.json')
 
@@ -23,7 +23,7 @@ def run_fingerprint(video: Path, selected: SelectedCalibration, request: Traject
     stat = video.stat()
     assets = selected.assets.hashes()
     if request.mode == 'dual':
-        rear_settings = Path(__file__).resolve().parent / 'assets/config/rear_basalt065_720.yaml'
+        rear_settings = Path(__file__).resolve().parents[1] / 'assets/config/rear_basalt065_720.yaml'
         assets['rear_slam_settings'] = hashlib.sha256(rear_settings.read_bytes()).hexdigest()
         assets['rear_geometry'] = config.file_hash(rear_settings.parents[1] / 'calib/rear_sample.json')
     fingerprint = {
@@ -77,7 +77,7 @@ def reuse_decision(output: Path, fingerprint: dict, *, notes: config.NoteParamet
         try:
             import json
             settings = json.loads(result_path(output, 'run_settings.json').read_text())
-            from software.trajectory.quality import evaluate_notes
+            from software.trajectory.reporting.quality import evaluate_notes
             # Validate the full evidence shape before accepting reuse; missing raw
             # measurements must trigger a rerun rather than a partial report.
             evaluate_notes(summary, notes)

@@ -14,8 +14,8 @@ import numpy as np
 from software.calibration.algorithms import aprilgrid_detect, board_pnp
 from software.calibration.models import BundleResult, GravityResult, StageContext, TrajectoryValidation
 from software.calibration import runtime
-from software.trajectory import calibration_assets as trajectory_calibration
-from software.trajectory import results as trajectory_results
+from software.trajectory.calibration import assets as trajectory_calibration
+from software.trajectory.reporting import results as trajectory_results
 
 def read_camera_positions(traj_camera: Path) -> np.ndarray:
     rows = [l.split() for l in traj_camera.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
