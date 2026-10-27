@@ -82,7 +82,7 @@ def check_environment(quiet: bool = False) -> bool:
         line(False, "OpenCV ArUco（contrib）", repr(error))
     for tool in ("basalt_calibrate", "basalt_calibrate_imu"):
         try:
-            result = subprocess.run(basalt_command(tool) + ["--help"], capture_output=True, text=True, timeout=60)
+            result = subprocess.run(basalt_command(tool) + ["--help"], capture_output=True, text=True, timeout=10)
             good = result.returncode == 0 and (tool != "basalt_calibrate_imu" or "--fixed-scale-opt-offset" in result.stdout)
             line(good, tool, "" if good else (result.stderr or result.stdout)[-200:])
         except Exception as error:

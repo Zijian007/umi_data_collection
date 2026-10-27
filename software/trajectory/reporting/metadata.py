@@ -50,24 +50,14 @@ def _yaml_scalars(path: Path) -> dict:
 
 
 def _binaries_from_run(run_txt: Path) -> dict:
-    """Short hashes recorded by reconstruction.py (sha256sum cut to 16 hex chars)."""
+    """从重建运行记录中读取各二进制资产的 short hash。"""
     structured = run_txt.with_suffix(".json")
     if structured.is_file():
-        return json.loads(structured.read_text())["binaries"]
-    out = {}
-    if not run_txt.is_file():
-        return out
-    for line in run_txt.read_text(encoding="utf-8", errors="replace").splitlines():
-        parts = line.split()
-        if len(parts) >= 6 and parts[0] == "kiwi_fuse3s.py" and parts[2] == "front_setting":
-            out["kiwi_fuse3s.py"] = parts[1]
-            out["front_setting"] = parts[3]
-            if "cam_imu_offset_ns" in parts:
-                out["cam_imu_offset_ns"] = parts[parts.index("cam_imu_offset_ns") + 1]
-        elif len(parts) >= 4 and parts[0] == "x3_mono_slam" and parts[2] == "lib":
-            out["x3_mono_slam"] = parts[1]
-            out["libORB_SLAM3.so"] = parts[3]
-    return out
+        try:
+            return json.loads(structured.read_text(encoding="utf-8")).get("binaries", {})
+        except (OSError, ValueError, KeyError):
+            return {}
+    return {}
 
 
 def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode: str, name: str,

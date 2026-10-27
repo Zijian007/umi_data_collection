@@ -68,7 +68,7 @@ def check() -> int:
         executable = shutil.which(tool)
         line(executable is not None, tool, executable or "PATH 中未找到")
     try:
-        enc = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=30).stdout
+        enc = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=10).stdout
         line("libx264" in enc, "FFmpeg 编码器 libx264")
     except Exception as error:
         line(False, "FFmpeg 编码器 libx264", repr(error))
@@ -83,7 +83,7 @@ def check() -> int:
         environment = dict(os.environ)
         environment["LD_LIBRARY_PATH"] = ":".join([str(orb / "lib"), str(orb / "Thirdparty/DBoW2/lib"), str(orb / "Thirdparty/g2o/lib"),
                                            os.environ.get("ORB3_EXTRA_LD", ""), environment.get("LD_LIBRARY_PATH", "")])
-        result = subprocess.run([str(exe), "--help"], capture_output=True, text=True, env=environment, timeout=60)
+        result = subprocess.run([str(exe), "--help"], capture_output=True, text=True, env=environment, timeout=10)
         line(result.returncode == 0, "x3_mono_slam 可运行", "" if result.returncode == 0 else (result.stderr or result.stdout)[-300:])
     for path in (HERE / "assets" / "calib" / "calibration_r1440.json", HERE / "assets" / "calib" / "t_tcp_camera_nominal_cad.json",
               HERE / "assets" / "config" / "front_x3_r1440_720.yaml", HERE / "assets" / "config" / "front_hand_mask.png"):
