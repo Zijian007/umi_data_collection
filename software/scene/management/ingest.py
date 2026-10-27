@@ -123,7 +123,7 @@ def _write_episode(session, path: Path, recording_refs: dict, expected: tuple, i
     return path
 
 
-def register_episode(session, name: str, recording_paths: dict[str, Path], *, expected_arms=None, instruction: str | None = None) -> Path:
+def register_episode(session, name: str, recording_paths: dict[str, Path], *, expected_arms=None, instruction: str | None = None, link: bool = False) -> Path:
     """登记/补片或更新已有任务指令；既有原片不替换，同步配置原样保留。"""
     name = inputs.validate_episode_name(name)
     directory = session.path.parent / name
@@ -153,12 +153,12 @@ def register_episode(session, name: str, recording_paths: dict[str, Path], *, ex
         for arm, video in recording_paths.items():
             if arm in recording_refs:
                 continue
-            imported = recordings.import_video(video, raw, metadata=metadata[arm])
+            imported = recordings.import_video(video, raw, metadata=metadata[arm], link=link)
             recording_refs[arm] = dict(metadata[arm], path=os.path.relpath(imported, directory))
         return _write_episode(session, target, recording_refs, expected, instruction)
 
 
-def ingest(raw_paths: list[Path], session_path: Path, *, expected_arms=None, dry_run=False) -> dict:
+def ingest(raw_paths: list[Path], session_path: Path, *, expected_arms=None, dry_run=False, link: bool = False) -> dict:
     session = inputs.read_session(session_path)
     expected = inputs.read_arms(expected_arms or session.expected_arms, session.expected_arms)
     batch_recording_dir = recordings.ROOT / session.scene.name / session.kit['id'] / session.name
@@ -195,7 +195,7 @@ def ingest(raw_paths: list[Path], session_path: Path, *, expected_arms=None, dry
         imported = {}
         for item in candidates:
             path = item.path if dry_run else recordings.import_video(item.path, batch_recording_dir,
-                metadata=dict(serial=item.serial, sha256=item.sha256))
+                metadata=dict(serial=item.serial, sha256=item.sha256), link=link)
             imported[item.sha256] = RawVideoInfo(path, item.serial, item.sha256, item.started_at_unix_s, item.duration_s)
         for plan in plans:
             previous = {existing[item.sha256] for item in plan.values() if item.sha256 in existing}

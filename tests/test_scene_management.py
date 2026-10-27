@@ -222,6 +222,42 @@ class SessionManagementTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '对应清单'):
             cli.episode_paths([unrelated])
 
+    def test_batch_review_supports_session_directory(self):
+        session = self.session(self.f.scene_path, 'batch_review')
+        t1, t2 = self.episode(session, 'take_001'), self.episode(session, 'take_002')
+        workflow.run_episode(t1)
+        workflow.run_episode(t2)
+        code = cli.main(['review', str(session.parent), '--accept', '--reviewer', 'tester'])
+        self.assertEqual(code, 0)
+        from software.scene.management import episodes
+        self.assertEqual(episodes.task_status(t1)['review'], 'accepted')
+        self.assertEqual(episodes.task_status(t2)['review'], 'accepted')
+
+    def test_import_video_with_hardlink(self):
+        import os
+        src = self.f.root / 'video_to_link.insv'
+        src.write_bytes(b'test_link_content')
+        meta = dict(serial='CAM_LINK', sha256=registry.sha256_file(src))
+        dest = recordings.ROOT / 'test_scene'
+        imported = recordings.import_video(src, dest, metadata=meta, link=True)
+        self.assertEqual(os.stat(src).st_ino, os.stat(imported).st_ino)
+
+    def test_build_auto_initializes_missing_scene(self):
+        auto_scene = self.f.root / 'auto_created_scene'
+        self.assertFalse((auto_scene / 'scene.yaml').exists())
+        mapping_video = self.f.recording_paths['left']
+        # dry_run 模式：成功返回 0，不落盘
+        code = cli.main(['build', str(auto_scene), '--mapping', str(mapping_video), '--dry-run'])
+        self.assertEqual(code, 0)
+        self.assertFalse((auto_scene / 'scene.yaml').exists())
+        # 实际 build 模式：自动静默初始化并生成 scene.yaml
+        with patch('software.scene.workflow.build_scene', return_value={'status': 'ok'}):
+            code = cli.main(['build', str(auto_scene), '--mapping', str(mapping_video)])
+            self.assertEqual(code, 0)
+            self.assertTrue((auto_scene / 'scene.yaml').exists())
+            data = inputs.read_yaml(auto_scene / 'scene.yaml')
+            self.assertEqual(data['name'], 'auto_created_scene')
+
 
 if __name__ == '__main__':
     unittest.main()

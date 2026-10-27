@@ -139,10 +139,12 @@ def build_parser():
     episode.add_argument('--instruction', help='本次操作指令或任务描述')
     for arm in ARMS:
         episode.add_argument('--'+arm, type=Path)
+    episode.add_argument('--link', action='store_true', help='优先使用硬链接（hardlink）归档原片，同磁盘分区零复制、零耗时')
     ingest_cmd = commands.add_parser('ingest', help='按批次套件批量入库；未配对原片保留待确认')
     ingest_cmd.add_argument('raw', nargs='+', type=Path)
     ingest_cmd.add_argument('--session', required=True, type=Path)
     ingest_cmd.add_argument('--arms', choices=['left', 'right', 'both'])
+    ingest_cmd.add_argument('--link', action='store_true', help='优先使用硬链接（hardlink）归档原片，同磁盘分区零复制、零耗时')
     ingest_cmd.add_argument('--dry-run', action='store_true')
     ingest_cmd.add_argument('--json', action='store_true')
     run = commands.add_parser('run', help='离线处理任务；按任务同步配置输出共同时间轴')
@@ -161,8 +163,8 @@ def build_parser():
     status = commands.add_parser('status', help='查看待补齐、待处理、失败、成功和验收状态')
     status.add_argument('paths', nargs='+', type=Path)
     status.add_argument('--json', action='store_true')
-    review = commands.add_parser('review', help='对当前成功结果进行人工验收')
-    review.add_argument('episode', type=Path)
+    review = commands.add_parser('review', help='对当前成功结果进行人工验收（支持单个任务或批量批次目录）')
+    review.add_argument('paths', nargs='+', type=Path, help='任务目录、批次目录、套件目录或场景目录')
     decision = review.add_mutually_exclusive_group(required=True)
     decision.add_argument('--accept', action='store_true')
     decision.add_argument('--reject', action='store_true')
@@ -203,13 +205,17 @@ def main(argv=None):
         elif args.command == 'episode':
             recording_paths = {arm: getattr(args, arm) for arm in ARMS if getattr(args, arm)}
             path = ingest.register_episode(inputs.read_session(args.session), args.name, recording_paths,
-                expected_arms=selected_arms(args.arms), instruction=args.instruction)
+                expected_arms=selected_arms(args.arms), instruction=args.instruction, link=args.link)
             result = dict(episode=str(path))
         elif args.command == 'build':
             root = args.scene.expanduser().resolve()
-            root = root if root.is_dir() else root.parent
-            if args.mapping or args.mapping_left or args.mapping_right:
+            if root.suffix in ('.yaml', '.yml'):
+                root = root.parent
+            needs_init = not (root / 'scene.yaml').exists()
+            if needs_init or args.mapping or args.mapping_left or args.mapping_right:
                 request = mapping_request(args, root)
+                if needs_init:
+                    request['data']['description'] = ''
                 if args.dry_run:
                     print(json.dumps(dict(status='planned', mapping={arm: dict(item, path=str(request['recording_paths'][arm]))
                         for arm, item in request['metadata'].items()}), ensure_ascii=False, indent=2))
@@ -220,7 +226,7 @@ def main(argv=None):
                 raise ValueError('修改建图模式或设备时需明确提供建图录像')
             result = workflow.build_scene(root, force=args.force, keep_work=args.keep_work, cores=args.cores, dry_run=args.dry_run)
         elif args.command == 'ingest':
-            result = ingest.ingest(args.raw, args.session, expected_arms=selected_arms(args.arms), dry_run=args.dry_run)
+            result = ingest.ingest(args.raw, args.session, expected_arms=selected_arms(args.arms), dry_run=args.dry_run, link=args.link)
             print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else ingest.format_ingest_summary(result))
             return 1 if result['errors'] or result['pending'] else 0
         elif args.command == 'run':
@@ -249,7 +255,26 @@ def main(argv=None):
                     print(f'{item["path"]}: {item["status"]} / {item.get("review", "unreviewed")} {item.get("reason", "")}')
                 return 0
         elif args.command == 'review':
-            result = episodes.review(args.episode, accept=args.accept, reviewer=args.reviewer, reason=args.reason)
+            targets = episode_paths(args.paths)
+            if not targets:
+                raise ValueError(f'未找到任何任务清单：{args.paths}')
+            if len(targets) == 1:
+                result = episodes.review(targets[0], accept=args.accept, reviewer=args.reviewer, reason=args.reason)
+            else:
+                accepted_count, rejected_count, failed, details = 0, 0, [], []
+                for ep in targets:
+                    try:
+                        res = episodes.review(ep, accept=args.accept, reviewer=args.reviewer, reason=args.reason)
+                        if args.accept:
+                            accepted_count += 1
+                        else:
+                            rejected_count += 1
+                        details.append(dict(episode=str(ep), status='ok', decision=res.get('decision')))
+                    except Exception as err:
+                        failed.append(dict(episode=str(ep), status='error', error=str(err)))
+                        details.append(dict(episode=str(ep), status='error', error=str(err)))
+                result = dict(total=len(targets), accepted=accepted_count, rejected=rejected_count,
+                              failed=len(failed), details=details)
         elif args.command == 'export':
             result = episodes.export(episode_paths(args.paths), args.out, with_video=args.with_video)
         elif args.command == 'inspect':

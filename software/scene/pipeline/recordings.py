@@ -27,8 +27,8 @@ def inspect(video: Path) -> dict:
     return dict(serial=serial, sha256=registry.sha256_file(video))
 
 
-def import_video(video: Path, directory: Path, *, metadata: dict) -> Path:
-    """SD 卡原片默认复制；已在本场景归档的录像直接引用，避免建图/任务重复存储。"""
+def import_video(video: Path, directory: Path, *, metadata: dict, link: bool = False) -> Path:
+    """SD 卡原片默认复制；支持 --link 硬链接（零 I/O 耗时与零额外存储）；已归档录像直接引用。"""
     video = video.expanduser().resolve()
     scene_root = directory.relative_to(ROOT).parts[0]
     managed = ROOT / scene_root
@@ -40,6 +40,12 @@ def import_video(video: Path, directory: Path, *, metadata: dict) -> Path:
             raise ValueError(f'同名录像内容不同，拒绝覆盖：{target}')
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
+    if link:
+        try:
+            os.link(video, target)
+            return target
+        except OSError:
+            pass  # 跨文件系统或无硬链接权限时平滑回退至安全复制
     fd, name = tempfile.mkstemp(prefix='.import-', dir=target.parent)
     os.close(fd)
     temporary = Path(name)
