@@ -69,7 +69,7 @@ def task_status(path: Path) -> dict:
     state = read_state(episode.path.parent)
     attempt = state.get('attempt', {})
     status = 'pending'
-    if set(episode.expected_arms)-episode.recordings.keys():
+    if set(episode.expected_arms) - set(episode.recordings.keys()):
         status = 'incomplete'
     elif (attempt.get('manifest_sha256') == config.file_hash(episode.path)
           and attempt.get('session_sha256') == config.file_hash(episode.session.path)):

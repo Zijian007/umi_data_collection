@@ -78,7 +78,7 @@ def load_scene_parameters(path: Path | None) -> SceneParameters:
     if path is not None:
         overlay = read_yaml(path)
         if overlay.keys() - data.keys():
-            raise ValueError(f'未知场景参数：{sorted(overlay.keys()-data.keys())}')
+            raise ValueError(f'未知场景参数：{sorted(overlay.keys() - data.keys())}')
         data.update(overlay)
     if data.keys() != {field.name for field in fields(SceneParameters)}:
         raise ValueError('场景参数字段不完整')
@@ -140,7 +140,7 @@ def read_scene(path: Path, *, verify_mapping: bool = False) -> Scene:
 
 
 def read_arms(value: list | tuple, available=ARMS) -> tuple[str, ...]:
-    if not isinstance(value, (list, tuple)) or not value or len(set(value)) != len(value) or set(value)-set(available):
+    if not isinstance(value, (list, tuple)) or not value or len(set(value)) != len(value) or set(value) - set(available):
         raise ValueError('预期使用的手必须为 left、right 或两者，且属于该套件')
     return tuple(arm for arm in ARMS if arm in value)
 
@@ -151,7 +151,7 @@ def validate_kit(data: dict) -> dict:
     validate_name(data['id'])
     if not isinstance(data.get('description', ''), str):
         raise ValueError('套件 description 必须为字符串')
-    if not isinstance(data['arms'], dict) or not data['arms'] or data['arms'].keys()-set(ARMS):
+    if not isinstance(data['arms'], dict) or not data['arms'] or set(data['arms'].keys()) - set(ARMS):
         raise ValueError('套件至少配置一只手：left 或 right')
     serials = []
     for item in data['arms'].values():
@@ -239,7 +239,7 @@ def read_episode(path: Path, *, verify: bool = True) -> Episode:
     validate_episode_name(path.parent.name)
     expected = read_arms(data['expected_arms'], session.expected_arms)
     recording_paths, serials = read_recordings(path.parent, data['recordings'], verify=verify)
-    if serials.keys()-set(expected):
+    if set(serials.keys()) - set(expected):
         raise ValueError('实际录像包含本次任务未声明使用的手')
     if any(serial != session.arm_serials[arm] for arm, serial in serials.items()):
         raise ValueError('录像清单的设备身份与套件的左右手配置不一致')

@@ -110,9 +110,9 @@ class Episode:
         return self.path.parent / 'results'
 
     def offsets(self) -> dict[str, float]:
-        missing = set(self.expected_arms)-self.recordings.keys()
+        missing = set(self.expected_arms) - set(self.recordings.keys())
         if missing:
-            raise ValueError('录像不完整，缺少：'+', '.join(sorted(missing)))
+            raise ValueError('录像不完整，缺少：' + ', '.join(sorted(missing)))
         return {arm: self.synchronization['offsets_s'][arm] for arm in self.recordings}
 
 

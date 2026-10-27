@@ -189,10 +189,10 @@ def place_front(front: VisualObservations, rear: VisualObservations, T_rear_fron
         dp = r.apply(source[:, :3, 3])+x[3:]-reference[:, :3, 3]
         return np.r_[dr.ravel()/np.radians(scene_parameters.placement_rotation_sigma_deg), dp.ravel()/scene_parameters.placement_position_sigma_m]
     result = least_squares(residual, np.r_[np.zeros(3), translation], loss='huber', f_scale=scene_parameters.huber)
-    G = transform((Rotation.from_rotvec(result.x[:3])*rotation).as_matrix(), result.x[3:])
-    error = np.linalg.inv(reference) @ (G @ source)
+    T_scene_front_map = transform((Rotation.from_rotvec(result.x[:3]) * rotation).as_matrix(), result.x[3:])
+    error = np.linalg.inv(reference) @ (T_scene_front_map @ source)
     position_rms = float(np.sqrt(np.mean(np.sum(error[:, :3, 3]**2, axis=1))))
     rotation_rms = float(np.degrees(np.sqrt(np.mean(np.sum(Rotation.from_matrix(error[:, :3, :3]).as_rotvec()**2, axis=1)))))
     if not result.success or position_rms > scene_parameters.maximum_placement_rms_m or rotation_rms > scene_parameters.maximum_placement_rotation_deg:
         raise ValueError(f'前后地图场景放置不一致：{position_rms:.4f} m，{rotation_rms:.2f}°')
-    return G, dict(pairs=int(keep.sum()), position_rms_m=position_rms, rotation_rms_deg=rotation_rms)
+    return T_scene_front_map, dict(pairs=int(keep.sum()), position_rms_m=position_rms, rotation_rms_deg=rotation_rms)

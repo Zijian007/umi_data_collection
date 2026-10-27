@@ -35,7 +35,7 @@ def write_arm(arm: str, recording: PreparedRecording, result: fusion.FusionResul
     poses = dict(imu=result.T_scene_imu, camera=result.T_scene_imu @ imu_from_camera(measured))
     poses['tcp'] = poses['camera'] @ T_cam_tcp
     # 文件时间为统一任务视频时钟。IMU 求解使用的 cam_time_offset 不应叠加两次。
-    times = recording.video_times_s+offset_s
+    times = recording.video_times_s + offset_s
     for name, matrices in poses.items():
         target = directory / 'traj_tcp.txt' if name == 'tcp' else details / f'traj_{name}.txt'
         write_tum(target, times, matrices[:, :3, 3], Rotation.from_matrix(matrices[:, :3, :3]).as_quat(),
@@ -53,7 +53,7 @@ def write_arm(arm: str, recording: PreparedRecording, result: fusion.FusionResul
         shutil.copy2(front, directory / 'front.mp4')
     length = float(np.linalg.norm(np.diff(poses['tcp'][:, :3, 3], axis=0), axis=1).sum())
     summary = dict(status='ok', mode='scene', arm=arm, scene=scene_record, video=camera.serial,
-        rows=len(times), duration_s=float(times[-1]-times[0]), path_length_m=length,
+        rows=len(times), duration_s=float(times[-1] - times[0]), path_length_m=length,
         constraint_fraction=dict(full=float(result.tracked.mean()), imu=float((~result.tracked).mean()), rot=0.),
         calibration_used=camera.selected.summary(), video_time_offset_s=offset_s,
         notes=[], fusion=result.evidence, tcp_frame=tcp_frame,
@@ -65,12 +65,12 @@ def write_arm(arm: str, recording: PreparedRecording, result: fusion.FusionResul
     text = [f'{arm} 场景轨迹', f'场景坐标：{scene_record["frame_id"]}', f'相机：{camera.serial}',
             'TCP 自身坐标：' + describe_tcp_frame(tcp_frame),
             f'视频时间偏移：{offset_s:+.9f} s（t_episode = t_video + offset）',
-            f'时长：{times[-1]-times[0]:.2f} s；TCP 路程：{length:.3f} m',
+            f'时长：{times[-1] - times[0]:.2f} s；TCP 路程：{length:.3f} m',
             f'地图位置约束：{result.tracked.mean():.1%}',
             f'最长无视觉：{result.evidence["maximum_visual_gap_s"]:.3f} s',
-            f'视觉一致性 RMS：{result.evidence["visual_consistency_rms_m"]*1000:.2f} mm（内部指标）',
+            f'视觉一致性 RMS：{result.evidence["visual_consistency_rms_m"] * 1000:.2f} mm（内部指标）',
             '实际误差：未测量；TCP 几何：CAD 名义值。']
-    (directory / 'report.txt').write_text('\n'.join(text)+'\n', encoding='utf-8')
+    (directory / 'report.txt').write_text('\n'.join(text) + '\n', encoding='utf-8')
     return ArmTrajectory(times, poses['tcp'], scene_record['frame_id'], tcp_frame)
 
 
@@ -88,10 +88,10 @@ def write_bimanual(tracks: dict[str, ArmTrajectory], directory: Path) -> list[fl
                    for arm, track in tracks.items()}
         with (directory / 'bimanual.csv').open('w') as stream:
             writer = csv.writer(stream)
-            writer.writerow(['t_scene_s']+[f'{arm}_{axis}' for arm in ('left', 'right') for axis in ('x', 'y', 'z', 'qx', 'qy', 'qz', 'qw')])
+            writer.writerow(['t_scene_s'] + [f'{arm}_{axis}' for arm in ('left', 'right') for axis in ('x', 'y', 'z', 'qx', 'qy', 'qz', 'qw')])
             quaternions = {arm: Rotation.from_matrix(poses[:, :3, :3]).as_quat() for arm, poses in sampled.items()}
             for k, time in enumerate(query):
-                writer.writerow([f'{time:.9f}']+[f'{v:.9f}' for arm in ('left', 'right')
+                writer.writerow([f'{time:.9f}'] + [f'{v:.9f}' for arm in ('left', 'right')
                     for v in np.r_[sampled[arm][k, :3, 3], quaternions[arm][k]]])
     return [float(query[0]), float(query[-1])]
 

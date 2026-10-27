@@ -48,11 +48,11 @@ def extract_video_info(path: Path) -> RawVideoInfo:
     import av
     metadata = recordings.inspect(path)
     with av.open(str(path)) as container:
-        duration = float(container.duration or 0)/1e6
+        duration = float(container.duration or 0) / 1e6
         if duration <= 0:
             streams = list(container.streams.video)
             if streams and streams[0].duration is not None:
-                duration = float(streams[0].duration*streams[0].time_base)
+                duration = float(streams[0].duration * streams[0].time_base)
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError('无法确定视频时长；不使用猜测值进行配对')
     return RawVideoInfo(path.resolve(), metadata['serial'], metadata['sha256'], parse_recording_start_unix_s(path.name), duration)
@@ -89,8 +89,8 @@ def plan_episodes(recording_infos: list[RawVideoInfo], arms: dict[str, str], par
     for left in by_arm['left']:
         for right in by_arm['right']:
             if (left.started_at_unix_s is not None and right.started_at_unix_s is not None
-                    and abs(left.started_at_unix_s-right.started_at_unix_s) <= parameters.pairing_start_tolerance_s
-                    and abs(left.duration_s-right.duration_s) <= parameters.pairing_duration_tolerance_s):
+                    and abs(left.started_at_unix_s - right.started_at_unix_s) <= parameters.pairing_start_tolerance_s
+                    and abs(left.duration_s - right.duration_s) <= parameters.pairing_duration_tolerance_s):
                 candidates.setdefault(left.sha256, []).append(right)
                 candidates.setdefault(right.sha256, []).append(left)
     paired, used = [], set()
@@ -131,7 +131,7 @@ def register_episode(session, name: str, recording_paths: dict[str, Path], *, ex
     expected = inputs.read_arms(expected_arms or existing_arms, session.expected_arms)
     if instruction is not None and not isinstance(instruction, str):
         raise ValueError('instruction 必须为操作描述字符串')
-    if recording_paths.keys()-set(expected):
+    if set(recording_paths.keys()) - set(expected):
         raise ValueError('录像必须属于本次预期使用的手')
     if not recording_paths and (instruction is None or not target.is_file()):
         raise ValueError('新任务需要原片；已有任务可只更新 --instruction')
@@ -177,7 +177,7 @@ def ingest(raw_paths: list[Path], session_path: Path, *, expected_arms=None, dry
                 if item['sha256'] in existing:
                     raise ValueError('同一原片已属于多个任务，请先核对任务清单')
                 existing[item['sha256']] = path
-            if set(episode.expected_arms) != episode.recordings.keys():
+            if set(episode.expected_arms) != set(episode.recordings.keys()):
                 incomplete[path] = episode
         complete_hashes = {digest for digest, path in existing.items() if path not in incomplete}
         skipped = sorted({existing[item.sha256].parent.name for item in recording_infos if item.sha256 in complete_hashes})
@@ -189,7 +189,7 @@ def ingest(raw_paths: list[Path], session_path: Path, *, expected_arms=None, dry
                 if digest not in {item.sha256 for item in candidates}:
                     candidates.append(extract_video_info(path))
         plans, pending = plan_episodes(candidates, allowed, session.scene.parameters)
-        index = max((int(name[5:]) for name in names if re.fullmatch(r'take_\d+', name)), default=0)+1
+        index = max((int(name[5:]) for name in names if re.fullmatch(r'take_\d+', name)), default=0) + 1
         created = []
         imported = {}
         for item in candidates:
@@ -213,7 +213,7 @@ def ingest(raw_paths: list[Path], session_path: Path, *, expected_arms=None, dry
             session=str(session.path), expected_arms=list(expected), total_scanned=len(recording_infos),
             episodes=created, skipped=skipped, pending=pending, ignored=ignored, errors=errors)
         if not dry_run:
-            report = session.path.parent / 'imports' / (uuid.uuid4().hex+'.json')
+            report = session.path.parent / 'imports' / (uuid.uuid4().hex + '.json')
             write_json(report, result)
             write_json(session.path.parent / 'imports/latest.json', result)
         return result

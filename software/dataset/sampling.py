@@ -107,14 +107,14 @@ def sample(arms: dict[str, ArmSamples], fps: float, max_gap_s: float) -> tuple[d
         if np.any(np.abs(time_error) > tolerance):
             raise ValueError(f'{name} 图像到样本的时间误差过大')
         indices = arm.video_indices[nearest]
-        arrays[name+'_T_scene_tcp'] = resample_pose_series(arm.times_s, arm.poses, query)
-        arrays[name+'_video_frame_index'] = indices
-        arrays[name+'_video_pts_s'] = arm.video_pts_s[indices]
-        arrays[name+'_image_time_s'] = arm.times_s[nearest]
-        arrays[name+'_image_time_error_s'] = time_error
-        arrays[name+'_full_constraint'] = arm.full_constraint[left] & arm.full_constraint[right]
-        arrays[name+'_front_tracked'] = arm.front_tracked[left] & arm.front_tracked[right]
+        arrays[f'{name}_T_scene_tcp'] = resample_pose_series(arm.times_s, arm.poses, query)
+        arrays[f'{name}_video_frame_index'] = indices
+        arrays[f'{name}_video_pts_s'] = arm.video_pts_s[indices]
+        arrays[f'{name}_image_time_s'] = arm.times_s[nearest]
+        arrays[f'{name}_image_time_error_s'] = time_error
+        arrays[f'{name}_full_constraint'] = arm.full_constraint[left] & arm.full_constraint[right]
+        arrays[f'{name}_front_tracked'] = arm.front_tracked[left] & arm.front_tracked[right]
         quality['arms'][name] = dict(maximum_image_time_error_s=float(np.abs(time_error).max()),
-            full_constraint_fraction=float(arrays[name+'_full_constraint'].mean()),
-            front_tracked_fraction=float(arrays[name+'_front_tracked'].mean()))
+            full_constraint_fraction=float(arrays[f'{name}_full_constraint'].mean()),
+            front_tracked_fraction=float(arrays[f'{name}_front_tracked'].mean()))
     return arrays, quality

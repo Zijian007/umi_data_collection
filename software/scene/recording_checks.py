@@ -51,7 +51,7 @@ def check_stream(path: Path) -> CheckResult:
             streams = list(container.streams.video)
             geometry = [dict(w=s.codec_context.width, h=s.codec_context.height) for s in streams]
             rate = float(streams[0].average_rate or 0) if streams else 0.
-            good = frame.detect_profile_from_streams(geometry) == frame.PROFILE and abs(rate-frame.FPS_SRC) <= frame.FPS_TOLERANCE
+            good = frame.detect_profile_from_streams(geometry) == frame.PROFILE and abs(rate - frame.FPS_SRC) <= frame.FPS_TOLERANCE
             return CheckResult('video_stream', 'PASS' if good else 'FAIL',
                 '视频流符合 X3 360 4K60' if good else '视频流不符合 X3 360 4K60', dict(streams=geometry, fps=rate))
     except (OSError, ValueError, RuntimeError) as error:
@@ -68,7 +68,7 @@ def check_imu(path: Path, parameters: SceneParameters) -> tuple[CheckResult, dic
     if (len(times) < 2 or not np.isfinite(times).all() or not np.all(np.diff(times) > 0)
             or not all(np.isfinite(imu[name]).all() for name in ('acc', 'gyr')) or status != 'OK'):
         return CheckResult('imu_integrity', 'FAIL', 'IMU 数据或时间戳无效', dict(integrity=imu.get('integrity'))), None
-    duration = float(times[-1]-max(0., times[0]))
+    duration = float(times[-1] - max(0., times[0]))
     metrics = dict(samples=len(times), duration_s=duration, integrity=imu.get('integrity'))
     if duration < parameters.recording_min_duration_s:
         return CheckResult('imu_integrity', 'FAIL', '录像有效时长过短', metrics), None
@@ -83,7 +83,7 @@ def check_initial_static(imu: dict, parameters: SceneParameters) -> CheckResult:
     acc = np.linalg.norm(imu['acc'][mask], axis=1)
     gyro = np.linalg.norm(imu['gyr'][mask], axis=1)
     mean, std, p95 = float(acc.mean()), float(acc.std()), float(np.percentile(gyro, 95))
-    good = (abs(mean-imu_reader.G0) <= parameters.recording_max_static_acc_dev_m_s2
+    good = (abs(mean - imu_reader.G0) <= parameters.recording_max_static_acc_dev_m_s2
             and std <= parameters.recording_max_static_acc_std_m_s2 and p95 <= parameters.recording_max_static_gyro_rad_s)
     return CheckResult('initial_static', 'PASS' if good else 'WARN',
         '开头静止质量正常' if good else '开头静止质量不足；以固定地图定位和融合质量继续判断',
@@ -101,7 +101,7 @@ def check_exposure(path: Path, parameters: SceneParameters) -> CheckResult:
         shutters = np.array([item[1] for item in struct.iter_unpack('<Qd', data)])
         if not np.isfinite(shutters).all() or np.any(shutters <= 0):
             return CheckResult('exposure', 'UNKNOWN', '曝光记录含无效数值')
-        median, cv = float(np.median(shutters)), float(shutters.std()/shutters.mean())
+        median, cv = float(np.median(shutters)), float(shutters.std() / shutters.mean())
         good = median <= parameters.recording_max_shutter_s and cv <= parameters.recording_max_exposure_cv
         return CheckResult('exposure', 'PASS' if good else 'FAIL',
             '快门和曝光稳定性正常' if good else '快门过慢或曝光变化过大', dict(median_shutter_s=median, exposure_cv=cv))
@@ -126,9 +126,9 @@ def check_episode(episode, parameters: SceneParameters | None = None) -> Episode
     parameters = parameters or episode.scene.parameters
     recording_reports = {arm: check_video(video, parameters) for arm, video in episode.recordings.items()}
     reasons = [f'[{arm}] {message}' for arm, report in recording_reports.items() for message in report.reasons]
-    missing = set(episode.expected_arms)-episode.recordings.keys()
+    missing = set(episode.expected_arms) - set(episode.recordings.keys())
     if missing:
-        reasons.append('录像不完整，缺少：'+', '.join(sorted(missing)))
+        reasons.append('录像不完整，缺少：' + ', '.join(sorted(missing)))
     parameters = {key: value for key, value in asdict(parameters).items() if key.startswith('recording_')}
     return EpisodeCheckReport(not reasons, reasons, recording_reports, parameters)
 
@@ -139,6 +139,6 @@ def format_report(report: EpisodeCheckReport | RecordingCheckReport) -> str:
     for arm, recording_report in recording_reports.items():
         lines.append(f'{arm}: {recording_report.path}')
         lines += [f'  [{item.status}] {item.name}: {item.message}' for item in recording_report.checks]
-    lines.append('检查结论：'+('PASS' if report.passed else 'FAIL'))
+    lines.append('检查结论：' + ('PASS' if report.passed else 'FAIL'))
     lines.extend(report.reasons)
     return '\n'.join(lines)

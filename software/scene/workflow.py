@@ -253,8 +253,8 @@ def prepare_episode_recordings(episode: Episode, cameras: dict[str, CalibratedCa
     """准备各手录像并检查共同时间区间；不估计跨相机时间偏移。"""
     prepared = {arm: prepare_cached(episode, arm, cameras[arm], episode.scene, cores)
                 for arm in episode.recordings}
-    start = max(recording.video_times_s[0]+video_offsets_s[arm] for arm, recording in prepared.items())
-    end = min(recording.video_times_s[-1]+video_offsets_s[arm] for arm, recording in prepared.items())
+    start = max(recording.video_times_s[0] + video_offsets_s[arm] for arm, recording in prepared.items())
+    end = min(recording.video_times_s[-1] + video_offsets_s[arm] for arm, recording in prepared.items())
     if start >= end:
         raise ValueError('左右手录像在任务时间轴上没有重叠')
     return prepared
@@ -460,26 +460,26 @@ def format_batch_summary(summaries: list[dict]) -> str:
     ok_count = 0
     skipped_count = 0
     failed_count = 0
-    for s in summaries:
-        name = s.get('name', Path(s['path']).parent.name)
-        status = s.get('status', 'unknown').upper()
+    for summary_item in summaries:
+        name = summary_item.get('name', Path(summary_item['path']).parent.name)
+        status = summary_item.get('status', 'unknown').upper()
         if status == 'OK':
             ok_count += 1
-            interval = s.get('common_interval_s')
-            dur = f'{interval[1]-interval[0]:.2f}s' if interval else '-'
-            detail = s.get('output', '')
+            interval = summary_item.get('common_interval_s')
+            duration_str = f'{interval[1] - interval[0]:.2f}s' if interval else '-'
+            detail = summary_item.get('output', '')
         elif status == 'SKIPPED':
             skipped_count += 1
-            dur = '-'
-            detail = f'已完成复用: {s.get("output", "")}'
+            duration_str = '-'
+            detail = f'已完成复用: {summary_item.get("output", "")}'
         elif status == 'PLANNED':
-            dur = '-'
+            duration_str = '-'
             detail = '预检完成 (dry-run)'
         else:
             failed_count += 1
-            dur = '-'
-            detail = s.get('error') or s.get('reason') or '未知错误'
-        lines.append(f'{name:<15} {status:<10} {dur:<15} {detail}')
+            duration_str = '-'
+            detail = summary_item.get('error') or summary_item.get('reason') or '未知错误'
+        lines.append(f'{name:<15} {status:<10} {duration_str:<15} {detail}')
     lines.append('=' * 80)
     lines.append(f'成功: {ok_count} | 跳过: {skipped_count} | 失败: {failed_count} | 总计: {len(summaries)}')
     return '\n'.join(lines)

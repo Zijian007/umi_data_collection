@@ -66,9 +66,9 @@ def build_maps(scene: Scene, prepared: dict[str, PreparedRecording], directory: 
             rear_scene = rear_raw.placed(shared['placement'], reference_frame='scene')
             front_metric = observations[role].placed(maps[role]['placement'], reference_frame='metric_map')
             T_rear_front = np.linalg.inv(imu_from_camera(recording.camera.measurements['rear'])) @ imu_from_camera(recording.camera.measurements['front'])
-            G, evidence = place_front(front_metric, rear_scene, T_rear_front, scene.parameters)
+            T_scene_front_map, evidence = place_front(front_metric, rear_scene, T_rear_front, scene.parameters)
             current = maps[role]['placement']
-            current['T_scene_metric_map'] = (G @ np.asarray(current['T_scene_metric_map'])).tolist()
+            current['T_scene_metric_map'] = (T_scene_front_map @ np.asarray(current['T_scene_metric_map'])).tolist()
             current['placement_evidence'] = evidence
     return maps
 
@@ -86,7 +86,7 @@ def freeze_maps(maps: dict, cameras: dict[str, CalibratedCamera], directory: Pat
         display.append(visual)
     for camera in cameras.values():
         for name, source in camera.files.items():
-            target = directory / 'devices' / camera.serial / (name+source.suffix)
+            target = directory / 'devices' / camera.serial / (name + source.suffix)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
     return frozen, dict(kind='umi_map_view', schema_version=1, maps=display,

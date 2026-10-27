@@ -27,10 +27,10 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
     if any(output.is_relative_to(item.scene_root) or item.scene_root.is_relative_to(output) for item in selected):
         raise ValueError('数据集输出目录不能位于源场景内或覆盖源场景')
     output.parent.mkdir(parents=True, exist_ok=True)
-    with locked(output.parent, name='.'+output.name+'.dataset.lock'):
+    with locked(output.parent, name=f'.{output.name}.dataset.lock'):
         if output.exists():
             raise ValueError(f'导出目录已存在，拒绝覆盖：{output}')
-        staging = Path(tempfile.mkdtemp(prefix='.'+output.name+'-', dir=output.parent))
+        staging = Path(tempfile.mkdtemp(prefix=f'.{output.name}-', dir=output.parent))
         try:
             entries = []
             for item in selected:
@@ -46,10 +46,10 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
                 for arm in arms:
                     settings = json.loads((item.run / arm / 'details/run_settings.json').read_text())
                     tcp_geometry[arm] = dict(T_camera_tcp=settings['T_camera_tcp'], cad_status=settings['cad_status'])
-                    video = target / 'videos' / (arm+'.mp4')
+                    video = target / 'videos' / f'{arm}.mp4'
                     video.parent.mkdir(exist_ok=True)
                     shutil.copy2(item.run / arm / 'front.mp4', video)
-                    if config.file_hash(video) != item.manifest['assets'][arm+'/front.mp4']:
+                    if config.file_hash(video) != item.manifest['assets'][f'{arm}/front.mp4']:
                         raise ValueError('导出期间源视频发生变化')
                 metadata = dict(kind='umi_training_episode', schema_version=SCHEMA_VERSION,
                     instruction=item.manifest['instruction'], synchronization=item.manifest['synchronization'],
@@ -63,9 +63,9 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
                     review=item.review, source=dict(episode_id=str(item.name), run_id=item.run.name,
                         result_sha256=item.result_sha256, inputs=item.manifest['inputs']),
                     arrays={name: dict(shape=list(value.shape), dtype=str(value.dtype)) for name, value in arrays.items()},
-                    videos={arm: 'videos/'+arm+'.mp4' for arm in arms})
+                    videos={arm: f'videos/{arm}.mp4' for arm in arms})
                 write_json(target / 'episode.json', metadata)
-                hashes = {str(p.relative_to(target)): config.file_hash(p) for p in sorted(target.rglob('*')) if p.is_file()}
+                hashes = {str(file_path.relative_to(target)): config.file_hash(file_path) for file_path in sorted(target.rglob('*')) if file_path.is_file()}
                 entries.append(dict(path=str(target.relative_to(staging)), rows=metadata['rows'], files=hashes,
                                     training_ready=metadata['training_ready'], missing_channels=metadata['missing_channels'],
                                     not_ready_reasons=metadata['not_ready_reasons']))
@@ -75,7 +75,7 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
             ready = all(entry['training_ready'] for entry in entries)
             manifest = dict(kind=FORMAT, schema_version=SCHEMA_VERSION, fps=fps, max_gap_s=max_gap_s,
                 training_ready=ready, missing_channels=missing_channels, episodes=entries)
-            write_json(staging / 'export_report.json', dict(episodes=len(entries), rows=sum(e['rows'] for e in entries),
+            write_json(staging / 'export_report.json', dict(episodes=len(entries), rows=sum(entry['rows'] for entry in entries),
                 training_ready=ready, missing_channels=missing_channels,
                 not_ready=[dict(path=entry['path'], reasons=entry['not_ready_reasons']) for entry in entries if not entry['training_ready']],
                 note='training_ready 仅表示基础观测通道齐全、宽度已核验且采样有效；模型动作切片与部署需另行适配。'))

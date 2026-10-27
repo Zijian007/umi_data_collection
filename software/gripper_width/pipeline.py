@@ -43,8 +43,8 @@ def detect(video: Path, measurement: dict) -> tuple[np.ndarray, np.ndarray, np.n
                     matches = np.flatnonzero(values == tag)
                     if len(matches) == 1:
                         centres[tag] = corners[int(matches[0])][0].mean(axis=0)
-            times.append(float(frame.pts*frame.time_base))
-            distances.append(float(np.linalg.norm(centres[0]-centres[1])) if len(centres) == 2 else np.nan)
+            times.append(float(frame.pts * frame.time_base))
+            distances.append(float(np.linalg.norm(centres[0] - centres[1])) if len(centres) == 2 else np.nan)
     times = np.asarray(times)
     if len(times) < 2 or not np.isfinite(times).all() or not np.all(np.diff(times) > 0):
         raise ValueError('宽度检测视频时间无效或非递增')
@@ -59,11 +59,11 @@ def detect(video: Path, measurement: dict) -> tuple[np.ndarray, np.ndarray, np.n
 def align(times: np.ndarray, widths: np.ndarray, above: np.ndarray,
           query: np.ndarray, max_gap_s: float) -> series.WidthSeries:
     """原片邻近三帧中位数，随后仅补短缺口；超出标定范围不插值掩盖。"""
-    indices = np.clip(np.searchsorted(times, query), 1, len(times)-1)
-    indices -= query-times[indices-1] <= times[indices]-query
+    indices = np.clip(np.searchsorted(times, query), 1, len(times) - 1)
+    indices -= (query - times[indices - 1]) <= (times[indices] - query)
     values = np.full(len(query), np.nan)
     source = np.full(len(query), series.MISSING, dtype=np.uint8)
-    tolerance = .5*float(np.median(np.diff(times)))+1e-6
+    tolerance = .5 * float(np.median(np.diff(times))) + 1e-6
     for k, i in enumerate(indices):
         if abs(times[i]-query[k]) > tolerance:
             continue
@@ -78,10 +78,10 @@ def align(times: np.ndarray, widths: np.ndarray, above: np.ndarray,
             source[k] = series.TWO_TAGS
     have = np.flatnonzero(np.isfinite(values))
     for left, right in zip(have[:-1], have[1:]):
-        if (right-left > 1 and query[right]-query[left] <= max_gap_s+1e-8
+        if (right - left > 1 and query[right] - query[left] <= max_gap_s + 1e-8
                 and not np.any(source[left:right] == series.OUT_OF_RANGE)):
-            values[left+1:right] = np.interp(query[left+1:right], query[[left, right]], values[[left, right]])
-            source[left+1:right] = series.INTERPOLATED
+            values[left + 1:right] = np.interp(query[left + 1:right], query[[left, right]], values[[left, right]])
+            source[left + 1:right] = series.INTERPOLATED
     return series.WidthSeries(query, values, source)
 
 

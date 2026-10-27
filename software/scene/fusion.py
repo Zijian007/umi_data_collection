@@ -21,20 +21,23 @@ def sample_observations(obs: VisualObservations, node_times: np.ndarray, maximum
     indices, poses = [], []
     for node, time in enumerate(node_times):
         right = int(np.searchsorted(obs.imu_times_s, time))
-        exact = next((k for k in (right, right-1) if 0 <= k < len(obs.imu_times_s) and abs(obs.imu_times_s[k]-time) < 1e-7), None)
+        exact = next((k for k in (right, right - 1) if 0 <= k < len(obs.imu_times_s) and abs(obs.imu_times_s[k] - time) < 1e-7), None)
         if exact is not None:
-            indices.append(node); poses.append(obs.T_reference_camera[exact]); continue
+            indices.append(node)
+            poses.append(obs.T_reference_camera[exact])
+            continue
         if not 0 < right < len(obs.imu_times_s):
             continue
-        left = right-1
-        span = obs.imu_times_s[right]-obs.imu_times_s[left]
-        if span > maximum_gap_s or obs.indices[right] != obs.indices[left]+1:
+        left = right - 1
+        span = obs.imu_times_s[right] - obs.imu_times_s[left]
+        if span > maximum_gap_s or obs.indices[right] != obs.indices[left] + 1:
             continue
-        fraction = (time-obs.imu_times_s[left])/span
+        fraction = (time - obs.imu_times_s[left]) / span
         pose = np.eye(4)
-        pose[:3, :3] = Slerp(obs.imu_times_s[left:right+1], Rotation.from_matrix(obs.T_reference_camera[left:right+1, :3, :3]))([time]).as_matrix()[0]
-        pose[:3, 3] = (1-fraction)*obs.T_reference_camera[left, :3, 3]+fraction*obs.T_reference_camera[right, :3, 3]
-        indices.append(node); poses.append(pose)
+        pose[:3, :3] = Slerp(obs.imu_times_s[left:right + 1], Rotation.from_matrix(obs.T_reference_camera[left:right + 1, :3, :3]))([time]).as_matrix()[0]
+        pose[:3, 3] = (1 - fraction) * obs.T_reference_camera[left, :3, 3] + fraction * obs.T_reference_camera[right, :3, 3]
+        indices.append(node)
+        poses.append(pose)
     return VisualObservations(node_times[indices], np.asarray(poses).reshape(-1, 4, 4), np.asarray(indices, int), obs.reference_frame)
 
 
@@ -114,9 +117,9 @@ def fuse(times: np.ndarray, imu: np.ndarray, observations: dict[str, VisualObser
         integrated = gtsam.PreintegratedImuMeasurements(params, bias0)
         for dt, gyro, acc in integrate_samples(imu, start, end):
             integrated.integrateMeasurement(acc, gyro, dt)
-        graph.add(gtsam.ImuFactor(X(k), V(k), X(k+1), V(k+1), B(k), integrated))
-        graph.add(gtsam.BetweenFactorConstantBias(B(k), B(k+1), gtsam.imuBias.ConstantBias(),
-                    gtsam.noiseModel.Diagonal.Sigmas(walk*np.sqrt(end-start))))
+        graph.add(gtsam.ImuFactor(X(k), V(k), X(k + 1), V(k + 1), B(k), integrated))
+        graph.add(gtsam.BetweenFactorConstantBias(B(k), B(k + 1), gtsam.imuBias.ConstantBias(),
+                    gtsam.noiseModel.Diagonal.Sigmas(walk * np.sqrt(end - start))))
     for lens, obs in sampled.items():
         sigma = scene_parameters.front_position_sigma_m if lens == 'front' else scene_parameters.rear_position_sigma_m
         base = gtsam.noiseModel.Diagonal.Sigmas(np.r_[np.repeat(np.radians(scene_parameters.visual_rotation_sigma_deg), 3), np.repeat(sigma, 3)])
@@ -125,13 +128,13 @@ def fuse(times: np.ndarray, imu: np.ndarray, observations: dict[str, VisualObser
             graph.add(gtsam.PriorFactorPose3(X(int(index)), gtsam.Pose3(gtsam.Rot3(pose[:3, :3]), pose[:3, 3]), noise))
     # 静止约束只作用于有真实静止 IMU 证据的节点，不把缺少视觉当成静止。
     zero_velocity_nodes = 0
-    z = trajectory_parameters.zupt
-    if z.enabled:
+    zupt_config = trajectory_parameters.zupt
+    if zupt_config.enabled:
         for k, time in enumerate(times):
-            samples = imu[(imu[:, 0] >= time-z.half_window_s) & (imu[:, 0] <= time+z.half_window_s)]
-            if (len(samples) >= z.minimum_samples and np.max(np.linalg.norm(samples[:, 1:4], axis=1)) < z.maximum_gyro_rad_s
-                    and np.std(np.linalg.norm(samples[:, 4:7], axis=1)) < z.maximum_acc_norm_std_m_s2):
-                graph.add(gtsam.PriorFactorVector(V(k), np.zeros(3), gtsam.noiseModel.Isotropic.Sigma(3, z.velocity_sigma_m_s)))
+            samples = imu[(imu[:, 0] >= time - zupt_config.half_window_s) & (imu[:, 0] <= time + zupt_config.half_window_s)]
+            if (len(samples) >= zupt_config.minimum_samples and np.max(np.linalg.norm(samples[:, 1:4], axis=1)) < zupt_config.maximum_gyro_rad_s
+                    and np.std(np.linalg.norm(samples[:, 4:7], axis=1)) < zupt_config.maximum_acc_norm_std_m_s2):
+                graph.add(gtsam.PriorFactorVector(V(k), np.zeros(3), gtsam.noiseModel.Isotropic.Sigma(3, zupt_config.velocity_sigma_m_s)))
                 zero_velocity_nodes += 1
     solver = gtsam.LevenbergMarquardtParams()
     solver.setMaxIterations(fusion_parameters.lm_iterations)
@@ -142,9 +145,9 @@ def fuse(times: np.ndarray, imu: np.ndarray, observations: dict[str, VisualObser
     for k in range(len(times)):
         pose = result.atPose3(X(k))
         poses[k, :3, :3], poses[k, :3, 3] = pose.rotation().matrix(), pose.translation()
-    if not np.isfinite(poses).all() or not np.isfinite(final_error) or final_error > initial_error+1e-5:
+    if not np.isfinite(poses).all() or not np.isfinite(final_error) or final_error > initial_error + 1e-5:
         raise ValueError('场景融合结果非有限或优化误差增加')
-    residuals = [np.linalg.norm((poses[obs.indices] @ np.linalg.inv(T_cam_imu[lens]))[:, :3, 3]-obs.T_reference_camera[:, :3, 3], axis=1)
+    residuals = [np.linalg.norm((poses[obs.indices] @ np.linalg.inv(T_cam_imu[lens]))[:, :3, 3] - obs.T_reference_camera[:, :3, 3], axis=1)
                  for lens, obs in sampled.items() if len(obs.imu_times_s)]
     rms = float(np.sqrt(np.mean(np.concatenate(residuals)**2)))
     if rms > scene_parameters.maximum_placement_rms_m:
