@@ -24,29 +24,29 @@ def _sha12(path: Path) -> str | None:
 
 
 def _file_asset(path: Path, **extra) -> dict:
-    p = Path(path)
-    out = {"path": str(p), "sha256_12": _sha12(p)}
-    out.update(extra)
-    return out
+    path_obj = Path(path)
+    asset_dict = {"path": str(path_obj), "sha256_12": _sha12(path_obj)}
+    asset_dict.update(extra)
+    return asset_dict
 
 
 def _yaml_scalars(path: Path) -> dict:
     """Camera / IMU-noise / ORB scalar lines actually in the settings file this run used."""
-    out = {}
+    scalars = {}
     if not path.is_file():
-        return out
-    skip = ("IMU.T_b_c1", "data:", "rows:", "cols:", "dt:", "Viewer.")
+        return scalars
+    skip_prefixes = ("IMU.T_b_c1", "data:", "rows:", "cols:", "dt:", "Viewer.")
     for line in path.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if not s or s.startswith(("%", "#")) or s.startswith(skip):
+        stripped_line = line.strip()
+        if not stripped_line or stripped_line.startswith(("%", "#")) or stripped_line.startswith(skip_prefixes):
             continue
-        if ":" not in s:
+        if ":" not in stripped_line:
             continue
-        k, v = s.split(":", 1)
-        k, v = k.strip(), v.strip().strip('"')
-        if k.startswith(("File.", "Camera", "IMU.", "ORBextractor.", "System.")):
-            out[k] = v
-    return out
+        key, value = stripped_line.split(":", 1)
+        key, value = key.strip(), value.strip().strip('"')
+        if key.startswith(("File.", "Camera", "IMU.", "ORBextractor.", "System.")):
+            scalars[key] = value
+    return scalars
 
 
 def _binaries_from_run(run_txt: Path) -> dict:
@@ -58,15 +58,15 @@ def _binaries_from_run(run_txt: Path) -> dict:
     if not run_txt.is_file():
         return out
     for line in run_txt.read_text(encoding="utf-8", errors="replace").splitlines():
-        p = line.split()
-        if len(p) >= 6 and p[0] == "kiwi_fuse3s.py" and p[2] == "front_setting":
-            out["kiwi_fuse3s.py"] = p[1]
-            out["front_setting"] = p[3]
-            if "cam_imu_offset_ns" in p:
-                out["cam_imu_offset_ns"] = p[p.index("cam_imu_offset_ns") + 1]
-        elif len(p) >= 4 and p[0] == "x3_mono_slam" and p[2] == "lib":
-            out["x3_mono_slam"] = p[1]
-            out["libORB_SLAM3.so"] = p[3]
+        parts = line.split()
+        if len(parts) >= 6 and parts[0] == "kiwi_fuse3s.py" and parts[2] == "front_setting":
+            out["kiwi_fuse3s.py"] = parts[1]
+            out["front_setting"] = parts[3]
+            if "cam_imu_offset_ns" in parts:
+                out["cam_imu_offset_ns"] = parts[parts.index("cam_imu_offset_ns") + 1]
+        elif len(parts) >= 4 and parts[0] == "x3_mono_slam" and parts[2] == "lib":
+            out["x3_mono_slam"] = parts[1]
+            out["libORB_SLAM3.so"] = parts[3]
     return out
 
 
@@ -75,16 +75,16 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
                          fuse_info: dict | None = None) -> dict:
     """The settings and on-disk assets this run read. Written next to the trajectory as run_settings.json."""
     reconstruction_dir = Path(reconstruction_dir)
-    src = calib or {}
-    json_path = Path(src["json"]) if src.get("json") else CALIB_IMU_CAM
-    yaml_path = Path(src["yaml"]) if src.get("yaml") else HERE / "assets" / "config" / "front_x3_r1440_720.yaml"
-    fuser_path = Path(src["fuser"]) if src.get("fuser") else FUSION_SCRIPT
+    calib_info = calib or {}
+    json_path = Path(calib_info["json"]) if calib_info.get("json") else CALIB_IMU_CAM
+    yaml_path = Path(calib_info["yaml"]) if calib_info.get("yaml") else HERE / "assets" / "config" / "front_x3_r1440_720.yaml"
+    fuser_path = Path(calib_info["fuser"]) if calib_info.get("fuser") else FUSION_SCRIPT
     basalt = read_basalt(json_path)
-    tcp_path = Path(src["tcp_json"]) if src.get("tcp_json") else CALIB_CAM_TCP
-    mask_path = Path(src["mask"]) if src.get("mask") else FRONT_MASK
-    cad = json.loads(tcp_path.read_text(encoding="utf-8"))
+    tcp_path = Path(calib_info["tcp_json"]) if calib_info.get("tcp_json") else CALIB_CAM_TCP
+    mask_path = Path(calib_info["mask"]) if calib_info.get("mask") else FRONT_MASK
+    cad_geometry = json.loads(tcp_path.read_text(encoding="utf-8"))
     env_cal = (os.environ.get("UMI_TRAJ_CALIB") or "").strip() or None
-    source = src.get("source") or "factory"
+    source = calib_info.get("source") or "factory"
     slam_scalars = _yaml_scalars(yaml_path)
     size_px = int(slam_scalars['Camera.width'])
     if int(slam_scalars['Camera.height']) != size_px:
@@ -92,9 +92,9 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
     run_txt = reconstruction_dir / "logs" / "run.txt"
     info = fuse_info if fuse_info is not None else {}
     if not info:
-        for cand in (reconstruction_dir / "fuse" / "fuse_info.json", reconstruction_dir / "logs" / "fuse_info.json"):
-            if cand.is_file():
-                info = json.loads(cand.read_text(encoding="utf-8"))
+        for candidate_path in (reconstruction_dir / "fuse" / "fuse_info.json", reconstruction_dir / "logs" / "fuse_info.json"):
+            if candidate_path.is_file():
+                info = json.loads(candidate_path.read_text(encoding="utf-8"))
                 break
     video_src = dict(extract_manifest.get("source") or {})
     video_src.setdefault("name", name)
@@ -115,19 +115,19 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
             "order": ["$UMI_TRAJ_CALIB (engineer override: bundle dir or the word factory)",
                       "registry/index.json keyed by camera serial from the .insv trailer"],
             "active": source,
-            "selection": src.get("selection"),
-            "serial": src.get("serial"),
-            "status": src.get("status"),
-            "gripper": src.get("gripper"),
+            "selection": calib_info.get("selection"),
+            "serial": calib_info.get("serial"),
+            "status": calib_info.get("status"),
+            "gripper": calib_info.get("gripper"),
             "UMI_TRAJ_CALIB": env_cal,
-            "id": src.get("id") or _sha12(json_path),
-            "dir": src.get("dir") or str(HERE),
-            "bundle_sha256": src.get("bundle_sha256"),
+            "id": calib_info.get("id") or _sha12(json_path),
+            "dir": calib_info.get("dir") or str(HERE),
+            "bundle_sha256": calib_info.get("bundle_sha256"),
         },
         "assets": {
             "camera_imu_calibration": _file_asset(
                 json_path,
-                note=("registry camera-IMU bundle for serial %s" % src.get("serial") if source == "registry"
+                note=("registry camera-IMU bundle for serial %s" % calib_info.get("serial") if source == "registry"
                       else "sample calibration of one X3, 2026-09-04"),
                 camera_type=basalt["camera_type"],
                 resolution=basalt["resolution"],
@@ -139,12 +139,12 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
             "camera_tcp_geometry": _file_asset(
                 tcp_path,
                 note="CAD nominal closed-fingertip pose in the camera frame; umi-calib does not solve this",
-                status=cad.get("status"),
-                version=cad.get("version"),
-                date=cad.get("date"),
-                T_camera_tcp=cad.get("T_camera_tcp"),
-                tcp_frame=tcp_frame_definition(cad),
-                optical_center_depth_mm=cad.get("optical_center_depth_mm"),
+                status=cad_geometry.get("status"),
+                version=cad_geometry.get("version"),
+                date=cad_geometry.get("date"),
+                T_camera_tcp=cad_geometry.get("T_camera_tcp"),
+                tcp_frame=tcp_frame_definition(cad_geometry),
+                optical_center_depth_mm=cad_geometry.get("optical_center_depth_mm"),
             ),
             "orbslam3_front_settings": _file_asset(
                 yaml_path,
@@ -156,8 +156,8 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
                 note="shared GTSAM fusion; camera extrinsics read explicitly from the selected calibration JSON",
             ),
             "front_hand_mask": _file_asset(mask_path, note="painted out during mapping so fingers are not mapped as the room",
-                                           source=_file_asset(Path(src.get('source_mask') or mask_path))),
-            **({"orbslam3_rear_settings": _file_asset(Path(src.get("rear_yaml") or REAR_YAML), note="sample rear geometry, not calibrated for this device; used only in dual mode")} if mode == "dual" else {}),
+                                           source=_file_asset(Path(calib_info.get('source_mask') or mask_path))),
+            **({"orbslam3_rear_settings": _file_asset(Path(calib_info.get("rear_yaml") or REAR_YAML), note="sample rear geometry, not calibrated for this device; used only in dual mode")} if mode == "dual" else {}),
         },
         "recording_contract": extract_manifest.get("input_contract"),
         "frame_geometry": geometry_record(size_px, mode=mode),
@@ -175,12 +175,14 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
 
 
 def load_extrinsics(calib_json: Path | None = None, tcp_json: Path | None = None) -> dict:
-    cal = json.loads(Path(calib_json or CALIB_IMU_CAM).read_text(encoding="utf-8"))
-    ic = (cal.get("value0") or cal)["T_imu_cam"][0]
-    T_imu_cam = imu_from_camera(dict(q_xyzw=[ic["qx"], ic["qy"], ic["qz"], ic["qw"]], p=[ic["px"], ic["py"], ic["pz"]]))
+    calibration_data = json.loads(Path(calib_json or CALIB_IMU_CAM).read_text(encoding="utf-8"))
+    imu_cam_data = (calibration_data.get("value0") or calibration_data)["T_imu_cam"][0]
+    T_imu_cam = imu_from_camera(dict(q_xyzw=[imu_cam_data["qx"], imu_cam_data["qy"], imu_cam_data["qz"], imu_cam_data["qw"]],
+                                     p=[imu_cam_data["px"], imu_cam_data["py"], imu_cam_data["pz"]]))
     tcp_path = Path(tcp_json) if tcp_json else CALIB_CAM_TCP
-    cad = json.loads(tcp_path.read_text(encoding="utf-8"))
-    T_cam_tcp = camera_from_tcp(cad)
-    return {"T_imu_cam": T_imu_cam, "T_cam_tcp": T_cam_tcp, "cad_status": cad.get("status"),
-            "tcp_frame": tcp_frame_definition(cad),
-            "cam_time_offset_ns": (cal.get("value0") or cal).get("cam_time_offset_ns"), "tcp_json": str(tcp_path)}
+    cad_geometry = json.loads(tcp_path.read_text(encoding="utf-8"))
+    T_cam_tcp = camera_from_tcp(cad_geometry)
+    return {"T_imu_cam": T_imu_cam, "T_cam_tcp": T_cam_tcp, "cad_status": cad_geometry.get("status"),
+            "tcp_frame": tcp_frame_definition(cad_geometry),
+            "cam_time_offset_ns": (calibration_data.get("value0") or calibration_data).get("cam_time_offset_ns"),
+            "tcp_json": str(tcp_path)}
