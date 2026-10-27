@@ -33,7 +33,7 @@ def sample(directory: Path, manifest: dict, arms: dict, query: np.ndarray, max_g
         report = manifest.get('gripper_width', {}).get(arm)
         if report is None:
             missing = True
-            reasons.append(arm+': missing gripper')
+            reasons.append(f"{arm}: missing gripper")
             continue
         measured = series.read(directory / arm / 'gripper_width.csv')
         if len(measured.times_s) != len(trajectory.times_s) or not np.allclose(measured.times_s, trajectory.times_s, atol=1e-8, rtol=0):
@@ -43,16 +43,19 @@ def sample(directory: Path, manifest: dict, arms: dict, query: np.ndarray, max_g
         if np.any((measured.width_mm[measured.valid] < 0) | (measured.width_mm[measured.valid] > opening)):
             raise ValueError(f'{arm} 有效宽度超出标定范围')
         sampled = series.resample(measured, query, max_gap_s)
-        arrays[arm+'_gripper_width_m'] = sampled.width_mm/1000.
-        arrays[arm+'_gripper_close_01'] = 1-sampled.width_mm/opening
-        arrays[arm+'_gripper_valid'] = sampled.valid
-        arrays[arm+'_gripper_source'] = sampled.source
-        measurements[arm] = dict(calibration=calibration, inputs=report['inputs'],
-            valid_fraction=float(sampled.valid.mean()), sources={name: int((sampled.source == code).sum())
-                for code, name in series.SOURCE_NAMES.items()})
+        arrays[f"{arm}_gripper_width_m"] = sampled.width_mm / 1000.0
+        arrays[f"{arm}_gripper_close_01"] = 1.0 - sampled.width_mm / opening
+        arrays[f"{arm}_gripper_valid"] = sampled.valid
+        arrays[f"{arm}_gripper_source"] = sampled.source
+        measurements[arm] = dict(
+            calibration=calibration,
+            inputs=report['inputs'],
+            valid_fraction=float(sampled.valid.mean()),
+            sources={name: int((sampled.source == code).sum()) for code, name in series.SOURCE_NAMES.items()}
+        )
         if not calibration['verified']:
-            reasons.append(arm+': gripper calibration unverified')
+            reasons.append(f"{arm}: gripper calibration unverified")
         if not sampled.valid.all():
-            reasons.append(arm+': gripper contains missing or out-of-range samples')
+            reasons.append(f"{arm}: gripper contains missing or out-of-range samples")
     return arrays, dict(training_ready=not reasons, missing_channels=['gripper'] if missing else [],
                         not_ready_reasons=reasons, measurements=measurements)

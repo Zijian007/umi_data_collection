@@ -207,7 +207,7 @@ def register_rear(source: Path) -> dict:
     if data.get('kind') != 'umi_rear_calibration' or data.get('lens') != 'rear' or not str(data.get('validation', {}).get('verdict', '')).startswith('PASS'):
         raise RegistryError('后镜头标定需要匹配序列号、lens: rear 和通过的验收证据')
     traj_calib.read_basalt(source)
-    version = 'rear_'+sha256_file(source)[:12]
+    version = f"rear_{sha256_file(source)[:12]}"
     with locked(ROOT, '.registry.lock'):
         store_version(CAMERAS / serial / 'calibrations', version, {'rear_calibration.json': source},
                       kind='umi_rear_calibration', serial=serial)
@@ -231,7 +231,7 @@ def register_width(serial: str, source: Path, *, gripper: str, gripper_version: 
     validate_id(serial)
     get(serial, gripper=gripper, gripper_version=gripper_version)
     binding = dict(kind='umi_gripper_width', serial=serial, gripper=gripper, gripper_version=gripper_version)
-    version = 'width_'+canonical_hash(dict(binding=binding, sha256=sha256_file(source)))[:12]
+    version = f"width_{canonical_hash(dict(binding=binding, sha256=sha256_file(source)))[:12]}"
     with locked(ROOT, '.registry.lock'):
         store_version(CAMERAS / serial / 'gripper_width', version,
                       {'width_calibration.json': source}, **binding)
