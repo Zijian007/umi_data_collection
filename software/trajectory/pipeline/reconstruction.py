@@ -39,16 +39,20 @@ def run_attempts(videos: tuple[LensVideo, ...], data: RecordingData,
             text = log.read_text(encoding='utf-8', errors='replace') if log.is_file() else ''
             (context.paths.logs / f'runner_try{number}.log').write_text(
                 text + (f'{last_stage}: {reason}\n' if reason else ''), encoding='utf-8')
-        tries.append({'try': number, 'rc': return_code, **(quality or {}),
-                      **({'failed_stage': last_stage, 'reason': reason} if reason else {})})
+        try_entry = {'try': number, 'rc': return_code}
+        if quality:
+            try_entry.update(quality)
+        if reason:
+            try_entry.update({'failed_stage': last_stage, 'reason': reason})
+        tries.append(try_entry)
         if quality is not None and (best is None or try_key(quality) < try_key(tries[best - 1])):
             best = number
         if quality is not None and not quality['suspicious']:
             break
         if number < context.request.max_tries:
             retry_reason = f'{last_stage}: {reason}' if reason else (
-                '%d 个独立地图放置，地图位置约束覆盖 %.0f%% 的帧'
-                % (quality['placements'], 100 * quality['full_fraction']))
+                f"{quality['placements']} 个独立地图放置，地图位置约束覆盖 {100 * quality['full_fraction']:.0f}% 的帧"
+            )
             runtime.console.write(f'{retry_reason}；重新执行建图、定位与融合', recording=Path(recording_name).stem, attempt=number, state='重试')
     if best is None:
         reason = f'{len(tries)} 次重建均失败（最后退出码 {tries[-1]["rc"]}）：{tries[-1].get("reason")}'

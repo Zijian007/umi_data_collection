@@ -6,7 +6,6 @@ from pathlib import Path
 from software.trajectory.pipeline import runtime
 from software.camera.geometry import describe_tcp_frame
 from software.trajectory.calibration.selection import SelectedCalibration
-from .plots import plot
 
 STATUS_LABELS = {"ok": "完成", "skipped": "跳过", "failed": "失败", "planned": "预检通过"}
 SELECTION_LABELS = {"registry": "设备档案", "UMI_TRAJ_CALIB": "环境变量覆盖"}

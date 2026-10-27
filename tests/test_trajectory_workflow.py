@@ -7,10 +7,10 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from software.vision import recordings as visual_recordings, runtime as visual_runtime, slam as visual_slam
+from software.vision import recordings as visual_recordings
 from software import config, registry
 from software.trajectory import calibration_assets
-from software.trajectory import cli, recording_data, reconstruction, results, runtime, selection, workflow
+from software.trajectory import cli, reconstruction, results, runtime, selection, workflow
 from software.camera.x3 import extraction
 from software.trajectory.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
 from software.vision.models import RecordingData

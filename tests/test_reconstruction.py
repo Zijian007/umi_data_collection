@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from software.vision import recordings as visual_recordings, runtime as visual_runtime, slam as visual_slam
 from software import config
-from software.trajectory import calibration_assets, recording_data, reconstruction, runtime
+from software.trajectory import calibration_assets, reconstruction, runtime
 from software.trajectory.models import FusionResult, RecordingPaths, ReconstructionContext, TrajectoryRequest
 from software.vision.models import RecordingData, ProcessingError
 from trajectory_fakes import FakeEngines

@@ -11,7 +11,7 @@ from pathlib import Path
 from software.camera.images import prepare_mask
 from unittest.mock import patch
 
-from software.vision import recordings as visual_recordings, runtime as visual_runtime, slam as visual_slam
+from software.vision import runtime as visual_runtime
 from software import config, registry
 from software.calibration import inputs, reports, workflow as calibration_workflow
 from software.calibration.models import CalibrationRequest, SegmentPaths

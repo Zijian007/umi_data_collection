@@ -98,6 +98,63 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
                 break
     video_src = dict(extract_manifest.get("source") or {})
     video_src.setdefault("name", name)
+
+    command_payload = {"mode": mode}
+    for key, value in (command or {}).items():
+        if key != "parameters":
+            command_payload[key] = value
+
+    assets = {
+        "camera_imu_calibration": _file_asset(
+            json_path,
+            note=(
+                f"registry camera-IMU bundle for serial {calib_info.get('serial')}"
+                if source == "registry"
+                else "sample calibration of one X3, 2026-09-04"
+            ),
+            camera_type=basalt["camera_type"],
+            resolution=basalt["resolution"],
+            intrinsics_1440={
+                "fx": basalt["fx"],
+                "fy": basalt["fy"],
+                "cx": basalt["cx"],
+                "cy": basalt["cy"],
+                "k": basalt["k"],
+            },
+            T_imu_cam={"p": basalt["p"], "q_xyzw": basalt["q_xyzw"]},
+            cam_time_offset_ns=basalt["cam_time_offset_ns"],
+        ),
+        "camera_tcp_geometry": _file_asset(
+            tcp_path,
+            note="CAD nominal closed-fingertip pose in the camera frame; umi-calib does not solve this",
+            status=cad_geometry.get("status"),
+            version=cad_geometry.get("version"),
+            date=cad_geometry.get("date"),
+            T_camera_tcp=cad_geometry.get("T_camera_tcp"),
+            tcp_frame=tcp_frame_definition(cad_geometry),
+            optical_center_depth_mm=cad_geometry.get("optical_center_depth_mm"),
+        ),
+        "orbslam3_front_settings": _file_asset(
+            yaml_path,
+            note=f"{size_px}x{size_px} KannalaBrandt8; intrinsics scaled from the calibrated crop with pixel-centre conversion",
+            scalars=slam_scalars,
+        ),
+        "fusion_script": _file_asset(
+            fuser_path,
+            note="shared GTSAM fusion; camera extrinsics read explicitly from the selected calibration JSON",
+        ),
+        "front_hand_mask": _file_asset(
+            mask_path,
+            note="painted out during mapping so fingers are not mapped as the room",
+            source=_file_asset(Path(calib_info.get("source_mask") or mask_path)),
+        ),
+    }
+    if mode == "dual":
+        assets["orbslam3_rear_settings"] = _file_asset(
+            Path(calib_info.get("rear_yaml") or REAR_YAML),
+            note="sample rear geometry, not calibrated for this device; used only in dual mode",
+        )
+
     return {
         "kind": "umi_traj_run_settings",
         "parameters": (command or {}).get("parameters"),
@@ -107,10 +164,7 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
             "container": extract_manifest.get("video"),
             "time_base": extract_manifest.get("time_base"),
         },
-        "command": {
-            "mode": mode,
-            **{key: value for key, value in (command or {}).items() if key != "parameters"},
-        },
+        "command": command_payload,
         "calibration_selection": {
             "order": ["$UMI_TRAJ_CALIB (engineer override: bundle dir or the word factory)",
                       "registry/index.json keyed by camera serial from the .insv trailer"],
@@ -124,41 +178,7 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
             "dir": calib_info.get("dir") or str(HERE),
             "bundle_sha256": calib_info.get("bundle_sha256"),
         },
-        "assets": {
-            "camera_imu_calibration": _file_asset(
-                json_path,
-                note=("registry camera-IMU bundle for serial %s" % calib_info.get("serial") if source == "registry"
-                      else "sample calibration of one X3, 2026-09-04"),
-                camera_type=basalt["camera_type"],
-                resolution=basalt["resolution"],
-                intrinsics_1440={"fx": basalt["fx"], "fy": basalt["fy"], "cx": basalt["cx"], "cy": basalt["cy"],
-                                 "k": basalt["k"]},
-                T_imu_cam={"p": basalt["p"], "q_xyzw": basalt["q_xyzw"]},
-                cam_time_offset_ns=basalt["cam_time_offset_ns"],
-            ),
-            "camera_tcp_geometry": _file_asset(
-                tcp_path,
-                note="CAD nominal closed-fingertip pose in the camera frame; umi-calib does not solve this",
-                status=cad_geometry.get("status"),
-                version=cad_geometry.get("version"),
-                date=cad_geometry.get("date"),
-                T_camera_tcp=cad_geometry.get("T_camera_tcp"),
-                tcp_frame=tcp_frame_definition(cad_geometry),
-                optical_center_depth_mm=cad_geometry.get("optical_center_depth_mm"),
-            ),
-            "orbslam3_front_settings": _file_asset(
-                yaml_path,
-                note=f"{size_px}x{size_px} KannalaBrandt8; intrinsics scaled from the calibrated crop with pixel-centre conversion",
-                scalars=slam_scalars,
-            ),
-            "fusion_script": _file_asset(
-                fuser_path,
-                note="shared GTSAM fusion; camera extrinsics read explicitly from the selected calibration JSON",
-            ),
-            "front_hand_mask": _file_asset(mask_path, note="painted out during mapping so fingers are not mapped as the room",
-                                           source=_file_asset(Path(calib_info.get('source_mask') or mask_path))),
-            **({"orbslam3_rear_settings": _file_asset(Path(calib_info.get("rear_yaml") or REAR_YAML), note="sample rear geometry, not calibrated for this device; used only in dual mode")} if mode == "dual" else {}),
-        },
+        "assets": assets,
         "recording_contract": extract_manifest.get("input_contract"),
         "frame_geometry": geometry_record(size_px, mode=mode),
         "pose_chain": {
