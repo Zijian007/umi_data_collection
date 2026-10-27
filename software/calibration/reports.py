@@ -191,7 +191,6 @@ class CalibrationReport:
             'segments': {name: path.name for name, path in inputs.recordings.items()},
             'tag_size_mm': request.tag_size_mm, 'serial': inputs.camera_serial,
             'compare_sample': request.compare_sample,
-            'tool_commit': runtime.git_commit(),
             'execution': dict(cores=request.cores, keep_work=request.keep_work, force=request.force, install=request.install),
             'basalt': (runtime.BASALT / 'BASALT_COMMIT.txt').read_text().strip() if (runtime.BASALT / 'BASALT_COMMIT.txt').is_file() else None,
             'factory_calibration': trajectory_calibration.describe(trajectory_calibration.HERE, 'factory')['id'],
@@ -256,7 +255,7 @@ class VerificationReport:
         self.in_registry = selected.get('serial') == inputs.camera_serial
         self.payload = {
             'kind': 'umi_calib_verify_report', 'video': inputs.video.name, 'serial': inputs.camera_serial,
-            'tag_size_mm': request.tag_size_mm, 'tool_commit': runtime.git_commit(),
+            'tag_size_mm': request.tag_size_mm,
             'execution': dict(cores=request.cores, keep_work=request.keep_work, force=request.force),
             'calibration': {'source': selected['source'], 'id': selected['id'],
                             'dir': selected['dir'], 'name': inputs.calibration_name},

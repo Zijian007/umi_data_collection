@@ -106,7 +106,7 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
         return summary
 
     started = time.monotonic()
-    summary.update(tool_commit=runtime.git_commit(), calibration_used=selected.summary(), run_fingerprint=fingerprint, parameters=provenance)
+    summary.update(calibration_used=selected.summary(), run_fingerprint=fingerprint, parameters=provenance)
     stage = "读取录像"
     try:
         # 1. 读取容器帧时间和尾部 IMU，不解码图像；此处检查丢帧策略。

@@ -17,7 +17,6 @@ __all__ = [
     "basalt_command",
     "run_logged",
     "pin_cores",
-    "git_commit",
     "check_environment",
     "last_reprojection",
     "prepare_output",
@@ -59,11 +58,6 @@ def pin_cores(cores: str | None) -> bool:
     return True
 
 
-def git_commit() -> str:
-    try:
-        return subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short=12", "HEAD"], capture_output=True, text=True, timeout=10).stdout.strip() or "unknown"
-    except Exception:
-        return "unknown"
 
 
 def check_environment(quiet: bool = False) -> bool:
@@ -141,7 +135,7 @@ def prepare(cores: str | None) -> bool:
 
 
 def check() -> int:
-    console.write(f"环境检查；版本 {git_commit()}")
+    console.write("环境检查")
     good = check_environment()
     console.write("环境检查通过" if good else "依赖不完整；请运行 bash software/calibration/setup/install.sh",
                   state="完成" if good else "失败")

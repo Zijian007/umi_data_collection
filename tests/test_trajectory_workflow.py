@@ -167,7 +167,7 @@ class WorkflowTests(RecordingFixture):
             self.engines.write_dataset(output)
             return manifest
 
-        with patch.object(selection, 'select_calibration', return_value=self.selected), patch.object(runtime, 'git_commit', return_value='test'), patch.object(extraction, 'extract', side_effect=extraction_error or extract), patch.object(runtime.subprocess, 'run', side_effect=self.fake_runner), patch.object(postprocess, 'export_trajectories', side_effect=self.fake_postprocess), patch.object(runtime.console, 'write'):
+        with patch.object(selection, 'select_calibration', return_value=self.selected), patch.object(extraction, 'extract', side_effect=extraction_error or extract), patch.object(runtime.subprocess, 'run', side_effect=self.fake_runner), patch.object(postprocess, 'export_trajectories', side_effect=self.fake_postprocess), patch.object(runtime.console, 'write'):
             return workflow.run_recording(self.video, self.output.parent, request)
 
     def test_success_skip_and_reprocess_after_calibration_change(self):

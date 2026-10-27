@@ -19,7 +19,6 @@ from software.vision.runtime import write_error_log
 __all__ = [
     "console",
     "reconstruction_settings",
-    "git_commit",
     "check",
     "write_error_log",
 ]
@@ -50,14 +49,6 @@ def reconstruction_settings(environment: dict[str, str], *, camera_json: Path, f
     )
 
 
-def git_commit() -> str:
-    try:
-        return subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short=12", "HEAD"], capture_output=True, text=True,
-                              timeout=10).stdout.strip() or os.environ.get("UMI_COMMIT", "unknown")
-    except Exception:
-        return os.environ.get("UMI_COMMIT", "unknown")
-
-
 def check() -> int:
     ok = True
 
@@ -66,7 +57,7 @@ def check() -> int:
         ok &= good
         console.write(what + (f"；{detail}" if detail else ""), state="正常" if good else "缺失")
 
-    console.write(f"环境检查；版本 {git_commit()}")
+    console.write("环境检查")
     for module_name in ("numpy", "scipy", "gtsam", "av", "matplotlib"):
         try:
             module = __import__(module_name)
