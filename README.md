@@ -1,90 +1,70 @@
 # UMI 相机标定与轨迹采集
 
-从 Insta360 X3 原始 `.insv` 录像生成夹爪 TCP 位姿。日常流程是：
+从 Insta360 X3 原始 `.insv` 视频生成夹爪 TCP 轨迹。使用三个程序：
 
-**登记设备 → 登记场景及其套件 → 建立采集批次 → 导入原片 → 离线建图与抽取 → 查看、验收与导出。**
+| 程序 | 职责 |
+|---|---|
+| `./umi-calib` | 相机标定、验收与设备资产管理 |
+| `./umi-scene` | 从场景批次发起建图和轨迹抽取，验收与导出 |
+| `./umi-view` | 查看视频、轨迹与地图 |
 
-首次操作请按 [双手采集操作手册](docs/操作手册.md) 执行，其中逐步列出上传文件、接收目录、处理命令和产出位置。
+**准备设备 → 放好套件配置和场景视频 → 运行 → 查看。** 完整 WSL 操作见[日常使用](docs/安装与日常使用.md)。
 
-场景包含套件，套件包含采集批次，批次包含任务；场景地图由各套件复用，设备实测资产全局共享。每个套件只有一个 `kit.yaml`，批次自动保存当时的设备与测量快照。一套设备允许只有左手、只有右手或双手。任务支持人工核验的双手固定时间偏移；未配置时保留未经确认的零偏移假设。训练中间包由独立入口 `umi-dataset` 导出，见 [训练数据指南](docs/训练数据.md)。
+设备线：每台相机分别标定，套件指定左右相机及其标定和夹爪几何版本。相机标定可跨场景复用；TCP 几何还取决于夹爪和相机安装关系。
 
-## 架构与心智模型
+场景线：场景下每轮“建图＋几次操作”组成一个批次，每次操作是一个 take。批次只需声明使用哪个套件，每次 run 按当前 kit.yaml 自动读取所需测量。新采集轮次可新建批次；同一批次替换建图原片后，重跑会自动重建地图。
 
-系统解构为自上而下的四层物理实体，所有物理标定与几何参数均带哈希版本快照：
-
-```mermaid
-graph TD
-    Registry["全局设备资产 registry/<br/>相机内参/外参/IMU + 夹爪TCP几何 + 夹爪开合标定"]
-    Scene["共享场景 scenes/&lt;场景&gt;/<br/>固定的物理环境"]
-    Map["共享场景地图 maps/<br/>单相机一次录制建图，米制尺度与重力对齐"]
-    Kit["套件 kits/&lt;套件&gt;/kit.yaml<br/>左右手绑定的具体设备/标定"]
-    Session["采集批次 sessions/&lt;批次&gt;/<br/>自动快照冻结当时的 Kit 与 Map 版本"]
-    Episode["单次任务 &lt;任务&gt;/<br/>左右手各一段原片，输出轨迹与开合"]
-
-    Registry -. 资产绑定 .- Kit
-    Scene --> Map
-    Scene --> Kit
-    Kit --> Session
-    Session --> Episode
-```
-
-处理流水线分四阶段：**录制入库对齐 → 共享地图定位与 IMU 因子图融合 → 前镜头指尖 ArUco 视觉测距 → 训练中间包标准化导出 (`umi-dataset`)**。
-
-## 1. 安装、验证与设备标定
-
-从项目根目录执行：
+## 首次准备
 
 ```bash
 bash install.sh
-./test.sh       # 一键运行全部主测试、历史测试与前端测试
-./umi-traj check
 ./umi-calib check
+./umi-scene check
 
-./umi-calib run recordings/calibration/IAQEB26097M4CP/20261022/front --tag-size-mm 24.0
-# 阅读 umi_calib_out/report.txt 后手动登记
-./umi-calib install recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out
+./umi-calib run recordings/calibration/CAMERA_SERIAL/20261105/front --tag-size-mm 24.0
+# 阅读 front/umi_calib_out/report.txt 后登记
+./umi-calib install recordings/calibration/CAMERA_SERIAL/20261105/front/umi_calib_out
 ```
 
-A/B/C/D 分别放在 `front/A/` 到 `front/D/`，保留原始文件名。按实际替换序列号、日期和标定板尺寸。安装新标定保留旧版本，已有套件不会自动改用新标定。
+每台相机单独在 `front/A/`、`B/`、`C/`、`D/` 放对应原片。登记结果保存在 `registry/`，由程序维护。然后填写 `kits/kit_001/kit.yaml`，字段见[套件配置说明](kits/README.md)。
 
-[安装指南](docs/安装.md) · [标定指南](docs/标定/说明.md)
+## 日常处理
 
-## 2. 一次登记，按批次采集
+先准备：
 
-下面使用已有的左手设备演示；双手套件在 `kit` 命令中增加 `--right <完整序列号>`。
-
-```bash
-./umi-scene init scenes/shelf
-./umi-scene kit scenes/shelf kit_001 --left IAQEB26097M4CP
-
-./umi-scene session scenes/shelf --name 20261025_001 --kit kit_001
-
-./umi-scene ingest /media/sd/this_session --session scenes/shelf/kits/kit_001/sessions/20261025_001
+```text
+kits/kit_001/kit.yaml
+scenes/shelf/20261105_001/
+├── batch.yaml                       # kit: kit_001
+├── mapping/原始建图文件名.insv
+├── take_001/videos/
+│   ├── left/原始任务文件名.insv
+│   └── right/原始任务文件名.insv
+└── take_002/videos/...
 ```
 
-每个导入目录应对应本批次的采集活动。同一套设备跨多个场景录制时，需要先明确各场景对应哪些原片。系统无法仅凭相机和时间推断场景。
-
-左右身份来自套件。双手任务缺一只手时保留待补齐，配对有歧义时保留原片待确认。双手套件录单手任务需明确传 `--arms left` 或 `--arms right`。[完整操作与配对规则](docs/场景.md)
-
-## 3. 离线处理与查看
-
-场景尚无地图时，用该场景的建图录像发布地图；批次可以提前建立，首次实际处理时固定所用地图版本。
-
 ```bash
-./umi-scene build scenes/shelf --mapping /media/sd/VID_mapping.insv
-./umi-scene run scenes/shelf/kits/kit_001/sessions/20261025_001
-./umi-scene status scenes/shelf
+./umi-scene run scenes/shelf/20261105_001
 ./umi-view scenes/shelf
 ```
 
-重复导入不会重复建任务，成功结果可以复用；失败重试保留已有成功结果。`run scenes --jobs 2` 可跨场景批处理，按机器资源设置并行数。默认 `shared_front` 使用共享前地图；`dual` 使用左右前地图和共享后地图，要求对应设备的实测后镜头标定。
+`run` 自动使用场景默认值、保存批次设备快照、登记原片、构建并固定本轮地图、抽取轨迹。无需依次执行 `init/session/ingest/build`。已有本地原片直接引用；保留相机文件名与 SD 卡源文件。
 
-配置了各手宽度标定的任务会从指尖标记估计夹爪开合，并随训练包保留有效性，见 [宽度接入](docs/训练数据.md#夹爪宽度标定与接入)。
+结果位于 `take_*/results/`，包括 `report.txt`、各手 `traj_tcp.txt` 和 `front.mp4`，双手另有 `bimanual.csv`。重复运行复用有效结果，失败不会覆盖上次成功结果。每次运行按当前 kit.yaml 和批次原片校验复用条件；标定或建图输入变化会自动重算。自动清单、地图、缓存和运行历史统一收在各级 `.umi/`，默认不生成空 `scene.yaml`。
 
-任务结果入口为 `scenes/<场景>/kits/<套件>/sessions/<批次>/<任务>/results/`。先读 `report.txt`，各手 `traj_tcp.txt` 为固定场景系中的 TCP 位姿，双手任务另有 `bimanual.csv`。人工验收通过后，可用 `review`、`export` 导出合格任务，命令见 [场景指南](docs/场景.md)。
+`front.mp4` 从对应相机的原始 INSV 提取前镜头画面，默认 720×720、约 29.97 fps。裁切、取帧、缩放、编码和音轨统一通过 [`trajectory.yaml` 的 `video:`](config/trajectory.yaml) 配置；范围、场景覆盖和联动规则见[视频处理参数](config/README.md#视频处理参数)。
 
-查看器默认地址 **http://127.0.0.1:9091**，支持轨迹、稀疏地图和前镜头视频。默认视频 720×720、保留鱼眼畸变。内部一致性指标不能代替独立精度测量；现有 [模拟商超示例](scenes/supermarket_demo/README.md) 使用历史实验室单相机录像。
+`--dry-run` 只读预览；`run scenes --jobs 2` 可跨场景批处理。默认共享前镜头地图；双路建图等高级配置见[场景指南](docs/场景处理.md)。不同地图版本不保证坐标一致。
 
-`umi-traj <录像.insv>` 保留用于独立实验：按当前默认标定处理，每段独立建图，不提供跨任务共享坐标。
+## 验收与导出
 
-[文档导航](docs/README.md) · [设备与目录](docs/设备与目录.md) · [参数管理](config/README.md) · [代码维护](docs/dev/README.md)
+```bash
+./umi-scene review scenes/shelf/20261105_001 --accept --reviewer zijian
+./umi-scene export scenes/shelf/20261105_001 --out exports/shelf
+# 或导出训练中间包，无需先导出轨迹包
+./umi-scene export scenes/shelf/20261105_001 --format training --out datasets/shelf
+```
+
+导出只接受当前有效且已人工验收的结果。训练包还要求操作指令、双手同步确认；夹爪宽度与训练就绪条件见[训练数据](docs/训练数据.md)。计算成功不等于已验收，查看器不自动验收。
+
+[文档导航](docs/README.md) · [设备与目录](docs/设备与坐标.md) · [标定指南](docs/标定.md) · [参数管理](config/README.md)

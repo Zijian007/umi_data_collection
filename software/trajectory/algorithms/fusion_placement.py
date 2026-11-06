@@ -7,7 +7,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
 from software import config
-from software.camera.x3.frame import FPS_USED
+from software.camera.x3.frame import output_frame_rate
 from software.trajectory.algorithms.fusion_alignment import AlignmentResult
 
 
@@ -25,7 +25,7 @@ class MapPlacements:
 def place_maps(aligned: AlignmentResult, parameters: config.TrajectoryParameters, *, log=print) -> MapPlacements:
     """冻结初始化镜头的参考段，再放置其它跟踪段和镜头。"""
     fusion_parameters = parameters.fusion
-    gravity_m_s2, frame_rate_hz = fusion_parameters.gravity_m_s2, FPS_USED
+    gravity_m_s2, frame_rate_hz = fusion_parameters.gravity_m_s2, float(output_frame_rate(parameters.video.frame_step))
     segment_duration_s = fusion_parameters.segment_s
     other_lens_rms_m, other_lens_rotation_deg = fusion_parameters.other_lens_rms_m, fusion_parameters.other_lens_rotation_deg
     lenses, alignment_estimates, initial_lens = aligned.lenses, aligned.estimates, aligned.initial_lens

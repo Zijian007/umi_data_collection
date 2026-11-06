@@ -9,7 +9,6 @@ import subprocess
 from pathlib import Path
 
 from software.console import Console
-from software.vision.runtime import write_error_log
 from software.calibration.models import RunPaths, StageError
 
 __all__ = [
@@ -23,7 +22,6 @@ __all__ = [
     "stage_errors",
     "prepare",
     "check",
-    "write_error_log",
 ]
 
 HERE = Path(__file__).resolve().parent

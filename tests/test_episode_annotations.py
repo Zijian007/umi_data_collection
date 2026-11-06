@@ -5,7 +5,8 @@ import unittest
 
 import numpy as np
 
-from software.scene import episodes, ingest, inputs, workflow
+from software.scene.management import episodes, ingest, inputs
+from software.scene import workflow
 from software.storage import write_json, write_yaml
 import test_scene as fixtures
 
@@ -68,7 +69,7 @@ class EpisodeAnnotationTests(unittest.TestCase):
 
     def test_instruction_only_update_preserves_sync_and_invalidates_review(self):
         data = self.configure()
-        state_path = self.f.episode_path.parent / 'state.json'
+        state_path = self.f.episode_path.parent / '.umi/state.json'
         write_json(state_path, dict(review=dict(decision='accepted')))
         session = inputs.read_session(self.f.session_path)
         ingest.register_episode(session, 'take_001', {}, instruction='拿起盒子')
@@ -76,7 +77,7 @@ class EpisodeAnnotationTests(unittest.TestCase):
         self.assertEqual(changed['recordings'], data['recordings'])
         self.assertEqual(changed['synchronization'], data['synchronization'])
         self.assertEqual(inputs.read_episode(self.f.episode_path).instruction, '拿起盒子')
-        self.assertEqual(json.loads(state_path.read_text()), {})
+        self.assertFalse(state_path.exists())
         before = self.f.episode_path.stat().st_mtime_ns
         ingest.register_episode(session, 'take_001', {}, instruction='拿起盒子')
         self.assertEqual(self.f.episode_path.stat().st_mtime_ns, before)

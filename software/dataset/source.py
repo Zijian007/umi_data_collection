@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from software import config
-from software.scene import episodes, inputs
+from software.scene.management import episodes, inputs
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,7 @@ def read_accepted(path: Path) -> AcceptedEpisode:
     for frame in manifest['tcp_frames'].values():
         if not isinstance(frame, dict) or not isinstance(frame.get('convention'), str) or not frame['convention']:
             raise ValueError('训练导出需要可识别的 TCP 定义')
-    name = Path(episode.scene.name) / episode.session.kit['id'] / episode.session.name / episode.path.parent.name
+    name = episode.session.relative_path / episode.root.name
     return AcceptedEpisode(episode.path, name, episode.scene.root, run, manifest, review,
                            config.file_hash(run / 'episode.json'))
 

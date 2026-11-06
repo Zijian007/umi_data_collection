@@ -8,16 +8,37 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.camera.geometry import imu_from_camera, camera_from_tcp, compose_pose_series, tcp_frame_definition, transform
+from software.camera.geometry import imu_from_camera, camera_from_tcp, compose_pose_series, tcp_frame_definition, describe_tcp_frame, transform
 from software import config
 
 
 class CameraGeometryTests(unittest.TestCase):
+    def test_display_uses_asset_fields_even_for_a_known_convention(self):
+        frame = dict(convention='genie_omnipicker_axes_v1', origin='measured origin',
+                     axes=dict(x='measured x direction', y='measured y direction', z='measured z direction'))
+        text = describe_tcp_frame(frame)
+        for value in (frame['origin'], *frame['axes'].values()):
+            self.assertIn(value, text)
+        frame['axes']['x'] = 'updated x direction'
+        self.assertIn('updated x direction', describe_tcp_frame(frame))
+        self.assertNotIn('measured x direction', describe_tcp_frame(frame))
+        self.assertEqual(describe_tcp_frame(dict(convention='asset_defined', description='legacy axes')), 'legacy axes')
+
+    def test_missing_selected_geometry_is_rejected_without_an_implicit_default(self):
+        from software.trajectory.reporting import metadata as run_metadata
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / 'uncreated'
+            with patch('software.registry.gripper_paths', side_effect=AssertionError('must not choose a default')):
+                with self.assertRaisesRegex(ValueError, 'tcp_json'):
+                    run_metadata.load_extrinsics()
+                with self.assertRaisesRegex(ValueError, 'tcp_json'):
+                    run_metadata.collect_run_settings(output, {}, 'handheld', 'VID.insv')
+            self.assertFalse(output.exists())
+
     def test_optical_parallel_tcp_keeps_fingertip_positions_and_changes_only_basis(self):
         root = Path(__file__).resolve().parents[1]
-        new = json.loads((root / 'registry/grippers/handheld_v1/versions/b90726d8a0ed/t_tcp_camera.json').read_text())
-        old_path = root / new['origin_geometry']['path']
-        self.assertEqual(config.file_hash(old_path), new['origin_geometry']['sha256'])
+        new = json.loads((root / 'registry/grippers/handheld_v1/002/t_tcp_camera.json').read_text())
+        old_path = root / 'registry/grippers/handheld_v1/001/t_tcp_camera.json'
         old = json.loads(old_path.read_text())
         np.testing.assert_array_equal(new['T_camera_tcp']['t_m'], old['T_camera_tcp']['t_m'])
         positions = np.array([[3., -2., 1.], [-1., 4., .2], [2., 3., 4.]])
@@ -28,16 +49,14 @@ class CameraGeometryTests(unittest.TestCase):
         np.testing.assert_allclose(Rotation.from_quat(q_new).as_matrix(), camera_rot.as_matrix(), atol=1e-14)
         change = Rotation.from_quat(q_old).inv() * Rotation.from_quat(q_new)
         np.testing.assert_allclose(change.magnitude(), np.deg2rad(21.5), atol=1e-8)
-        reverse = new['T_tcp_camera']
-        np.testing.assert_allclose(camera_from_tcp(new) @ transform(reverse['R_rows'], reverse['t_m']), np.eye(4), atol=1e-14)
         self.assertEqual(tcp_frame_definition(new)['convention'], 'front_optical_parallel_v1')
         self.assertEqual(tcp_frame_definition(old)['convention'], 'asset_defined')
         self.assertIn('jaw opening', tcp_frame_definition(old)['description'])
 
     def test_robot_tcp_axes_keep_position_and_point_x_toward_image_left(self):
         root = Path(__file__).resolve().parents[1]
-        new = json.loads((root / 'software/trajectory/assets/calib/t_tcp_camera_nominal_cad.json').read_text())
-        legacy = json.loads((root / new['origin_geometry']['path']).read_text())
+        new = json.loads((root / 'registry/grippers/handheld_v1/003/t_tcp_camera.json').read_text())
+        legacy = json.loads((root / 'registry/grippers/handheld_v1/001/t_tcp_camera.json').read_text())
         extrinsic = camera_from_tcp(new)
         expected = Rotation.from_euler('x', 21.5, degrees=True).as_matrix() @ np.diag([-1., -1., 1.])
         np.testing.assert_allclose(extrinsic[:3, :3], expected, atol=1e-8)
@@ -45,9 +64,6 @@ class CameraGeometryTests(unittest.TestCase):
         np.testing.assert_allclose(extrinsic[:3, 0], [-1., 0., 0.], atol=1e-14)
         np.testing.assert_allclose(extrinsic[:3, 2], np.asarray(legacy['T_camera_tcp']['R_rows'])[:, 2], atol=1e-8)
         np.testing.assert_allclose(np.cross(extrinsic[:3, 2], extrinsic[:3, 0]), extrinsic[:3, 1], atol=1e-14)
-        reverse = new['T_tcp_camera']
-        np.testing.assert_allclose(extrinsic @ transform(reverse['R_rows'], reverse['t_m']), np.eye(4), atol=1e-14)
-        np.testing.assert_allclose(Rotation.from_quat(reverse['q_xyzw']).as_matrix(), extrinsic[:3, :3].T, atol=1e-14)
         self.assertEqual(new['tcp_frame']['convention'], 'genie_omnipicker_axes_v1')
 
     def test_pose_chain_matches_homogeneous_transforms_with_nonzero_levers(self):
@@ -67,16 +83,16 @@ class CameraGeometryTests(unittest.TestCase):
         self.assertGreater(p[0, 0], 2.)  # 换算不会把场景原点移到本段起点。
 
     def test_independent_export_records_the_selected_tcp_convention(self):
-        from software.trajectory import calibration_assets
+        from software.trajectory.calibration import assets as calibration_assets
         from software.pose_io import write_tum
         from software.trajectory.algorithms import postprocess
 
         root = Path(__file__).resolve().parents[1]
-        source = root / 'software/trajectory/assets/calib/t_tcp_camera_nominal_cad.json'
+        source = root / 'registry/grippers/handheld_v1/003/t_tcp_camera.json'
         new = json.loads(source.read_text())
         sources = (
-            (root / new['origin_geometry']['path'], 'asset_defined'),
-            (root / 'registry/grippers/handheld_v1/versions/b90726d8a0ed/t_tcp_camera.json', 'front_optical_parallel_v1'),
+            (root / 'registry/grippers/handheld_v1/001/t_tcp_camera.json', 'asset_defined'),
+            (root / 'registry/grippers/handheld_v1/002/t_tcp_camera.json', 'front_optical_parallel_v1'),
             (source, 'genie_omnipicker_axes_v1'),
         )
         with tempfile.TemporaryDirectory() as temporary:

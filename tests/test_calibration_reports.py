@@ -9,17 +9,21 @@ from unittest.mock import patch
 
 from software import registry
 from software.calibration import devices, reports
-from software.trajectory import calibration_assets as calibration
+from software.trajectory.calibration import assets as calibration
 
 
 class ResultReportTests(unittest.TestCase):
     def test_registry_always_checks_version_assets(self):
-        sample = registry.sample()
+        from test_scene_management import RegistryVersionTests
+        fixture = RegistryVersionTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        sample = registry.get('CAMERA_A')
         for path in (Path(sample['json']), Path(sample['tcp_json']), Path(sample['mask'])):
             original = registry.sha256_file
             with self.subTest(path=path), patch.object(registry, 'sha256_file', side_effect=lambda value: '0'*64 if Path(value) == path else original(value)):
                 with self.assertRaisesRegex(registry.RegistryError, '哈希'):
-                    registry.sample()
+                    registry.get('CAMERA_A')
 
     def test_terminal_distinguishes_acceptance_failure_from_execution_failure(self):
         output = Path('/results/calibration')
@@ -81,10 +85,12 @@ class ResultReportTests(unittest.TestCase):
                     self.assertEqual(registry.load_index()['devices'], {})  # Writing a report never activates.
                     self.assertEqual(devices.install_bundle(out, force=False), 0)
                     self.assertEqual(registry.get('camera')['id'], bundle['id'])
+                    self.assertEqual(registry.get('camera')['calibration_version'], '001')
                     refreshed = reports.load_report(out)
                     self.assertEqual(refreshed['activation']['state'], 'active')
                     self.assertFalse((out / 'report.json').exists())
                     self.assertIn('已设为该设备默认标定', (out / 'report.txt').read_text())
+                    self.assertIn('标定：001\n', (out / 'report.txt').read_text())
                     self.assertEqual((out / 'report.txt').read_bytes(), (Path(registry.get('camera')['dir']).parent / 'report.txt').read_bytes())
 
     def test_text_report_includes_camera_errors_and_scale_interpretation(self):

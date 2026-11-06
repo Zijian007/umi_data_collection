@@ -64,7 +64,7 @@ def select_calibration(video: Path, *, device: str = "", gripper: str = "") -> S
             front_mask=Path(record['mask']),
         )
         return SelectedCalibration(
-            assets=assets, directory=Path(record['dir']), calibration_id=record['id'],
+            assets=assets, directory=Path(record['dir']), calibration_id=record.get('calibration_version', record['id']),
             camera_serial=record.get('serial'), gripper_id=record['gripper'],
             source=record['source'], selection=record['selection'], status=record['status'],
             time_offset_ns=int(record['cam_time_offset_ns']),

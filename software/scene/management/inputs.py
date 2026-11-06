@@ -1,7 +1,7 @@
 """读取场景清单、解析固定设备资产，并生成可复现的输入身份。"""
 from __future__ import annotations
 
-from dataclasses import asdict, fields
+from dataclasses import asdict, fields, replace
 import json
 import math
 from pathlib import Path
@@ -10,11 +10,13 @@ import re
 from ruamel.yaml import YAML
 
 from software import config, registry
+from software.scene import layout
 from software.scene.models import ARMS, CalibratedCamera, Episode, Scene, SceneParameters, Session
-from software.trajectory import calibration_assets, selection
+from software.trajectory.calibration import assets as calibration_assets, selection
 
 ROOT = Path(__file__).resolve().parents[3]
-INTERNAL_DIRECTORIES = frozenset({'archive', 'cache', 'runs', 'versions', 'maps', 'imports', 'results'})
+KITS = ROOT / 'kits'
+INTERNAL_DIRECTORIES = frozenset({'archive', 'cache', 'runs', 'versions', 'maps', 'mapping', 'videos', 'pending', 'imports', 'results'})
 
 
 def read_yaml(path: Path) -> dict:
@@ -50,6 +52,26 @@ def validate_episode_name(value: str) -> str:
     if value in INTERNAL_DIRECTORIES:
         raise ValueError(f'任务名不能使用内部目录名称：{value}')
     return value
+
+
+def validate_batch_name(value: str) -> str:
+    value = validate_name(value)
+    if value in INTERNAL_DIRECTORIES | {'kits', 'sessions'}:
+        raise ValueError(f'批次名不能使用内部目录名称：{value}')
+    return value
+
+
+def batch_video_sources(batch: Path) -> list[Path]:
+    """只发现任务原片和待配对原片，跳过缓存、结果及其他内部目录。"""
+    sources = [batch / 'pending'] if (batch / 'pending').is_dir() else []
+    for videos in sorted(batch.glob('*/videos')):
+        try:
+            validate_episode_name(videos.parent.name)
+        except ValueError:
+            continue
+        if videos.is_dir():
+            sources.append(videos)
+    return sources
 
 
 def read_recordings(base: Path, data: dict, *, verify: bool = True) -> tuple[dict[str, Path], dict[str, str]]:
@@ -113,16 +135,44 @@ def rear_files(devices: dict[str, dict]) -> dict[str, Path]:
             for serial, device_binding in devices.items() if 'rear_calibration' in device_binding}
 
 
-def read_scene(path: Path, *, verify_mapping: bool = False) -> Scene:
+def scene_definition(data: dict, name: str) -> dict:
+    """在内存中补齐场景默认值，目录是场景身份的来源。"""
+    require_keys(data, {'schema_version', 'name', 'mode', 'reference_arm', 'mapping', 'devices',
+                        'trajectory_config', 'parameters', 'description'},
+                 {'schema_version'}, 'scene')
+    if type(data['schema_version']) is not int or data['schema_version'] != 2:
+        raise ValueError('场景清单需要 schema_version: 2')
+    if data.get('name', name) != name:
+        raise ValueError('场景目录与配置名称不一致')
+    normalized = dict(schema_version=2, name=validate_name(name), mode='shared_front', mapping={}, devices={},
+                      description='', trajectory_config=None, parameters=None)
+    normalized.update(data)
+    if not isinstance(normalized['mapping'], dict) or not isinstance(normalized['devices'], dict):
+        raise ValueError('场景 mapping 和 devices 必须为映射')
+    reference = next((arm for arm in ARMS if arm in normalized['mapping']), 'left')
+    normalized.setdefault('reference_arm', reference)
+    if not isinstance(normalized['description'], str):
+        raise ValueError('场景 description 必须为字符串')
+    return normalized
+
+
+def compact_scene(data: dict) -> dict:
+    """仅持久化实际输入和非默认选项。"""
+    default_reference = next((arm for arm in ARMS if arm in data['mapping']), 'left')
+    defaults = dict(name=data['name'], mode='shared_front', reference_arm=default_reference,
+                    mapping={}, devices={}, description='', trajectory_config=None, parameters=None)
+    return {key: value for key, value in data.items() if key not in defaults or value != defaults[key]}
+
+
+def read_scene(path: Path, *, verify_mapping: bool = False, load_mapping: bool = True) -> Scene:
     path = path.expanduser().resolve()
     if path.is_dir():
         path /= 'scene.yaml'
-    data = read_yaml(path)
-    require_keys(data, {'schema_version', 'name', 'mode', 'reference_arm', 'mapping', 'devices',
-                        'trajectory_config', 'parameters', 'description'},
-                 {'schema_version', 'name', 'mode', 'reference_arm', 'mapping', 'devices'}, 'scene')
-    if type(data['schema_version']) is not int or data['schema_version'] != 2:
-        raise ValueError('场景清单需要 schema_version: 2')
+    if not path.parent.is_dir():
+        raise ValueError(f'场景目录不存在：{path.parent}')
+    data = scene_definition(read_yaml(path) if path.is_file() else dict(schema_version=2), path.parent.name)
+    if not load_mapping:
+        data.update(mapping={}, devices={})
     if data['mode'] not in ('shared_front', 'dual'):
         raise ValueError('场景 mode 必须为 shared_front 或 dual')
     recording_paths, serials = read_recordings(path.parent, data['mapping'], verify=verify_mapping) if data.get('mapping') else ({}, {})
@@ -145,10 +195,13 @@ def read_arms(value: list | tuple, available=ARMS) -> tuple[str, ...]:
     return tuple(arm for arm in ARMS if arm in value)
 
 
-def validate_kit(data: dict) -> dict:
+def validate_kit(data: dict, *, name: str | None = None) -> dict:
     """当前套件和批次快照使用相同结构；相机标定、夹爪测量仍固定实际版本。"""
-    require_keys(data, {'id', 'arms', 'description'}, {'id', 'arms'}, '套件')
-    validate_name(data['id'])
+    require_keys(data, {'id', 'arms', 'description'}, {'arms'} if name is not None else {'id', 'arms'}, '套件')
+    identity = name if name is not None else data['id']
+    if data.get('id', identity) != identity:
+        raise ValueError('套件目录与配置 ID 不一致')
+    validate_name(identity)
     if not isinstance(data.get('description', ''), str):
         raise ValueError('套件 description 必须为字符串')
     if not isinstance(data['arms'], dict) or not data['arms'] or set(data['arms'].keys()) - set(ARMS):
@@ -162,31 +215,67 @@ def validate_kit(data: dict) -> dict:
         serials.append(item['serial'])
     if len(set(serials)) != len(serials):
         raise ValueError('套件的左右手必须使用不同相机')
-    return data
-
-
-def read_kit(scene: Scene, name: str) -> dict:
-    """新建批次读取当前配置；处理已有批次时直接使用 session.yaml 内的快照。"""
-    kit = validate_kit(read_yaml(scene.root / 'kits' / validate_name(name) / 'kit.yaml'))
-    if kit['id'] != name:
-        raise ValueError('套件目录与配置 ID 不一致')
+    kit = dict(id=identity, arms=data['arms'])
+    if data.get('description'):
+        kit['description'] = data['description']
     return kit
 
 
-def read_session(path: Path) -> Session:
-    path = path.expanduser().resolve()
-    if path.is_dir():
-        path /= 'session.yaml'
+def read_kit(name: str) -> dict:
+    """读取当前套件配置；run 用它更新本次解析记录。"""
+    path = KITS / validate_name(name) / 'kit.yaml'
+    return validate_kit(read_yaml(path), name=name)
+
+
+def mapping_records(source: dict) -> dict:
+    """单段建图不带手标签；展开为算法内部的参考槽位，兼容旧记录。"""
+    if not isinstance(source, dict):
+        raise ValueError('批次 mapping 必须为建图原片映射')
+    return {'left': source} if 'path' in source else source
+
+
+def read_session(path: Path, *, verify_mapping=False) -> Session:
+    path = layout.manifest(path, 'manifest.yaml')
+    root = layout.owner(path)
     data = read_yaml(path)
-    require_keys(data, {'schema_version', 'scene', 'map', 'kit', 'expected_arms', 'description'},
-                 {'schema_version', 'scene', 'kit', 'expected_arms'}, 'session')
-    if type(data['schema_version']) is not int or data['schema_version'] != 4:
-        raise ValueError('采集批次需要 schema_version: 4')
-    scene = read_scene(resolve_path(path.parent, data['scene']))
+    require_keys(data, {'schema_version', 'scene', 'map', 'mapping', 'mapping_reference_arm', 'kit', 'expected_arms', 'description'},
+                 {'schema_version', 'kit'}, 'session')
+    if type(data['schema_version']) is not int or data['schema_version'] not in (4, 5):
+        raise ValueError('采集批次需要 schema_version: 4 或 5')
+    scene_path = root.parent / 'scene.yaml'
+    if layout.manifest(root.parent, 'manifest.yaml').is_file() or (root.parent / 'batch.yaml').is_file():
+        raise ValueError('采集批次不能嵌套在另一个批次内')
+    if 'scene' in data and resolve_path(root, data['scene']) != scene_path:
+        raise ValueError('采集批次必须位于所属场景目录下')
+    scene = read_scene(scene_path, load_mapping=False)
     kit = validate_kit(data['kit'])
-    if path.parent.parent != scene.root / 'kits' / kit['id'] / 'sessions':
-        raise ValueError('采集批次必须位于 scenes/<场景>/kits/<套件>/sessions/<批次>/，且与清单套件一致')
-    expected = read_arms(data['expected_arms'], kit['arms'])
+    source = mapping_records(data.get('mapping', {}))
+    if source:
+        read_arms(list(source))
+        refs, devices = {}, {}
+        for arm, item in source.items():
+            require_keys(item, {'serial', 'path', 'sha256', 'calibration', 'gripper', 'gripper_version', 'rear_calibration'},
+                         {'serial', 'path', 'sha256'}, '批次建图录像')
+            refs[arm] = {key: item[key] for key in ('serial', 'path', 'sha256')}
+            binding = {key: value for key, value in item.items() if key not in ('serial', 'path', 'sha256')}
+            if not binding:
+                binding = next(({key: value for key, value in camera.items() if key not in ('serial', 'width_calibration')}
+                                for camera in kit['arms'].values() if camera['serial'] == item['serial']), None)
+                if binding is None:
+                    raise ValueError('套件外的建图相机必须固定独立测量版本')
+            devices[item['serial']] = binding
+        paths, serials = read_recordings(root, refs, verify=verify_mapping)
+        mode = 'shared_front' if len(paths) == 1 else 'dual'
+        reference = data.get('mapping_reference_arm', next(iter(paths)))
+        if reference not in paths:
+            raise ValueError('批次建图参考手必须属于本轮建图录像')
+        devices = read_devices(devices)
+        scene = replace(scene, mode=mode, recordings=paths, recording_serials=serials, devices=devices,
+                        reference_arm=reference, rear_calibrations=rear_files(devices))
+    if path.name != 'manifest.yaml' or root.parent != scene.root:
+        raise ValueError('采集批次必须位于 scenes/<场景>/<批次>/')
+    validate_batch_name(root.name)
+    expected = read_arms(data.get('expected_arms', list(kit['arms'])), kit['arms'])
     version, digest = None, None
     if data.get('map') is not None:
         require_keys(data['map'], {'version', 'manifest_sha256'}, {'version', 'manifest_sha256'}, '批次地图')
@@ -194,7 +283,7 @@ def read_session(path: Path) -> Session:
         registry.validate_id(version)
         if not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
             raise ValueError('批次地图需要完整 SHA256')
-    return Session(path, scene, version, digest, kit, expected)
+    return Session(path, scene, version, digest, kit, expected, source)
 
 
 def read_synchronization(data: dict | None, arms: tuple[str, ...]) -> dict:
@@ -221,24 +310,24 @@ def read_synchronization(data: dict | None, arms: tuple[str, ...]) -> dict:
 
 
 def read_episode(path: Path, *, verify: bool = True) -> Episode:
-    path = path.expanduser().resolve()
-    if path.is_dir():
-        path /= 'episode.yaml'
+    path = layout.manifest(path, 'episode.yaml')
+    root = layout.owner(path)
     data = read_yaml(path)
     require_keys(data, {'schema_version', 'session', 'recordings', 'expected_arms', 'instruction', 'synchronization'},
-                 {'schema_version', 'session', 'recordings', 'expected_arms'}, 'episode')
+                 {'schema_version', 'recordings'}, 'episode')
     if type(data['schema_version']) is not int or data['schema_version'] not in (4, 5):
         raise ValueError('任务清单需要 schema_version: 4 或 5')
     if data['schema_version'] == 4 and 'synchronization' in data:
         raise ValueError('配置同步请将任务 schema_version 更新为 5')
-    if data['schema_version'] == 5 and not {'instruction', 'synchronization'} <= data.keys():
-        raise ValueError('schema 5 任务需要 instruction 和 synchronization')
-    session = read_session(resolve_path(path.parent, data['session']))
-    if path.parent.parent != session.path.parent:
+    session_path = layout.manifest(root.parent, 'manifest.yaml')
+    if 'session' in data and layout.manifest(resolve_path(root, data['session']), 'manifest.yaml') != session_path:
+        raise ValueError('任务必须直接位于所属采集批次目录下')
+    session = read_session(session_path)
+    if root.parent != session.root:
         raise ValueError('任务必须直接位于采集批次的 <任务>/ 目录')
-    validate_episode_name(path.parent.name)
-    expected = read_arms(data['expected_arms'], session.expected_arms)
-    recording_paths, serials = read_recordings(path.parent, data['recordings'], verify=verify)
+    validate_episode_name(root.name)
+    expected = read_arms(data.get('expected_arms', session.expected_arms), session.expected_arms)
+    recording_paths, serials = read_recordings(root, data['recordings'], verify=verify)
     if set(serials.keys()) - set(expected):
         raise ValueError('实际录像包含本次任务未声明使用的手')
     if any(serial != session.arm_serials[arm] for arm, serial in serials.items()):
@@ -262,7 +351,7 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
     if device_record['status'] not in ('active', 'retired') or device_record.get('calibration_owner', serial) != serial:
         raise ValueError('共享场景需要已启用的实测相机标定，不能使用 sample')
     assets = selection.CalibrationAssets(Path(device_record['json']), Path(device_record['tcp_json']), Path(device_record['mask']))
-    calibration_selection = selection.SelectedCalibration(assets, Path(device_record['dir']), device_record['id'], device_record['serial'],
+    calibration_selection = selection.SelectedCalibration(assets, Path(device_record['dir']), device_binding['calibration'], device_record['serial'],
         device_record['gripper'], device_record['source'], 'scene_registry', device_record['status'], int(device_record['cam_time_offset_ns']))
     asset_paths = dict(front=assets.camera_json, tcp=assets.tcp_geometry, mask=assets.front_mask)
     if 'width_calibration' in device_binding:
@@ -279,7 +368,7 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
         if rear_metadata.get('camera_serial') != device_record['serial'] or rear_metadata.get('lens') != 'rear':
             raise ValueError(f'{rear_calibration_path} 必须明确包含匹配的 camera_serial 和 lens: rear')
         if rear_metadata.get('kind') != 'umi_rear_calibration' or not str(rear_metadata.get('validation', {}).get('verdict', '')).startswith('PASS'):
-            raise ValueError(f'{rear_calibration_path} 缺少通过验收的后镜头测量；请运行 umi-scene calibrate-rear')
+            raise ValueError(f'{rear_calibration_path} 缺少通过验收的后镜头测量；请运行 umi-calib calibrate-rear')
         lens_calibrations['rear'] = calibration_assets.read_basalt(rear_calibration_path)
         asset_paths['rear'] = rear_calibration_path
     return CalibratedCamera(device_record['serial'], calibration_selection, lens_calibrations, asset_paths)
@@ -324,14 +413,24 @@ def algorithm_identity() -> dict:
         'cli.py', 'capture_config.py', 'ingest.py', 'recording_checks.py', 'episodes.py', '__main__.py'}}
 
 
+def configuration_identity(batch_root: Path) -> str | None:
+    declaration = batch_root / 'batch.yaml'
+    if declaration.is_file():
+        batch = read_yaml(declaration)
+        return config.canonical_hash(dict(batch=batch, kit=read_kit(batch['kit'])))
+    return None
+
+
 def episode_inputs(episode, cameras, map_manifest) -> dict:
     from software.gripper_width import pipeline as width_pipeline
 
     widths = {arm: dict(version=camera.files['width'].parent.name, sha256=config.file_hash(camera.files['width']))
               for arm, camera in cameras.items() if 'width' in camera.files}
-    return dict(map_mode=map_manifest['mode'], scene_version=map_manifest['version'], frame_id=map_manifest['frame_id'], scene_assets=map_manifest['assets'],
+    current_configuration = configuration_identity(episode.session.root)
+    return dict(configuration=current_configuration, map_mode=map_manifest['mode'], scene_version=map_manifest['version'], frame_id=map_manifest['frame_id'], scene_assets=map_manifest['assets'],
         session=episode.session.name, session_manifest_sha256=config.file_hash(episode.session.path),
-        episode_manifest_sha256=config.file_hash(episode.path), scene_manifest_sha256=config.file_hash(episode.scene.path),
+        episode_manifest_sha256=config.file_hash(episode.path), scene_manifest_sha256=config.canonical_hash(scene_definition(
+            read_yaml(episode.scene.path) if episode.scene.path.is_file() else dict(schema_version=2), episode.scene.name)),
         recordings={arm: recording_identity(video) for arm, video in episode.recordings.items()},
         cameras={arm: camera_identity(camera) for arm, camera in cameras.items()}, synchronization=episode.synchronization,
         gripper_width=widths, gripper_width_code=width_pipeline.identity() if widths else {},

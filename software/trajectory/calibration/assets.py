@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
-from software.camera.x3.frame import CROP, scale_intrinsics, validate_video_size
+from software.camera.x3.frame import CROP, scale_intrinsics, validate_video_size, video_intrinsics, output_frame_rate
 
 HERE = Path(__file__).resolve().parents[1]
 REPO = HERE.parents[1]
@@ -87,7 +87,7 @@ def _image_size(text: str) -> int:
     return size
 
 
-def yaml_text(calib_info: dict, *, size_px: int | None = None) -> str:
+def yaml_text(calib_info: dict, *, size_px: int | None = None, video=None) -> str:
     """实测标定 → 指定尺寸的 SLAM 内参；省略尺寸仅用于核对旧包的模板规格。"""
     template_text = FRONT_SETTINGS_TEMPLATE.read_text(encoding="utf-8")
     size_px = _image_size(template_text) if size_px is None else size_px
@@ -95,7 +95,9 @@ def yaml_text(calib_info: dict, *, size_px: int | None = None) -> str:
     T_imu_camera = np.eye(4)
     T_imu_camera[:3, :3] = Rot.from_quat(calib_info["q_xyzw"]).as_matrix()
     T_imu_camera[:3, 3] = calib_info["p"]
-    vals = {**scale_intrinsics({key: calib_info[key] for key in ('fx', 'fy', 'cx', 'cy')}, CROP, size_px),
+    intrinsics = {key: calib_info[key] for key in ('fx', 'fy', 'cx', 'cy')}
+    scaled = video_intrinsics(intrinsics, video) if video else scale_intrinsics(intrinsics, CROP, size_px)
+    vals = {**scaled,
             "k1": calib_info["k"][0], "k2": calib_info["k"][1], "k3": calib_info["k"][2], "k4": calib_info["k"][3]}
     template_text = _replace_scalars(template_text, {**{f'Camera1.{key}': f'{value:.12f}' for key, value in vals.items()},
                                                      'Camera.width': size_px, 'Camera.height': size_px})
@@ -189,11 +191,15 @@ def slam_settings_text(calib_info: dict, parameters, *, rear: bool = False) -> s
         txt = (HERE / 'assets/config/rear_basalt065_720.yaml').read_text()
         intrinsics = {key: float(re.search(rf'(?m)^Camera1\.{key}: (\S+)$', txt)[1])
                       for key in ('fx', 'fy', 'cx', 'cy')}
-        scaled = scale_intrinsics(intrinsics, _image_size(txt), size)
+        scaled = video_intrinsics(intrinsics, parameters.video, source_px=_image_size(txt))
         txt = _replace_scalars(txt, {**{f'Camera1.{key}': f'{value:.12f}' for key, value in scaled.items()},
                                      'Camera.width': size, 'Camera.height': size})
     else:
-        txt = yaml_text(calib_info, size_px=size)
+        txt = yaml_text(calib_info, size_px=size, video=parameters.video)
+    # ORB Settings::readParameter<int> requires an integer nominal frame rate.
+    # Video encoding and fusion retain their exact fractional rate and timestamps.
+    nominal_fps = max(1, round(output_frame_rate(parameters.video.frame_step)))
+    txt = _replace_scalars(txt, {'Camera.fps': nominal_fps})
     orb_params = parameters.orb
     knobs = {'ORBextractor.nFeatures': orb_params.features, 'ORBextractor.scaleFactor': orb_params.scale_factor,
              'ORBextractor.nLevels': orb_params.levels, 'ORBextractor.iniThFAST': orb_params.initial_fast,
@@ -204,13 +210,13 @@ def slam_settings_text(calib_info: dict, parameters, *, rear: bool = False) -> s
 
 
 def active() -> dict:
-    """Engineer override only. ``umi-traj`` normally calls ``software.registry.resolve_insv``."""
+    """Engineer override only. The trajectory engine normally calls ``software.registry.resolve_insv``."""
     env = os.environ.get("UMI_TRAJ_CALIB", "").strip()
     if env == "factory":
         return describe(HERE, "factory")
     if env:
         return describe(Path(env).expanduser().resolve(), "registry")
     raise CalibrationError(
-        "未设置 $UMI_TRAJ_CALIB；umi-traj 默认按录像中的相机序列号选择标定；"
+        "未设置 $UMI_TRAJ_CALIB；内部逐段轨迹引擎 默认按录像中的相机序列号选择标定；"
         "使用 ./umi-calib devices 查看设备档案"
     )

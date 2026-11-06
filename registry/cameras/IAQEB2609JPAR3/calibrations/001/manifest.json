@@ -1,0 +1,10 @@
+{
+  "version": "001",
+  "assets": {
+    "bundle/calibration_r1440.json": "fa0d2d72ef52367640e05b036f783ba13248626b3d6c47ff06a0b84b5b1e7461",
+    "bundle/bundle.json": "a0309d7e6854a2b066541a14ac503a3ab5d7a8dad03f42dc14fb760311d026e3"
+  },
+  "kind": "umi_camera_calibration",
+  "serial": "IAQEB2609JPAR3",
+  "note": "umi-calib install from /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out"
+}

@@ -99,10 +99,6 @@ def prepare_verification(request: VerificationRequest) -> VerificationInputs:
     if not video.is_file():
         raise ValueError(f'找不到录像 {video}')
     camera_serial = registry.read_insv_serial(video)
-    try:
-        selected = registry.resolve_insv(video)
-        name = f"档案 {selected['serial']} / {selected['id']}"
-    except registry.UnknownCameraError:
-        selected = registry.sample()
-        name = f"样例标定 {selected['id']}（序列号 {camera_serial} 还没有档案）"
+    selected = registry.resolve_insv(video)
+    name = f"档案 {selected['serial']} / {selected.get('calibration_version', selected['id'])}"
     return VerificationInputs(video, camera_serial, load_board(request.tag_size_mm), selected, name)

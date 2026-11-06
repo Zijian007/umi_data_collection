@@ -8,17 +8,17 @@
     umi-calib status                      # 同 devices
     umi-calib check                       # 标定组件装好了吗
     umi-calib verify <C 段录像>           # 可选：不标定，只检查现有标定在这台上准不准
-    umi-calib adopt-sample --serial S     # 可选：verify PASS 后沿用样例相机–IMU（不是默认入库）
 
-四段录像怎么录见 docs/标定/说明.md。支持 A/B/C/D 子目录各放一段；平铺四段则按文件名排序。
+四段录像怎么录见 docs/标定.md。支持 A/B/C/D 子目录各放一段；平铺四段则按文件名排序。
 流程与 2026-09-04 的样例标定相同：A -> 内参（basalt_calibrate kb4）；B -> 相机–IMU（basalt_calibrate_imu，固定 IMU 尺度、
-第二阶段只优化相机时间差）；D -> 六朝向静止的重力一致性检查；C -> 用新标定跑 umi-traj，与标定板 PnP 位姿比较。"""
+第二阶段只优化相机时间差）；D -> 六朝向静止的重力一致性检查；C -> 用新标定跑内部轨迹引擎，与标定板 PnP 位姿比较。"""
 
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
+from ruamel.yaml.error import YAMLError
 
 from software.calibration import devices, inputs, migration, runtime, workflow
 
@@ -44,10 +44,6 @@ def main(argv=None) -> int:
         return devices.install_rear(args.measurement)
     if args.cmd == "install-gripper":
         return devices.install_gripper(args.gripper_id, args.directory)
-    if args.cmd == "adopt-sample":
-        return devices.adopt_sample(camera_serial=args.serial,
-                                    from_video=Path(args.from_video) if args.from_video else None,
-                                    gripper=args.gripper, note=args.note)
     if args.cmd in ("devices", "status"):
         return devices.list_devices()
     if args.cmd == "retire":
@@ -65,6 +61,16 @@ def main(argv=None) -> int:
         return 0
     if args.cmd == "check":
         return runtime.check()
+    if args.cmd == 'calibrate-rear':
+        from software.scene.spatial.rear_calibration import run
+        try:
+            result = run(args.folder, output=args.out, tag_size_mm=args.tag_size_mm, cores=args.cores,
+                keep_work=args.keep_work, config_path=args.config, dry_run=args.dry_run)
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError, YAMLError) as error:
+            runtime.console.write(str(error), state='失败')
+            return 2
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result['status'].startswith('PASS') or result['status'] == 'planned' else 1
     parser.print_help()
     return 2
 
@@ -77,21 +83,17 @@ def build_parser() -> argparse.ArgumentParser:
     for segment in "abcd":
         run_parser.add_argument("--" + segment, help=f"{segment.upper()} 段录像")
     run_parser.add_argument("--out", help="结果目录（默认 <录像文件夹>/umi_calib_out）")
-    run_parser.add_argument("--tag-size-mm", type=float, default=24.0, help="标定板上一个黑色方块的边长，用尺子量到的值（A4 板 24，A3 板 36）")
     run_parser.add_argument("--compare-sample", action="store_true", help="额外用样例标定跑 C 段轨迹，仅作对照，默认不运行")
-    run_parser.add_argument("--cores", help="限制使用的 CPU，例如 0-7")
     run_parser.add_argument("--install", action="store_true", help="检查通过后按序列号写入设备档案")
     run_parser.add_argument("--gripper", help="夹爪 id（默认 registry 的 default_gripper）")
-    run_parser.add_argument("--keep-work", action="store_true", help="保留中间文件（很大）")
-    run_parser.add_argument("--force", action="store_true", help="结果目录已存在时覆盖")
     verify_parser = commands.add_parser("verify", help="可选：不标定，只检查现有标定在这段 C 上准不准（不是默认入库）")
-    verify_parser.add_argument("video", help="C 段录像（按 docs/标定/说明.md 第 3 节 C 段的录法）")
+    verify_parser.add_argument("video", help="C 段录像（按 docs/标定.md 第 3 节 C 段的录法）")
     verify_parser.add_argument("--out", help="结果目录（默认 <录像名>_umi_calib_verify，在录像旁边）")
-    verify_parser.add_argument("--tag-size-mm", type=float, default=24.0, help="标定板上一个黑色方块的边长，用尺子量到的值（A4 板 24，A3 板 36）")
-    verify_parser.add_argument("--cores", help="限制使用的 CPU，例如 0-7")
-    verify_parser.add_argument("--keep-work", action="store_true", help="保留中间文件（很大）")
-    verify_parser.add_argument("--force", action="store_true", help="结果目录已存在时覆盖")
     for command_parser in (run_parser, verify_parser):
+        command_parser.add_argument("--tag-size-mm", type=float, default=24.0, help="标定板上一个黑色方块的边长，用尺子量到的值（A4 板 24，A3 板 36）")
+        command_parser.add_argument("--cores", help="限制使用的 CPU，例如 0-7")
+        command_parser.add_argument("--keep-work", action="store_true", help="保留中间文件（很大）")
+        command_parser.add_argument("--force", action="store_true", help="结果目录已存在时覆盖")
         command_parser.add_argument("--config", type=Path, help="显式 YAML 覆盖配置（默认 config/calibration.yaml）")
         command_parser.add_argument("--dry-run", action="store_true", help="只检查输入与生效参数，不创建输出或运行算法")
     recheck_parser = commands.add_parser("recheck", help="仅按新验收规则重新评估已有完整报告")
@@ -100,18 +102,21 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser = commands.add_parser("install", help="把一份通过检查的标定按序列号写入设备档案")
     install_parser.add_argument("out")
     install_parser.add_argument("--serial", help="覆盖报告里的序列号")
-    install_parser.add_argument("--gripper", help="夹爪 id（默认 handheld_v1）")
+    install_parser.add_argument("--gripper", help="夹爪 id（默认 registry 的 default_gripper）")
     install_parser.add_argument("--force", action="store_true")
     rear_parser = commands.add_parser("install-rear", help="登记通过验收的后镜头标定版本")
     rear_parser.add_argument("measurement", type=Path)
+    rear = commands.add_parser('calibrate-rear', help='从后镜头 A/B/C/D 求解与验收')
+    rear.add_argument('folder', type=Path)
+    rear.add_argument('--out', type=Path)
+    rear.add_argument('--tag-size-mm', type=float, default=24.)
+    rear.add_argument('--cores', default='')
+    rear.add_argument('--keep-work', action='store_true')
+    rear.add_argument('--config', type=Path)
+    rear.add_argument('--dry-run', action='store_true')
     gripper_parser = commands.add_parser("install-gripper", help="登记夹爪几何版本，已有版本保留")
     gripper_parser.add_argument("gripper_id")
     gripper_parser.add_argument("directory", type=Path)
-    sample_parser = commands.add_parser("adopt-sample", help="可选：verify PASS 后沿用样例相机–IMU（不是默认入库）")
-    sample_parser.add_argument("--serial", help="相机序列号")
-    sample_parser.add_argument("--from-video", help="从这段 .insv 读序列号")
-    sample_parser.add_argument("--gripper", help="夹爪 id")
-    sample_parser.add_argument("--note", help="写进档案的备注")
     upgrade = commands.add_parser('upgrade-device', help='把该设备旧标定包保存为 v2 新版本，不自动启用')
     upgrade.add_argument('serial')
     upgrade.add_argument('--dry-run', action='store_true', help='只校验来源并显示升级计划，不创建文件')

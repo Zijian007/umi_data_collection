@@ -98,7 +98,7 @@ gravity:
   # 0.8 用于排除尾部残缺或过于稀疏的窗口；调大要求窗口更完整。
   minimum_window_span_fraction: 0.8
 
-# C：通过真实的 umi-traj 入口，使用新标定抽取轨迹，再与板参考比较。
+# C：通过真实的内部轨迹引擎，使用新标定抽取轨迹，再与板参考比较。
 trajectory_validation:
   # 轨迹覆盖配置文件；空字符串使用项目默认 trajectory.yaml。
   # 相对路径从本标定配置文件所在目录解析；它影响 C 的实际重建，不只是报告。

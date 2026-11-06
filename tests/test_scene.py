@@ -16,10 +16,13 @@ from scipy.spatial.transform import Rotation
 
 from software import config, registry
 from software.camera.geometry import imu_from_camera
-from software.scene import inputs, slam, fusion, geometry, mapping, models, recording_checks, results, workflow
-from software.scene.inputs import select_camera
+from software.scene.management import inputs
+from software.scene.spatial import slam, fusion, geometry, mapping
+from software.scene import models, workflow
+from software.scene.pipeline import recording_checks, results
+from software.scene.management.inputs import select_camera
 from software.storage import write_json, write_yaml
-from software.trajectory import calibration_assets, selection
+from software.trajectory.calibration import assets as calibration_assets, selection
 from software.vision.models import LensVideo, MapAtlas
 from software.viewer.data import RecordingCatalog, ViewerDataError
 
@@ -109,23 +112,25 @@ class SceneWorkflowTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        kit_root = patch.object(inputs, 'KITS', self.root / 'kits')
+        kit_root.start(); self.addCleanup(kit_root.stop)
         self.source = self.root / 'source'
         self.source.mkdir()
-        self.scene_path = self.root / 'scene/scene.yaml'
+        self.scene_path = self.root / 'lab/scene.yaml'
         self.recording_paths = {arm: self.source / (arm+'.insv') for arm in models.ARMS}
         for arm, video in self.recording_paths.items():
             video.write_bytes(arm.encode())
         self.device_pins = {f'SERIAL_{arm}': dict(calibration='test', gripper='test', gripper_version='test') for arm in models.ARMS}
-        write_yaml(self.scene_path, dict(schema_version=2, name='lab', mode='shared_front', reference_arm='left',
+        write_yaml(self.scene_path, dict(schema_version=2,
                    mapping=dict(left=self.ref('left')), devices=self.device_pins))
         self.scene = inputs.read_scene(self.scene_path)
         kit = self.write_kit('test_kit', {arm: dict(serial='SERIAL_'+arm, **self.device_pins['SERIAL_'+arm]) for arm in models.ARMS})
-        self.session_path = self.scene.root / 'kits/test_kit/sessions/20261025_001/session.yaml'
-        write_yaml(self.session_path, dict(schema_version=4, scene=str(self.scene.path),
-                   map=dict(version='pending', manifest_sha256='0'*64), expected_arms=['left','right'],
+        self.session_path = self.scene.root / '20261025_001/manifest.yaml'
+        write_yaml(self.session_path, dict(schema_version=4,
+                   map=dict(version='pending', manifest_sha256='0'*64),
                    kit=kit))
         self.episode_path = self.session_path.parent / 'take_001/episode.yaml'
-        write_yaml(self.episode_path, dict(schema_version=4, session=str(self.session_path), expected_arms=['left','right'],
+        write_yaml(self.episode_path, dict(schema_version=4,
                    recordings={arm: self.ref(arm) for arm in self.recording_paths}))
         self.rear_files = {}
         self.cameras = {}
@@ -155,17 +160,17 @@ class SceneWorkflowTests(unittest.TestCase):
             self.prepared_recordings[self.recording_paths[arm]] = models.PreparedRecording(camera,
                 SimpleNamespace(parameters=self.scene.trajectory.values),
                 (LensVideo('front', encoded, asset_dir / 'settings.yaml', None),), times, imu)
-        self.patches = [patch('software.scene.inputs.registry.rear_path', side_effect=lambda serial, version: self.rear_files[serial]),
-            patch('software.scene.inputs.registry.pin', side_effect=lambda serial: dict(calibration='test', gripper='test', gripper_version='test')),
-            patch('software.scene.recording_checks.check_episode', return_value=recording_checks.EpisodeCheckReport(passed=True)),
-            patch('software.scene.inputs.select_camera', side_effect=lambda video, scene: self.cameras[video]),
+        self.patches = [patch('software.scene.management.inputs.registry.rear_path', side_effect=lambda serial, version: self.rear_files[serial]),
+            patch('software.scene.management.inputs.registry.pin', side_effect=lambda serial: dict(calibration='test', gripper='test', gripper_version='test')),
+            patch('software.scene.pipeline.recording_checks.check_episode', return_value=recording_checks.EpisodeCheckReport(passed=True)),
+            patch('software.scene.management.inputs.select_camera', side_effect=lambda video, scene: self.cameras[video]),
             patch('software.scene.workflow.runtime.validate_engines', return_value=(self.root, self.root)),
             patch('software.scene.workflow.config.engine_identity', return_value=dict(orb_library='fixture')),
-            patch('software.scene.recordings.prepare_recording', side_effect=lambda video, *args, **kwargs: self.prepared_recordings[video]),
-            patch('software.scene.slam.build', side_effect=self.build),
-            patch('software.scene.slam.atlas_candidates', side_effect=lambda rec, lens, *args: iter([(0, self.observations(rec, lens))])),
-            patch('software.scene.slam.localize', side_effect=lambda rec, lens, *args: self.observations(rec, lens)),
-            patch('software.scene.slam.export_map', return_value=dict(index=0, id=0, points=[[0., 0., 0.]], point_count=1,
+            patch('software.scene.pipeline.recordings.prepare_recording', side_effect=lambda video, *args, **kwargs: self.prepared_recordings[video]),
+            patch('software.scene.spatial.slam.build', side_effect=self.build),
+            patch('software.scene.spatial.slam.atlas_candidates', side_effect=lambda rec, lens, *args: iter([(0, self.observations(rec, lens))])),
+            patch('software.scene.spatial.slam.localize', side_effect=lambda rec, lens, *args: self.observations(rec, lens)),
+            patch('software.scene.spatial.slam.export_map', return_value=dict(index=0, id=0, points=[[0., 0., 0.]], point_count=1,
                 keyframes=[], bounds=None, coordinates='trajectory', alignment=dict(status='aligned', scale=2.3,
                 rotation=np.eye(3).tolist(), translation=[0., 0., 0.], rmse_m=0., source='fixed_scene')))]
         for item in self.patches:
@@ -175,11 +180,10 @@ class SceneWorkflowTests(unittest.TestCase):
         video = self.recording_paths[arm]
         return dict(path=str(video), serial='SERIAL_'+arm, sha256=registry.sha256_file(video))
 
-    def write_kit(self, name, arms, *, scene=None):
-        scene = scene or self.scene
+    def write_kit(self, name, arms):
         arms = {arm: arms[arm] for arm in models.ARMS if arm in arms}
         snapshot = dict(id=name, arms=arms)
-        write_yaml(scene.root / 'kits' / name / 'kit.yaml', snapshot)
+        write_yaml(inputs.KITS / name / 'kit.yaml', dict(arms=arms))
         return snapshot
 
     def build_scene(self, **kwargs):
@@ -187,7 +191,7 @@ class SceneWorkflowTests(unittest.TestCase):
         if built['status'] != 'planned':
             data = inputs.read_yaml(self.session_path)
             if data['map']['version'] == 'pending':
-                directory = self.scene.root / 'maps/versions' / built['version']
+                directory = self.scene.root / '.umi/maps/versions' / built['version']
                 data['map'] = dict(version=built['version'], manifest_sha256=config.file_hash(directory / 'manifest.json'))
                 write_yaml(self.session_path, data)
         return built
@@ -250,7 +254,7 @@ class SceneWorkflowTests(unittest.TestCase):
         record = dict(serial=camera.serial, status='active', json=str(camera.files['front']), tcp_json=str(camera.files['tcp']),
             mask=str(camera.files['mask']), dir=str(camera.selected.directory), id='test', gripper='test', source='registry', cam_time_offset_ns=0)
         scene = replace(self.scene, mode='dual', rear_calibrations={camera.serial: rear})
-        with patch('software.scene.inputs.registry.read_insv_serial', return_value=camera.serial), patch('software.scene.inputs.registry.get', return_value=record):
+        with patch('software.scene.management.inputs.registry.read_insv_serial', return_value=camera.serial), patch('software.scene.management.inputs.registry.get', return_value=record):
             write_json(rear, content)
             with self.assertRaisesRegex(ValueError, 'camera_serial'):
                 select_camera(self.recording_paths['left'], scene)
@@ -297,7 +301,7 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertIs(scene_parameters, episode.scene.parameters)
 
     def test_robot_tcp_convention_is_written_with_bimanual_results(self):
-        source = Path(__file__).resolve().parents[1] / 'software/trajectory/assets/calib/t_tcp_camera_nominal_cad.json'
+        source = Path(__file__).resolve().parents[1] / 'registry/grippers/handheld_v1/003/t_tcp_camera.json'
         for camera in self.cameras.values():
             camera.files['tcp'].write_bytes(source.read_bytes())
         self.build_scene()
@@ -324,7 +328,7 @@ class SceneWorkflowTests(unittest.TestCase):
         metadata = json.loads((output / 'episode.json').read_text())
         self.assertEqual(metadata['frame_id'], built['frame_id'])
         self.assertEqual(workflow.run_episode(self.episode_path)['status'], 'skipped')
-        shared_map = self.scene.root / 'maps/versions' / built['version'] / 'map.json'
+        shared_map = self.scene.root / '.umi/maps/versions' / built['version'] / 'map.json'
         for arm in ('left', 'right'):
             self.assertFalse((output / arm / 'details/map.json').exists())
             summary = json.loads((output / arm / 'details/summary.json').read_text())
@@ -344,7 +348,7 @@ class SceneWorkflowTests(unittest.TestCase):
         write_yaml(second_path, inputs.read_yaml(self.episode_path))
         second = workflow.run_episode(second_path)
         self.assertEqual(first['frame_id'], second['frame_id'])
-        self.assertEqual(json.loads((self.scene.root / 'maps/current.json').read_text())['version'], built['version'])
+        self.assertEqual(json.loads((self.scene.root / '.umi/maps/current.json').read_text())['version'], built['version'])
         slam.build.assert_called_once()
         # 只读查看器在同一时间轴中返回双手；offset 不能在裁到共同时间时被重置。
         catalog = RecordingCatalog(self.scene.root)
@@ -390,7 +394,7 @@ class SceneWorkflowTests(unittest.TestCase):
                 manifest.update(version=old_version, frame_id=f'lab/{old_version}')
                 write_json(old_dir / 'manifest.json', manifest)
                 pointer = dict(version=old_version, manifest_sha256=config.file_hash(old_dir / 'manifest.json'))
-                write_json(self.scene.root / 'maps/current.json', pointer)
+                write_json(self.scene.root / '.umi/maps/current.json', pointer)
                 session = inputs.read_yaml(self.session_path)
                 session['map'] = pointer
                 write_yaml(self.session_path, session)
@@ -408,7 +412,7 @@ class SceneWorkflowTests(unittest.TestCase):
         # 旧清单两处都存了配置；读取仍使用已有的 inputs.definition，无需改写旧文件。
         manifest['definition'] = manifest['inputs']['definition']
         write_json(map_dir / 'manifest.json', manifest)
-        write_json(self.scene.root / 'maps/current.json', dict(version=built['version'],
+        write_json(self.scene.root / '.umi/maps/current.json', dict(version=built['version'],
             manifest_sha256=config.file_hash(map_dir / 'manifest.json')))
         self.assertEqual(workflow.load_published(self.scene, check_definition=True)[1], manifest)
         self.assertEqual(self.build_scene()['status'], 'skipped')
@@ -423,7 +427,7 @@ class SceneWorkflowTests(unittest.TestCase):
         workflow.run_episode(self.episode_path)
         output = self.episode_path.parent / 'results'
         previous = output.resolve()
-        with patch('software.scene.fusion.fuse', side_effect=ValueError('failed fusion')):
+        with patch('software.scene.spatial.fusion.fuse', side_effect=ValueError('failed fusion')):
             with self.assertRaisesRegex(ValueError, 'failed fusion'):
                 workflow.run_episode(self.episode_path, force=True)
         self.assertEqual(output.resolve(), previous)

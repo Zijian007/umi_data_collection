@@ -1,9 +1,10 @@
-"""umi-scene：登记套件和采集批次，导入任务，再离线建图与抽取轨迹。"""
+"""umi-scene：读取批次配置和原片，自动建图、抽取轨迹，并负责验收与导出。"""
 from __future__ import annotations
+
+from software.scene import layout
 
 import argparse
 from dataclasses import asdict
-from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -12,11 +13,12 @@ from ruamel.yaml.error import YAMLError
 
 from software import registry
 from software.scene import workflow
-from software.scene.management import capture_config, episodes, ingest, inputs
+from software.scene.management import capture_config, episodes, ingest, inputs, processing
 from software.scene.management.episodes import episode_paths
 from software.scene.pipeline import recording_checks, recordings
 from software.scene.models import ARMS
-from software.storage import locked, write_yaml
+from software.scene.layout import locked
+from software.storage import write_yaml
 
 
 def relative(path: Path, parent: Path) -> str:
@@ -29,9 +31,8 @@ def selected_arms(value: str | None):
 
 def mapping_request(args, root: Path) -> dict:
     recording_paths = {arm: getattr(args, 'mapping_'+arm) for arm in ARMS if getattr(args, 'mapping_'+arm)}
-    data = inputs.read_yaml(root / 'scene.yaml') if (root / 'scene.yaml').exists() else dict(
-        schema_version=2, name=inputs.validate_name(root.name), description='', mode='shared_front', reference_arm='left',
-        mapping={}, devices={}, trajectory_config=None, parameters=None)
+    stored = inputs.read_yaml(root / 'scene.yaml') if (root / 'scene.yaml').exists() else dict(schema_version=2)
+    data = inputs.scene_definition(stored, root.name)
     data['mode'] = args.mode or data['mode']
     if args.mapping:
         if recording_paths:
@@ -66,18 +67,19 @@ def mapping_request(args, root: Path) -> dict:
 
 def save_mapping(args, root: Path, request: dict) -> None:
     data, device_bindings = request['data'], request['device_bindings']
-    batch = inputs.validate_name(args.mapping_session or datetime.now().strftime('%Y%m%d_%H%M%S'))
     recording_refs = {}
     for arm, video in request['recording_paths'].items():
         item = request['metadata'][arm]
         rear = getattr(args, 'rear_'+arm)
         if rear is not None:
             device_bindings[item['serial']]['rear_calibration'] = registry.register_rear(rear)['version']
-        target = recordings.import_video(video, recordings.ROOT / data['name'] / batch / 'mapping', metadata=item)
+        target = recordings.import_video(video, root / 'mapping' / arm, metadata=item, owned_root=root / 'mapping')
         recording_refs[arm] = dict(item, path=relative(target, root))
     if recording_refs:
         data.update(mapping=recording_refs, devices=device_bindings)
-    write_yaml(root / 'scene.yaml', data)
+    compact = inputs.compact_scene(data)
+    if compact != dict(schema_version=2):
+        write_yaml(root / 'scene.yaml', compact)
 
 
 def initialize_scene(args) -> Path:
@@ -97,41 +99,42 @@ def add_mapping_arguments(parser):
     parser.add_argument('--mode', choices=['shared_front', 'dual'], help='shared_front：共享前地图；dual：左右前地图与共享后地图')
     parser.add_argument('--mapping', type=Path, help='shared_front 的单段建图原片，与左右手身份无关')
     parser.add_argument('--reference-arm', choices=ARMS)
-    parser.add_argument('--mapping-session', help='建图原片所属采集批次，默认当前时间')
     for arm in ARMS:
         parser.add_argument('--mapping-'+arm, type=Path, help='dual 对应手建图原片；shared_front 旧接口')
         parser.add_argument('--rear-'+arm, type=Path, help='对应相机的后镜头实测 JSON')
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(prog='umi-scene', description=__doc__)
+    parser = argparse.ArgumentParser(prog='umi-scene', description=__doc__,
+        epilog='日常只需 run <批次>；查看使用 umi-view。init、kit、session、episode、ingest、build 用于高级配置与排障。')
     commands = parser.add_subparsers(dest='command', required=True)
+    commands.add_parser('check', help='检查场景轨迹处理环境')
     init = commands.add_parser('init', help='登记场景，可稍后补充建图录像')
     init.add_argument('directory', type=Path)
     init.add_argument('--description')
     init.add_argument('--trajectory-config', type=Path)
     init.add_argument('--parameters', type=Path, help='覆盖 config/scene_parameters.yaml')
     add_mapping_arguments(init)
-    build = commands.add_parser('build', help='登记建图输入并发布固定地图')
+    build = commands.add_parser('build', help='按批次固定来源建图；也支持独立场景建图实验')
     build.add_argument('scene', type=Path)
     build.add_argument('--keep-work', action='store_true')
     add_mapping_arguments(build)
-    kit = commands.add_parser('kit', help='登记或更新场景下的套件；允许只有左手或右手')
-    kit.add_argument('scene', type=Path)
-    kit.add_argument('name')
+    kit = commands.add_parser('kit', help='登记或更新可复用套件；允许只有左手或右手')
+    kit.add_argument('name', help='全局套件名称')
     kit.add_argument('--description', default='')
     for arm in ARMS:
         kit.add_argument('--'+arm, help='完整相机序列号')
         kit.add_argument('--rear-'+arm, help='已登记的后镜头标定版本')
         kit.add_argument('--width-'+arm, type=Path, help='该相机/夹爪安装对应的宽度标定 JSON')
-    kits = commands.add_parser('kits', help='列出场景下的当前套件配置')
-    kits.add_argument('scene', type=Path)
+    commands.add_parser('kits', help='列出全局套件')
     session = commands.add_parser('session', help='保存本批次设备快照和预期使用手，不要求已有地图')
     session.add_argument('scene', type=Path)
     session.add_argument('--name', required=True)
     session.add_argument('--description')
     session.add_argument('--kit', required=True)
     session.add_argument('--arms', choices=['left', 'right', 'both'], help='默认使用套件全部手')
+    session.add_argument('--mapping', type=Path, help='本轮建图原片；默认采用批次 mapping/ 中唯一原片')
+    session.add_argument('--map-version', help='明确复用某个已发布地图版本，与本轮建图原片互斥')
     episode = commands.add_parser('episode', help='登记/补齐任务原片，或更新已有任务指令')
     episode.add_argument('session', type=Path)
     episode.add_argument('--name', required=True)
@@ -147,11 +150,11 @@ def build_parser():
     ingest_cmd.add_argument('--link', action='store_true', help='优先使用硬链接（hardlink）归档原片，同磁盘分区零复制、零耗时')
     ingest_cmd.add_argument('--dry-run', action='store_true')
     ingest_cmd.add_argument('--json', action='store_true')
-    run = commands.add_parser('run', help='离线处理任务；按任务同步配置输出共同时间轴')
-    run.add_argument('episodes', nargs='+', type=Path)
+    run = commands.add_parser('run', help='读取批次配置和视频，自动登记、建图并抽取轨迹')
+    run.add_argument('episodes', nargs='+', type=Path, metavar='路径', help='场景、批次、任务目录，或 batch.yaml / manifest.yaml / episode.yaml')
     run.add_argument('--jobs', '-j', type=int, default=1)
     run.add_argument('--skip-preflight', action='store_true', help='仅排障时跳过原片检查')
-    run.add_argument('--map-version', help='显式选择已发布地图；默认使用批次固定版本，首次使用当前地图')
+    run.add_argument('--map-version', help='显式选择已发布地图；默认使用批次固定版本或本轮原片建图')
     run.add_argument('--json', action='store_true')
     for command in (build, run):
         command.add_argument('--force', action='store_true')
@@ -174,33 +177,32 @@ def build_parser():
     export.add_argument('paths', nargs='+', type=Path)
     export.add_argument('--out', required=True, type=Path)
     export.add_argument('--with-video', action='store_true')
+    export.add_argument('--format', choices=['trajectory', 'training'], default='trajectory', help='默认轨迹交付包；training 为训练中间包')
+    export.add_argument('--fps', type=float, default=30., help='训练包目标帧率，默认 30')
+    export.add_argument('--max-gap-s', type=float, default=.25, help='训练包最大轨迹插值间隔，默认 0.25 秒')
     inspect = commands.add_parser('inspect', help='核对当前场景地图')
     inspect.add_argument('scene', type=Path)
-    rear = commands.add_parser('calibrate-rear', help='从后镜头 A/B/C/D 求解与验收')
-    rear.add_argument('folder', type=Path)
-    rear.add_argument('--out', type=Path)
-    rear.add_argument('--tag-size-mm', type=float, default=24.)
-    rear.add_argument('--cores', default='')
-    rear.add_argument('--keep-work', action='store_true')
-    rear.add_argument('--config', type=Path)
-    rear.add_argument('--dry-run', action='store_true')
     return parser
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
-        if args.command == 'init':
+        if args.command == 'check':
+            from software.trajectory.pipeline.runtime import check
+            return check()
+        elif args.command == 'init':
             result = dict(scene=str(initialize_scene(args)))
         elif args.command == 'kit':
-            result = capture_config.register_kit(args.scene, args.name, {arm: getattr(args, arm) for arm in ARMS if getattr(args, arm)},
+            result = capture_config.register_kit(args.name, {arm: getattr(args, arm) for arm in ARMS if getattr(args, arm)},
                 rear={arm: getattr(args, 'rear_'+arm) for arm in ARMS if getattr(args, 'rear_'+arm)},
                 width={arm: getattr(args, 'width_'+arm) for arm in ARMS if getattr(args, 'width_'+arm)}, description=args.description)
         elif args.command == 'kits':
-            result = capture_config.list_kits(args.scene)
+            result = capture_config.list_kits()
         elif args.command == 'session':
             path = capture_config.create_session(args.scene, args.name, kit=args.kit,
-                arms=selected_arms(args.arms), description=args.description or '')
+                arms=selected_arms(args.arms), description=args.description or '',
+                mapping={'left': args.mapping} if args.mapping else None, map_version=args.map_version)
             result = dict(session=str(path))
         elif args.command == 'episode':
             recording_paths = {arm: getattr(args, arm) for arm in ARMS if getattr(args, arm)}
@@ -210,9 +212,13 @@ def main(argv=None):
         elif args.command == 'build':
             root = args.scene.expanduser().resolve()
             if root.suffix in ('.yaml', '.yml'):
-                root = root.parent
+                root = layout.owner(root)
             needs_init = not (root / 'scene.yaml').exists()
-            if needs_init or args.mapping or args.mapping_left or args.mapping_right:
+            is_batch = layout.manifest(root, 'manifest.yaml').is_file()
+            if is_batch:
+                if args.mapping or args.mapping_left or args.mapping_right or args.mode or args.reference_arm or args.rear_left or args.rear_right:
+                    raise ValueError('批次建图只读取已登记的 mapping 快照；更换建图录像请新建批次')
+            elif needs_init or args.mapping or args.mapping_left or args.mapping_right:
                 request = mapping_request(args, root)
                 if needs_init:
                     request['data']['description'] = ''
@@ -222,7 +228,7 @@ def main(argv=None):
                     return 0
                 with locked(root):
                     save_mapping(args, root, request)
-            elif args.mode or args.reference_arm or args.rear_left or args.rear_right or args.mapping_session:
+            elif args.mode or args.reference_arm or args.rear_left or args.rear_right:
                 raise ValueError('修改建图模式或设备时需明确提供建图录像')
             result = workflow.build_scene(root, force=args.force, keep_work=args.keep_work, cores=args.cores, dry_run=args.dry_run)
         elif args.command == 'ingest':
@@ -230,10 +236,7 @@ def main(argv=None):
             print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else ingest.format_ingest_summary(result))
             return 1 if result['errors'] or result['pending'] else 0
         elif args.command == 'run':
-            paths = episode_paths(args.episodes)
-            if not paths:
-                raise ValueError('没有找到任务清单')
-            result = workflow.run_episodes(paths, jobs=args.jobs, force=args.force,
+            result = processing.run(args.episodes, jobs=args.jobs, force=args.force,
                 cores=args.cores, dry_run=args.dry_run, check_recordings=not args.skip_preflight, map_version=args.map_version)
             print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else workflow.format_batch_summary(result))
             return int(any(item['status'] not in ('ok', 'skipped', 'planned') for item in result))
@@ -276,16 +279,16 @@ def main(argv=None):
                 result = dict(total=len(targets), accepted=accepted_count, rejected=rejected_count,
                               failed=len(failed), details=details)
         elif args.command == 'export':
-            result = episodes.export(episode_paths(args.paths), args.out, with_video=args.with_video)
+            if args.format == 'training':
+                if args.with_video:
+                    raise ValueError('training 包已包含视频，不需要 --with-video')
+                from software.dataset.export import build
+                result = build(args.paths, args.out, fps=args.fps, max_gap_s=args.max_gap_s)
+            else:
+                result = episodes.export(episode_paths(args.paths), args.out, with_video=args.with_video)
         elif args.command == 'inspect':
             directory, data = workflow.load_published(inputs.read_scene(args.scene))
             result = dict(directory=str(directory), name=data['name'], version=data['version'], frame_id=data['frame_id'], maps=data['maps'])
-        else:
-            from software.scene.spatial.rear_calibration import run
-            result = run(args.folder, output=args.out, tag_size_mm=args.tag_size_mm, cores=args.cores,
-                keep_work=args.keep_work, config_path=args.config, dry_run=args.dry_run)
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-            return 0 if result['status'].startswith('PASS') or result['status'] == 'planned' else 1
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except (OSError, ValueError, KeyError, TypeError, YAMLError, RuntimeError) as error:

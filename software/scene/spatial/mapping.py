@@ -9,7 +9,8 @@ import numpy as np
 
 from software import config
 from . import fusion, slam
-from .geometry import metric_alignment, place_front
+from .geometry import MapAlignmentError, metric_alignment, place_front
+from software.storage import write_json
 from software.camera.geometry import imu_from_camera
 from software.scene.models import PreparedRecording, CalibratedCamera, Scene
 
@@ -25,19 +26,65 @@ def definition(scene: Scene) -> dict:
         devices=scene.devices,
         rear_calibrations={serial: config.file_hash(path) for serial, path in scene.rear_calibrations.items()},
         parameters={key: value for key, value in parameter_values.items() if key.startswith(names) or key == 'huber'},
+        motion_segmentation={key: getattr(fusion_parameters, key) for key in
+            ('step', 'split_rotation_deg', 'refine_chain_pairs', 'minimum_alignment_pairs',
+             'minimum_chain_pairs', 'linear_tolerance', 'linear_iterations')},
         video=asdict(scene.trajectory.values.video), orb=asdict(scene.trajectory.values.orb),
         imu_alignment=dict(gravity=fusion_parameters.gravity_m_s2, initial_static_gyro_rad_s=fusion_parameters.initial_static_gyro_rad_s,
                            initial_bias_min_samples=fusion_parameters.initial_bias_min_samples, initial_bias_max_samples=fusion_parameters.initial_bias_max_samples))
 
 
+def candidate_score(observations, placement, *, total_frames: int | None = None) -> dict:
+    """Rank already accepted maps by consistency and coverage evidence."""
+    def number(value, fallback):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        return value if np.isfinite(value) else fallback
+
+    evidence = placement.get('evidence', {})
+    alignment = evidence.get('alignment', {})
+    fixed = alignment.get('fixed_map_validation', [])
+    measured = [item for item in fixed if item.get('status') in ('verified', 'inconsistent')
+                and isinstance(item.get('rms_m'), (int, float)) and np.isfinite(item['rms_m'])]
+    worst_rms = max((float(item['rms_m']) for item in measured), default=1e6)
+    verified_fraction = (sum(item.get('status') == 'verified' for item in measured) / len(fixed)
+                        if fixed else 0.0)
+    alignment_rms = number(evidence.get('rms_m'), 1e6)
+    scale_std = number(evidence.get('relative_scale_std'), 1e6)
+    condition = number(evidence.get('condition'), 1e12)
+    observed_frames = len(observations.imu_times_s)
+    coverage = min(observed_frames / total_frames, 1.0) if total_frames else 0.0
+    rank = [
+        float(verified_fraction),
+        -worst_rms,
+        -alignment_rms,
+        -scale_std,
+        -condition,
+        float(coverage),
+        float(observed_frames),
+    ]
+    return dict(verified_fraction=float(verified_fraction), worst_fixed_rms_m=worst_rms,
+        alignment_rms_m=alignment_rms, relative_scale_std=scale_std,
+        condition=condition, coverage_fraction=float(coverage),
+        observed_frames=observed_frames, rank=rank)
+
+
 def choose_map(recording: PreparedRecording, lens: str, archive: Path, directory: Path, scene: Scene):
     accepted, rejected = [], []
+    total_frames = len(recording.video_times_s) if getattr(recording, 'video_times_s', None) is not None else None
     for index, obs in slam.atlas_candidates(recording, lens, archive, directory):
         try:
             placement = metric_alignment(obs, np.linalg.inv(imu_from_camera(recording.camera.measurements[lens])),
-                recording.imu, fusion.initial_gyro_bias(recording), scene.trajectory.values.fusion.gravity_m_s2, scene.parameters)
-            accepted.append((len(obs.imu_times_s), index, obs, placement))
+                recording.imu, fusion.initial_gyro_bias(recording), scene.trajectory.values.fusion.gravity_m_s2, scene.parameters,
+                trajectory_parameters=scene.trajectory.values)
+            score = candidate_score(obs, placement, total_frames=total_frames)
+            write_json(directory / f'm{index}/metric_alignment.json', dict(status='ok', selection_score=score, **placement))
+            accepted.append((score['rank'], index, obs, placement))
         except ValueError as error:
+            write_json(directory / f'm{index}/metric_alignment.json', dict(status='failed', reason=str(error),
+                diagnostics=error.diagnostics if isinstance(error, MapAlignmentError) else {}))
             rejected.append(dict(index=index, reason=str(error)))
     if not accepted:
         raise ValueError(f'{lens} 没有通过尺度/重力验收的子地图：{rejected}')

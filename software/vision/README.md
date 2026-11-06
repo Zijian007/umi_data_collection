@@ -13,7 +13,9 @@
 
 `VisualContext` 直接包含已解析参数、核心设置、路径、帧数及 CPU 设置，不携带 `TrajectoryRequest`。独立流程通过 `ReconstructionContext.visual` 提供视觉上下文；场景直接构造 `VisualContext`。
 
-调用方明确选择镜头及其参数文本，`visual_settings()` 只负责生成运行资产，不自动回退样例标定。相机–IMU–TCP 共用几何位于 `software/camera/geometry.py`，遮手图缩放位于 `software/camera/images.py`。
+调用方明确选择镜头及其参数文本，`visual_settings()` 只负责生成运行资产，不自动回退样例标定。相机–IMU–TCP 共用几何位于 `software/camera/geometry.py`，遮手图裁切和缩放位于 `software/camera/images.py`。
+
+视频参数来自父流程已解析的 `TrajectoryParameters.video`，字段说明见[视频处理参数](../../config/README.md#视频处理参数)。`prepare()` 将 `frame_step` 传给时间戳提取；`prepare_lens_videos()` 写出完整参数 YAML，并通过 `--config` 传给子工具，子工具不再接收单独的尺寸、CRF 或 preset 覆盖。裁切范围、内参、遮手图与 SLAM 帧率按同一配置生成，注册表中的原始测量资产保持只读。
 
 `build_maps()` 允许更新地图并保存图集；`localize_map()` 加载固定图集，使用 `localization_only`，不扩建地图。二者共用底层可执行文件，分次调用。
 

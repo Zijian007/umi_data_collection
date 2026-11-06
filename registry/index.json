@@ -3,19 +3,13 @@
   "version": 2,
   "default_gripper": "handheld_v1",
   "devices": {
-    "sample": {
-      "serial": "sample",
-      "status": "sample",
-      "note": "lab X3 camera-IMU, 2026-09-04. umi-traj will not use this unless the recording serial is 'sample' or this serial was adopted.",
-      "calibration": "e3ef0e5b79eb",
-      "gripper": "handheld_v1"
-    },
     "IAQEB26097M4CP": {
-      "serial": "IAQEB26097M4CP",
       "status": "active",
-      "note": "前镜头实测标定；来源 recordings/calibration/IAQEB26097M4CP/20261022/front/umi_calib_out",
-      "calibration": "839fd277d850",
-      "gripper": "handheld_v1"
+      "calibration": "001"
+    },
+    "IAQEB2609JPAR3": {
+      "status": "active",
+      "calibration": "001"
     }
   }
 }

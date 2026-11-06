@@ -1,6 +1,8 @@
 # 独立轨迹代码指南
 
-本模块服务 `umi-traj`：每段录像独立建图、定位并融合 IMU，不提供跨任务共享坐标。日常共享场景和双手采集由 [scene](../scene/README.md) 编排，共用的视觉能力位于 [vision](../vision/README.md)。
+本模块提供内部逐段轨迹引擎：每段录像独立建图、定位并融合 IMU，不提供跨任务共享坐标。日常共享场景和双手采集由 [scene](../scene/README.md) 编排，共用的视觉能力位于 [vision](../vision/README.md)。
+
+各模块通过真实目录直接导入；包初始化不加载求解器、不注入旧模块别名。
 
 ## 执行顺序
 
@@ -72,15 +74,14 @@ algorithms/
 ├── fusion_graph.py      构建、优化因子图 → OptimizedGraph
 ├── fusion_recovery.py   恢复节点之间的全帧率状态 → FusionSolution
 ├── fusion_factors.py    因子与解析 Jacobian，自检 selftest()
-├── postprocess.py       编排 IMU → 相机/TCP、指标、配置与预览输出
-└── kiwi_fuse3s.py       旧脚本路径的薄兼容入口
+└── postprocess.py       编排 IMU → 相机/TCP、指标、配置与预览输出
 ```
 
 求解器可直接导入，不解析命令行、不打开录像、不创建输出。输入和输出显式传递；尺度、跟踪段、偏置、GTSAM 图与优化结果都属于单次调用。文件边界独立，`write_solution()` 保留原轨迹、辅助 CSV 及 JSON 字段。`state.csv` 中历史兼容列仍保留，其零值不代表这些量已被估计。
 
 算法内部使用视频秒。`FusionInputs.imu_video_clock` 已将 IMU 样本换到视频时钟，`FusionSolution.video_times_s` 与 `T_world_imu` 明确时间和位姿语义。`fusion_data` 在文件边界处理 EuRoC 人工 +1 秒，转换集中在 `software/camera/timing.py`；求解核心不处理文件时钟。
 
-两套融合目标不同：独立模式估计跟踪段的尺度与放置，场景模式以已冻结的米制地图位姿为约束。两者分别维护，数值方法与历史验证见 [原理](../../docs/轨迹/原理.md)。
+两套融合目标不同：独立模式估计跟踪段的尺度与放置，场景模式以已冻结的米制地图位姿为约束。两者分别维护，数值方法与历史验证见 [原理](../../docs/算法原理.md)。
 
 自检：
 

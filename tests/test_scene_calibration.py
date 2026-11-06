@@ -14,7 +14,7 @@ import numpy as np
 
 from software.calibration import recording_data
 from software.calibration.models import CalibrationInputs, CameraImuResult, GravityResult, IntrinsicsResult, SegmentPaths
-from software.scene import rear_calibration
+from software.scene.spatial import rear_calibration
 from software.storage import write_json
 from software.vision.models import LensVideo
 import test_scene as scene_fixtures

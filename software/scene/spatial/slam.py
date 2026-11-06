@@ -9,7 +9,7 @@ import numpy as np
 
 from .geometry import VisualObservations, read_visual_observations
 from software.scene.models import PreparedRecording
-from software.trajectory import map_data
+from software.trajectory.reporting import map_data
 from software.vision import slam as visual_slam, runtime
 from software.vision.models import MapAtlas
 

@@ -15,8 +15,8 @@ from pathlib import Path
 
 from software.environment import python_executable
 
-from software.trajectory import map_data
-from software.trajectory.results import result_path
+from software.trajectory.reporting import map_data
+from software.trajectory.reporting.results import result_path
 from software.viewer import cache
 
 _export_lock = threading.Lock()
@@ -85,7 +85,7 @@ def _export(directory: Path) -> dict:
     with tempfile.TemporaryDirectory(prefix='umi-view-map-') as temp:
         target = Path(temp) / 'map.json'
         try:
-            process = subprocess.run([python, '-m', 'software.trajectory.map_data', str(directory), '--output', str(target)],
+            process = subprocess.run([python, '-m', 'software.trajectory.reporting.map_data', str(directory), '--output', str(target)],
                 cwd=map_data.ROOT, capture_output=True, text=True, timeout=240)
         except subprocess.TimeoutExpired as error:
             raise ValueError('地图读取超时；轨迹和视频仍可正常查看') from error
@@ -128,13 +128,13 @@ def load_shared(directory: Path, summary: dict) -> dict:
         raise ValueError('场景地图引用无效')
     # 先按引用的原始位置检查固定布局，再解析软链接，防止跨场景或目录越界。
     path = Path(os.path.abspath(directory / reference['path']))
-    if len(path.parents) < 4:
+    if len(path.parents) < 5:
         raise ValueError('场景地图引用路径无效')
-    scene_root = path.parents[3]
-    expected = scene_root / 'maps/versions' / scene['version'] / 'map.json'
+    scene_root = path.parents[4]
+    expected = scene_root / '.umi/maps/versions' / scene['version'] / 'map.json'
     if (path != expected or not directory.resolve().is_relative_to(scene_root.resolve())
             or not path.resolve().is_relative_to(scene_root.resolve())
-            or not (scene_root / 'scene.yaml').is_file()):
+            or scene_root.name != scene.get('name')):
         raise ValueError('场景地图引用越界或不属于当前场景')
     manifest_path = path.parent / 'manifest.json'
     map_data.require_local(manifest_path, scene_root)

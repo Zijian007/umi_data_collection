@@ -15,6 +15,7 @@ from . import runtime
 from software.vision import runtime as visual_runtime, slam
 from software.trajectory.models import AttemptResult, FusionResult, ReconstructionContext
 from software.vision.models import LensLocalization, LensVideo, RecordingData, ProcessingError
+from software.vision.runtime import write_error_log
 
 
 def run_attempts(videos: tuple[LensVideo, ...], data: RecordingData,
@@ -32,7 +33,7 @@ def run_attempts(videos: tuple[LensVideo, ...], data: RecordingData,
             last_stage = error.stage if isinstance(error, ProcessingError) else '轨迹重建'
             return_code = error.return_code if isinstance(error, ProcessingError) else 1
             reason = str(error)
-            runtime.write_error_log(directory / 'stage_error.log', error)
+            write_error_log(directory / 'stage_error.log', error)
         finally:
             # 每个命令保留独立原始日志；runner_tryN 汇总阶段进度及失败原因。
             log = directory / 'logs/run.txt'

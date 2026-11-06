@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh -- 一次性安装 X3 轨迹工具（umi-traj）的全部依赖。
+# install.sh -- 一次性安装 X3 场景轨迹工具（umi-scene）的全部依赖。
 #
 #   bash install.sh                        # 装到 ./.deps（约 5 GB，首次 15-40 分钟，取决于网速和 CPU）
 #   UMI_DEPS=/some/dir bash install.sh     # 装到别处
@@ -91,7 +91,7 @@ tail -4 "$DEPS/logs/4_build.log" 2>/dev/null || true
 
 step "5/5 写环境文件并自检"
 cat > "$DEPS/env.sh" <<EOF
-# 由 install.sh 生成；umi-traj 会自动 source。
+# 由 install.sh 生成；umi-scene 会自动 source。
 export UMI_DEPS="$DEPS"
 export PATH="$ENV/bin:\$PATH"
 export UMI_PY="\${UMI_PY:-$ENV/bin/python}"
@@ -108,7 +108,7 @@ EOF
   echo "platform $PLAT micromamba $MAMBA_VERSION"
   sha256sum "$O/lib/libORB_SLAM3.so" "$O/Examples/Monocular-Inertial/x3_mono_slam" | sed 's|  .*/|  |'
 } > "$DEPS/BUILD_INFO.txt"
-bash "$ROOT/umi-traj" check || fail "自检没通过（见上面 FAIL 的那一行）"
+bash "$ROOT/umi-scene" check || fail "自检没通过（见上面 FAIL 的那一行）"
 echo
 echo "安装完成。用法："
-echo "  $ROOT/umi-traj <录像.insv 或 放录像的文件夹>"
+echo "  $ROOT/umi-scene run scenes/<场景>/<批次>"

@@ -9,9 +9,11 @@ from unittest.mock import patch
 import av
 import numpy as np
 
-from software.dataset import cli, sampling
+from software.dataset import sampling
+from software.scene import cli
 from software.dataset.export import build, load_episode
-from software.scene import episodes, inputs, workflow
+from software.scene.management import episodes, inputs
+from software.scene import workflow
 from software.storage import write_yaml
 import test_scene as fixtures
 
@@ -50,7 +52,7 @@ class DatasetTests(unittest.TestCase):
     def test_portable_package_uses_video_indices_and_flags_missing_gripper(self):
         before = self.f.episode_path.read_bytes()
         with redirect_stdout(io.StringIO()) as out:
-            code = cli.main(['build', str(self.f.session_path.parent), '--out', str(self.output), '--fps', '20'])
+            code = cli.main(['export', '--format', 'training', str(self.f.session_path.parent), '--out', str(self.output), '--fps', '20'])
         self.assertEqual(code, 0)
         self.assertFalse(json.loads(out.getvalue())['training_ready'])
         manifest = json.loads((self.output / 'manifest.json').read_text())

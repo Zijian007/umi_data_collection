@@ -1,0 +1,16 @@
+{
+  "status": "NOMINAL_CAD_CANDIDATE_UNVERIFIED",
+  "units": "metres",
+  "tcp_frame": {
+    "convention": "asset_defined",
+    "description": "closed-fingertip contact midpoint; x = jaw opening direction, z = body->fingertips, y right-handed (user SW construction; M4 photo confirmation pending)"
+  },
+  "T_camera_tcp": {
+    "R_rows": [
+      [1.0, 0.0, -0.0],
+      [0.0, 0.930417568, -0.366501227],
+      [0.0, 0.366501227, 0.930417568]
+    ],
+    "t_m": [-0.0001815, 0.0369877, 0.1650461]
+  }
+}

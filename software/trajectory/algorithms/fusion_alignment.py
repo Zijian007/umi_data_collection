@@ -7,7 +7,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
 from software import config
-from software.camera.x3.frame import FPS_USED
+from software.camera.x3.frame import output_frame_rate
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 from software.trajectory.algorithms.fusion_data import FusionInputs
@@ -30,7 +30,7 @@ def summarize_alignment(s, chains):
     if s is None:
         return None
     return {"ba": np.round(s["ba"], 4).tolist(), "pos_rms_mm": round(1e3 * s["pos_rms"], 3), "pairs": s["pairs"],
-            "chains": [{"k": list(chains[i]), "scale": round(c["scale"], 5), "rel_std": None if c["rel_std"] is None else round(c["rel_std"], 4),
+            "chains": [{"k": list(chains[i]), "scale": round(c["scale"], 5), "rel_std": None if c["rel_std"] is None or not np.isfinite(c["rel_std"]) else round(c["rel_std"], 4),
                         "g_free": None if c["g_free"] is None else round(c["g_free"], 3), "pairs": c["pairs"], "good": c["good"]}
                        for i, c in enumerate(s["chains"])]}
 
@@ -85,8 +85,9 @@ def preintegrate_samples(imu_video_times_s, gyro, acc, t0, t1, gyro_bias, acc_bi
     return dR, dv, dp, Jv, Jp, t1 - t0
 
 
-def estimate_lens_alignment(lens, video_times_s, imu_video_clock, initial_gyro_bias, fusion_parameters, use_chains=None):
-    """per-chain scale + gravity, shared b_a. Returns dict or None."""
+def estimate_lens_alignment(lens, video_times_s, imu_video_clock, initial_gyro_bias, fusion_parameters,
+                            use_chains=None, *, shared_map=False):
+    """逐段估计，或为同一固定地图共用尺度/重力；速度始终按连续段隔离。"""
     gravity_m_s2 = fusion_parameters.gravity_m_s2
     alignment_step = fusion_parameters.step
     maximum_scale_relative_std = fusion_parameters.maximum_relative_scale_std
@@ -104,7 +105,8 @@ def estimate_lens_alignment(lens, video_times_s, imu_video_clock, initial_gyro_b
         return None
     nc = len(chains)
     # 未知量依次为：每段尺度、每段重力、共享加速度计零偏、各节点速度。
-    scale_offset, gravity_offset, bias_offset, velocity_offset = 0, nc, 4 * nc, 4 * nc + 3
+    groups = 1 if shared_map else nc
+    scale_offset, gravity_offset, bias_offset, velocity_offset = 0, groups, 4 * groups, 4 * groups + 3
     velocity_indices = {}
     for k, c in pairs:
         for kk in (k, k + alignment_step):
@@ -127,16 +129,17 @@ def estimate_lens_alignment(lens, video_times_s, imu_video_clock, initial_gyro_b
         r = 0
         prow = []
         for k, c in pairs:
+            group = 0 if shared_map else c
             (pk, Rk), (pk1, Rk1) = obs[k], obs[k + alignment_step]
             RMI = Rk @ R_CI
             dR, dv, dp, Jv, Jp, dt = pre[k]
-            put(r, scale_offset + c, (pk1 - pk).reshape(3, 1))
+            put(r, scale_offset + group, (pk1 - pk).reshape(3, 1))
             put(r, velocity_offset + 3 * velocity_indices[k], -np.eye(3) * dt)
             b = RMI @ dp - (Rk1 - Rk) @ lever
             if fixed_gravity is None:
-                put(r, gravity_offset + 3 * c, -0.5 * np.eye(3) * dt * dt)
+                put(r, gravity_offset + 3 * group, -0.5 * np.eye(3) * dt * dt)
             else:
-                b = b + 0.5 * fixed_gravity[c] * dt * dt
+                b = b + 0.5 * fixed_gravity[group] * dt * dt
             put(r, bias_offset, -RMI @ Jp)
             rhs.extend(b)
             prow.extend([r, r + 1, r + 2])
@@ -145,9 +148,9 @@ def estimate_lens_alignment(lens, video_times_s, imu_video_clock, initial_gyro_b
             put(r, velocity_offset + 3 * velocity_indices[k], -np.eye(3))
             b = RMI @ dv
             if fixed_gravity is None:
-                put(r, gravity_offset + 3 * c, -np.eye(3) * dt)
+                put(r, gravity_offset + 3 * group, -np.eye(3) * dt)
             else:
-                b = b + fixed_gravity[c] * dt
+                b = b + fixed_gravity[group] * dt
             put(r, bias_offset, -RMI @ Jv)
             rhs.extend(b)
             r += 3
@@ -161,41 +164,79 @@ def estimate_lens_alignment(lens, video_times_s, imu_video_clock, initial_gyro_b
         return sp.csr_matrix((vals, (rows, cols)), shape=(r, unknown_count)), np.array(rhs), np.array(prow)
     A, bb, _ = build(None)
     x = spla.lsqr(A, bb, atol=fusion_parameters.linear_tolerance, btol=fusion_parameters.linear_tolerance, iter_lim=fusion_parameters.linear_iterations)[0]
-    free_gravity = x[gravity_offset:bias_offset].reshape(nc, 3)
+    free_gravity = x[gravity_offset:bias_offset].reshape(groups, 3)
     fixed_gravity = np.array([g / max(np.linalg.norm(g), 1e-9) * gravity_m_s2 for g in free_gravity])
     A, bb, prow = build(fixed_gravity)
     x2 = spla.lsqr(A, bb, atol=fusion_parameters.linear_tolerance, btol=fusion_parameters.linear_tolerance, iter_lim=fusion_parameters.linear_iterations)[0]
     res = A @ x2 - bb
-    dof = max(len(pairs) * 6 - (unknown_count - 3 * nc), 1)
+    dof = max(len(pairs) * 6 - (unknown_count - 3 * groups), 1)
     sig2 = float((res[:len(pairs) * 6] ** 2).sum() / dof)
     AtA = (A.T @ A).tocsc()
     lu = spla.splu(AtA + sp.identity(unknown_count, format="csc") * 1e-12)
     out_ch = []
     for c in range(nc):
-        s = float(x2[scale_offset + c])
+        group = 0 if shared_map else c
+        s = float(x2[scale_offset + group])
         if pairs_per_chain[c] == 0:
             out_ch.append({"scale": s, "rel_std": None, "g_free": None, "pairs": 0, "good": False})
             continue
         e = np.zeros(unknown_count)
-        e[scale_offset + c] = 1.0
-        var = float(lu.solve(e)[scale_offset + c]) * sig2
+        e[scale_offset + group] = 1.0
+        var = float(lu.solve(e)[scale_offset + group]) * sig2
         rel = float(np.sqrt(max(var, 0)) / abs(s)) if s != 0 else np.inf
-        gn = float(np.linalg.norm(free_gravity[c]))
+        gn = float(np.linalg.norm(free_gravity[group]))
         good = bool(s > 0 and pairs_per_chain[c] >= fusion_parameters.minimum_chain_pairs
                     and rel <= maximum_scale_relative_std
                     and abs(gn - gravity_m_s2) <= fusion_parameters.gravity_tolerance_m_s2)
-        out_ch.append({"scale": s, "rel_std": rel, "g_free": gn, "g_map": fixed_gravity[c], "pairs": int(pairs_per_chain[c]), "good": good})
+        out_ch.append({"scale": s, "rel_std": rel, "g_free": gn, "g_map": fixed_gravity[group], "pairs": int(pairs_per_chain[c]), "good": good})
     acc_bias = x2[bias_offset:bias_offset + 3]
     pos_rms = float(np.sqrt((res[prow] ** 2).mean()))
     return {"chains": out_ch, "ba": acc_bias, "pos_rms": pos_rms, "pairs": len(pairs)}
 
 
+def fixed_map_residuals(lens, times, imu, gyro_bias, scale, gravity, acc_bias, step,
+                        *, maximum_rms_m=None):
+    """用固定地图检验全部可检查段；消去各段速度，不重新拟合尺度或零偏。
+
+    相邻区间分别由位置方程推算起点速度，再与前一区间 IMU 预测的终点
+    速度比较。乘后一区间时长后为米制位置方程残差，不是轨迹真值误差。
+    """
+    segments = []
+    for index, (start, end) in enumerate(lens['chains']):
+        previous = None
+        residuals = []
+        for k in range(start, end-step+1, step):
+            p0, R0 = lens['obs'][k]
+            p1, R1 = lens['obs'][k+step]
+            _, dv, dp, Jv, Jp, dt = preintegrate_samples(
+                imu[:, 0], imu[:, 1:4], imu[:, 4:7], times[k], times[k+step], gyro_bias, np.zeros(3))
+            rotation = R0 @ lens['R_CI']
+            displacement = scale*(p1-p0)+(R1-R0) @ lens['lever']
+            start_velocity = (displacement-.5*gravity*dt*dt-rotation @ (dp+Jp @ acc_bias))/dt
+            if previous is not None:
+                residuals.append((start_velocity-previous)*dt)
+            previous = start_velocity+gravity*dt+rotation @ (dv+Jv @ acc_bias)
+        if not residuals:
+            segments.append(dict(index=index, k=[start, end], pairs=0, rms_m=None,
+                status='insufficient_evidence'))
+            continue
+        rms_m = float(np.sqrt(np.mean(np.square(residuals))))
+        if maximum_rms_m is None:
+            status = 'measured'
+        elif not np.isfinite(rms_m) or rms_m > maximum_rms_m:
+            status = 'inconsistent'
+        else:
+            status = 'verified'
+        segments.append(dict(index=index, k=[start, end], pairs=len(residuals),
+            rms_m=rms_m, status=status))
+    return segments
+
+
 def align_recording(inputs: FusionInputs, parameters: config.TrajectoryParameters, *, log=print) -> AlignmentResult:
     """细分不一致观测，估计各连续跟踪段的尺度与重力，选择初始化镜头。"""
     fusion_parameters = parameters.fusion
-    gravity_m_s2, frame_rate_hz = fusion_parameters.gravity_m_s2, FPS_USED
+    frame_rate_hz = float(output_frame_rate(parameters.video.frame_step))
     R_imu_rear_camera = inputs.rear_rotation
-    alignment_step = fusion_parameters.step
     rear_lever_m = inputs.rear_lever
     enabled_lenses = {"rear": parameters.input.mode == "dual", "front": True}
     camera = inputs.camera
@@ -221,6 +262,19 @@ def align_recording(inputs: FusionInputs, parameters: config.TrajectoryParameter
     video_times_s = input_times_s if input_video_times_s is not None else np.arange(frame_count) / frame_rate_hz
     static = np.linalg.norm(gyro, axis=1) < fusion_parameters.initial_static_gyro_rad_s
     initial_gyro_bias = gyro[static][:fusion_parameters.initial_bias_max_samples].mean(0) if static.sum() > fusion_parameters.initial_bias_min_samples else np.zeros(3)
+    estimates, initial_lens, diagnostics = align_lenses(
+        lenses, video_times_s, imu, initial_gyro_bias, fusion_parameters, log=log)
+    return AlignmentResult(lenses, video_times_s, imu_video_times_s, gyro, acc, initial_gyro_bias,
+                           estimates, initial_lens, diagnostics)
+
+
+def align_lenses(lenses, video_times_s, imu, initial_gyro_bias, fusion_parameters, *, log=print):
+    """共用运动段筛选；显式接收同一时钟上的观测和 IMU，不读取文件或设备注册表。
+
+    lenses 的 obs/mapid/chains 会更新为细分后的运动段；不执行地图放置。
+    """
+    imu_video_times_s, gyro = imu[:, 0], imu[:, 1:4]
+    alignment_step = fusion_parameters.step
     split_rotation_deg = fusion_parameters.split_rotation_deg
 
 
@@ -262,11 +316,11 @@ def align_recording(inputs: FusionInputs, parameters: config.TrajectoryParameter
         # lens over the gate. A long chain (>= 2W pairs) that fails jointly is therefore judged ALONE (its own b_a); if it also fails
         # alone it is cut in two at its middle pair and the pieces are judged the same way (pieces down to 3 pairs), recursively.
         for m in lenses:
-            if not (enabled_lenses[m] and lenses[m]["obs"]):
+            if not lenses[m]["obs"]:
                 continue
             pieces, nsplit = set(), 0
             while True:
-                r = estimate_lens_alignment(lenses[m], video_times_s, inputs.imu_video_clock, initial_gyro_bias, fusion_parameters)
+                r = estimate_lens_alignment(lenses[m], video_times_s, imu, initial_gyro_bias, fusion_parameters)
                 if r is None:
                     break
                 new, changed, alone = [], False, set()
@@ -276,7 +330,7 @@ def align_recording(inputs: FusionInputs, parameters: config.TrajectoryParameter
                     if ch["good"] or not eligible:
                         new.append((k0, k1))
                         continue
-                    ra = estimate_lens_alignment(lenses[m], video_times_s, inputs.imu_video_clock, initial_gyro_bias, fusion_parameters, {c})
+                    ra = estimate_lens_alignment(lenses[m], video_times_s, imu, initial_gyro_bias, fusion_parameters, {c})
                     if ra is not None and ra["chains"][c]["good"]:
                         new.append((k0, k1))
                         alone.add((k0, k1))
@@ -300,15 +354,15 @@ def align_recording(inputs: FusionInputs, parameters: config.TrajectoryParameter
 
     alignment_estimates = {}
     for m in lenses:
-        if not (enabled_lenses[m] and lenses[m]["obs"]):
+        if not lenses[m]["obs"]:
             alignment_estimates[m] = None
             continue
-        r0 = estimate_lens_alignment(lenses[m], video_times_s, inputs.imu_video_clock, initial_gyro_bias, fusion_parameters)
+        r0 = estimate_lens_alignment(lenses[m], video_times_s, imu, initial_gyro_bias, fusion_parameters)
         if r0 is not None:  # re-solve on the good chains only so bad chains do not corrupt b_a / scales
             goodc = {i for i, c in enumerate(r0["chains"]) if c["good"]}
             goodc |= {i for i, ch in enumerate(lenses[m]["chains"]) if tuple(ch) in individually_good_chains.get(m, ())}   # 3s: passed alone
             if goodc and len(goodc) < len(r0["chains"]):
-                r1 = estimate_lens_alignment(lenses[m], video_times_s, inputs.imu_video_clock, initial_gyro_bias, fusion_parameters, goodc)
+                r1 = estimate_lens_alignment(lenses[m], video_times_s, imu, initial_gyro_bias, fusion_parameters, goodc)
                 if r1 is not None:
                     for i in range(len(r1["chains"])):
                         if i not in goodc:
@@ -320,9 +374,9 @@ def align_recording(inputs: FusionInputs, parameters: config.TrajectoryParameter
                     r0["chains"][i] = dict(individual_estimates[m][tuple(ch)], good=True)
             r0["sane"] = bool(any(c["good"] for c in r0["chains"]) and np.max(np.abs(r0["ba"])) <= fusion_parameters.maximum_acc_bias_m_s2)
         alignment_estimates[m] = r0
-    cand = [m for m in ("rear", "front") if alignment_estimates[m] is not None and alignment_estimates[m]["sane"]]
+    cand = [m for m in lenses if alignment_estimates[m] is not None and alignment_estimates[m]["sane"]]
     if not cand:
-        cand = [m for m in ("rear", "front") if alignment_estimates[m] is not None and any(c["good"] for c in alignment_estimates[m]["chains"])]
+        cand = [m for m in lenses if alignment_estimates[m] is not None and any(c["good"] for c in alignment_estimates[m]["chains"])]
     if not cand:
         raise ValueError("NO_USABLE_LENS")
     initial_lens = min(cand, key=lambda m: alignment_estimates[m]["pos_rms"])
@@ -331,5 +385,4 @@ def align_recording(inputs: FusionInputs, parameters: config.TrajectoryParameter
     log("init_lens", initial_lens, flush=True)
 
 
-    return AlignmentResult(lenses, video_times_s, imu_video_times_s, gyro, acc, initial_gyro_bias, alignment_estimates, initial_lens,
-        dict(chain_splits=split_counts, refined=refinements))
+    return alignment_estimates, initial_lens, dict(chain_splits=split_counts, refined=refinements)

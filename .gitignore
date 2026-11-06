@@ -6,7 +6,8 @@ __pycache__/
 *.insv
 *.lrv
 umi_traj_out/
-datasets/
+datasets/*
+!datasets/README.md
 scenes/**/maps/
 scenes/**/runs/
 scenes/**/results
@@ -15,3 +16,4 @@ scenes/**/results
 scenes/**/archive/
 scenes/**/cache/
 scenes/**/imports/
+scenes/**/.umi/

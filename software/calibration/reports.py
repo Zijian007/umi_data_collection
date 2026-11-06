@@ -17,14 +17,14 @@ from software.calibration.models import (
     VerificationInputs, VerificationRequest,
 )
 from software.calibration import runtime
-from software.trajectory import calibration_assets as trajectory_calibration
+from software.trajectory.calibration import assets as trajectory_calibration
 
 
 def write_text_report(output: Path, report: dict) -> None:
     activation = report.get("activation", {})
     lines = ["umi-calib 标定报告", "=" * 18,
          f"设备：{report.get('serial', '未知')}",
-         f"标定：{report.get('bundle', {}).get('id', '尚未生成')}",
+         f"标定：{activation.get('version', '未启用' if report.get('bundle') else '尚未生成')}",
          f"结论：{report.get('verdict')}",
          f"启用状态（报告生成时）：{activation.get('message', '未核对')}",
          f"档案核对时间：{activation.get('checked_at', '未知')}"]
@@ -57,7 +57,7 @@ def write_text_report(output: Path, report: dict) -> None:
     lines += ["其余检查项（OK / INFO）", "  结果  项目：数值（要求）"]
     for check in sorted((check for check in report["checks"] if check["result"] not in ("WARN", "FAIL")), key=check_priority):
         lines.append(f"  {check['result']:<5} {check['check']}：{check['value']}（{check['limit']}）")
-    lines += ["", "OK = 正常；WARN = 能用但建议看一下（常见原因见 docs/标定/说明.md 的“结果不好怎么办”）；FAIL = 这份标定不要用。",
+    lines += ["", "OK = 正常；WARN = 能用但建议看一下（常见原因见 docs/标定.md 的“结果不好怎么办”）；FAIL = 这份标定不要用。",
           "标定包：bundle/；详细指标：diagnostics/report.json；日志及中间结果：diagnostics/。"]
     (output / "report.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -83,8 +83,9 @@ def activation_status(report: dict) -> dict:
     except (registry.RegistryError, OSError, ValueError) as error:
         return dict(result, state="unavailable", message=f"无法确认：{error}")
     if device["id"] == bundle_id:
-        return dict(result, state="active", message="已设为该设备默认标定（UMI_TRAJ_CALIB 可临时覆盖）")
-    return dict(result, state="inactive", message=f"本次结果未启用，设备默认标定仍为 {device['id']}")
+        return dict(result, state="active", version=device.get('calibration_version', device['id']),
+                    message="已设为该设备默认标定（UMI_TRAJ_CALIB 可临时覆盖）")
+    return dict(result, state="inactive", message=f"本次结果未启用，设备默认标定仍为 {device.get('calibration_version', device['id'])}")
 
 
 def check_priority(check: dict) -> tuple:
@@ -257,7 +258,7 @@ class VerificationReport:
             'kind': 'umi_calib_verify_report', 'video': inputs.video.name, 'serial': inputs.camera_serial,
             'tag_size_mm': request.tag_size_mm,
             'execution': dict(cores=request.cores, keep_work=request.keep_work, force=request.force),
-            'calibration': {'source': selected['source'], 'id': selected['id'],
+            'calibration': {'source': selected['source'], 'id': selected.get('calibration_version', selected['id']),
                             'dir': selected['dir'], 'name': inputs.calibration_name},
         }
 
@@ -292,8 +293,7 @@ def show_conclusion(output: Path, report: dict) -> None:
 
 def verification_advice(conclusion: str, in_registry: bool, camera_serial: str) -> str:
     if conclusion == 'PASS':
-        return ('本次 C 段验证通过。新相机建议录制 A/B/C/D 完成独立标定，验收通过后手动启用。'
-                + (f' 如需沿用样例：./umi-calib adopt-sample --serial {camera_serial}' if not in_registry else ''))
+        return '本次 C 段验证通过。设备档案保持不变；新相机应录制 A/B/C/D 完成独立标定。'
     if conclusion == 'FAIL':
         return '本次 C 段验证未通过。请查看报告中的 FAIL 项和失败原因；核对录像后，重新验证或录制 A/B/C/D 标定。'
     return '本次 C 段验证通过，存在提醒。请查看报告中的 WARN 项；覆盖不足可补录 C 段，误差或尺度异常需复查标定。'

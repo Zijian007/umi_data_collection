@@ -3,17 +3,17 @@
 #
 #   bash software/calibration/setup/install.sh
 #
-# 先要装好 umi-traj（仓库根目录 bash install.sh）。不需要 sudo，全部放进同一个 <deps> 目录，重跑安全。
+# 先要装好 场景轨迹环境（仓库根目录 bash install.sh）。不需要 sudo，全部放进同一个 <deps> 目录，重跑安全。
 #   1) 解压仓库自带的 Basalt 标定程序：官方 0.1.7 + 本仓库的补丁（固定 IMU 尺度、第二阶段只优化相机时间差），
 #      预编译 x86_64，自带动态加载器和全部运行库，不依赖系统 glibc 版本（来源见 basalt/PROVENANCE.md）。
-#   2) 建 <deps>/calib_env：叠在 umi-traj 的 Python 环境上的 venv，另装 OpenCV（contrib）和 rosbags。
+#   2) 建 <deps>/calib_env：叠在 场景轨迹环境 的 Python 环境上的 venv，另装 OpenCV（contrib）和 rosbags。
 #      需要能访问 pypi.org（或自行设置 PIP_INDEX_URL 镜像）。
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$HERE/../../.." && pwd)
 DEPS=${UMI_DEPS:-$ROOT/.deps}
 fail() { echo "ERROR: $*" >&2; exit 1; }
-[ -f "$DEPS/env.sh" ] || fail "还没装 umi-traj：先运行  bash $ROOT/install.sh"
+[ -f "$DEPS/env.sh" ] || fail "还没装 场景轨迹环境：先运行  bash $ROOT/install.sh"
 # shellcheck disable=SC1091
 source "$DEPS/env.sh"
 # 新变量优先；现有安装生成的旧环境文件无需重装。

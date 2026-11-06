@@ -11,6 +11,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from software import config
+from software.camera.x3.frame import geometry_record
+from dataclasses import asdict
 from software.camera.geometry import (
     imu_from_camera, camera_from_tcp, tcp_frame_definition, validate_transform,
     describe_tcp_frame, resample_pose_series,
@@ -28,6 +30,7 @@ def write_arm(arm: str, recording: PreparedRecording, result: fusion.FusionResul
     details = directory / 'details'
     details.mkdir()
     camera = recording.camera
+    video_parameters = recording.context.parameters.video
     measured = camera.measurements['front']
     geometry = json.loads(camera.files['tcp'].read_text())
     tcp_frame = tcp_frame_definition(geometry)
@@ -46,7 +49,8 @@ def write_arm(arm: str, recording: PreparedRecording, result: fusion.FusionResul
     with (details / 'frames.csv').open('w') as stream:
         stream.write('row,video_frame,source_video_frame,t_video_s,t_scene_s,constraint,front_lens_tracked\n')
         for k, time in enumerate(times):
-            stream.write(f'{k},{k},{2*k},{recording.video_times_s[k]:.9f},{time:.9f},{"full" if result.tracked[k] else "imu"},{int(result.front_tracked[k])}\n')
+            source_frame = video_parameters.frame_step * k
+            stream.write(f'{k},{k},{source_frame},{recording.video_times_s[k]:.9f},{time:.9f},{"full" if result.tracked[k] else "imu"},{int(result.front_tracked[k])}\n')
     front = recording.lens_video('front').path
     try:
         os.link(front, directory / 'front.mp4')
@@ -62,7 +66,10 @@ def write_arm(arm: str, recording: PreparedRecording, result: fusion.FusionResul
     write_json(details / 'summary.json', summary)
     write_json(details / 'run_settings.json', dict(scene=scene_record, camera=inputs.camera_identity(camera),
         measurements=camera.measurements, video_time_offset_s=offset_s, cad_status=geometry.get('status'),
-        tcp_frame=tcp_frame, T_camera_tcp=geometry['T_camera_tcp']))
+        tcp_frame=tcp_frame, T_camera_tcp=geometry['T_camera_tcp'],
+        video_parameters=asdict(video_parameters),
+        frame_geometry=geometry_record(video_parameters.size_px,
+            mode='dual' if 'rear' in camera.measurements else 'shared_front', video=video_parameters)))
     text = [f'{arm} 场景轨迹', f'场景坐标：{scene_record["frame_id"]}', f'相机：{camera.serial}',
             'TCP 自身坐标：' + describe_tcp_frame(tcp_frame),
             f'视频时间偏移：{offset_s:+.9f} s（t_episode = t_video + offset）',
@@ -101,7 +108,7 @@ def write_episode(episode: Episode, tracks: dict[str, ArmTrajectory], directory:
                   common_interval_s: list[float], scene_record: dict, input_identity: dict,
                   video_offsets_s: dict[str, float], elapsed_s: float, gripper_width: dict | None = None) -> None:
     """写任务报告与资产清单；不更新 results 指针或人工验收状态。"""
-    (directory / 'report.txt').write_text(f'场景任务：{episode.path.parent.name}\n采集批次：{episode.session.name}\n坐标：{scene_record["frame_id"]}\n'
+    (directory / 'report.txt').write_text(f'场景任务：{episode.root.name}\n采集批次：{episode.session.name}\n坐标：{scene_record["frame_id"]}\n'
         f'操作指令：{episode.instruction or "未填写"}\n'
         f'手：{", ".join(tracks)}\n共同有效时间：{common_interval_s[0]:.6f}–{common_interval_s[1]:.6f} s\n'
         f'同步：{episode.synchronization["method"]}；offsets_s={video_offsets_s}\n'
@@ -114,7 +121,7 @@ def write_episode(episode: Episode, tracks: dict[str, ArmTrajectory], directory:
         if (directory / name).is_file():
             assets[name] = config.file_hash(directory / name)
     primary_times = tracks.get('left', next(iter(tracks.values()))).episode_times_s
-    metadata = dict(kind='umi_scene_episode', schema_version=2, status='ok', name=episode.path.parent.name, session=episode.session.name, kit=episode.session.kit, scene=scene_record,
+    metadata = dict(kind='umi_scene_episode', schema_version=2, status='ok', name=episode.root.name, session=episode.session.name, kit=episode.session.kit, scene=scene_record,
         frame_id=scene_record['frame_id'], arms={arm: arm for arm in tracks}, common_interval_s=common_interval_s,
         rows=int(np.count_nonzero((primary_times >= common_interval_s[0]) & (primary_times <= common_interval_s[1]))),
         instruction=episode.instruction, synchronization=episode.synchronization,

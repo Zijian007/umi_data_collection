@@ -1,6 +1,6 @@
 """Global device registry: immutable calibration and gripper versions; defaults only guide new sessions.
 
-``umi-traj`` looks up the serial in the recording's INSV trailer. Missing serial, missing record,
+The trajectory engine looks up the serial in the recording's INSV trailer. Missing serial, missing record,
 retired device, or hash mismatch is a refusal -- never a silent fall-back to the lab sample.
 ``UMI_TRAJ_CALIB`` remains an engineer override (used by ``umi-calib`` while it is solving a new
 bundle). ``calibration_user/`` is no longer consulted.
@@ -20,7 +20,6 @@ from pathlib import Path
 from software.storage import locked, write_json
 
 from software.trajectory.calibration import assets as traj_calib
-tcal = traj_calib  # 兼容测试 patch 与历史引用
 
 REPO = Path(__file__).resolve().parents[1]
 ROOT = REPO / "registry"
@@ -28,7 +27,6 @@ INDEX = ROOT / "index.json"
 CAMERAS = ROOT / "cameras"
 GRIPPERS = ROOT / "grippers"
 SAMPLE_SERIAL = "sample"
-DEFAULT_GRIPPER = "handheld_v1"
 STATUSES = ("sample", "active", "retired")
 
 
@@ -52,16 +50,33 @@ def validate_id(value: str) -> str:
 
 
 def load_index() -> dict:
+    """索引只保存选择；目录身份和默认夹爪在读取时展开。"""
     if not INDEX.is_file():
         raise RegistryError(f"设备档案索引不存在：{INDEX}")
     idx = json.loads(INDEX.read_text(encoding="utf-8"))
     if idx.get("kind") != "umi_device_registry" or idx.get("version") != 2:
         raise RegistryError(f"设备档案需要 version: 2：{INDEX}")
+    default_gripper = validate_id(idx['default_gripper'])
+    for serial, record in idx['devices'].items():
+        validate_id(serial)
+        if record.get('serial', serial) != serial:
+            raise RegistryError(f'设备键名与序列号不一致：{serial}')
+        record['serial'] = serial
+        record.setdefault('gripper', default_gripper)
+        validate_id(record['gripper'])
     return idx
 
 
 def save_index(idx: dict) -> None:
-    write_json(INDEX, idx)
+    """不落盘重复的序列号、默认夹爪或已有标定档案中的来源备注。"""
+    devices = {}
+    for serial, record in idx['devices'].items():
+        if record.get('serial', serial) != serial:
+            raise RegistryError(f'设备键名与序列号不一致：{serial}')
+        devices[serial] = {key: value for key, value in record.items()
+                           if key not in ('serial', 'note')
+                           and not (key == 'gripper' and value == idx['default_gripper'])}
+    write_json(INDEX, dict(idx, devices=devices))
 
 
 def version_assets(directory: Path) -> dict:
@@ -110,7 +125,7 @@ def gripper_paths(gripper_id: str, version: str | None = None) -> dict:
     parent = GRIPPERS / validate_id(gripper_id)
     if version is None:
         version = json.loads((parent / 'current.json').read_text())['version']
-    directory = parent / 'versions' / validate_id(version)
+    directory = parent / validate_id(version)
     manifest = version_assets(directory)
     if manifest.get('kind') != 'umi_gripper' or manifest.get('gripper') != gripper_id:
         raise RegistryError(f'夹爪版本身份不一致：{directory}')
@@ -120,17 +135,39 @@ def gripper_paths(gripper_id: str, version: str | None = None) -> dict:
 
 
 def register_gripper(gripper_id: str, source: Path) -> dict:
+    gripper_id = validate_id(gripper_id)
     files = {name: source / name for name in ('t_tcp_camera.json', 'front_hand_mask.png')}
-    digest = hashlib.sha256(''.join(sha256_file(files[name]) for name in sorted(files)).encode()).hexdigest()[:12]
+    parent = GRIPPERS / gripper_id
     with locked(ROOT, '.registry.lock'):
-        store_version(GRIPPERS / validate_id(gripper_id) / 'versions', digest, files,
-                      kind='umi_gripper', gripper=gripper_id)
-        write_json(GRIPPERS / gripper_id / 'current.json', dict(version=digest))
-    return gripper_paths(gripper_id, digest)
+        identity = dict(kind='umi_gripper', gripper=gripper_id)
+        version = measurement_version(parent, files, identity=identity)
+        store_version(parent, version, files, **identity)
+        write_json(parent / 'current.json', dict(version=version))
+    return gripper_paths(gripper_id, version)
 
 
 def bundle_sha256(bundle_dir: Path) -> str:
     return sha256_file(Path(bundle_dir) / "calibration_r1440.json")
+
+
+def measurement_version(parent: Path, files: dict[str, Path], *, identity: dict, asset_prefix='') -> str:
+    """在档案写锁内调用：相同资产沿用编号，新资产递增为 001–999。"""
+    wanted = {name: sha256_file(path) for name, path in files.items() if name.startswith(asset_prefix)}
+    numbers = []
+    for directory in sorted(parent.iterdir()) if parent.exists() else []:
+        if not re.fullmatch(r'[0-9]{3}', directory.name):
+            continue
+        numbers.append(int(directory.name))
+        manifest = version_assets(directory)
+        if any(manifest.get(key) != value for key, value in identity.items()):
+            raise RegistryError(f'测量版本身份不一致：{directory}')
+        stored = {name: digest for name, digest in manifest['assets'].items() if name.startswith(asset_prefix)}
+        if stored == wanted:
+            return directory.name
+    number = max(numbers, default=0) + 1
+    if number > 999:
+        raise RegistryError('三位测量版本编号已用完（999）；拒绝覆盖已有版本')
+    return f'{number:03d}'
 
 
 def read_insv_identity(path: Path) -> dict:
@@ -159,7 +196,7 @@ def _record_view(serial: str, device_record: dict, *, calibration: str | None = 
     if device_record.get('status') not in STATUSES:
         raise RegistryError(f'相机 {serial} 的档案状态无效')
     version = validate_id(calibration or device_record['calibration'])
-    # adopt-sample 明确记录测量来源；场景模式仍拒绝样例替代。
+    # 设备测量来源必须明确；场景模式拒绝跨设备借用标定。
     owner = device_record.get('calibration_owner', serial)
     directory = CAMERAS / validate_id(owner) / 'calibrations' / version
     manifest = version_assets(directory)
@@ -167,16 +204,12 @@ def _record_view(serial: str, device_record: dict, *, calibration: str | None = 
         raise RegistryError(f'相机标定版本身份不一致：{directory}')
     bundle = directory / 'bundle'
     calibration_info = traj_calib.describe(bundle, 'registry')
-    gripper_info = gripper_paths(gripper or device_record['gripper'], gripper_version)
     calibration_info.update(
-        source='registry', serial=serial, status=device_record['status'], note=device_record.get('note'),
+        source='registry', serial=serial, status=device_record['status'], note=manifest.get('note'),
         calibration_version=version, calibration_owner=owner,
-        gripper=gripper_info['id'], gripper_version=gripper_info['version'],
-        tcp_json=gripper_info['tcp_json'], mask=gripper_info['mask'],
-        bundle_sha256=bundle_sha256(bundle), tcp_sha256=gripper_info['tcp_sha256'],
-        mask_sha256=gripper_info['mask_sha256'], gripper_dir=gripper_info['dir'],
+        bundle_sha256=bundle_sha256(bundle),
     )
-    return calibration_info
+    return attach_gripper(calibration_info, gripper or device_record['gripper'], version=gripper_version)
 
 
 def get(serial: str, *, calibration: str | None = None, gripper: str | None = None,
@@ -247,13 +280,9 @@ def width_path(serial: str, version: str, *, gripper: str, gripper_version: str)
     return directory / 'width_calibration.json'
 
 
-def sample() -> dict:
-    return get(SAMPLE_SERIAL)
-
-
-def attach_gripper(cal: dict, gripper_id: str | None = None) -> dict:
-    """Add TCP / mask paths to a bundle-only calibration (UMI_TRAJ_CALIB override)."""
-    grip = gripper_paths(gripper_id or load_index().get("default_gripper") or DEFAULT_GRIPPER)
+def attach_gripper(cal: dict, gripper_id: str | None = None, *, version: str | None = None) -> dict:
+    """为设备标定或工程覆盖绑定同一套夹爪版本、几何与遮罩字段。"""
+    grip = gripper_paths(gripper_id or load_index()['default_gripper'], version)
     out = dict(cal)
     out.setdefault("serial", None)
     out.setdefault("status", "override")
@@ -270,7 +299,7 @@ def resolve_insv(path: Path, device: str | None = None, gripper: str | None = No
     """
     env = (os.environ.get("UMI_TRAJ_CALIB") or "").strip()
     if env:
-        cal = tcal.active()
+        cal = traj_calib.active()
         try:
             ident = read_insv_identity(path)
         except RegistryError:
@@ -293,9 +322,9 @@ def list_devices() -> list[dict]:
     for serial, rec in sorted((idx.get("devices") or {}).items()):
         try:
             view = get(serial)
-            rows.append({"serial": serial, "status": rec.get("status"), "calib_id": view["id"],
+            rows.append({"serial": serial, "status": rec.get("status"), "calib_id": view["calibration_version"],
                          "bundle": rec.get("calibration"), "gripper": rec.get("gripper"),
-                         "note": rec.get("note"), "ok": True})
+                         "note": view.get("note"), "ok": True})
         except RegistryError as e:
             rows.append({"serial": serial, "status": rec.get("status"), "ok": False, "error": str(e),
                          "bundle": rec.get("calibration"), "gripper": rec.get("gripper"),
@@ -308,31 +337,18 @@ def register(serial: str, bundle_dir: Path, *, gripper: str | None = None, statu
     serial = validate_id(serial.strip())
     if serial == SAMPLE_SERIAL or status not in ('active', 'retired'):
         raise RegistryError('不能覆盖样例设备，状态应为 active 或 retired')
-    tcal.describe(bundle_dir, 'registry')
-    version = bundle_sha256(bundle_dir)[:12]
+    traj_calib.describe(bundle_dir, 'registry')
     grip = gripper_paths(gripper or load_index()['default_gripper'])
     files = {'bundle/'+path.name: path for path in bundle_dir.iterdir() if path.is_file()}
     with locked(ROOT, '.registry.lock'):
-        store_version(CAMERAS / serial / 'calibrations', version, files,
+        parent = CAMERAS / serial / 'calibrations'
+        version = measurement_version(parent, files,
+            identity=dict(kind='umi_camera_calibration', serial=serial), asset_prefix='bundle/')
+        store_version(parent, version, files,
                       kind='umi_camera_calibration', serial=serial, note=note)
         idx = load_index()
         idx['devices'][serial] = dict(serial=serial, status=status, note=note, calibration=version,
                                      gripper=grip['id'])
-        save_index(idx)
-    return get(serial)
-
-
-def adopt_sample(serial: str, *, gripper: str | None = None, note: str | None = None) -> dict:
-    serial = validate_id(serial.strip())
-    if serial == SAMPLE_SERIAL:
-        raise RegistryError('不能覆盖样例相机')
-    sample_record = sample()
-    grip = gripper_paths(gripper or sample_record['gripper'])
-    with locked(ROOT, '.registry.lock'):
-        idx = load_index()
-        idx['devices'][serial] = dict(serial=serial, status='active', note=note or 'adopted sample after verify PASS',
-            calibration=sample_record['calibration_version'], calibration_owner=SAMPLE_SERIAL,
-            gripper=grip['id'])
         save_index(idx)
     return get(serial)
 

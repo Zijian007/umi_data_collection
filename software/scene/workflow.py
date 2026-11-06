@@ -4,11 +4,14 @@
 """
 from __future__ import annotations
 
+from software.scene import layout
+
 import concurrent.futures as cf
 import json
 import os
 import shutil
 import time
+import traceback
 import uuid
 from contextlib import nullcontext
 from dataclasses import asdict, replace
@@ -42,12 +45,13 @@ from software.console import Console
 from software.scene.management import episodes, inputs
 from software.scene.spatial import fusion, mapping, slam
 from software.scene.spatial.geometry import VisualObservations
-from software.scene.pipeline import recording_checks, recordings, results
+from software.scene.pipeline import diagnostics, recording_checks, recordings, results
 from software.camera.timing import video_to_imu_seconds
 from software.camera.geometry import imu_from_camera
 from software.gripper_width import pipeline as width_pipeline
 from software.scene.models import CalibratedCamera, Episode, PreparedRecording, Scene
-from software.storage import locked, publish_link, write_json, write_yaml
+from software.scene.layout import locked
+from software.storage import publish_link, write_json, write_yaml
 from software.vision import runtime
 from software.vision.models import ProcessingError
 
@@ -66,14 +70,14 @@ def cleanup_work(path: Path, keep: bool) -> None:
 def load_published(scene: Scene, *, version: str | None = None, manifest_sha256: str | None = None, check_definition: bool = False) -> tuple[Path, dict]:
     uses_fixed_version = version is not None
     if not uses_fixed_version:
-        if not (scene.root / 'maps/current.json').is_file():
+        if not (layout.maps(scene.root) / 'current.json').is_file():
             raise ValueError('场景尚未发布地图，请先运行 umi-scene build <scene.yaml>')
-        pointer = json.loads((scene.root / 'maps/current.json').read_text())
+        pointer = json.loads((layout.maps(scene.root) / 'current.json').read_text())
         version, manifest_sha256 = pointer['version'], pointer['manifest_sha256']
     if not isinstance(version, str) or not version or any(c not in '0123456789abcdef-_' for c in version):
         raise ValueError('场景版本指针无效')
-    map_dir = (scene.root / 'maps/versions' / version).resolve()
-    if not map_dir.is_relative_to((scene.root / 'maps/versions').resolve()):
+    map_dir = (layout.maps(scene.root) / 'versions' / version).resolve()
+    if not map_dir.is_relative_to((layout.maps(scene.root) / 'versions').resolve()):
         raise ValueError('场景版本指针越界')
     manifest_path = map_dir / 'manifest.json'
     if manifest_sha256 is not None and config.file_hash(manifest_path) != manifest_sha256:
@@ -91,29 +95,68 @@ def load_published(scene: Scene, *, version: str | None = None, manifest_sha256:
 
 
 def build_scene(path: Path, *, force=False, keep_work=False, cores='', dry_run=False) -> BuildSceneResult:
-    scene = inputs.read_scene(path, verify_mapping=True)
+    path = path.expanduser().resolve()
+    session_path = layout.manifest(path, 'manifest.yaml') if path.is_dir() else path
+    if session_path.name == 'manifest.yaml' and session_path.is_file():
+        with nullcontext() if dry_run else locked(layout.owner(session_path), blocking=True):
+            session = inputs.read_session(session_path, verify_mapping=True)
+            configuration = inputs.configuration_identity(session.root)
+            if session.map_version and not force:
+                try:
+                    _, manifest = load_published(session.scene, version=session.map_version,
+                        manifest_sha256=session.map_manifest_sha256)
+                except (OSError, ValueError, KeyError):
+                    if not session.mapping:
+                        raise
+                else:
+                    if (not session.mapping or configuration is None or manifest['inputs'] == mapping_inputs(session.scene,
+                            inputs.select_cameras(session.scene.recordings, session.scene, session.scene.recording_serials))):
+                        return dict(status='skipped', version=manifest['version'], frame_id=manifest['frame_id'])
+            if not session.mapping:
+                raise ValueError('本批次未登记建图原片；请准备批次 mapping/ 后登记，或显式选择已有地图版本')
+            before = config.file_hash(session.path)
+            result = _build_scene(session.scene, force=force, keep_work=keep_work, cores=cores, dry_run=dry_run)
+            if not dry_run:
+                if config.file_hash(session.path) != before:
+                    raise ValueError('建图期间批次清单发生变化，未绑定地图，请重新核对')
+                if configuration != inputs.configuration_identity(session.root):
+                    raise ValueError('建图期间 batch.yaml 或 kit.yaml 发生变化，请重新运行')
+                manifest_path = layout.maps(session.scene.root) / 'versions' / result['version'] / 'manifest.json'
+                data = inputs.read_yaml(session.path)
+                data['map'] = dict(version=result['version'], manifest_sha256=config.file_hash(manifest_path))
+                write_yaml(session.path, data)
+            return result
+    return _build_scene(inputs.read_scene(path, verify_mapping=True), force=force,
+                        keep_work=keep_work, cores=cores, dry_run=dry_run)
+
+
+def mapping_inputs(scene: Scene, cameras: dict) -> dict:
+    """建图复用的完整输入身份；批次记录中的 map 不是跳过此检查的依据。"""
+    return dict(
+        definition=mapping.definition(scene),
+        recordings={arm: inputs.recording_identity(video) for arm, video in scene.recordings.items()},
+        cameras={arm: inputs.camera_identity(camera) for arm, camera in cameras.items()},
+        code=config.code_identity('scene'), trajectory_code=config.code_identity('trajectory'),
+        engines=config.engine_identity('trajectory'),
+    )
+
+
+def _build_scene(scene: Scene, *, force=False, keep_work=False, cores='', dry_run=False) -> BuildSceneResult:
     if not scene.recordings:
         raise ValueError('尚未登记建图录像，请用 build --mapping 指定原片；dual 使用 --mapping-left/--mapping-right')
     cameras = inputs.select_cameras(scene.recordings, scene, scene.recording_serials)
     runtime.validate_engines(dict(os.environ))
 
     # 计算全局输入指纹（录像 + 标定 + 代码 + 算法引擎），用于幂等复用与安全防篡改
-    input_identity = dict(
-        definition=mapping.definition(scene),
-        recordings={arm: inputs.recording_identity(video) for arm, video in scene.recordings.items()},
-        cameras={arm: inputs.camera_identity(camera) for arm, camera in cameras.items()},
-        code=config.code_identity('scene'),
-        trajectory_code=config.code_identity('trajectory'),
-        engines=config.engine_identity('trajectory'),
-    )
+    input_identity = mapping_inputs(scene, cameras)
     if dry_run:
         return dict(status='planned', scene=scene.name, inputs=input_identity)
 
-    with locked(scene.root / 'maps'):
+    with locked(scene.root):
         # 1. 检查是否可秒级复用已有地图版本
-        if not force and (scene.root / 'maps/current.json').is_file():
+        if not force and (layout.maps(scene.root) / 'current.json').is_file():
             try:
-                _, current = load_published(scene, check_definition=True)
+                _, current = load_published(scene)
                 if current['inputs'] == input_identity:
                     return dict(status='skipped', version=current['version'], frame_id=current['frame_id'])
             except (OSError, ValueError, KeyError) as error:
@@ -122,7 +165,7 @@ def build_scene(path: Path, *, force=False, keep_work=False, cores='', dry_run=F
         # 2. 创建本次建图版本目录（时间戳便于浏览，随机后缀防止并发冲突）
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         version = f'{timestamp}-{uuid.uuid4().hex[:8]}'
-        map_dir = scene.root / 'maps/versions' / version
+        map_dir = layout.maps(scene.root) / 'versions' / version
         map_dir.mkdir(parents=True)
         work_dir = map_dir / 'work'
         started = time.monotonic()
@@ -188,10 +231,10 @@ def build_scene(path: Path, *, force=False, keep_work=False, cores='', dry_run=F
                 f'地图：{", ".join(frozen)}\n单位：米；Z 朝上。\n实际误差：未测量；对齐验收仅检查内部一致性。\n',
                 encoding='utf-8',
             )
-            write_json(scene.root / 'maps/current.json', dict(version=version, manifest_sha256=config.file_hash(map_dir / 'manifest.json')))
+            write_json(layout.maps(scene.root) / 'current.json', dict(version=version, manifest_sha256=config.file_hash(map_dir / 'manifest.json')))
         except Exception as error:
-            write_json(map_dir / 'failure.json', dict(status='failed', reason=str(error)))
-            runtime.write_error_log(map_dir / 'error.log', error)
+            write_json(map_dir / 'error.json', dict(status='failed', reason=str(error),
+                traceback=''.join(traceback.format_exception(error)), inputs=input_identity))
             raise
 
         cleanup_work(work_dir, keep_work)
@@ -199,10 +242,19 @@ def build_scene(path: Path, *, force=False, keep_work=False, cores='', dry_run=F
 
 
 def bind_map(episode, requested: str | None, dry_run: bool):
-    """采集不依赖地图；首次处理才固定版本，之后使用该版本。"""
-    with nullcontext() if dry_run else locked(episode.session.path.parent, blocking=True):
+    """使用批次固定版本；待建批次从自身原片建图，不猜场景最新地图。"""
+    use_current_inputs = (episode.session.root / 'batch.yaml').is_file()
+    if not requested and episode.session.mapping and (use_current_inputs or not episode.session.map_version):
+        if dry_run:
+            if build_scene(episode.session.path, dry_run=True)['status'] == 'planned':
+                raise ValueError('当前输入需要构建地图；只读预览不会启动建图')
+        else:
+            build_scene(episode.session.path)
+    with nullcontext() if dry_run else locked(episode.session.root, blocking=True):
         session = inputs.read_session(episode.session.path)
         version = requested or session.map_version
+        if not version:
+            raise ValueError('批次尚未绑定地图；请登记本轮 mapping/ 或显式指定 --map-version')
         digest = session.map_manifest_sha256 if version == session.map_version else None
         map_dir, map_manifest = load_published(session.scene, version=version, manifest_sha256=digest)
         digest = config.file_hash(map_dir / 'manifest.json')
@@ -219,7 +271,7 @@ def prepare_cached(episode, arm, camera, scene, cores):
     key = config.canonical_hash(dict(recording=episode.recording_refs[arm]['sha256'], camera=inputs.camera_identity(camera),
         video=asdict(scene.trajectory.values.video), orb=asdict(scene.trajectory.values.orb),
         code=config.code_identity('trajectory'), preparation=config.file_hash(Path(recordings.__file__))))[:20]
-    cache_dir = episode.path.parent / 'cache/prepare' / key
+    cache_dir = layout.metadata(episode.root, 'cache/prepare') / key
     cache_manifest_path = cache_dir / 'ready.json'
     if cache_manifest_path.exists():
         inputs.validate_assets(cache_dir, json.loads(cache_manifest_path.read_text())['assets'])
@@ -237,7 +289,7 @@ def localize_cached(episode, arm, recording, lens, map_archive, map_index, map_m
         camera=inputs.camera_identity(recording.camera), map_version=map_manifest['version'], index=map_index,
         video=asdict(episode.scene.trajectory.values.video), orb=asdict(episode.scene.trajectory.values.orb),
         code=config.code_identity('trajectory'), localization=config.file_hash(Path(slam.__file__))))[:20]
-    cache_dir = episode.path.parent / 'cache/localization' / key
+    cache_dir = layout.metadata(episode.root, 'cache/localization') / key
     cache_manifest_path = cache_dir / 'ready.json'
     if cache_manifest_path.exists():
         inputs.validate_assets(cache_dir, json.loads(cache_manifest_path.read_text())['assets'])
@@ -263,7 +315,8 @@ def prepare_episode_recordings(episode: Episode, cameras: dict[str, CalibratedCa
 
 
 def reconstruct_arm_in_scene(episode: Episode, arm: str, recording: PreparedRecording,
-                             map_dir: Path, map_manifest: dict) -> fusion.FusionResult:
+                             map_dir: Path, map_manifest: dict,
+                             *, diagnostic_dir: Path | None = None) -> fusion.FusionResult:
     """在已固定的场景系内求单手 T_scene_imu；不重新建图或重置原点。
 
     每个镜头先定位于自己的视觉地图，再用建图时冻结的尺度和刚体变换
@@ -279,7 +332,40 @@ def reconstruct_arm_in_scene(episode: Episode, arm: str, recording: PreparedReco
         observations[lens] = visual.placed(item['placement'], reference_frame='scene')
     T_cam_imu = {lens: np.linalg.inv(imu_from_camera(measured)) for lens, measured in camera.measurements.items()}
     imu_times = video_to_imu_seconds(recording.video_times_s, camera.measurements['front']['cam_time_offset_ns'])
-    return fusion.fuse(imu_times, recording.imu, observations, T_cam_imu, scene.trajectory.values, scene.parameters)
+    try:
+        return fusion.fuse(imu_times, recording.imu, observations, T_cam_imu, scene.trajectory.values, scene.parameters)
+    except Exception:
+        if diagnostic_dir is not None:
+            try:
+                indices = sorted({int(index) for visual in observations.values() for index in visual.indices})
+                clips = diagnostics.save_no_visual_slices(
+                    recording.lens_video('front').path,
+                    recording.video_times_s,
+                    indices,
+                    diagnostic_dir / 'no_visual',
+                    minimum_gap_s=scene.parameters.alignment_max_gap_s,
+                    context_s=0.5,
+                )
+                if clips:
+                    write_json(diagnostic_dir / 'no_visual.json', dict(status='saved', clips=clips))
+            except Exception as diagnostic_error:
+                write_json(diagnostic_dir / 'no_visual.json', dict(status='failed', reason=str(diagnostic_error)))
+        raise
+
+
+def record_failure(episode: Episode, directory: Path, reason: str, *, identity: dict,
+                   status='failed', error: Exception | None = None) -> None:
+    """同一输入和原因只保留一份失败现场；成功运行不参与去重。"""
+    key = config.canonical_hash(dict(inputs=identity, reason=reason, status=status))[:24]
+    target = directory.parent / ('failed-' + key)
+    write_json(directory / 'error.json', dict(status=status, reason=reason,
+        traceback=''.join(traceback.format_exception(error)) if error else '', input_hash=config.canonical_hash(identity),
+        inputs=identity, batch=inputs.read_yaml(episode.session.path)))
+    if target.exists():
+        shutil.rmtree(directory)
+    else:
+        directory.rename(target)
+    episodes.record_attempt(episode, status, target)
 
 
 def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recordings=True,
@@ -291,21 +377,22 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
     """
     episode = inputs.read_episode(path)
     video_offsets_s = episode.offsets()
-    name = episode.path.parent.name
+    name = episode.root.name
 
     # --- 阶段 0: 原片录像预检 (Preflight Check) ---
     check_report = recording_checks.check_episode(episode) if check_recordings else None
     if check_report is not None and not check_report.passed:
         message = '原片检查未通过：' + '；'.join(check_report.reasons)
         if not dry_run:
-            with locked(episode.path.parent):
-                run_dir = episode.path.parent / 'runs' / uuid.uuid4().hex
+            with locked(episode.root):
+                run_dir = layout.metadata(episode.root, 'runs') / uuid.uuid4().hex
                 write_json(run_dir / 'preflight_report.json', asdict(check_report))
-                write_json(run_dir / 'failure.json', dict(status='rejected_preflight', reasons=check_report.reasons))
-                episodes.record_attempt(episode, 'rejected_preflight', run_dir, reason=message)
+                record_failure(episode, run_dir, message, status='rejected_preflight',
+                    identity=dict(episode=config.file_hash(episode.path), session=config.file_hash(episode.session.path),
+                                  preflight=asdict(check_report)))
         raise recording_checks.RecordingCheckError(message)
 
-    with nullcontext() if dry_run else locked(episode.path.parent):
+    with nullcontext() if dry_run else locked(episode.root):
         # --- 阶段 1: 地图版本绑定与输入指纹比对 (Bind Map & Verify Cache) ---
         episode, map_dir, map_manifest = bind_map(episode, map_version, dry_run)
         scene = episode.scene
@@ -336,7 +423,7 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
                 return dict(status='skipped', output=str(episode.output), frame_id=map_manifest['frame_id'])
 
         # --- 阶段 2: 独立计算隔离运行 (Isolated Run) ---
-        run_dir = episode.path.parent / 'runs' / uuid.uuid4().hex
+        run_dir = layout.metadata(episode.root, 'runs') / uuid.uuid4().hex
         run_dir.mkdir(parents=True)
         started = time.monotonic()
 
@@ -360,7 +447,9 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             widths = {}
             for arm, recording in prepared_recordings.items():
                 console.write(f'{arm}：已有场景地图定位 → 固定场景系融合', recording=name, step=(2, 3))
-                fusion_result = reconstruct_arm_in_scene(episode, arm, recording, map_dir, map_manifest)
+                fusion_result = reconstruct_arm_in_scene(
+                    episode, arm, recording, map_dir, map_manifest,
+                    diagnostic_dir=run_dir / arm)
                 tracks[arm] = results.write_arm(
                     arm, recording, fusion_result, video_offsets_s[arm], scene_metadata, display_map_path, run_dir / arm
                 )
@@ -374,7 +463,7 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
                         recording.video_times_s,
                         video_offsets_s[arm],
                         run_dir / arm,
-                        episode.path.parent / 'cache/gripper_width',
+                        layout.metadata(episode.root, 'cache/gripper_width'),
                         episode.recording_refs[arm]['sha256'],
                     )
 
@@ -403,9 +492,7 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             publish_link(run_dir, episode.output)
             episodes.record_attempt(episode, 'ok', run_dir)
         except Exception as error:
-            write_json(run_dir / 'failure.json', dict(status='failed', reason=str(error)))
-            runtime.write_error_log(run_dir / 'error.log', error)
-            episodes.record_attempt(episode, 'failed', run_dir, reason=str(error))
+            record_failure(episode, run_dir, str(error), identity=input_identity, error=error)
             raise
 
         return dict(
@@ -427,7 +514,7 @@ def run_episodes(paths: list[Path], *, jobs: int = 1, force=False, cores='', dry
     console.write(f'共 {len(resolved)} 个任务；并发数 {jobs}')
 
     def _execute(path: Path) -> dict:
-        name = path.parent.name
+        name = layout.owner(path).name
         try:
             res = run_episode(path, force=force, cores=cores, dry_run=dry_run, check_recordings=check_recordings, map_version=map_version)
             return dict(path=str(path), name=name, **res)
@@ -435,7 +522,7 @@ def run_episodes(paths: list[Path], *, jobs: int = 1, force=False, cores='', dry
             if not dry_run and path.is_file():
                 try:
                     episode = inputs.read_episode(path, verify=False)
-                    state = episodes.read_state(path.parent)
+                    state = episodes.read_state(layout.owner(path))
                     if state.get('attempt', {}).get('status') not in ('rejected_preflight', 'failed'):
                         episodes.record_attempt(episode, 'failed', None, reason=str(error))
                 except (OSError, ValueError, KeyError, RuntimeError, YAMLError):

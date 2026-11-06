@@ -106,7 +106,12 @@ def run_orb(video: LensVideo, output: Path, context: VisualContext, directory: P
                   compatibility_exit=return_code in (139, -11), accepted=False)
     try:
         if return_code not in (0, 139, -11):
-            raise ProcessingError(stage, f'ORB 退出码 {return_code}；日志：{output / "log.txt"}', return_code=return_code)
+            stderr_path = output / 'stderr.txt'
+            lines = [line.strip() for line in stderr_path.read_text(encoding='utf-8', errors='replace').splitlines()
+                     if line.strip()] if stderr_path.is_file() else []
+            cause = f'；{lines[-1][:500]}' if lines else ''
+            raise ProcessingError(stage, f'ORB 退出码 {return_code}{cause}；日志：{output / "log.txt"}；错误日志：{stderr_path}',
+                                  return_code=return_code)
         stats = re.findall(r'TRACKED (\d+) / (\d+)', text)
         if not stats or int(stats[-1][1]) != context.frame_count:
             raise ValueError('ORB 未写出完整帧数的结束统计')

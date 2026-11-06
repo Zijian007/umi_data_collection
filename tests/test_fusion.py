@@ -19,7 +19,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
 from software import config
-from software.trajectory import calibration_assets as assets
+from software.trajectory.calibration import assets
 
 GOLDEN = [
     [1, -.000191196, .139494246, .000208187, .000262825, .085124379, -.000089214, .996370294],
@@ -85,6 +85,23 @@ class FusionRegressionTests(unittest.TestCase):
         self.assertTrue(info['stage1']['front']['chains'][0]['good'])
         self.assertEqual(info['nodes'], 49)
 
+    def test_configured_frame_step_reaches_real_solver_time_grid(self):
+        with self.frames.open() as stream:
+            reader = csv.DictReader(stream)
+            fields = reader.fieldnames
+            selected = list(reader)[::2]
+        with self.frames.open('w') as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer.writeheader()
+            for index, row in enumerate(selected):
+                writer.writerow(dict(row, frame_idx=index))
+        # 保持原有一秒对齐窗口，并保证短测试录像有足够的位姿对。
+        parameters = config.load('trajectory', overrides={'video': {'frame_step': 4}, 'fusion': {'step': 15}}).values
+        trajectory, info = self.solve(parameters)
+        self.assertEqual(trajectory.shape, (121, 8))
+        np.testing.assert_allclose(trajectory[:, 0], 1+np.arange(121)/(15000/1001), atol=1e-8)
+        self.assertEqual(info['effective_parameters']['video']['frame_step'], 4)
+
     def test_changed_config_and_explicit_camera_reach_the_real_solver(self):
         parameters = config.load('trajectory').values
         parameters = replace(parameters, fusion=replace(parameters.fusion, node_stride=3, gyro_bias_rw=.00003),
@@ -144,12 +161,11 @@ class FusionRegressionTests(unittest.TestCase):
         self.assertIsNotNone(solved.evidence['rear_lever_final'])
         self.assertTrue(np.isfinite(solved.T_world_imu).all())
 
-    def test_negative_csv_vectors_and_legacy_entry_remain_accepted(self):
+    def test_negative_csv_vectors_are_accepted_by_fusion_cli(self):
         path = self.root/'parameters.json'
         path.write_text(json.dumps(asdict(config.load('trajectory').values)))
         output = self.root/'signed'
-        old_entry = assets.HERE/'algorithms/kiwi_fuse3s.py'
-        command = [sys.executable, str(old_entry), str(self.frames), str(self.frames), str(self.imu),
+        command = [sys.executable, str(assets.FUSION_SCRIPT), str(self.frames), str(self.frames), str(self.imu),
                    str(self.camera['cam_time_offset_ns']), '-.500794,-.498606,.501155,-.499441', str(output),
                    '--lever_prior', '-.0147,.0093,.0163', '--calibration', str(assets.SAMPLE_CAMERA_JSON), '--parameters', str(path)]
         process = subprocess.run(command, capture_output=True, text=True, timeout=60)

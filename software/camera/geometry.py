@@ -45,11 +45,15 @@ def tcp_frame_definition(geometry: dict) -> dict:
 
 
 def describe_tcp_frame(frame: dict) -> str:
-    if frame.get('convention') == 'genie_omnipicker_axes_v1':
-        return '原点为闭合指尖中点；+X 外侧指向内侧指（前镜头画面左侧），+Z 本体指向指尖，+Y 按右手规则确定'
-    if frame.get('convention') == 'front_optical_parallel_v1':
-        return '原点为闭合指尖中点；+X 前镜头图像右，+Y 图像下，+Z 镜头前方（与前镜头平行）'
-    return frame.get('description', '轴向由所选夹爪资产定义，详见轨迹文件头和外参记录')
+    """展示实际资产字段；约定名称不决定或覆盖轴向含义。"""
+    parts = []
+    if frame.get('origin'):
+        parts.append('原点：' + frame['origin'])
+    axes = frame.get('axes', {})
+    parts.extend(f'+{axis.upper()}：{axes[axis]}' for axis in ('x', 'y', 'z') if axes.get(axis))
+    if parts:
+        return '；'.join(parts)
+    return frame.get('description') or frame.get('convention') or '未记录工具坐标约定'
 
 
 def compose_pose_series(p, q, T_right: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

@@ -6,7 +6,9 @@ import unittest
 from unittest.mock import MagicMock, patch
 import numpy as np
 
-from software.scene import inputs, recording_checks, workflow
+from software.scene.management import inputs
+from software.scene.pipeline import recording_checks
+from software.scene import workflow
 import test_scene as fixtures
 
 
@@ -58,7 +60,7 @@ class RecordingCheckTests(unittest.TestCase):
                 self.assertEqual(before,after)
                 with self.assertRaises(recording_checks.RecordingCheckError):workflow.run_episode(f.episode_path)
             self.assertEqual(output.resolve(),previous)
-            state=json.loads((f.episode_path.parent/'state.json').read_text())
+            state=json.loads((f.episode_path.parent/'.umi/state.json').read_text())
             self.assertEqual(state['attempt']['status'],'rejected_preflight')
             self.assertEqual(json.loads((output/'episode.json').read_text())['status'],'ok')
         finally:f.doCleanups()

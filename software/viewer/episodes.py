@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
+from software.scene import layout
 
 from software.viewer.data import ViewerDataError
 
@@ -30,24 +31,31 @@ def capture_status(directory: Path) -> dict:
         return data
 
     session_dir = directory.parent
-    episode_path = directory / 'episode.yaml'
-    session_path = session_dir / 'session.yaml'
+    episode_path = layout.manifest(directory, 'episode.yaml')
+    session_path = layout.manifest(session_dir, 'manifest.yaml')
     episode = read_yaml(episode_path)
     session = read_yaml(session_path)
-    scene = read_yaml(session_dir.parents[3] / 'scene.yaml')
-    state_path = directory / 'state.json'
-    state = json.loads(state_path.read_text()) if state_path.is_file() else {}
+    scene_path = session_dir.parent / 'scene.yaml'
+    scene = read_yaml(scene_path) if scene_path.is_file() else {}
+    if scene.get('name', scene_path.parent.name) != scene_path.parent.name:
+        raise ViewerDataError('场景目录与配置名称不一致')
+    if ('scene' in session and (session_dir / session['scene']).resolve() != scene_path
+            or 'session' in episode and layout.manifest((directory / episode['session']).resolve(), 'manifest.yaml') != session_path):
+        raise ViewerDataError('采集清单与所属目录不一致')
+    batch_arms = session.get('expected_arms', [arm for arm in ('left', 'right') if arm in session['kit']['arms']])
+    expected_arms = episode.get('expected_arms', batch_arms)
+    state = layout.read_state(directory)
     attempt = state.get('attempt', {})
     fresh = all(hashlib.sha256(path.read_bytes()).hexdigest() == attempt.get(key)
                 for path, key in ((episode_path, 'manifest_sha256'), (session_path, 'session_sha256')))
-    missing = set(episode['expected_arms']) - episode['recordings'].keys()
+    missing = set(expected_arms) - episode['recordings'].keys()
     status = 'pending'
     if missing:
         status = 'incomplete'
     elif fresh:
         status = attempt.get('status', 'pending')
-    return dict(scene=scene['name'], kit=session['kit']['id'], session=session_dir.name, name=directory.name,
-        expected_arms=episode['expected_arms'], status=status, attempt=attempt,
+    return dict(scene=scene_path.parent.name, kit=session['kit']['id'], session=session_dir.name, name=directory.name,
+        expected_arms=expected_arms, status=status, attempt=attempt,
         review=state.get('review', {}) if status in ('ok', 'skipped') else {})
 
 

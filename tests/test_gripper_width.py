@@ -15,7 +15,8 @@ import numpy as np
 from software import registry
 from software.dataset.export import build, load_episode
 from software.gripper_width import calibration, pipeline, series
-from software.scene import capture_config, episodes, inputs, workflow
+from software.scene.management import capture_config, episodes, inputs
+from software.scene import workflow
 from software.storage import write_json
 import test_dataset as dataset_fixtures
 import test_scene_management as registry_fixtures
@@ -122,7 +123,7 @@ class WidthRegistryTests(unittest.TestCase):
         write_json(self.width, measurement())
 
     def test_kit_freezes_camera_owned_calibration_and_detects_tampering(self):
-        first = capture_config.register_kit(self.scene, 'rig', dict(left='CAMERA_A', right='CAMERA_B'),
+        first = capture_config.register_kit('rig', dict(left='CAMERA_A', right='CAMERA_B'),
                                            width=dict(left=self.width))
         session = capture_config.create_session(self.scene, 'morning', kit='rig')
         binding = first['arms']['left']
@@ -130,7 +131,7 @@ class WidthRegistryTests(unittest.TestCase):
             gripper=binding['gripper'], gripper_version=binding['gripper_version'])
         before = path.read_bytes()
         write_json(self.width, measurement(verified=True))
-        second = capture_config.register_kit(self.scene, 'rig', dict(left='CAMERA_A', right='CAMERA_B'),
+        second = capture_config.register_kit('rig', dict(left='CAMERA_A', right='CAMERA_B'),
                                             width=dict(left=self.width))
         self.assertNotEqual(first['arms']['left']['width_calibration'], second['arms']['left']['width_calibration'])
         self.assertEqual(inputs.read_session(session).kit, first)

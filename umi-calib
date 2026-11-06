@@ -30,14 +30,14 @@
 ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 DEPS=${UMI_DEPS:-$ROOT/.deps}
 if [ ! -f "$DEPS/env.sh" ]; then
-  echo "还没安装 umi-traj：先运行  bash $ROOT/install.sh" >&2
+  echo "还没安装运行环境：先运行  bash $ROOT/install.sh" >&2
   exit 2
 fi
 CMD=${1:-}
 # 设备管理、报告重评、帮助与只读预检无需启动求解器，使用基础轨迹环境。
 # 其他命令使用 calib_env；环境或 Basalt 缺失时先调用标定组件安装脚本。
 NEED_CALIB=1
-case "$CMD" in devices|status|retire|adopt-sample|install|upgrade-device|activate-calibration|migrate-legacy|uninstall|recheck) NEED_CALIB=0 ;; esac
+case "$CMD" in devices|status|retire|install|install-rear|install-gripper|upgrade-device|activate-calibration|migrate-legacy|uninstall|recheck) NEED_CALIB=0 ;; esac
 for ARG in "$@"; do
   case "$ARG" in --dry-run|--help|-h) NEED_CALIB=0 ;; esac
 done

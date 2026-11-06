@@ -13,7 +13,7 @@ from software import config
 from software.pose_io import read_tum, write_tum
 from software.camera.geometry import compose_pose_series
 from software.camera.timing import canonical_to_video_seconds
-from software.camera.x3.frame import FPS_USED
+from software.camera.x3.frame import output_frame_rate
 from software.trajectory.reporting.metadata import CALIB_IMU_CAM, collect_run_settings, load_extrinsics
 from software.trajectory.reporting.quality import frame_constraints, front_tracked, tracked_counts, runs, evaluate_notes
 from software.trajectory.reporting.plots import plot
@@ -21,11 +21,14 @@ from software.trajectory.reporting.plots import plot
 
 def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_dir: Path, mode: str, name: str,
                 calib: dict | None = None, command: dict | None = None) -> dict:
-    """calib = software.registry.resolve_insv(...). command = extra umi-traj flags recorded in run_settings.json."""
+    """calib = software.registry.resolve_insv(...). command = extra trajectory flags recorded in run_settings.json."""
     reconstruction_dir, out_dir = Path(reconstruction_dir), Path(out_dir)
     fuse = reconstruction_dir / "fuse"
     info = json.loads((fuse / "fuse_info.json").read_text(encoding="utf-8"))
     tc, p_imu, q_imu = read_tum(fuse / "traj_tum.txt")
+    snapshot = (command or {}).get('parameters', {}).get('configuration')
+    parameters = config.from_dict('trajectory', snapshot['values']) if snapshot else config.load('trajectory').values
+    frame_rate = float(output_frame_rate(parameters.video.frame_step))
     n = len(tc)
     t = canonical_to_video_seconds(tc)
     user_cal = bool(calib) and calib.get("source") not in (None, "factory")
@@ -35,7 +38,7 @@ def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_di
     q_imu = q_imu.copy()
     q_imu[q_imu[:, 3] < 0] *= -1
 
-    common = ("t = video time in s (first video frame = 0; row k = video frame 2k). W: metric, z up (gravity -z), origin and\n"
+    common = (f"t = video time in s (first video frame = 0; row k = source video frame {parameters.video.frame_step}k). W: metric, z up (gravity -z), origin and\n"
               "heading arbitrary per recording. Pose maps body coordinates to W; quaternion x y z w.\n"
               "Source: %s, X3 trajectory tool (front-lens map relocalization + IMU fusion), mode %s." % (name, mode))
     write_tum(out_dir / "traj_tcp.txt", t, p_tcp, q_tcp,
@@ -52,9 +55,9 @@ def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_di
     kind = frame_constraints(info, n)
     tracked = front_tracked(reconstruction_dir / "front" / "loc" / "frames.csv", n)
     with open(out_dir / "frames.csv", "w", encoding="utf-8", newline="\n") as f:
-        f.write("row,video_frame,t_video_s,constraint,front_lens_tracked\n")
+        f.write("row,video_frame,source_video_frame,t_video_s,constraint,front_lens_tracked\n")
         for k in range(n):
-            f.write("%d,%d,%.6f,%s,%d\n" % (k, 2 * k, t[k], kind[k], int(tracked[k])))
+            f.write("%d,%d,%d,%.6f,%s,%d\n" % (k, k, parameters.video.frame_step * k, t[k], kind[k], int(tracked[k])))
 
     seg_len = np.linalg.norm(np.diff(p_tcp, axis=0), axis=1)
     dt = np.diff(t)
@@ -62,8 +65,8 @@ def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_di
     tr = tracked_counts(reconstruction_dir / "logs" / "run.txt")
     full_runs = runs(kind == "full")
     gaps = runs(kind != "full")
-    longest_gap = max(((k1 - k0 + 1) / FPS_USED for k0, k1 in gaps), default=0.0)
-    lead = (full_runs[0][0] / FPS_USED) if full_runs else float(n / FPS_USED)
+    longest_gap = max(((k1 - k0 + 1) / frame_rate for k0, k1 in gaps), default=0.0)
+    lead = (full_runs[0][0] / frame_rate) if full_runs else float(n / frame_rate)
     frac = {kd: round(float((kind == kd).mean()), 4) for kd in ("full", "rot", "imu")}
     map_tr = tr.get("map")
 
@@ -98,8 +101,6 @@ def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_di
         "tcp_frame": ex['tcp_frame'],
         "run_settings": "run_settings.json",
     }
-    snapshot = (command or {}).get('parameters', {}).get('configuration')
-    parameters = config.from_dict('trajectory', snapshot['values']) if snapshot else config.load('trajectory').values
     summary['quality_notes'] = evaluate_notes(summary, parameters.notes)
     summary['notes'] = list(summary['quality_notes'])
     settings = collect_run_settings(reconstruction_dir, extract_manifest, mode, name, calib, command, info)

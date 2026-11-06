@@ -15,10 +15,14 @@ from software.vision import runtime as visual_runtime
 from software import config, registry
 from software.calibration import inputs, reports, workflow as calibration_workflow
 from software.calibration.models import CalibrationRequest, SegmentPaths
-from software.trajectory import calibration_assets, cli, reconstruction, results, reuse, runtime, selection, workflow
+from software.trajectory.calibration import assets as calibration_assets, selection
+from software.trajectory import cli, workflow
+from software.trajectory.pipeline import reconstruction, reuse, runtime
+from software.trajectory.reporting import results
 from software.trajectory.models import FusionResult, TrajectoryRequest
 import test_calibration_workflow as calibration_tests
 import test_trajectory_workflow as trajectory_tests
+from registry_fakes import legacy_bundle
 
 
 class ConfigTests(unittest.TestCase):
@@ -225,8 +229,9 @@ class ConfigTests(unittest.TestCase):
         (cam/'data.csv').write_text('#timestamp,filename\n1000000000,frame.png\n')
         video = self.root/'front.mp4'
         video.write_bytes(b'video')
+        video_parameters = config.load('trajectory', overrides={'video': {'size_px': 960, 'crf': 11, 'preset': 'slow'}}).values.video
         with patch.object(config, 'load', side_effect=AssertionError('unexpected defaults reload')), patch.object(make_lens_video.subprocess, 'run', return_value=SimpleNamespace(stdout='{"streams":[{"nb_read_frames":"1"}]}')) as run, contextlib.redirect_stdout(io.StringIO()):
-            make_lens_video.render('source.insv', str(cam.parent), str(video), 'right', size_px=960, crf=11, preset='slow')
+            make_lens_video.render('source.insv', str(cam.parent), str(video), 'right', video=video_parameters)
         command = run.call_args_list[0].args[0]
         self.assertEqual(command[command.index('-crf')+1], '11')
         self.assertEqual(command[command.index('-preset')+1], 'slow')
@@ -246,9 +251,7 @@ class ConfigTests(unittest.TestCase):
             calibration_assets.describe(bundle, 'user')
 
     def test_legacy_bundle_is_read_only_and_never_executes_its_script(self):
-        source = Path(registry.sample()['dir'])
-        target = self.root / 'legacy'
-        shutil.copytree(source, target)
+        target = legacy_bundle(self.root / 'legacy')
         script = target / 'kiwi_fuse3s.py'
         script.write_text(script.read_text()+'\nraise RuntimeError("must never execute")\n')
         before = {p.name: p.read_bytes() for p in target.iterdir()}

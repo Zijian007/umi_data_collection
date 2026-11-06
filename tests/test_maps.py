@@ -11,8 +11,8 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.trajectory import map_data
-from software.scene import slam
+from software.trajectory.reporting import map_data
+from software.scene.spatial import slam
 from software.viewer import maps
 
 
@@ -21,11 +21,11 @@ class SharedMapTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.scene = self.root / 'scene'
+        self.scene = self.root / 'lab'
         self.directory = self.scene / 'tasks/take/left'
         self.directory.mkdir(parents=True)
         (self.scene / 'scene.yaml').write_text('name: lab\n')
-        self.path = self.scene / 'maps/versions/abcdef-12345678/map.json'
+        self.path = self.scene / '.umi/maps/versions/abcdef-12345678/map.json'
         self.path.parent.mkdir(parents=True)
         self.data = dict(kind='umi_map_view', schema_version=1, maps=[])
         self.path.write_text(json.dumps(self.data))
@@ -53,7 +53,7 @@ class SharedMapTests(unittest.TestCase):
             maps.load(self.directory, self.summary)
 
     def test_shared_map_outside_current_scene_is_rejected(self):
-        self.summary['map']['path'] = os.path.relpath(self.root / 'other/maps/versions/abcdef-12345678/map.json', self.directory)
+        self.summary['map']['path'] = os.path.relpath(self.root / 'other/.umi/maps/versions/abcdef-12345678/map.json', self.directory)
         with self.assertRaisesRegex(ValueError, '越界'):
             maps.load(self.directory, self.summary)
 

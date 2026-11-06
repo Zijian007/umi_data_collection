@@ -9,11 +9,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from software import registry
-from software.scene import inputs, cli, capture_config, ingest, models, recordings, workflow
+from software.scene import layout
+from software.scene.management import inputs, capture_config, ingest
+from software.scene import cli, models, workflow
+from software.scene.pipeline import recordings
 from software.storage import write_json, write_yaml
-from software.trajectory import calibration_assets
+from software.trajectory.calibration import assets as calibration_assets
 from software.viewer.data import RecordingCatalog
 import test_scene as fixtures
+from registry_fakes import legacy_bundle
 
 
 class RegistryVersionTests(unittest.TestCase):
@@ -21,7 +25,9 @@ class RegistryVersionTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.legacy_bundle = Path(registry.sample()['dir'])
+        self.legacy_bundle = legacy_bundle(self.root / 'legacy_source')
+        kit_root = patch.object(inputs, 'KITS', self.root / 'kits')
+        kit_root.start(); self.addCleanup(kit_root.stop)
         original = registry.gripper_paths('handheld_v1')
         self.grip = self.root / 'gripper_source'
         self.grip.mkdir()
@@ -38,6 +44,65 @@ class RegistryVersionTests(unittest.TestCase):
         calibration_assets.make_bundle(calibration_assets.SAMPLE_CAMERA_JSON, self.bundle)
         registry.register('CAMERA_A', self.bundle)
 
+    def test_camera_numbers_are_per_device_and_repeated_installs_reuse_versions(self):
+        self.assertEqual(registry.pin('CAMERA_A')['calibration'], '001')
+        self.assertEqual(registry.register('CAMERA_B', self.bundle)['calibration_version'], '001')
+        original = registry.get('CAMERA_A')
+        from software.trajectory.calibration import selection
+        with patch.object(registry, 'read_insv_serial', return_value='CAMERA_A'):
+            selected = selection.select_calibration(Path('video.insv'))
+        self.assertEqual(selected.summary()['id'], '001')
+        self.assertEqual(selected.assets.hashes()['camera_json'], original['bundle_sha256'])
+        # 相同测量 JSON、不同包元数据也必须保存为独立版本，不能发生同名冲突。
+        second = self.root / 'second'
+        calibration_assets.make_bundle(calibration_assets.SAMPLE_CAMERA_JSON, second, note=dict(source='new'))
+        self.assertEqual(registry.register('CAMERA_A', second)['calibration_version'], '002')
+        self.assertEqual(registry.register('CAMERA_A', second)['calibration_version'], '002')
+        self.assertEqual(registry.register('CAMERA_A', self.bundle)['calibration_version'], '001')
+        self.assertEqual(registry.get('CAMERA_A')['bundle_sha256'], original['bundle_sha256'])
+        self.assertEqual(registry.get('CAMERA_A', calibration='002')['calibration_version'], '002')
+        self.assertEqual(len(list((registry.CAMERAS / 'CAMERA_A/calibrations').iterdir())), 2)
+        self.assertEqual({row['calib_id'] for row in registry.list_devices()}, {'001'})
+
+    def test_index_roundtrip_omits_duplicates_and_keeps_device_overrides(self):
+        registry.register('CAMERA_B', self.bundle, note='source measurement')
+        stored = json.loads(registry.INDEX.read_text())
+        self.assertEqual(stored['devices']['CAMERA_A'], dict(status='active', calibration='001'))
+        self.assertEqual(stored['devices']['CAMERA_B'], dict(status='active', calibration='001'))
+        self.assertEqual(registry.get('CAMERA_B')['note'], 'source measurement')
+        expanded = registry.load_index()
+        self.assertEqual(expanded['devices']['CAMERA_A']['serial'], 'CAMERA_A')
+        self.assertEqual(expanded['devices']['CAMERA_A']['gripper'], 'test')
+        registry.register_gripper('other', self.grip)
+        expanded['devices']['CAMERA_B']['gripper'] = 'other'
+        registry.save_index(expanded)
+        registry.retire('CAMERA_A')
+        stored = json.loads(registry.INDEX.read_text())
+        self.assertEqual(stored['devices']['CAMERA_A'], dict(status='retired', calibration='001'))
+        self.assertEqual(stored['devices']['CAMERA_B']['gripper'], 'other')
+        self.assertEqual(registry.get('CAMERA_B')['gripper'], 'other')
+        with self.assertRaisesRegex(registry.RegistryError, '停用'):
+            registry.pin('CAMERA_A')
+
+    def test_index_rejects_conflicting_redundant_serial(self):
+        stored = json.loads(registry.INDEX.read_text())
+        stored['devices']['CAMERA_A']['serial'] = 'OTHER_CAMERA'
+        write_json(registry.INDEX, stored)
+        with self.assertRaisesRegex(registry.RegistryError, '序列号不一致'):
+            registry.load_index()
+
+    def test_camera_number_limit_never_overwrites_an_existing_version(self):
+        parent = registry.CAMERAS / 'CAMERA_A/calibrations'
+        files = {'bundle/' + path.name: path for path in self.bundle.iterdir()}
+        registry.store_version(parent, '999', files, kind='umi_camera_calibration', serial='CAMERA_A')
+        second = self.root / 'second'
+        calibration_assets.make_bundle(calibration_assets.SAMPLE_CAMERA_JSON, second, note=dict(source='new'))
+        with self.assertRaisesRegex(registry.RegistryError, '999'):
+            registry.register('CAMERA_A', second)
+        self.assertEqual(registry.pin('CAMERA_A')['calibration'], '001')
+        self.assertEqual({p.name for p in parent.iterdir()}, {'001', '999'})
+        registry.version_assets(parent / '999')
+
     def test_upgrade_is_previewable_immutable_and_requires_explicit_activation(self):
         from software.calibration import migration
         registry.register('CAMERA_OLD', self.legacy_bundle)
@@ -48,6 +113,9 @@ class RegistryVersionTests(unittest.TestCase):
         self.assertEqual(planned['status'], 'planned')
         self.assertEqual(before, {str(p.relative_to(registry.ROOT)): p.read_bytes() for p in registry.ROOT.rglob('*') if p.is_file()})
         stored = migration.upgrade_device('CAMERA_OLD')
+        self.assertEqual(pinned['calibration'], '001')
+        self.assertEqual(stored['version'], '002')
+        self.assertEqual(planned['version'], stored['version'])
         self.assertEqual(registry.pin('CAMERA_OLD'), pinned)
         modern = registry.get('CAMERA_OLD', calibration=stored['version'])
         self.assertEqual(modern['bundle_schema_version'], 2)
@@ -61,8 +129,39 @@ class RegistryVersionTests(unittest.TestCase):
             if name != 'index.json':
                 self.assertEqual((registry.ROOT/name).read_bytes(), contents)
 
+    def test_gripper_numbers_are_flat_reusable_and_independent_per_model(self):
+        first = registry.gripper_paths('test')
+        parent = registry.GRIPPERS / 'test'
+        self.assertEqual(first['version'], '001')
+        self.assertEqual(Path(first['dir']), parent / '001')
+        self.assertEqual(registry.register_gripper('test', self.grip)['version'], '001')
+        self.assertEqual(registry.register_gripper('other', self.grip)['version'], '001')
+        mask = self.grip / 'front_hand_mask.png'
+        mask.write_bytes(mask.read_bytes() + b'changed mask')
+        second = registry.register_gripper('test', self.grip)
+        self.assertEqual(second['version'], '002')
+        self.assertEqual(registry.register_gripper('test', self.grip)['version'], '002')
+        self.assertEqual(registry.gripper_paths('test', '001')['mask_sha256'], first['mask_sha256'])
+        self.assertEqual(registry.register_gripper('test', Path(first['dir']))['version'], '001')
+        self.assertEqual(json.loads((parent / 'current.json').read_text())['version'], '001')
+        self.assertEqual({p.name for p in parent.iterdir()}, {'current.json', '001', '002'})
+        self.assertNotEqual(first['mask_sha256'], second['mask_sha256'])
+
+    def test_gripper_number_limit_never_overwrites_an_existing_version(self):
+        parent = registry.GRIPPERS / 'test'
+        files = {name: self.grip / name for name in ('t_tcp_camera.json', 'front_hand_mask.png')}
+        registry.store_version(parent, '999', files, kind='umi_gripper', gripper='test')
+        mask = self.grip / 'front_hand_mask.png'
+        mask.write_bytes(mask.read_bytes() + b'changed mask')
+        with self.assertRaisesRegex(registry.RegistryError, '999'):
+            registry.register_gripper('test', self.grip)
+        self.assertEqual(registry.gripper_paths('test')['version'], '001')
+        self.assertEqual({p.name for p in parent.iterdir()}, {'current.json', '001', '999'})
+        registry.version_assets(parent / '999')
+
     def test_new_defaults_keep_old_calibration_and_geometry_reproducible(self):
         pinned = registry.pin('CAMERA_A')
+        self.assertEqual(pinned['gripper_version'], '001')
         old = registry.get('CAMERA_A', **pinned)
         changed = json.loads(calibration_assets.SAMPLE_CAMERA_JSON.read_text())
         data = changed.get('value0') or changed
@@ -77,6 +176,7 @@ class RegistryVersionTests(unittest.TestCase):
         write_json(self.grip / 't_tcp_camera.json', geometry)
         registry.register_gripper('test', self.grip)
         current = registry.pin('CAMERA_A')
+        self.assertEqual(current['gripper_version'], '002')
         self.assertNotEqual(current['calibration'], pinned['calibration'])
         self.assertNotEqual(current['gripper_version'], pinned['gripper_version'])
         self.assertEqual(registry.get('CAMERA_A', **pinned)['json'], old['json'])
@@ -119,14 +219,14 @@ class RecordingImportTests(unittest.TestCase):
             video = root / 'sd/VID_001.insv'
             video.parent.mkdir(); video.write_bytes(b'original')
             managed = root / 'recordings'
-            destination = managed / 'market/rig/20261025_001'
-            with patch.object(recordings, 'ROOT', managed), patch.object(registry, 'read_insv_serial', return_value='CAMERA_A'):
+            destination = managed / 'market/20261025_001/videos/left'
+            with patch.object(registry, 'read_insv_serial', return_value='CAMERA_A'):
                 metadata = recordings.inspect(video)
                 imported = recordings.import_video(video, destination, metadata=metadata)
-                self.assertEqual(imported.parent.name, 'CAMERA_A')
+                self.assertEqual(imported.parent.name, 'left')
                 self.assertEqual(imported.name, video.name)
                 self.assertEqual(video.read_bytes(), imported.read_bytes())
-                self.assertEqual(recordings.import_video(imported, managed / 'market/other/mapping', metadata=metadata), imported)
+                self.assertEqual(recordings.import_video(imported, destination, metadata=metadata), imported)
                 video.write_bytes(b'different')
                 with self.assertRaisesRegex(ValueError, '同名录像'):
                     recordings.import_video(video, destination, metadata=recordings.inspect(video))
@@ -142,7 +242,6 @@ class SessionManagementTests(unittest.TestCase):
         self.fixture.build_scene()
         self.f = self.fixture
         for item in (
-            patch.object(recordings, 'ROOT', self.f.root / 'raw'),
             patch.object(registry, 'get', return_value={}),
             patch.object(registry, 'pin', side_effect=lambda serial: self.f.device_pins[serial]),
             patch.object(registry, 'read_insv_serial', side_effect=lambda path: 'SERIAL_'+Path(path).read_text()),
@@ -150,8 +249,7 @@ class SessionManagementTests(unittest.TestCase):
             item.start(); self.addCleanup(item.stop)
 
     def session(self, scene_path, name):
-        self.f.write_kit('fixture', {arm:dict(serial='SERIAL_'+arm,**self.f.device_pins['SERIAL_'+arm]) for arm in models.ARMS},
-            scene=inputs.read_scene(scene_path))
+        self.f.write_kit('fixture', {arm:dict(serial='SERIAL_'+arm,**self.f.device_pins['SERIAL_'+arm]) for arm in models.ARMS})
         return capture_config.create_session(scene_path, name, kit='fixture')
 
     def episode(self, session, name):
@@ -165,7 +263,7 @@ class SessionManagementTests(unittest.TestCase):
 
     def test_interleaved_scenes_reuse_devices_with_distinct_map_frames(self):
         first = self.session(self.f.scene_path, 'morning')
-        other_path = self.f.root / 'other_scene/scene.yaml'
+        other_path = self.f.root / 'other_market/scene.yaml'
         data = inputs.read_yaml(self.f.scene_path); data['name'] = 'other_market'
         write_yaml(other_path, data)
         workflow.build_scene(other_path)
@@ -227,7 +325,7 @@ class SessionManagementTests(unittest.TestCase):
         t1, t2 = self.episode(session, 'take_001'), self.episode(session, 'take_002')
         workflow.run_episode(t1)
         workflow.run_episode(t2)
-        code = cli.main(['review', str(session.parent), '--accept', '--reviewer', 'tester'])
+        code = cli.main(['review', str(layout.owner(session)), '--accept', '--reviewer', 'tester'])
         self.assertEqual(code, 0)
         from software.scene.management import episodes
         self.assertEqual(episodes.task_status(t1)['review'], 'accepted')
@@ -238,7 +336,7 @@ class SessionManagementTests(unittest.TestCase):
         src = self.f.root / 'video_to_link.insv'
         src.write_bytes(b'test_link_content')
         meta = dict(serial='CAM_LINK', sha256=registry.sha256_file(src))
-        dest = recordings.ROOT / 'test_scene'
+        dest = self.f.root / 'test_scene/videos/left'
         imported = recordings.import_video(src, dest, metadata=meta, link=True)
         self.assertEqual(os.stat(src).st_ino, os.stat(imported).st_ino)
 
@@ -256,7 +354,8 @@ class SessionManagementTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertTrue((auto_scene / 'scene.yaml').exists())
             data = inputs.read_yaml(auto_scene / 'scene.yaml')
-            self.assertEqual(data['name'], 'auto_created_scene')
+            self.assertNotIn('name', data)
+            self.assertEqual(inputs.read_scene(auto_scene).name, 'auto_created_scene')
 
 
 if __name__ == '__main__':

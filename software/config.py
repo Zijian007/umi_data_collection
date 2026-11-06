@@ -19,7 +19,7 @@ from typing import get_type_hints
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from software.camera.x3.frame import validate_video_size
+from software.camera.x3.frame import validate_video_parameters
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_VERSION = 1
@@ -32,10 +32,24 @@ class InputParameters:
 
 
 @dataclass(frozen=True)
-class VideoParameters:
+class VideoCropParameters:
     size_px: int
+    offset_x_px: int
+    offset_y_px: int
+
+
+@dataclass(frozen=True)
+class VideoParameters:
+    crop: VideoCropParameters
+    frame_step: int
+    size_px: int
+    codec: str
+    pixel_format: str
+    resize_filter: str
     crf: int
     preset: str
+    keep_audio: bool
+    audio_bitrate_kbps: int
 
 
 @dataclass(frozen=True)
@@ -272,6 +286,8 @@ def _validate(values) -> None:
             v, key = getattr(obj, f.name), prefix + f.name
             if is_dataclass(v):
                 walk(v, key + '.')
+            elif key in ('video.crop.offset_x_px', 'video.crop.offset_y_px'):
+                continue  # 裁切中心可向任一方向偏移，边界统一由几何校验。
             elif type(v) in (int, float) and (v < 0 if f.name in zero_allowed else v <= 0):
                 raise ValueError(f'{key} 必须为{"非负" if f.name in zero_allowed else "正"}数')
     walk(values)
@@ -279,7 +295,7 @@ def _validate(values) -> None:
         p = values
         if p.input.mode not in ('handheld', 'dual'):
             raise ValueError('input.mode 必须为 handheld 或 dual')
-        validate_video_size(p.video.size_px)
+        validate_video_parameters(p.video)
         if not 0 <= p.video.crf <= 51:
             raise ValueError('video.crf 必须在 0–51 之间')
         if p.video.preset not in ('ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'):

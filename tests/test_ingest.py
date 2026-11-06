@@ -8,7 +8,10 @@ import unittest
 from unittest.mock import patch
 
 from software import registry
-from software.scene import cli, inputs, ingest, recordings
+from software.scene import layout
+from software.scene import cli
+from software.scene.management import episodes, inputs, ingest
+from software.scene.pipeline import recordings
 from software.storage import write_json, write_yaml
 import test_scene as fixtures
 
@@ -20,7 +23,6 @@ class IngestTests(unittest.TestCase):
         self.infos = [ingest.RawVideoInfo(path, 'SERIAL_'+arm, registry.sha256_file(path), 1000., 8.) for arm, path in self.f.recording_paths.items()]
         self.items = list(self.infos)
         for item in (
-            patch.object(recordings, 'ROOT', self.f.root / 'raw'),
             patch.object(ingest, 'scan_raw_videos', side_effect=lambda paths: (list(self.items), [])),
             patch.object(registry, 'read_insv_serial', side_effect=lambda path: 'SERIAL_'+Path(path).read_text()),
         ):
@@ -48,17 +50,17 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(first['status'], 'ok')
         path = Path(first['episodes'][0]['path'])
         episode = inputs.read_episode(path)
-        self.assertEqual(path.parent.parent, self.f.session_path.parent)
+        self.assertEqual(layout.owner(path).parent, self.f.session_path.parent)
         self.assertFalse((self.f.session_path.parent / 'episodes').exists())
         self.assertEqual(episode.recordings['left'].parent.parent,
-                         self.f.root / 'raw/lab/test_kit/20261025_001')
+                         self.f.session_path.parent / 'take_001/videos')
         self.assertEqual(episode.offsets(), {'left':0., 'right':0.})
         self.assertEqual(episode.synchronization['method'], 'assumed_simultaneous')
-        count = len(list((self.f.root/'raw').rglob('*.insv')))
+        count = len(list((self.f.session_path.parent).rglob('*.insv')))
         second = self.run_ingest()
         self.assertFalse(second['episodes'])
         self.assertEqual(second['skipped'], ['take_001'])
-        self.assertEqual(len(list((self.f.root/'raw').rglob('*.insv'))), count)
+        self.assertEqual(len(list((self.f.session_path.parent).rglob('*.insv'))), count)
         json.dumps(second)
 
     def test_missing_peer_does_not_become_single_and_later_import_completes_pair(self):
@@ -67,11 +69,11 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(first['status'], 'pending')
         self.assertFalse(first['episodes'])
         self.assertEqual(first['pending'][0]['expected_arms'], ['left','right'])
-        self.assertTrue(list((self.f.root/'raw').rglob('*.insv')))
+        self.assertTrue(list((self.f.session_path.parent).rglob('*.insv')))
         self.items = self.infos
         second = self.run_ingest()
         self.assertEqual(len(second['episodes']), 1)
-        self.assertEqual(len(list((self.f.root/'raw').rglob('*.insv'))), 2)
+        self.assertEqual(len(list((self.f.session_path.parent).rglob('*.insv'))), 2)
 
     def test_right_only_kit_and_left_only_task_keep_actual_arm(self):
         data = inputs.read_yaml(self.f.session_path)
@@ -102,7 +104,7 @@ class IngestTests(unittest.TestCase):
         after={str(path.relative_to(self.f.root)):(path.stat().st_size,path.stat().st_mtime_ns)
                for path in self.f.root.rglob('*') if path.is_file()}
         self.assertEqual(before,after)
-        self.assertFalse((self.f.root/'raw').exists())
+        self.assertFalse(list(self.f.session_path.parent.rglob('*.insv')))
         self.assertFalse((self.f.session_path.parent/'imports').exists())
 
     def test_manual_registration_can_fill_missing_hand_without_replacing_original(self):
@@ -120,7 +122,7 @@ class IngestTests(unittest.TestCase):
         session = inputs.read_session(self.f.session_path)
         path = ingest.register_episode(session, 'take_001', self.f.recording_paths, instruction='取出商品')
         state_path = path.parent / 'state.json'
-        state = json.loads(state_path.read_text())
+        state = episodes.read_state(layout.owner(path))
         state['review'] = dict(decision='accepted', reviewer='reviewer')
         write_json(state_path, state)
         before = {item: (item.read_bytes(), item.stat().st_mtime_ns) for item in (path, state_path)}
@@ -167,7 +169,7 @@ class IngestTests(unittest.TestCase):
         for name in inputs.INTERNAL_DIRECTORIES:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, '内部目录'):
                 ingest.register_episode(session, name, {'left': self.f.recording_paths['left']})
-        self.assertFalse((self.f.root / 'raw').exists())
+        self.assertFalse(list(self.f.session_path.parent.rglob('*.insv')))
 
     def test_ingest_ignores_internal_and_hidden_directories(self):
         for name in (*inputs.INTERNAL_DIRECTORIES, '.hidden'):

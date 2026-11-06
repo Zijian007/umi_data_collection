@@ -12,11 +12,15 @@ import numpy as np
 from software.camera.timing import euroc_ns_to_seconds
 from software import registry
 from software.scene.models import CalibratedCamera, PreparedRecording, Scene
-from software.trajectory import calibration_assets
+from software.trajectory.calibration import assets as calibration_assets
 from software.vision import recordings as recording_data, runtime
 from software.vision.models import LensVideo, RecordingData, RecordingPaths, VisualContext
 
-ROOT = Path(__file__).resolve().parents[3] / 'recordings' / 'scenes'
+
+
+def insv_files(directory: Path) -> list[Path]:
+    """所有目录入口共用原片发现规则，包括大写扩展名。"""
+    return sorted(path for path in directory.rglob('*') if path.is_file() and path.suffix.lower() == '.insv')
 
 
 def inspect(video: Path) -> dict:
@@ -27,14 +31,16 @@ def inspect(video: Path) -> dict:
     return dict(serial=serial, sha256=registry.sha256_file(video))
 
 
-def import_video(video: Path, directory: Path, *, metadata: dict, link: bool = False) -> Path:
-    """SD 卡原片默认复制；支持 --link 硬链接（零 I/O 耗时与零额外存储）；已归档录像直接引用。"""
+def import_video(video: Path, directory: Path, *, metadata: dict, link: bool = False,
+                 owned_root: Path | None = None) -> Path:
+    """本场景指定原片目录内直接引用；外部原片复制或显式硬链接到目标目录。"""
     video = video.expanduser().resolve()
-    scene_root = directory.relative_to(ROOT).parts[0]
-    managed = ROOT / scene_root
-    if video.is_relative_to(managed) and video.parent.name == metadata['serial']:
+    directory = directory.expanduser().resolve()
+    if video.is_relative_to((owned_root or directory).resolve()):
+        if registry.sha256_file(video) != metadata['sha256']:
+            raise ValueError(f'原片在导入前发生变化：{video}')
         return video
-    target = directory / metadata['serial'] / video.name
+    target = directory / video.name
     if target.exists():
         if registry.sha256_file(target) != metadata['sha256']:
             raise ValueError(f'同名录像内容不同，拒绝覆盖：{target}')
@@ -66,7 +72,8 @@ def prepare_recording(recording_path: Path, camera: CalibratedCamera, scene: Sce
     if reuse:
         extracted_data = RecordingData(json.loads((paths.dataset / 'extract_manifest.json').read_text()), paths.dataset / 'mav0/imu0/data.csv')
     else:
-        extracted_data = recording_data.prepare(recording_path, paths, allow_irregular=False)
+        extracted_data = recording_data.prepare(recording_path, paths, allow_irregular=False,
+            frame_step=scene.trajectory.values.video.frame_step)
     if extracted_data.manifest['source']['serial'] != camera.serial:
         raise ValueError('录像设备身份在处理期间发生变化')
     settings = runtime.visual_settings(dict(os.environ),

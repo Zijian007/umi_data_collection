@@ -8,11 +8,11 @@ from pathlib import Path
 
 from software.camera.geometry import imu_from_camera, camera_from_tcp, tcp_frame_definition
 from software.camera.x3.frame import geometry_record
+from software import config
 from software.trajectory.calibration.assets import FUSION_SCRIPT, read_basalt
 
 HERE = Path(__file__).resolve().parents[1]
 CALIB_IMU_CAM = HERE / 'assets/calib/calibration_r1440.json'
-CALIB_CAM_TCP = HERE / 'assets/calib/t_tcp_camera_nominal_cad.json'
 FRONT_MASK = HERE / 'assets/config/front_hand_mask.png'
 REAR_YAML = HERE / 'assets/config/rear_basalt065_720.yaml'
 
@@ -21,6 +21,12 @@ def _sha12(path: Path) -> str | None:
     if not path.is_file():
         return None
     return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+
+
+def _tcp_geometry_path(value: str | Path | None) -> Path:
+    if not value:
+        raise ValueError('缺少显式选择的夹爪几何 tcp_json；请先通过 registry 选择夹爪版本')
+    return Path(value)
 
 
 def _file_asset(path: Path, **extra) -> dict:
@@ -66,11 +72,11 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
     """The settings and on-disk assets this run read. Written next to the trajectory as run_settings.json."""
     reconstruction_dir = Path(reconstruction_dir)
     calib_info = calib or {}
+    tcp_path = _tcp_geometry_path(calib_info.get('tcp_json'))
     json_path = Path(calib_info["json"]) if calib_info.get("json") else CALIB_IMU_CAM
     yaml_path = Path(calib_info["yaml"]) if calib_info.get("yaml") else HERE / "assets" / "config" / "front_x3_r1440_720.yaml"
     fuser_path = Path(calib_info["fuser"]) if calib_info.get("fuser") else FUSION_SCRIPT
     basalt = read_basalt(json_path)
-    tcp_path = Path(calib_info["tcp_json"]) if calib_info.get("tcp_json") else CALIB_CAM_TCP
     mask_path = Path(calib_info["mask"]) if calib_info.get("mask") else FRONT_MASK
     cad_geometry = json.loads(tcp_path.read_text(encoding="utf-8"))
     env_cal = (os.environ.get("UMI_TRAJ_CALIB") or "").strip() or None
@@ -118,11 +124,8 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
             tcp_path,
             note="CAD nominal closed-fingertip pose in the camera frame; umi-calib does not solve this",
             status=cad_geometry.get("status"),
-            version=cad_geometry.get("version"),
-            date=cad_geometry.get("date"),
             T_camera_tcp=cad_geometry.get("T_camera_tcp"),
             tcp_frame=tcp_frame_definition(cad_geometry),
-            optical_center_depth_mm=cad_geometry.get("optical_center_depth_mm"),
         ),
         "orbslam3_front_settings": _file_asset(
             yaml_path,
@@ -145,6 +148,8 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
             note="sample rear geometry, not calibrated for this device; used only in dual mode",
         )
 
+    snapshot = (command or {}).get('parameters', {}).get('configuration')
+    parameters = config.from_dict('trajectory', snapshot['values']) if snapshot else config.load('trajectory').values
     return {
         "kind": "umi_traj_run_settings",
         "parameters": (command or {}).get("parameters"),
@@ -170,7 +175,7 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
         },
         "assets": assets,
         "recording_contract": extract_manifest.get("input_contract"),
-        "frame_geometry": geometry_record(size_px, mode=mode),
+        "frame_geometry": geometry_record(size_px, mode=mode, video=parameters.video),
         "pose_chain": {
             "formula": "T_W_tcp = T_W_imu * T_imu_cam * T_cam_tcp",
             "T_imu_cam": "Basalt p_imu = T_imu_cam p_cam, from camera_imu_calibration",
@@ -185,11 +190,11 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
 
 
 def load_extrinsics(calib_json: Path | None = None, tcp_json: Path | None = None) -> dict:
+    tcp_path = _tcp_geometry_path(tcp_json)
     calibration_data = json.loads(Path(calib_json or CALIB_IMU_CAM).read_text(encoding="utf-8"))
     imu_cam_data = (calibration_data.get("value0") or calibration_data)["T_imu_cam"][0]
     T_imu_cam = imu_from_camera(dict(q_xyzw=[imu_cam_data["qx"], imu_cam_data["qy"], imu_cam_data["qz"], imu_cam_data["qw"]],
                                      p=[imu_cam_data["px"], imu_cam_data["py"], imu_cam_data["pz"]]))
-    tcp_path = Path(tcp_json) if tcp_json else CALIB_CAM_TCP
     cad_geometry = json.loads(tcp_path.read_text(encoding="utf-8"))
     T_cam_tcp = camera_from_tcp(cad_geometry)
     return {"T_imu_cam": T_imu_cam, "T_cam_tcp": T_cam_tcp, "cad_status": cad_geometry.get("status"),

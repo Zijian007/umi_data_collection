@@ -14,13 +14,11 @@ from software.console import Console
 from software.trajectory.calibration import assets as calibration_assets
 from software.trajectory.models import ReconstructionSettings
 from software.vision import runtime as visual_runtime
-from software.vision.runtime import write_error_log
 
 __all__ = [
     "console",
     "reconstruction_settings",
     "check",
-    "write_error_log",
 ]
 
 HERE = Path(__file__).resolve().parents[1]
@@ -85,7 +83,7 @@ def check() -> int:
                                            os.environ.get("ORB3_EXTRA_LD", ""), environment.get("LD_LIBRARY_PATH", "")])
         result = subprocess.run([str(exe), "--help"], capture_output=True, text=True, env=environment, timeout=10)
         line(result.returncode == 0, "x3_mono_slam 可运行", "" if result.returncode == 0 else (result.stderr or result.stdout)[-300:])
-    for path in (HERE / "assets" / "calib" / "calibration_r1440.json", HERE / "assets" / "calib" / "t_tcp_camera_nominal_cad.json",
+    for path in (HERE / "assets" / "calib" / "calibration_r1440.json",
               HERE / "assets" / "config" / "front_x3_r1440_720.yaml", HERE / "assets" / "config" / "front_hand_mask.png"):
         line(path.is_file(), "配置文件 " + str(path.relative_to(REPO)))
     try:

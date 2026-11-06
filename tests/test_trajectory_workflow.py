@@ -9,14 +9,18 @@ from unittest.mock import patch
 
 from software.vision import recordings as visual_recordings
 from software import config, registry
-from software.trajectory import calibration_assets
-from software.trajectory import cli, reconstruction, results, runtime, selection, workflow
+from software.trajectory.calibration import assets as calibration_assets
+from software.trajectory import cli, workflow
+from software.trajectory.pipeline import reconstruction, runtime
+from software.trajectory.reporting import results
+from software.trajectory.calibration import selection
 from software.camera.x3 import extraction
 from software.trajectory.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
 from software.vision.models import RecordingData
-from software.trajectory.reuse import REQUIRED_OUTPUTS, reuse_decision, run_fingerprint
-from software.trajectory.selection import CalibrationAssets, SelectedCalibration
+from software.trajectory.pipeline.reuse import REQUIRED_OUTPUTS, reuse_decision, run_fingerprint
+from software.trajectory.calibration.selection import CalibrationAssets, SelectedCalibration
 from trajectory_fakes import FakeEngines
+from registry_fakes import device_record
 
 
 class RecordingFixture(unittest.TestCase):
@@ -112,14 +116,14 @@ class ReuseTests(RecordingFixture):
 
 class SelectionTests(unittest.TestCase):
     def test_recording_serial_is_default(self):
-        with patch.dict(os.environ, {'UMI_TRAJ_CALIB': ''}), patch.object(registry, 'read_insv_serial', return_value='actual') as identity, patch.object(registry, 'get', return_value=registry.sample()) as get:
+        with patch.dict(os.environ, {'UMI_TRAJ_CALIB': ''}), patch.object(registry, 'read_insv_serial', return_value='actual') as identity, patch.object(registry, 'get', return_value=device_record()) as get:
             chosen = selection.select_calibration(Path('video.insv'))
             identity.assert_called_once()
             get.assert_called_once_with('actual')
             self.assertEqual(chosen.selection, 'registry')
 
     def test_explicit_device_overrides_recording_serial(self):
-        with patch.dict(os.environ, {'UMI_TRAJ_CALIB': ''}), patch.object(registry, 'read_insv_serial') as identity, patch.object(registry, 'get', return_value=registry.sample()) as get:
+        with patch.dict(os.environ, {'UMI_TRAJ_CALIB': ''}), patch.object(registry, 'read_insv_serial') as identity, patch.object(registry, 'get', return_value=device_record()) as get:
             selection.select_calibration(Path('video.insv'), device='specified')
             get.assert_called_once_with('specified')
             identity.assert_not_called()
@@ -140,7 +144,7 @@ class SelectionTests(unittest.TestCase):
                 selection.select_calibration(Path('video.insv'))
 
     def test_gripper_override_preserves_camera_and_calibration(self):
-        record = dict(registry.sample(), serial='actual', gripper='original')
+        record = dict(device_record(), serial='actual', gripper='original')
         replacement = dict(id='replacement', version='geometry_002', tcp_json='/new/tcp.json', mask='/new/mask.png',
                            tcp_sha256='tcp', mask_sha256='mask', dir='/new')
         with patch.dict(os.environ, {'UMI_TRAJ_CALIB': ''}), patch.object(registry, 'get', return_value=record), \
@@ -163,7 +167,7 @@ class WorkflowTests(RecordingFixture):
     def run_recording(self, request=TrajectoryRequest(), *, extraction_error=None, manifest=None):
         from software.trajectory.algorithms import postprocess
         manifest = manifest or {'frames': dict(regular=True, n_frames_used=100, duration_s=3.3)}
-        def extract(video, output):
+        def extract(video, output, **kwargs):
             self.engines.write_dataset(output)
             return manifest
 
@@ -189,7 +193,7 @@ class WorkflowTests(RecordingFixture):
 
     def test_display_map_survives_successful_debug_cleanup(self):
         display = dict(kind='umi_map_view', schema_version=1, maps=[])
-        with patch('software.trajectory.map_data.export_attempt', return_value=display):
+        with patch('software.trajectory.reporting.map_data.export_attempt', return_value=display):
             result = self.run_recording()
         self.assertEqual(result['status'], 'ok')
         self.assertFalse((self.output/'debug/reconstruction').exists())
@@ -218,13 +222,13 @@ class WorkflowTests(RecordingFixture):
 
     def test_reuse_reads_summary_once(self):
         self.assertEqual(self.run_recording()['status'], 'ok')
-        with patch('software.trajectory.reuse.load_summary', wraps=results.load_summary) as load:
+        with patch('software.trajectory.pipeline.reuse.load_summary', wraps=results.load_summary) as load:
             self.assertEqual(self.run_recording()['status'], 'skipped')
         load.assert_called_once_with(self.output)
 
     def test_force_does_not_read_previous_summary(self):
         self.successful_result()
-        with patch('software.trajectory.reuse.load_summary', side_effect=AssertionError('unexpected reuse check')) as load:
+        with patch('software.trajectory.pipeline.reuse.load_summary', side_effect=AssertionError('unexpected reuse check')) as load:
             self.assertEqual(self.run_recording(TrajectoryRequest(force=True))['status'], 'ok')
         load.assert_not_called()
 
@@ -236,7 +240,7 @@ class WorkflowTests(RecordingFixture):
         self.assertIn('unreadable IMU', (self.output / 'report.txt').read_text())
 
     def test_irregular_recording_is_refused_by_default(self):
-        manifest = {'frames': dict(regular=False, max_deviation_from_29p97_grid_ms=34, gaps_over_1p5x_median=1)}
+        manifest = {'frames': dict(regular=False, max_deviation_from_grid_ms=34, gaps_over_1p5x_median=1)}
         with patch.object(reconstruction, 'run_attempts') as reconstruct:
             result = self.run_recording(manifest=manifest)
         reconstruct.assert_not_called()
@@ -384,7 +388,7 @@ class RecordingDataTests(RecordingFixture):
         paths = RecordingPaths(self.output)
         manifest = {'frames': dict(regular=False)}
 
-        def extract(video, output):
+        def extract(video, output, **kwargs):
             cam = output / 'mav0/cam0'
             cam.mkdir(parents=True)
             (cam / 'data.csv').write_text('#timestamp [ns],filename\n1000000000,first.png\n1066733333,second.png\n')

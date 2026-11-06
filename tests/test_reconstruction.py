@@ -8,8 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from software.vision import recordings as visual_recordings, runtime as visual_runtime, slam as visual_slam
-from software import config
-from software.trajectory import calibration_assets, reconstruction, runtime
+from software import config, registry
+from software.trajectory.calibration import assets as calibration_assets
+from software.trajectory.pipeline import reconstruction, runtime
 from software.trajectory.models import FusionResult, RecordingPaths, ReconstructionContext, TrajectoryRequest
 from software.vision.models import RecordingData, ProcessingError
 from trajectory_fakes import FakeEngines
@@ -78,8 +79,8 @@ class ReconstructionTests(unittest.TestCase):
 
     def test_output_size_reaches_video_slam_mask_and_run_record(self):
         import cv2
-        from software.trajectory import run_metadata
-        from software.trajectory import reports
+        from software.trajectory.reporting import metadata as run_metadata
+        from software.trajectory.reporting import reports
 
         configuration = config.load('trajectory', overrides={'video': {'size_px': 960}})
         request = config.resolve_trajectory_request(TrajectoryRequest(configuration=configuration, mode='handheld'))
@@ -90,12 +91,14 @@ class ReconstructionTests(unittest.TestCase):
         context = replace(self.context, request=request, settings=settings)
         videos = visual_recordings.prepare_lens_videos(self.video, context.visual, lenses=('front', 'rear') if context.request.mode == 'dual' else ('front',))
         video_command = self.engines.calls[0][1]
-        self.assertEqual(video_command[video_command.index('--size-px')+1], '960')
+        video_config = Path(video_command[video_command.index('--config')+1])
+        self.assertEqual(config.load('trajectory', video_config).values.video.size_px, 960)
         self.assertEqual(cv2.imread(str(videos[0].mask), 0).shape, (960, 960))
         self.assertEqual(videos[0].settings, settings.front_settings)
 
         record = run_metadata.collect_run_settings(self.paths.output, {}, 'handheld', 'VID.insv',
             calib=dict(yaml=str(settings.front_settings), mask=str(settings.front_mask),
+                       tcp_json=registry.gripper_paths('handheld_v1')['tcp_json'],
                        source_mask=str(runtime.HERE / 'assets/config/front_hand_mask.png')),
             command=dict(parameters={'configuration': configuration.snapshot()}))
         self.assertEqual(record['frame_geometry']['slam_video_px'], [960, 960])
@@ -156,6 +159,25 @@ class ReconstructionTests(unittest.TestCase):
         record = json.loads((self.paths.attempt(1)/'front/map/execution.json').read_text())
         self.assertFalse(record['accepted'])
         self.assertFalse(record['compatibility_exit'])
+
+    def test_orb_startup_error_includes_stderr_cause_and_log_path(self):
+        cause = 'Camera.fps parameter must be an integer number, aborting...'
+        self.engines.failures['map'] = 255
+
+        def execute(command, **options):
+            if './x3_mono_slam' in command:
+                options['stderr'].write('Optional parameter does not exist...\n' + cause + '\n\n')
+            return self.engines(command, **options)
+
+        with patch.object(runtime.subprocess, 'run', side_effect=execute):
+            result = self.run_stages(replace(self.context,
+                request=config.resolve_trajectory_request(TrajectoryRequest(max_tries=1))))
+        self.assertIsNone(result.chosen)
+        self.assertEqual(result.attempts[0]['rc'], 255)
+        self.assertIn(cause, result.reason)
+        self.assertIn(str(self.paths.attempt(1) / 'front/map/stderr.txt'), result.reason)
+        record = json.loads((self.paths.attempt(1) / 'front/map/execution.json').read_text())
+        self.assertFalse(record['accepted'])
 
     def test_partial_frame_table_is_rejected_even_with_a_zero_exit(self):
         self.engines.frames = 50  # 上下文预期 100 帧，模拟视频提前结束。

@@ -9,7 +9,7 @@ from pathlib import Path
 from software.calibration.algorithms import aprilgrid_detect, board_pnp
 from software.calibration.models import BundleResult, CameraImuResult, IntrinsicsResult, SegmentPaths, StageContext, StageError
 from software.calibration import runtime
-from software.trajectory import calibration_assets as trajectory_calibration
+from software.trajectory.calibration import assets as trajectory_calibration
 
 
 @runtime.stage_errors("B 相机–IMU")

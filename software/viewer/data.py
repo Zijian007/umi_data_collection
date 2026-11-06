@@ -7,7 +7,8 @@ import math
 import os
 from pathlib import Path
 
-from software.trajectory.results import front_video_path, load_summary, result_path
+from software.trajectory.reporting.results import front_video_path, load_summary, result_path
+from software.scene import layout
 
 
 class ViewerDataError(ValueError):
@@ -107,13 +108,16 @@ class RecordingCatalog:
             directory = Path(current)
             children[:] = sorted(name for name in children if name not in {
                 '.git', '.deps', 'node_modules', 'details', 'debug', 'diagnostics', 'work', 'bundle', 'umi_calib_out', '__pycache__',
-                'runs', 'versions', 'archive', 'cache', 'imports',
+                'runs', 'versions', 'archive', 'cache', 'imports', 'mapping', 'videos', 'pending',
             } and not name.startswith('.'))
             capture = {}
-            if 'episode.yaml' in files and self.contains(directory / 'episode.yaml'):
+            capture_path = layout.manifest(directory, 'episode.yaml')
+            has_capture = capture_path.is_file() and self.contains(capture_path)
+            if has_capture:
                 try:
                     from software.viewer.episodes import capture_status
-                    if (directory / 'state.json').exists() and not self.contains(directory / 'state.json'):
+                    state_path = layout.manifest(directory, 'state.json')
+                    if state_path.exists() and not self.contains(state_path):
                         raise ViewerDataError('任务状态超出查看目录')
                     capture = capture_status(directory)
                 except (OSError, ValueError, TypeError, KeyError, IndexError):
@@ -128,7 +132,7 @@ class RecordingCatalog:
                     children[:] = []
                     continue
             # 任务的 results 是原子发布的版本指针；只展示当前版本，不遍历历史 runs。
-            episode = directory / 'results' if 'episode.yaml' in files else directory
+            episode = directory / 'results' if has_capture else directory
             if (episode / 'episode.json').is_file():
                 from software.viewer.episodes import read_episode, recording_key
                 children[:] = []

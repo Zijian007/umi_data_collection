@@ -1,12 +1,14 @@
 """原片 → 时间戳、IMU 和显式选择的镜头视频。"""
 from __future__ import annotations
 from pathlib import Path
+from software import config
 from software.camera.x3 import extraction
+from software.camera.x3.frame import LENS_HALF, STEP
 from software.vision import runtime
 from software.vision.models import RecordingData, RecordingPaths, LensVideo, VisualContext, ProcessingError
 
-def prepare(video: Path, paths: RecordingPaths, *, allow_irregular: bool = False) -> RecordingData:
-    manifest = extraction.extract(video, paths.dataset)
+def prepare(video: Path, paths: RecordingPaths, *, allow_irregular: bool = False, frame_step: int = STEP) -> RecordingData:
+    manifest = extraction.extract(video, paths.dataset, frame_step=frame_step)
     imu_csv = paths.dataset / 'mav0/imu0/data.csv'
     frames = manifest["frames"]
     if frames["regular"]:
@@ -15,7 +17,7 @@ def prepare(video: Path, paths: RecordingPaths, *, allow_irregular: bool = False
         raise extraction.Refused(
             "帧时间不规则（最大偏差 %.1f ms，%d 处间隔异常）；默认拒绝处理。"
             "如需继续，可加 --allow-irregular（该处理路径尚未验证）"
-            % (frames["max_deviation_from_29p97_grid_ms"], frames["gaps_over_1p5x_median"]))
+            % (frames["max_deviation_from_grid_ms"], frames["gaps_over_1p5x_median"]))
     times_csv = paths.debug / "times.csv"
     write_times_csv(paths.dataset / "mav0", times_csv)
     return RecordingData(manifest, imu_csv, times_csv)
@@ -28,15 +30,15 @@ def prepare_lens_videos(video: Path, context: VisualContext, *, lenses: tuple[st
     if not lenses or len(set(lenses)) != len(lenses) or set(lenses) - {'front', 'rear'}:
         raise ProcessingError('准备镜头视频', '镜头列表必须由不重复的 front/rear 组成')
     prepared = []
+    resolved_config = paths.debug / 'video_parameters.yaml'
+    config.write_yaml(resolved_config, context.parameters)
     for lens in lenses:
         stage = f'准备镜头视频（{lens}）'
         output = paths.lens_videos / f'{lens}.mp4'
         log = paths.logs / f'{lens}_video.log'
         runtime.run_logged(
             [settings.tools_python, str(runtime.TOOLS / 'make_lens_video.py'), str(video),
-             str(paths.dataset / 'mav0'), str(output), 'right' if lens == 'front' else 'left',
-             '--size-px', str(context.parameters.video.size_px),
-             '--crf', str(context.parameters.video.crf), '--preset', context.parameters.video.preset],
+             str(paths.dataset / 'mav0'), str(output), LENS_HALF[lens], '--config', str(resolved_config)],
             log, stage=stage, environment=settings.environment, failure_code=3,
         )
         if not output.is_file() or output.stat().st_size == 0:

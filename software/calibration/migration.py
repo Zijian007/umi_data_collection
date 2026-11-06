@@ -1,10 +1,11 @@
 """显式升级旧设备标定：新增不可变版本，默认不切换设备或历史批次。"""
 from __future__ import annotations
 import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 from software import registry
 from software.storage import locked
-from software.trajectory import calibration_assets
+from software.trajectory.calibration import assets as calibration_assets
 
 
 def upgrade_device(serial: str, *, dry_run: bool = False) -> dict:
@@ -16,14 +17,8 @@ def upgrade_device(serial: str, *, dry_run: bool = False) -> dict:
     old_version = selected['calibration_version']
     if selected['bundle_schema_version'] == 2:
         return dict(status='current', serial=serial, version=old_version, activated=False)
-    version = selected['id']+'-v2'
     parent = source.parent.parent
-    directory = parent/version
-    plan = dict(status='planned' if dry_run else 'stored', serial=serial, source_version=old_version,
-                version=version, directory=str(directory), activated=False)
-    if dry_run:
-        return plan
-    with locked(registry.ROOT, '.registry.lock'):
+    with nullcontext() if dry_run else locked(registry.ROOT, '.registry.lock'):
         # 原版本必须仍然存在且校验通过；不依赖期间可能改变的当前默认指针。
         registry.get(serial, calibration=old_version, allow_retired=True)
         with tempfile.TemporaryDirectory(prefix='umi-upgrade-') as temp:
@@ -32,6 +27,12 @@ def upgrade_device(serial: str, *, dry_run: bool = False) -> dict:
             if registry.bundle_sha256(bundle) != selected['bundle_sha256']:
                 raise ValueError('升级期间源测量发生变化，拒绝发布')
             files = {'bundle/'+p.name: p for p in bundle.iterdir() if p.is_file()}
+            version = registry.measurement_version(parent, files,
+                identity=dict(kind='umi_camera_calibration', serial=serial), asset_prefix='bundle/')
+            plan = dict(status='planned' if dry_run else 'stored', serial=serial, source_version=old_version,
+                        version=version, directory=str(parent / version), activated=False)
+            if dry_run:
+                return plan
             report = source.parent/'report.txt'
             if report.is_file():
                 files['report.txt'] = report

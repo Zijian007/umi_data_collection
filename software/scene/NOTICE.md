@@ -17,5 +17,10 @@ Local adaptations add exact IMU interval boundaries, observability and residual
 gates, parallel/antiparallel gravity handling, explicit scene/calibration versions,
 configuration-driven noise, and integration with the X3 timestamp convention.
 These files are modified adaptations, not unmodified upstream KIWI code.
-The existing `trajectory/algorithms/kiwi_fuse3s.py` remains the separate legacy
-per-recording implementation.
+Shared-map scale estimation and motion-segment screening now call the common
+solver in `trajectory/algorithms/fusion_alignment.py`; the three-node system in
+`geometry.py` is retained only as an observability check. Shared maps fit one
+scale, gravity vector and accelerometer bias across accepted segments, rather
+than adopting independent per-segment map placements.
+The separate per-recording implementation is in `trajectory/algorithms/fusion.py`;
+its command-line adapter is `trajectory/algorithms/fusion_cli.py`.

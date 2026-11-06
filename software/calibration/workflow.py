@@ -22,7 +22,8 @@ from software.calibration import (
 )
 from software.calibration.algorithms import aprilgrid_detect, board_pnp
 from software.calibration.models import CalibrationRequest, RunPaths, StageContext, StageError, VerificationRequest
-from software.trajectory import calibration_assets as trajectory_calibration
+from software.trajectory.calibration import assets as trajectory_calibration
+from software.vision.runtime import write_error_log
 
 
 def run(request: CalibrationRequest) -> int:
@@ -95,7 +96,7 @@ def run(request: CalibrationRequest) -> int:
             report.record_gravity(gravity_result)
             check_results.extend(checks.assess_gravity(gravity_result, configuration.values.checks))
 
-            # 5. 封装 umi-traj 读取的标定包，让下一步 C 使用真实的轨迹处理入口。
+            # 5. 封装 内部轨迹引擎读取的标定包，让下一步 C 使用真实的轨迹处理入口。
             stage = '生成标定包'
             bundle = camera_imu.build_bundle(camera_imu_result, context, recordings=calibration_inputs.recordings,
                                              tag_size_mm=request.tag_size_mm)
@@ -111,7 +112,7 @@ def run(request: CalibrationRequest) -> int:
             # 保留阶段函数给出的详细归因（如“读取 B 段”）；其他异常用当前 stage 归因。
             stage_error = error if isinstance(error, StageError) else StageError(stage, str(error))
             report.record_failure(stage_error)
-            runtime.write_error_log(paths.logs / 'stage_error.log', error)
+            write_error_log(paths.logs / 'stage_error.log', error)
 
         # 执行异常直接判失败；正常执行结束后，由全部检查项决定 PASS / 提醒 / FAIL。
         conclusion = 'FAIL' if stage_error else checks.verdict(check_results)
@@ -195,7 +196,7 @@ def verify(request: VerificationRequest) -> int:
             # 所有阶段采用同一收尾方式，同时保留真实原因和完整异常堆栈。
             stage_error = error if isinstance(error, StageError) else StageError(stage, str(error))
             report.record_failure(stage_error)
-            runtime.write_error_log(paths.logs / 'stage_error.log', error)
+            write_error_log(paths.logs / 'stage_error.log', error)
             # 失败也生成一条验收项，报告中同时显示执行原因与 FAIL 检查项。
             failed_measurement = {'status': 'failed', 'reason': str(stage_error)}
             check_results.extend(checks.assess_verification(failed_measurement, calibration_name, configuration.values.checks))

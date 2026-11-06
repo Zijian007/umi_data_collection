@@ -1,8 +1,8 @@
-"""umi-traj -- 从 Insta360 X3 录像抽取夹爪轨迹。
+"""内部逐段轨迹引擎，供标定 C 验证和开发测试使用。
 
-    umi-traj <video.insv | folder> [more ...] [--out DIR] [--mode handheld|dual] [--jobs N] [--keep-work] [--force]
+    python -m software.trajectory <video.insv | folder> [more ...] [--out DIR] [--mode handheld|dual] [--jobs N] [--keep-work] [--force]
                                          [--device SERIAL] [--gripper ID]
-    umi-traj check                         # 检查运行环境
+    python -m software.trajectory check                         # 检查运行环境
 
 目录输入处理该目录直接包含的全部 .insv。结果写入 <输出目录>/<录像名>/，
 默认输出目录为第一项输入旁的 umi_traj_out/。主要产物为 traj_tcp.txt、front.mp4、trajectory.png 和 report.txt，辅助产物在 details/。
@@ -25,7 +25,7 @@ def main(argv=None) -> int:
         return runtime.check()
     if argv and argv[0] == "run":
         argv = argv[1:]
-    parser = argparse.ArgumentParser(prog="umi-traj", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(prog="python -m software.trajectory", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("inputs", nargs="+", help=".insv 录像或包含录像的目录，可指定多项")
     parser.add_argument("--out", type=Path, default=None, help="输出目录（默认第一项输入旁的 umi_traj_out/）")
     parser.add_argument("--mode", choices=["handheld", "dual"], default=None,

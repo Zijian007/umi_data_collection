@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from software.environment import python_executable
+from software.vision.runtime import write_error_log
 
 import numpy as np
 
@@ -23,7 +24,7 @@ def read_camera_positions(traj_camera: Path) -> np.ndarray:
 
 def trajectory_check(video: Path, detections: dict, context: StageContext, *,
                      calibration_json: Path, bundle: str, tag: str) -> dict:
-    """Run umi-traj with the selected calibration, then compare camera positions to the board."""
+    """Run the internal trajectory engine with the selected calibration, then compare camera positions to the board."""
     output = context.paths.work / ("C_traj_" + tag)
     log = context.paths.logs / f"C_umi_traj_{tag}.log"
     environment = dict(os.environ, UMI_TRAJ_CALIB=bundle, PYTHONPATH=str(runtime.REPO) + os.pathsep + os.environ.get("PYTHONPATH", ""))
@@ -90,5 +91,5 @@ def validate_trajectory(video: Path, dataset: Path, bundle: BundleResult,
                                          bundle='factory', tag='factory')
         except Exception as error:
             reference = {'status': 'comparison_failed', 'reason': str(error)}
-            runtime.write_error_log(context.paths.logs / 'C_sample_comparison_error.log', error)
+            write_error_log(context.paths.logs / 'C_sample_comparison_error.log', error)
     return TrajectoryValidation(candidate=candidate, reference=reference)

@@ -1,20 +1,24 @@
 """按批次套件接收原片，再为明确的左右手生成任务；重复导入不重复建任务。"""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from software.scene import layout
+
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 import math
+import json
 import os
 from pathlib import Path
 import re
-import uuid
 from contextlib import nullcontext
 
 from software.console import Console
+from software import registry
 from . import inputs
 from .episodes import record_capture
 from software.scene.pipeline import recordings
-from software.storage import locked, write_json, write_yaml
+from software.scene.layout import locked
+from software.storage import write_json, write_yaml
 
 console = Console('入库')
 
@@ -66,7 +70,7 @@ def scan_raw_videos(paths: list[Path]) -> tuple[list[RawVideoInfo], list[dict]]:
         if source.is_file() and source.suffix.lower() == '.insv':
             files.add(source)
         elif source.is_dir():
-            files.update(path for path in source.rglob('*') if path.is_file() and path.suffix.lower() == '.insv')
+            files.update(recordings.insv_files(source))
         else:
             errors.append(dict(path=str(source), reason='输入不存在或不是原始 INSV'))
     found = {}
@@ -106,17 +110,78 @@ def plan_episodes(recording_infos: list[RawVideoInfo], arms: dict[str, str], par
     return paired, pending
 
 
+def plan_tasks(recording_infos: list[RawVideoInfo], arms: dict[str, str], parameters,
+               batch: Path, existing: dict | None = None) -> tuple[list[tuple[Path, dict]], list[dict]]:
+    """尊重用户已分好的 take；只有未分组原片参与自动时间配对。"""
+    existing = existing or {}
+    grouped, unassigned = {}, []
+    video_dirs = [videos for videos in inputs.batch_video_sources(batch) if videos.name == 'videos']
+    for item in recording_infos:
+        owner = next((layout.manifest(videos.parent, 'episode.yaml') for videos in video_dirs
+                      if item.path.is_relative_to(videos.resolve())), None)
+        if owner is not None:
+            grouped.setdefault(owner, []).append(item)
+        else:
+            unassigned.append(item)
+    expected = inputs.read_arms(list(arms))
+    plans, pending = [], []
+    for path, items in sorted(grouped.items()):
+        plan = {arm: [item for item in items if item.serial == serial] for arm, serial in arms.items()}
+        if path.exists() and any(not values for values in plan.values()):
+            unassigned.extend(items)
+            continue
+        if any(len(values) > 1 for values in plan.values()):
+            pending.extend(dict(**item.summary(), status='ambiguous_task', expected_arms=list(expected),
+                                reason='同一 take 每只手只能有一段原片，请按操作拆分 take') for item in items)
+            continue
+        plan = {arm: values[0] for arm, values in plan.items() if values}
+        plans.append((path, plan))
+        if set(plan) != set(expected):
+            pending.extend(dict(**item.summary(), status='missing_peer', expected_arms=list(expected)) for item in items)
+    paired, unmatched = plan_episodes(unassigned, arms, parameters)
+    pending.extend(unmatched)
+    names = [path.name for path in batch.iterdir()] if batch.exists() else []
+    index = max((int(name[5:]) for name in names if re.fullmatch(r'take_\d+', name)), default=0) + 1
+    for plan in paired:
+        previous = {existing[item.sha256] for item in plan.values() if item.sha256 in existing}
+        if len(previous) > 1:
+            pending.extend(dict(**item.summary(), status='conflicting_tasks', expected_arms=list(expected)) for item in plan.values())
+            continue
+        path = next(iter(previous)) if previous else layout.metadata(batch / f'take_{index:03d}', 'episode.yaml')
+        if not previous:
+            index += 1
+        plans.append((path, plan))
+    return plans, pending
+
+
+def _remove_pending_source(source: Path, target: Path, pending: Path, digest: str) -> None:
+    """清单成功保存后，移除已归位的待配对副本，保留外部源文件。"""
+    if source != target and source.is_relative_to(pending.resolve()) and source.is_file():
+        if registry.sha256_file(source) != digest:
+            raise ValueError(f'待配对原片归位后发生变化，已保留：{source}')
+        source.unlink()
+        directory = source.parent
+        while directory.is_relative_to(pending):
+            try:
+                directory.rmdir()
+            except OSError:
+                break
+            directory = directory.parent
+
+
 def _write_episode(session, path: Path, recording_refs: dict, expected: tuple, instruction: str | None = None) -> Path:
     """手动登记与自动入库共用写入；相同内容不改清单和验收，补片保留任务描述。"""
     previous = inputs.read_yaml(path) if path.exists() else {}
-    if previous and inputs.read_arms(previous['expected_arms']) != expected:
+    if previous and inputs.read_arms(previous.get('expected_arms', session.expected_arms)) != expected:
         raise ValueError('已有任务的预期使用手不能改变，请建立新任务')
-    data = dict(schema_version=previous.get('schema_version', 5), session=os.path.relpath(session.path, path.parent),
-        expected_arms=list(expected),
-        instruction=previous.get('instruction', '') if instruction is None else instruction, recordings=recording_refs)
-    if data['schema_version'] == 5:
-        data['synchronization'] = previous.get('synchronization', dict(
-            offsets_s={arm: 0. for arm in expected}, confirmed=False, note=''))
+    data = dict(schema_version=previous.get('schema_version', 5), recordings=recording_refs)
+    if expected != session.expected_arms:
+        data['expected_arms'] = list(expected)
+    description = previous.get('instruction', '') if instruction is None else instruction
+    if description:
+        data['instruction'] = description
+    if data['schema_version'] == 5 and len(expected) > 1 and 'synchronization' in previous:
+        data['synchronization'] = previous['synchronization']
     if data != previous:
         write_yaml(path, data)
         record_capture(path)
@@ -126,8 +191,8 @@ def _write_episode(session, path: Path, recording_refs: dict, expected: tuple, i
 def register_episode(session, name: str, recording_paths: dict[str, Path], *, expected_arms=None, instruction: str | None = None, link: bool = False) -> Path:
     """登记/补片或更新已有任务指令；既有原片不替换，同步配置原样保留。"""
     name = inputs.validate_episode_name(name)
-    directory = session.path.parent / name
-    target = directory / 'episode.yaml'
+    directory = session.root / name
+    target = layout.manifest(directory, 'episode.yaml')
     existing_arms = inputs.read_episode(target, verify=False).expected_arms if target.is_file() else session.expected_arms
     expected = inputs.read_arms(expected_arms or existing_arms, session.expected_arms)
     if instruction is not None and not isinstance(instruction, str):
@@ -139,7 +204,7 @@ def register_episode(session, name: str, recording_paths: dict[str, Path], *, ex
     metadata = {arm: recordings.inspect(video) for arm, video in recording_paths.items()}
     if any(item['serial'] != session.arm_serials[arm] for arm, item in metadata.items()):
         raise ValueError('INSV 内部序列号与套件的左右手配置不一致')
-    with locked(session.path.parent):
+    with locked(session.root):
         recording_refs = {}
         if target.exists():
             old = inputs.read_episode(target)
@@ -149,31 +214,40 @@ def register_episode(session, name: str, recording_paths: dict[str, Path], *, ex
             for arm, item in metadata.items():
                 if arm in recording_refs and recording_refs[arm]['sha256'] != item['sha256']:
                     raise ValueError('不能替换已有任务原片，请建立新任务')
-        raw = recordings.ROOT / session.scene.name / session.kit['id'] / session.name
+        raw = directory / 'videos'
         for arm, video in recording_paths.items():
             if arm in recording_refs:
                 continue
-            imported = recordings.import_video(video, raw, metadata=metadata[arm], link=link)
+            imported = recordings.import_video(video, raw / arm, metadata=metadata[arm], link=link, owned_root=raw)
             recording_refs[arm] = dict(metadata[arm], path=os.path.relpath(imported, directory))
-        return _write_episode(session, target, recording_refs, expected, instruction)
+        _write_episode(session, target, recording_refs, expected, instruction)
+        for arm, video in recording_paths.items():
+            _remove_pending_source(video.resolve(), (directory / recording_refs[arm]['path']).resolve(),
+                                   session.root / 'pending', metadata[arm]['sha256'])
+        return target
 
 
 def ingest(raw_paths: list[Path], session_path: Path, *, expected_arms=None, dry_run=False, link: bool = False) -> dict:
     session = inputs.read_session(session_path)
     expected = inputs.read_arms(expected_arms or session.expected_arms, session.expected_arms)
-    batch_recording_dir = recordings.ROOT / session.scene.name / session.kit['id'] / session.name
-    with nullcontext() if dry_run else locked(session.path.parent):
-        sources = [*raw_paths, *([batch_recording_dir] if batch_recording_dir.exists() else [])]
+    batch = session.root
+    pending_root = batch / 'pending'
+    with nullcontext() if dry_run else locked(session.root):
+        sources = [*raw_paths, *inputs.batch_video_sources(batch)]
         recording_infos, errors = scan_raw_videos(sources)
+        mapping_hashes = {item['sha256'] for item in session.mapping.values()}
+        recording_infos = [item for item in recording_infos if item.sha256 not in mapping_hashes
+                           and not item.path.is_relative_to((batch / 'mapping').resolve())]
         allowed = {arm: session.arm_serials[arm] for arm in expected}
+        serial_arms = {serial: arm for arm, serial in allowed.items()}
         ignored = [dict(**item.summary(), reason='不属于本批次预期使用的设备') for item in recording_infos if item.serial not in allowed.values()]
         recording_infos = [item for item in recording_infos if item.serial in allowed.values()]
-        existing, incomplete, names = {}, {}, []
-        for path in sorted(session.path.parent.glob('*/episode.yaml')):
-            if path.parent.name.startswith('.') or path.parent.name in inputs.INTERNAL_DIRECTORIES:
+        existing, incomplete = {}, {}
+        for path in sorted(layout.manifest(child, 'episode.yaml') for child in session.root.iterdir()
+                           if child.is_dir() and layout.manifest(child, 'episode.yaml').is_file()):
+            if layout.owner(path).name.startswith('.') or layout.owner(path).name in inputs.INTERNAL_DIRECTORIES:
                 continue
             episode = inputs.read_episode(path, verify=False)
-            names.append(path.parent.name)
             for item in episode.recording_refs.values():
                 if item['sha256'] in existing:
                     raise ValueError('同一原片已属于多个任务，请先核对任务清单')
@@ -181,42 +255,49 @@ def ingest(raw_paths: list[Path], session_path: Path, *, expected_arms=None, dry
             if set(episode.expected_arms) != set(episode.recordings.keys()):
                 incomplete[path] = episode
         complete_hashes = {digest for digest, path in existing.items() if path not in incomplete}
-        skipped = sorted({existing[item.sha256].parent.name for item in recording_infos if item.sha256 in complete_hashes})
+        skipped = sorted({layout.owner(existing[item.sha256]).name for item in recording_infos if item.sha256 in complete_hashes})
         candidates = [item for item in recording_infos if item.sha256 not in complete_hashes]
+        for index, item in enumerate(candidates):
+            pending_file = pending_root / serial_arms[item.serial] / item.path.name
+            if pending_file.is_file() and registry.sha256_file(pending_file) == item.sha256:
+                candidates[index] = replace(item, path=pending_file)
         # 手动登记过的不完整任务也参与补齐，避免另一张卡稍后导入时丢失关联。
         for episode in incomplete.values():
             for arm, path in episode.recordings.items():
                 digest = episode.recording_refs[arm]['sha256']
                 if digest not in {item.sha256 for item in candidates}:
                     candidates.append(extract_video_info(path))
-        plans, pending = plan_episodes(candidates, allowed, session.scene.parameters)
-        index = max((int(name[5:]) for name in names if re.fullmatch(r'take_\d+', name)), default=0) + 1
+        plans, pending = plan_tasks(candidates, allowed, session.scene.parameters, batch, existing)
         created = []
         imported = {}
-        for item in candidates:
-            path = item.path if dry_run else recordings.import_video(item.path, batch_recording_dir,
-                metadata=dict(serial=item.serial, sha256=item.sha256), link=link)
-            imported[item.sha256] = RawVideoInfo(path, item.serial, item.sha256, item.started_at_unix_s, item.duration_s)
-        for plan in plans:
-            previous = {existing[item.sha256] for item in plan.values() if item.sha256 in existing}
-            if len(previous) > 1:
-                pending.extend(dict(**item.summary(), status='conflicting_tasks', expected_arms=list(expected)) for item in plan.values())
-                continue
-            path = next(iter(previous)) if previous else session.path.parent / f'take_{index:03d}' / 'episode.yaml'
-            if not previous:
-                index += 1
-            entry = dict(name=path.parent.name, path=str(path), status='planned' if dry_run else 'imported', arms=list(plan))
+        for path, plan in plans:
+            entry = dict(name=layout.owner(path).name, path=str(path), status='planned' if dry_run else 'imported', arms=list(plan))
             created.append(entry)
             if not dry_run:
-                recording_refs = {arm: imported[item.sha256].reference(path.parent) for arm, item in plan.items()}
+                raw = layout.owner(path) / 'videos'
+                for arm, item in plan.items():
+                    target = recordings.import_video(item.path, raw / arm,
+                        metadata=dict(serial=item.serial, sha256=item.sha256), link=link, owned_root=raw)
+                    imported[item.sha256] = RawVideoInfo(target, item.serial, item.sha256, item.started_at_unix_s, item.duration_s)
+                recording_refs = {arm: imported[item.sha256].reference(layout.owner(path)) for arm, item in plan.items()}
                 _write_episode(session, path, recording_refs, expected)
+                for item in plan.values():
+                    _remove_pending_source(item.path, imported[item.sha256].path, pending_root, item.sha256)
+        for item in pending:
+            if item['sha256'] in imported:
+                item['path'] = str(imported[item['sha256']].path)
+            elif not dry_run and item['sha256'] not in existing:
+                source = Path(item['path'])
+                if not any(source.is_relative_to(videos.resolve()) for videos in inputs.batch_video_sources(batch) if videos.name == 'videos'):
+                    item['path'] = str(recordings.import_video(source, pending_root / serial_arms[item['serial']],
+                        metadata=item, link=link, owned_root=pending_root))
         result = dict(status='planned' if dry_run else ('pending' if pending or errors else 'ok'),
             session=str(session.path), expected_arms=list(expected), total_scanned=len(recording_infos),
             episodes=created, skipped=skipped, pending=pending, ignored=ignored, errors=errors)
-        if not dry_run:
-            report = session.path.parent / 'imports' / (uuid.uuid4().hex + '.json')
-            write_json(report, result)
-            write_json(session.path.parent / 'imports/latest.json', result)
+        if not dry_run and (created or pending or ignored or errors):
+            report = layout.metadata(session.root, 'import.json')
+            if not report.is_file() or json.loads(report.read_text()) != result:
+                write_json(report, result)
         return result
 
 

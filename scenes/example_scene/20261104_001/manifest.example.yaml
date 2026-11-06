@@ -1,0 +1,16 @@
+# 自动解析记录示例，无需手填；每次 run 以当前 batch.yaml、kit.yaml 和原片为准。
+schema_version: 5
+kit:
+  id: example_kit
+  arms:
+    left:
+      serial: CAMERA_SERIAL
+      calibration: '001'
+      gripper: handheld_v1
+      gripper_version: '003'
+mapping:
+  serial: CAMERA_SERIAL
+  path: mapping/VID_YYYYMMDD_HHMMSS_00_001.insv
+  # 占位值；程序自动计算哈希并按序列号匹配套件中的标定。
+  sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+# 单段建图没有左右手标签。地图字段只是复用候选，输入身份匹配才会复用。

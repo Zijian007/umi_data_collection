@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from software import config
-from software.camera.x3.frame import FPS_USED
+from software.camera.x3.frame import output_frame_rate
 import time
 from typing import Callable
 from dataclasses import asdict
@@ -39,7 +39,7 @@ def optimize_trajectory(aligned: AlignmentResult, placements: MapPlacements,
                         parameters: config.TrajectoryParameters, *, log=print) -> OptimizedGraph:
     """按照固定插入顺序构图和优化，保留原求解器的数值行为。"""
     fusion_parameters, zupt_parameters = parameters.fusion, parameters.zupt
-    gravity_m_s2, frame_rate_hz = fusion_parameters.gravity_m_s2, FPS_USED
+    gravity_m_s2, frame_rate_hz = fusion_parameters.gravity_m_s2, float(output_frame_rate(parameters.video.frame_step))
     lenses, alignment_estimates, initial_lens = aligned.lenses, aligned.estimates, aligned.initial_lens
     frame_count = len(aligned.video_times_s)
     video_times_s, imu_video_times_s = aligned.video_times_s, aligned.imu_video_times_s
@@ -222,7 +222,8 @@ def optimize_trajectory(aligned: AlignmentResult, placements: MapPlacements,
         front_lever_final=res.atVector(FRONT_LEVER_KEY).round(4).tolist() if use_flever else None,
         ba_final=res.atConstantBias(B(nodes[-1])).accelerometer().round(4).tolist(),
         graph_error_init=float(err0), graph_error_final=float(err1),
-        effective_parameters={"fusion": asdict(fusion_parameters), "zupt": asdict(zupt_parameters)},
+        effective_parameters={"video": {"frame_step": parameters.video.frame_step},
+                              "fusion": asdict(fusion_parameters), "zupt": asdict(zupt_parameters)},
         params={"node_stride": node_stride, "map_residual": use_map_residual,
                 "acc_noise": acc_noise, "gyro_noise": gyro_noise, "acc_rw": acc_bias_rw,
                 "pos_sigma": position_sigma_m, "adaptive_sigma": adaptive_sigma, "lens_pos_sigma": lens_position_sigmas,

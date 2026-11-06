@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from software import registry
-from software.trajectory import calibration_assets as trajectory_calibration
+from software.trajectory.calibration import assets as trajectory_calibration
 from software.calibration import reports, runtime
 
 
@@ -36,7 +36,7 @@ def install_bundle(output: Path, force: bool, camera_serial: str | None = None, 
     archived_report = Path(device["dir"]).parent / "report.txt"
     if not archived_report.exists():
         shutil.copyfile(output / "report.txt", archived_report)
-    runtime.console.write(f"已启用标定：相机 {device['serial']}；标定 {device['id']}；"
+    runtime.console.write(f"已启用标定：相机 {device['serial']}；标定 {device['calibration_version']}；"
                           f"夹爪 {device['gripper']}；目录：{device['dir']}", state="完成")
     return 0
 
@@ -58,21 +58,6 @@ def install_gripper(gripper_id: str, directory: Path) -> int:
         runtime.console.write(str(error), state="失败")
         return 2
     runtime.console.write(f"已登记夹爪几何：{gripper_id}；版本 {result['version']}", state="完成")
-    return 0
-
-
-def adopt_sample(*, camera_serial: str | None, from_video: Path | None,
-                 gripper: str | None, note: str | None) -> int:
-    try:
-        camera_serial = camera_serial or (registry.read_insv_serial(from_video) if from_video else None)
-        if not camera_serial:
-            runtime.console.write("需要 --serial，或 --from-video <这台相机的 .insv>", state="失败")
-            return 2
-        device = registry.adopt_sample(camera_serial, gripper=gripper, note=note)
-    except registry.RegistryError as error:
-        runtime.console.write(str(error), state="失败")
-        return 2
-    runtime.console.write(f"已登记：相机 {device['serial']}；样例标定 {device['id']}；夹爪 {device['gripper']}", state="完成")
     return 0
 
 

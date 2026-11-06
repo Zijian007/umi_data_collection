@@ -306,8 +306,9 @@
  "why": "",
  "wall_s": 1092.8,
  "activation": {
-  "checked_at": "2026-10-22T22:38:41+08:00",
+  "checked_at": "2026-11-04T16:22:32+08:00",
   "state": "active",
+  "version": "001",
   "message": "已设为该设备默认标定（UMI_TRAJ_CALIB 可临时覆盖）"
  }
 }

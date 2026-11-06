@@ -27,7 +27,8 @@ def visual_settings(environment: dict[str, str], *, lens_settings: dict[str, str
     for lens, text in lens_settings.items():
         paths[lens] = output / f'{lens}.yaml'
         paths[lens].write_text(text, encoding='utf-8')
-    mask = prepare_mask(front_mask, output / 'front_mask.png', parameters.video.size_px)
+    mask = prepare_mask(front_mask, output / 'front_mask.png', parameters.video.size_px,
+                        crop=parameters.video.crop)
     return VisualSettings(environment=dict(environment),
         tools_python=python_executable(environment, tools=True),
         orb_directory=orb, vocabulary=vocabulary, front_settings=paths['front'],
@@ -72,7 +73,7 @@ def validate_engines(environment: dict[str, str]) -> tuple[Path, Path]:
         raise ProcessingError('准备运行环境', str(error)) from error
     for name in ('ORB3_DIR',):
         if not environment.get(name):
-            raise ProcessingError('准备运行环境', f'缺少环境变量 {name}；请通过 ./umi-traj 启动')
+            raise ProcessingError('准备运行环境', f'缺少环境变量 {name}；请通过 ./umi-scene 启动')
     orb = Path(environment['ORB3_DIR']).resolve()
     vocabulary = Path(environment.get('ORB3_VOCAB') or orb / 'Vocabulary/ORBvoc.txt').resolve()
     for path in (orb_executable(orb), vocabulary):

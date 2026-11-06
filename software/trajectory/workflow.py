@@ -23,6 +23,7 @@ from software.trajectory.reporting.quality import evaluate_notes
 from software.trajectory.algorithms import postprocess
 from software.trajectory.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
 from software.vision.models import ProcessingError
+from software.vision.runtime import write_error_log
 
 
 def run_batch(input_paths: list[str], output: Path | None, request: TrajectoryRequest, *, jobs: int = 1) -> int:
@@ -111,7 +112,8 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
     try:
         # 1. 读取容器帧时间和尾部 IMU，不解码图像；此处检查丢帧策略。
         runtime.console.write("读取录像时间戳和 IMU", recording=recording_name, step=(1, 4))
-        data = visual_recordings.prepare(video, paths, allow_irregular=request.allow_irregular)
+        data = visual_recordings.prepare(video, paths, allow_irregular=request.allow_irregular,
+            frame_step=request.configuration.values.video.frame_step)
         frames = data.manifest["frames"]
         runtime.console.write(f"{frames['n_frames_used']} 帧；时长 {frames['duration_s']:.1f} 秒", recording=recording_name)
 
@@ -156,11 +158,11 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
             summary['map_visualization'] = 'details/map.json'
         except (OSError, ValueError) as error:
             summary.setdefault('notes', []).append(f'地图展示数据未生成：{error}')
-            runtime.write_error_log(paths.logs / 'map_export_error.log', error)
+            write_error_log(paths.logs / 'map_export_error.log', error)
         summary["status"] = "ok"
     except Exception as error:
         summary.update(reason=str(error), failed_stage=error.stage if isinstance(error, ProcessingError) else stage)
-        runtime.write_error_log(paths.logs / "stage_error.log", error)
+        write_error_log(paths.logs / "stage_error.log", error)
     except (KeyboardInterrupt, SystemExit):
         summary.update(reason="处理已中断", failed_stage=stage)
         raise
@@ -177,7 +179,7 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
         except OSError as error:
             summary["debug_retained"] = True
             summary.setdefault("notes", []).append(f"临时数据未完全清理：{error}")
-            runtime.write_error_log(paths.logs / "cleanup_error.log", error)
+            write_error_log(paths.logs / "cleanup_error.log", error)
             results.finalize_result(paths.output, summary)
     reports.show_recording(summary)
     return summary

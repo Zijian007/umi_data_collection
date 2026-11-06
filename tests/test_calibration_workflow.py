@@ -13,7 +13,7 @@ from software.calibration import (
     checks, cli, devices, inputs, recording_data, reports, runtime, validation, workflow,
 )
 from software.calibration.algorithms import board_pnp
-from software.trajectory import calibration_assets as tcal
+from software.trajectory.calibration import assets as tcal
 from software.calibration.models import CameraImuResult, GravityResult, IntrinsicsResult
 
 
@@ -29,10 +29,8 @@ class DeviceCommandTests(unittest.TestCase):
             self.assertEqual(cli.main(['install', '/result', '--serial', 'camera', '--gripper', 'handheld_v1', '--force']), 0)
             install.assert_called_once_with(Path('/result'), True, camera_serial='camera', gripper='handheld_v1')
 
-    def test_sample_command_passes_values_without_argparse_namespace(self):
-        with patch.object(devices, 'adopt_sample', return_value=0) as adopt:
-            self.assertEqual(cli.main(['adopt-sample', '--from-video', '/C.insv', '--note', 'test']), 0)
-            adopt.assert_called_once_with(camera_serial=None, from_video=Path('/C.insv'), gripper=None, note='test')
+    def test_help_contains_only_supported_device_commands(self):
+        self.assertNotIn('adopt-sample', cli.build_parser().format_help())
 
 
 class AcceptanceTests(unittest.TestCase):
@@ -112,7 +110,7 @@ class RegistryFallbackTests(unittest.TestCase):
                 registry.get("new-camera")
         self.assertTrue(issubclass(registry.UnknownCameraError, registry.RegistryError))
 
-    def run_verify(self, error, directory, sample):
+    def run_verify(self, error, directory):
         video = directory / "C.insv"
         video.touch()
         args = Namespace(config=None, dry_run=False, video=str(video), out=str(directory / "verify"), force=False,
@@ -121,26 +119,20 @@ class RegistryFallbackTests(unittest.TestCase):
             stack.enter_context(patch.object(runtime, "check_environment", return_value=True))
             stack.enter_context(patch.object(registry, "read_insv_serial", return_value="camera"))
             stack.enter_context(patch.object(registry, "resolve_insv", side_effect=error))
-            stack.enter_context(patch.object(registry, "sample", sample))
             stack.enter_context(patch.object(runtime.console, "write"))
             return workflow.verify(inputs.parse_verify_args(args))
 
-    def test_broken_or_retired_registry_never_uses_sample(self):
-        from unittest.mock import Mock
+    def test_broken_or_retired_registry_is_rejected(self):
         for reason in ("retired", "hash mismatch", "incomplete bundle"):
             with self.subTest(reason=reason), tempfile.TemporaryDirectory() as tmp:
-                sample = Mock()
-                rc = self.run_verify(registry.RegistryError(reason), Path(tmp), sample)
+                rc = self.run_verify(registry.RegistryError(reason), Path(tmp))
                 self.assertEqual(rc, 2)
-                sample.assert_not_called()
 
-    def test_unknown_camera_attempts_sample_and_reports_sample_error(self):
-        from unittest.mock import Mock
+    def test_unknown_camera_is_rejected_without_creating_output(self):
         with tempfile.TemporaryDirectory() as tmp:
-            sample = Mock(side_effect=registry.RegistryError("sample missing"))
-            rc = self.run_verify(registry.UnknownCameraError("unknown"), Path(tmp), sample)
+            rc = self.run_verify(registry.UnknownCameraError("unknown"), Path(tmp))
             self.assertEqual(rc, 2)
-            sample.assert_called_once_with()
+            self.assertFalse((Path(tmp) / 'verify').exists())
 
 
 class FullWorkflowTests(unittest.TestCase):

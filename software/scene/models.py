@@ -7,7 +7,8 @@ from pathlib import Path
 import numpy as np
 
 from software import config
-from software.trajectory import selection
+from software.scene import layout
+from software.trajectory.calibration import selection
 from software.vision.models import LensVideo, VisualContext
 
 ARMS = ('left', 'right')
@@ -75,10 +76,20 @@ class Session:
     map_manifest_sha256: str | None
     kit: dict
     expected_arms: tuple[str, ...]
+    mapping: dict = field(default_factory=dict)
+
+    @property
+    def root(self) -> Path:
+        return layout.owner(self.path)
 
     @property
     def name(self) -> str:
-        return self.path.parent.name
+        return self.root.name
+
+    @property
+    def relative_path(self) -> Path:
+        """批次在原片归档和导出包中的路径。"""
+        return Path(self.scene.name) / self.name
 
     @property
     def devices(self) -> dict[str, dict]:
@@ -102,12 +113,16 @@ class Episode:
     synchronization: dict
 
     @property
+    def root(self) -> Path:
+        return layout.owner(self.path)
+
+    @property
     def scene(self) -> Scene:
         return self.session.scene
 
     @property
     def output(self) -> Path:
-        return self.path.parent / 'results'
+        return self.root / 'results'
 
     def offsets(self) -> dict[str, float]:
         missing = set(self.expected_arms) - set(self.recordings.keys())

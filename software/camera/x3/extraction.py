@@ -3,20 +3,20 @@
     python -m software.camera.x3.extraction <VID_..._00_NNN.insv> --out <dir>
 
 writes
-    <dir>/mav0/cam0/data.csv        "#timestamp [ns],filename" -- one row per frame the tool uses (every 2nd frame -> 29.97 fps)
+    <dir>/mav0/cam0/data.csv        "#timestamp [ns],filename" -- one row per selected frame
     <dir>/mav0/imu0/data.csv        "#timestamp [ns],w_x,w_y,w_z [rad/s],a_x,a_y,a_z [m/s^2]"
     <dir>/extract_manifest.json     source size / sha256, profile, counts, frame-timing check
 
 No image is decoded or written (the lens video is cut separately by make_lens_video.py); the filename column only keeps the
 EuRoC format.
   * IMU: software.camera.x3.imu_reader.read_imu_and_meta. t_ns = round((t_s + 1 s) * 1e9), rows with t_ns < 0 dropped.
-  * Frames: presentation timestamps are read from the container packets (no decoding), sorted, and every 2nd one is kept.
+  * Frames: presentation timestamps are read from the container packets (no decoding), sorted, and sampled by frame_step.
     t_s = float(pts * float(time_base)), t_ns = int(round((t_s + 1.0) * 1e9)). The time base is the container's float
     value, not an exact fraction.
 
 Refuses (exit 2) anything that is not a single packed 3840x1920 stream (= the X3 "360 4K60" mode the calibration belongs to),
-an IMU trailer that cannot be read, or duplicate / missing presentation timestamps.  The fusion places frame k at k / 29.97 s;
-the frame-timing check reports how far the real timestamps are from that grid (frames dropped by the camera show up here).
+an IMU trailer that cannot be read, or duplicate / missing presentation timestamps.
+The frame-timing check compares against the configured sampling grid; default step 2 gives 29.97 fps.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import numpy as np
 
 from software.camera.x3.imu_reader import ImuReadError, read_imu_and_meta
 from software.camera.x3.frame import (
-    FPS_SRC, FPS_USED, PROFILE, STEP, T0_S, detect_profile_from_streams,
+    FPS_SRC, PROFILE, STEP, T0_S, detect_profile_from_streams, output_frame_rate,
     FPS_TOLERANCE, REGULAR_GRID_TOLERANCE_MS, GAP_INTERVAL_RATIO, IMU_COVERAGE_TOLERANCE_S,
 )
 EUROC_IMU_HEADER = ("#timestamp [ns],w_RS_S_x [rad s^-1],w_RS_S_y [rad s^-1],w_RS_S_z [rad s^-1],"
@@ -94,7 +94,8 @@ def write_imu(imu: dict, path: Path) -> int:
     return int(len(keep))
 
 
-def extract(insv: Path, out: Path, with_sha256: bool = True) -> dict:
+def extract(insv: Path, out: Path, with_sha256: bool = True, *, frame_step: int = STEP) -> dict:
+    frame_rate = float(output_frame_rate(frame_step))
     insv = Path(insv)
     info = video_stream_info(insv)
     profile = detect_profile_from_streams(info["video_streams"])
@@ -109,7 +110,7 @@ def extract(insv: Path, out: Path, with_sha256: bool = True) -> dict:
         raise Refused(f"{insv.name}: IMU trailer unreadable: {e}") from e
 
     pts, tb = presentation_pts(insv)
-    sel = pts[::STEP]
+    sel = pts[::frame_step]
     t_s_list = [float(p * tb) for p in sel]
     t_s = np.array(t_s_list)
     t_ns = [int(round((x + T0_S) * 1e9)) for x in t_s_list]
@@ -123,15 +124,15 @@ def extract(insv: Path, out: Path, with_sha256: bool = True) -> dict:
     (cam / "data.csv").write_text("#timestamp [ns],filename\n" + "".join(f"{t},{t}.png\n" for t in t_ns), encoding="utf-8")
     n_imu = write_imu(imu, imu_dir / "data.csv")
 
-    grid = np.arange(len(t_s)) / FPS_USED          # the fusion's frame grid: row k at k / 29.97 s, first frame at 0
+    grid = np.arange(len(t_s)) / frame_rate
     dev_ms = np.abs(t_s - grid) * 1e3
     d = np.diff(t_s)
     med = float(np.median(d))
-    timing = {"n_frames_recorded": len(pts), "n_frames_used": len(sel), "step": STEP,
+    timing = {"n_frames_recorded": len(pts), "n_frames_used": len(sel), "step": frame_step, "fps_used": frame_rate,
               "first_frame_s": float(t_s[0]), "duration_s": float(t_s[-1] - t_s[0]),
               "dt_median_ms": med * 1e3, "dt_max_ms": float(d.max() * 1e3),
               "gaps_over_1p5x_median": int((d > GAP_INTERVAL_RATIO * med).sum()),
-              "max_deviation_from_29p97_grid_ms": float(dev_ms.max()),
+              "max_deviation_from_grid_ms": float(dev_ms.max()),
               "regular": bool(dev_ms.max() < REGULAR_GRID_TOLERANCE_MS and (d > GAP_INTERVAL_RATIO * med).sum() == 0)}
     imu_t = imu["t_s"]
     imu_info = {"n_samples": n_imu, "rate_hz": float((len(imu_t) - 1) / (imu_t[-1] - imu_t[0])) if len(imu_t) > 1 else None,

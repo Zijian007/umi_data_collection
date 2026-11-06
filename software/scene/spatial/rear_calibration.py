@@ -21,6 +21,7 @@ from software.camera.geometry import imu_from_camera
 from software.scene.models import Scene
 from software.storage import write_json
 from software.pose_io import write_tum
+from software.vision.runtime import write_error_log
 
 
 def run(folder: Path, *, output: Path | None = None, tag_size_mm=24., cores='', keep_work=False,
@@ -92,7 +93,7 @@ def run(folder: Path, *, output: Path | None = None, tag_size_mm=24., cores='', 
             write_json(output / 'rear_calibration.json', measurement)
     except Exception as error:
         report.update(status='FAIL', reason=str(error))
-        runtime.write_error_log(paths.logs / 'rear_error.log', error)
+        write_error_log(paths.logs / 'rear_error.log', error)
         raise
     finally:
         write_json(output / 'report.json', report)

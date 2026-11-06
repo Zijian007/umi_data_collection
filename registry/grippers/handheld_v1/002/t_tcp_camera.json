@@ -1,0 +1,22 @@
+{
+  "status": "NOMINAL_CAD_CANDIDATE_UNVERIFIED",
+  "units": "metres",
+  "tcp_frame": {
+    "convention": "front_optical_parallel_v1",
+    "origin": "closed-fingertip contact midpoint",
+    "axes": {
+      "x": "front image right",
+      "y": "front image down",
+      "z": "front optical forward"
+    },
+    "handedness": "right-handed"
+  },
+  "T_camera_tcp": {
+    "R_rows": [
+      [1.0, 0.0, 0.0],
+      [0.0, 1.0, 0.0],
+      [0.0, 0.0, 1.0]
+    ],
+    "t_m": [-0.0001815, 0.0369877, 0.1650461]
+  }
+}

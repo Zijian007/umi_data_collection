@@ -1,0 +1,7 @@
+# kits/kit_001/kit.yaml
+arms:
+  right:
+    serial: IAQEB26097M4CP
+    calibration: '001'
+    gripper: handheld_v1
+    gripper_version: '003'

@@ -14,7 +14,7 @@ SELECTION_LABELS = {"registry": "设备档案", "UMI_TRAJ_CALIB": "环境变量�
 def write_result_report(output: Path, summary: dict) -> None:
     selected = summary.get('calibration_used', {})
     success = summary.get('status') == 'ok'
-    lines = ['umi-traj 轨迹报告', '=' * 18,
+    lines = ['UMI 轨迹报告', '=' * 18,
              f"录像：{summary.get('video', '未知')}",
              f"状态：{STATUS_LABELS.get(summary.get('status'), '未知')}",
              f"设备：{selected.get('serial') or '未知'}",

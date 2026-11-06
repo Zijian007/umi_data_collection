@@ -11,8 +11,10 @@ from software.camera.timing import (
     canonical_to_video_seconds, euroc_ns_to_seconds,
     video_to_canonical_seconds, video_to_imu_seconds,
 )
-from software.scene import fusion, inputs, results
-from software.scene.geometry import VisualObservations
+from software.scene.spatial import fusion
+from software.scene.management import inputs
+from software.scene.pipeline import results
+from software.scene.spatial.geometry import VisualObservations
 from software.scene.models import ArmTrajectory
 
 
