@@ -42,7 +42,7 @@ class RecordingFixture(unittest.TestCase):
         paths[0].write_bytes(calibration_assets.SAMPLE_CAMERA_JSON.read_bytes())
         paths[2].write_bytes((runtime.HERE / 'assets/config/front_hand_mask.png').read_bytes())
         self.selected = SelectedCalibration(CalibrationAssets(*paths), self.root, 'calib-id',
-                                            'camera', 'gripper', 'registry', 'registry', 'active', 100)
+                                            'camera', 'registry', 'registry', 'active', 100)
         self.output = self.root / 'results' / self.video.stem
 
     def fingerprint(self, request=TrajectoryRequest()):
@@ -138,21 +138,20 @@ class SelectionTests(unittest.TestCase):
             self.assertEqual(chosen.as_postprocess_dict(hashes)['mask'], str(chosen.assets.front_mask))
             self.assertEqual(chosen.time_offset_ns, calibration_assets.read_basalt(chosen.assets.camera_json)['cam_time_offset_ns'])
 
-    def test_invalid_override_is_reported_as_registry_error(self):
+    def test_invalid_override_fails_at_the_file_boundary(self):
         with patch.dict(os.environ, {'UMI_TRAJ_CALIB': '/missing/calibration'}):
-            with self.assertRaises(registry.RegistryError):
+            with self.assertRaises(FileNotFoundError):
                 selection.select_calibration(Path('video.insv'))
 
-    def test_gripper_override_preserves_camera_and_calibration(self):
-        record = dict(device_record(), serial='actual', gripper='original')
-        replacement = dict(id='replacement', version='geometry_002', tcp_json='/new/tcp.json', mask='/new/mask.png',
-                           tcp_sha256='tcp', mask_sha256='mask', dir='/new')
-        with patch.dict(os.environ, {'UMI_TRAJ_CALIB': ''}), patch.object(registry, 'get', return_value=record), \
-                patch.object(registry, 'gripper_paths', return_value=replacement):
-            selected = registry.resolve_insv(Path('video.insv'), device='actual', gripper='replacement')
-        self.assertEqual((selected['serial'], selected['id']), ('actual', record['id']))
-        self.assertEqual((selected['gripper'], selected['tcp_json']), ('replacement', '/new/tcp.json'))
-        self.assertEqual(record['gripper'], 'original')
+    def test_explicit_tcp_preserves_camera_selection(self):
+        record = dict(device_record(), serial='actual', selection='registry')
+        tcp = Path(__file__).parent / 'fixtures/tcp_camera.json'
+        with patch.object(registry, 'resolve_insv', return_value=record):
+            selected = selection.select_calibration(Path('video.insv'), tcp=tcp)
+        self.assertEqual(selected.camera_serial, 'actual')
+        self.assertEqual(selected.assets.tcp_geometry, tcp)
+        self.assertEqual(selected.geometry, json.loads(tcp.read_text()))
+        self.assertNotIn('tcp_json', record)
 
 
 class WorkflowTests(RecordingFixture):

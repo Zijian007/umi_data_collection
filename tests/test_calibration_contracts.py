@@ -83,13 +83,15 @@ class CheckpointContractTests(unittest.TestCase):
             fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
             fake.chmod(0o755)
             (deps/'env.sh').write_text(f'export UMI_PY="{fake}"\n')
-            result=subprocess.run([str(runtime.REPO/'umi-calib'),'verify','missing.insv'],
-                env=dict(os.environ,UMI_DEPS=str(deps)),capture_output=True,text=True)
-            self.assertEqual(result.returncode,0)
-            self.assertIn('software.calibration',result.stdout)
-            self.assertIn('verify',result.stdout)
-            self.assertNotIn('安装',result.stderr)
-            self.assertFalse((deps/'calib_env').exists())
+            for command in ('verify', 'preview-width', 'detect-width'):
+                with self.subTest(command=command):
+                    result=subprocess.run([str(runtime.REPO/'umi-calib'),command,'missing.insv'],
+                        env=dict(os.environ,UMI_DEPS=str(deps)),capture_output=True,text=True)
+                    self.assertEqual(result.returncode,0)
+                    self.assertIn('software.calibration',result.stdout)
+                    self.assertIn(command,result.stdout)
+                    self.assertNotIn('安装',result.stderr)
+                    self.assertFalse((deps/'calib_env').exists())
 
 
 class GravityFailureTests(unittest.TestCase):

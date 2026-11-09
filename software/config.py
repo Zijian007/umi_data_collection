@@ -389,7 +389,7 @@ def _read_yaml(path: Path) -> dict:
     return data
 
 
-def load(kind: str, path: Path | None = None, overrides: dict | None = None) -> Configuration:
+def load(kind: str, path: Path | None = None, overrides: dict | None = None, *, inline: dict | None = None) -> Configuration:
     default_path = ROOT / 'config' / f'{kind}.yaml'
     try:
         defaults = _read_yaml(default_path)
@@ -400,6 +400,7 @@ def load(kind: str, path: Path | None = None, overrides: dict | None = None) -> 
             overlay = _read_yaml(path)
             sources.append(str(path))
         data = _merge(defaults, overlay)
+        data = _merge(data, inline or {})
         data = _merge(data, overrides or {})
         effective = from_dict(kind, data)
         changed = _differences(defaults, asdict(effective))

@@ -2,6 +2,13 @@
 arms:
   right:
     serial: IAQEB26097M4CP
-    calibration: '001'
-    gripper: handheld_v1
-    gripper_version: '003'
+    calibration: '002'
+    gripper:
+      tcp: tcp_camera.json
+      width: left_width.json
+  left:
+    serial: IAQEB2609JPAR3
+    calibration: '002'
+    gripper:
+      tcp: tcp_camera.json
+      width: right_width.json

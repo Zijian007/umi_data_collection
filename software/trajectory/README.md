@@ -8,7 +8,7 @@
 
 ```text
 cli.main() → workflow.run_batch() → workflow.run_recording()
-    selection.select_calibration()       固定设备标定及夹爪几何
+    selection.select_calibration()       选择相机标定及显式指定的 TCP 几何
     reuse.run_fingerprint()              输入、资产、算法与引擎身份
     reuse.reuse_decision()               完整成功结果复用
     vision.recordings.prepare()          时间戳、IMU、丢帧策略
@@ -99,18 +99,101 @@ algorithms/
 
 ## 输出
 
+标定 C 验证和开发测试使用内部逐段引擎。默认只输出相机/IMU 轨迹；需要 TCP 时显式提供 `--tcp kits/kit_001/tcp_camera.json`，可用 `--mask <PNG>` 覆盖通用遮手图。相机验收不依赖套件或夹爪。单段输出布局如下：
+
 ```text
-umi_traj_out/<录像名>/
-├── traj_tcp.txt
-├── front.mp4
-├── trajectory.png
-├── report.txt
-├── details/             相机/IMU 轨迹、逐帧信息、配置、摘要、展示地图
+umi_traj_out/VID_20261003_182246_00_067/
+├── traj_tcp.txt           提供 --tcp 时生成的夹爪尖轨迹
+├── front.mp4              前镜头视频，viewer 直接读取
+├── trajectory.png         轨迹预览（绘图成功时生成）
+├── report.txt             状态、设备、标定、运动统计和提醒
+├── details/
+│   ├── traj_camera.txt    相机轨迹，供标定验证和排查
+│   ├── traj_imu.txt       IMU 轨迹
+│   ├── frames.csv         逐帧对应关系和约束来源
+│   ├── run_settings.json  完整配置及资产哈希
+│   ├── summary.json       完整结果指标和复用判断信息
+│   └── map.json           前镜头轻量地图展示数据（导出成功时）
 └── debug/
-    ├── logs/            默认保留
-    ├── dataset/         --keep-work 或失败时保留
-    ├── lens_videos/
-    └── reconstruction/try_N/
+    ├── logs/              建图、定位和融合日志，默认保留
+    ├── dataset/           提取的时间戳与 IMU（按需保留）
+    ├── lens_videos/       本段录像共用的镜头视频（按需保留）
+    └── reconstruction/    各轮重建中间数据（按需保留）
 ```
 
-地图展示导出失败不会否定成功轨迹，错误单独记录。`--dry-run` 不创建输出，`--keep-work` 保留各轮计算现场。
+内部逐段结果先看 `report.txt`、`trajectory.png`，相机轨迹位于 `details/traj_camera.txt`，提供 TCP 几何时还可使用 `traj_tcp.txt`，配合 `front.mp4` 回看画面。视频是前镜头裁切，默认 720×720、约 29.97 fps，保留鱼眼畸变；实际裁切、尺寸、取帧和编码参数见本次运行记录。`details/` 提供完整结果与配置，`debug/` 用于排查。
+
+新运行成功后默认清理数据集与重建中间文件，根视频、轨迹、辅助结果和日志继续保留。`--keep-work` 保留完整中间数据；失败或中断时也保留。无独立真值的任务录像只报告跟踪和运动统计，不把地图约束比例当作真实误差。
+
+`details/map.json` 保存选中轮次的前镜头稀疏点云、关键帧和展示对齐信息。它独立于被清理的 `.osa`，可直接由 `umi-view` 查看；每图最多展示 50000 点。对齐只用于展示，不改动轨迹或地图，拟合残差不代表真实精度。导出失败只增加提醒，不改变轨迹抽取的成功状态，详细原因见 `debug/logs/map_export_error.log`。
+
+旧 `diagnostics/` 与平铺结果仍能读取；输入匹配而跳过计算时会自动整理为上述目录。整理旧结果只搬迁文件、发布根视频并修复引用，不重新建图、不改变轨迹数值，也不删除已有独有中间数据。
+
+### details/summary.json
+
+**总览**
+
+| 字段 | 意思 |
+|---|---|
+| `status` | `ok` 或 `failed`；失败时 `reason` 写原因 |
+| `pose_frame` | `camera` 或 `tcp`，由是否提供安装外参决定 |
+| `camera_path_length_m` / `tcp_path_length_m`、相应的 `*_extent_m` | 所选坐标原点的路程、活动范围（米） |
+| `notes` | 自动检查发现的问题（经验规则，不是精度测试） |
+| `run_settings` | 相对结果根目录的 `details/run_settings.json` |
+
+**建图**
+
+| 字段 | 意思 |
+|---|---|
+| `tracking.front_map_build_tracked` | 建图那一趟跟上了多少帧 / 总帧数（`debug/logs/run.txt` 里的 `map: rc=… TRACKED a / b`）。偏低：开头没初始化、中途跟丢另起图 |
+| `tries`、`chosen_try` | 重建失败或质量可疑时会重试完整的建图、定位和融合（默认最多 3 次）。`placements` 是融合里地图被摆了几块，大于 1 多半建图时跟丢、atlas 里不止一张图 |
+
+**定位**
+
+| 字段 | 意思 |
+|---|---|
+| `tracking.relocalization` | 每一张图单独查一遍。只有 `loc_m0` 表示全程一张图；出现 `loc_m1` 就是建图时另起过图，定位对每张图各播一遍 |
+| `tracking.front_lens_tracked_fraction` | 定位成功的帧比例（和 `details/frames.csv` 的 `front_lens_tracked` 一致） |
+
+**融合（最终轨迹）**
+
+| 字段 | 意思 |
+|---|---|
+| `constraint_fraction.full` | 有多少比例的帧最终用地图位置（越高越好；验证过的录像在 0.85–1.0）。定位成功但和 IMU 对不上会变成 `rot`，不是建图数字 |
+| `camera_map_chains` | 融合里连续「有地图位置」的段数。1 最好 |
+| `longest_stretch_without_map_position_s` | 最长一段没有地图位置、靠 IMU 衔接的时长（秒） |
+
+### debug/logs/：运行日志
+
+默认保留镜头视频准备日志、选中轮次的运行/建图/定位/融合记录，以及各次重试摘要；整段失败时保留完整阶段数据。摘要的失败阶段会区分视频准备、建图、定位、合并定位和 IMU 融合。
+
+| 文件 | 内容 |
+|---|---|
+| `run.txt` | 建图/定位摘要、工具哈希 |
+| `front_map_log.txt` | 建图过程、初始化和新地图事件 |
+| `front_loc_frames.csv` | 合并后的逐帧定位状态、位姿和地图来源 |
+| `fuse_info.json` | 融合全文，包括 chains、尺度与参数 |
+| `fuse.log` | 融合过程日志（源日志存在时保留） |
+| `runner_tryN.log` | 各轮阶段摘要、失败阶段与原始日志位置 |
+
+### debug/ 中间数据
+
+新运行仅在 `--keep-work`、失败或中断时保留；迁移旧结果时保留原有独有数据。
+
+| 路径 | 内容 |
+|---|---|
+| `debug/dataset/mav0/` | 每帧时间与 IMU |
+| `debug/lens_videos/front.mp4` | 从原片生成一次的前镜头视频；dual 模式另有 rear.mp4 |
+| `debug/reconstruction/try_N/front/front.mp4` | 该轮引用的共享前镜头视频，各轮不会重新裁切原片 |
+| `debug/reconstruction/try_N/front/map/map.osa` | 保存的地图 |
+| `debug/reconstruction/try_N/front/map/frames.csv` | 建图逐帧状态 |
+| `debug/reconstruction/try_N/front/loc_m*/frames.csv` | 对各地图逐帧重定位的结果 |
+| `debug/reconstruction/try_N/fuse/state.csv` | 融合内部状态，包括速度与 bias |
+
+根目录 `front.mp4` 独立保留，不依赖这些中间目录。双镜头模式的后镜头视频属于中间数据，可用 `--keep-work` 保留。
+
+### 参数与复用记录
+
+`details/run_settings.json` 的 `parameters` 保存完整有效配置、覆盖来源、代码和引擎身份；TXT 显示配置 ID 和覆盖项。重建参数与提醒规则分别计算指纹，详见 [参数管理](../../config/README.md)。新运行的融合脚本来自项目，标定包仅提供测量；双镜头模式的后镜头仍为样例几何。
+
+场景任务的结果布局与人工验收见[结果指南](../../docs/结果查看与验收.md)。

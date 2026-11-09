@@ -36,7 +36,7 @@ class ResultReportTests(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         sample = registry.get('CAMERA_A')
-        for path in (Path(sample['json']), Path(sample['tcp_json']), Path(sample['mask'])):
+        for path in (Path(sample['json']),):
             original = registry.sha256_file
             with self.subTest(path=path), patch.object(registry, 'sha256_file', side_effect=lambda value: '0'*64 if Path(value) == path else original(value)):
                 with self.assertRaisesRegex(registry.RegistryError, '哈希'):
@@ -66,7 +66,7 @@ class ResultReportTests(unittest.TestCase):
     def empty_registry(root: Path) -> Path:
         target = root/'registry'
         target.mkdir()
-        (target/'index.json').write_text(json.dumps(dict(kind='umi_device_registry', version=2, devices={}, default_gripper='handheld_v1')))
+        (target/'index.json').write_text(json.dumps(dict(kind='umi_device_registry', version=2, devices={})))
         return target
 
     def test_manual_install_copies_result_and_updates_activation_snapshot(self):

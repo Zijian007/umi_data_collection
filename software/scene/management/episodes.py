@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from software.scene import layout
+from software.scene.result_io import trajectory_path
 
 from dataclasses import replace
 from collections.abc import Iterable
@@ -46,11 +47,7 @@ def episode_paths(paths: list[Path], *, exclude: Iterable[Path] = ()) -> list[Pa
     return list(dict.fromkeys(found))
 
 
-def read_state(directory: Path) -> dict:
-    return layout.read_state(directory)
-
-
-def record_capture(path: Path) -> None:
+def invalidate_task_state(path: Path) -> None:
     """清单变化使处理和验收失效；身份和使用手始终从清单读取。"""
     inputs.read_episode(path, verify=False)
     root = layout.owner(path)
@@ -77,7 +74,7 @@ def record_attempt(episode, status: str, target: Path | None, *, reason='') -> N
 
 def task_status(path: Path) -> dict:
     episode = inputs.read_episode(path, verify=False)
-    state = read_state(episode.root)
+    state = layout.read_state(episode.root)
     attempt = state.get('attempt', {})
     status = 'pending'
     if set(episode.expected_arms) - set(episode.recordings.keys()):
@@ -98,7 +95,7 @@ def successful_run(episode) -> tuple[Path, dict]:
     if status['status'] not in ('ok', 'skipped'):
         raise ValueError(f'任务当前尚无可验收的成功结果：{status["status"]}')
     run_dir = episode.output.resolve()
-    state = read_state(episode.root)
+    state = layout.read_state(episode.root)
     if (episode.root / state['attempt']['run']).resolve() != run_dir:
         raise ValueError('最近成功尝试与 results 入口不一致')
     run_manifest = json.loads((run_dir / 'episode.json').read_text())
@@ -117,7 +114,7 @@ def review(path: Path, *, accept: bool, reviewer: str, reason='') -> dict:
     episode = inputs.read_episode(path)
     with locked(episode.root):
         run_dir, _ = successful_run(episode)
-        state = read_state(episode.root)
+        state = layout.read_state(episode.root)
         decision = dict(decision='accepted' if accept else 'rejected', reviewer=inputs.validate_name(reviewer), reason=reason,
             run=str(run_dir.relative_to(episode.root)), result_sha256=config.file_hash(run_dir / 'episode.json'),
             checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
@@ -132,7 +129,7 @@ def review(path: Path, *, accept: bool, reviewer: str, reason='') -> dict:
 def accepted_run(episode) -> tuple[Path, dict, dict]:
     """成果打包和训练导出共用的只读入口，验证当前结果及其人工验收。"""
     run_dir, manifest = successful_run(episode)
-    record = read_state(episode.root).get('review', {})
+    record = layout.read_state(episode.root).get('review', {})
     if record.get('decision') != 'accepted' or record.get('result_sha256') != config.file_hash(run_dir / 'episode.json'):
         raise ValueError(f'任务尚未人工接收或验收对应的结果已变化：{episode.path}')
     return run_dir, manifest, record
@@ -160,9 +157,11 @@ def export(paths: list[Path], export_dir: Path, *, with_video=False) -> dict:
             files = ['report.txt', 'episode.json']
             if len(run_manifest['arms']) == 2:
                 files.append('bimanual.csv')
-            files += [f'{arm}/traj_tcp.txt' for arm in run_manifest['arms']]
-            files += [f'{arm}/{name}' for arm in run_manifest.get('gripper_width', {})
-                      for name in ('gripper_width.csv', 'details/gripper_width.json', 'details/gripper_width_frames.csv')]
+            files += [str(trajectory_path(run_dir / arm).relative_to(run_dir)) for arm in run_manifest['arms']]
+            files += [f'{arm}/gripper_width.csv' for arm in run_manifest.get('gripper_width', {})
+                      if trajectory_path(run_dir / arm).suffix != '.csv']
+            files += [f'{arm}/details/gripper_width_frames.csv' for arm in run_manifest.get('gripper_width', {})
+                      if f'{arm}/details/gripper_width_frames.csv' in run_manifest['assets']]
             if with_video:
                 files += [f'{arm}/front.mp4' for arm in run_manifest['arms']]
             exported_file_hashes = {}

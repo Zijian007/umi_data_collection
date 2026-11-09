@@ -1,0 +1,41 @@
+{
+  "kind": "umi_camera_calibration_result",
+  "schema_version": 3,
+  "camera_serial": "IAQEB2609JPAR3",
+  "lens": "front",
+  "camera_model": "kb4",
+  "resolution": [
+    1440,
+    1440
+  ],
+  "provenance": {
+    "created_by": "umi-calib",
+    "board": {
+      "tagCols": 6,
+      "tagRows": 6,
+      "tagSize": 0.024,
+      "tagSpacing": 0.3
+    },
+    "recordings": {
+      "A": {
+        "path": "/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/A/VID_20261102_160711_00_037.insv",
+        "sha256": "207f3084fad9c30daa9ac1e3b6d4c180fd0a202288ae660b3639fad5711f3018"
+      },
+      "B": {
+        "path": "/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/B/VID_20261102_160924_00_038.insv",
+        "sha256": "df0d302af2aa4777066d97882786eee082350a20d75c24b8893a8351ae66a44e"
+      },
+      "C": {
+        "path": "/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/C/VID_20261102_161145_00_039.insv",
+        "sha256": "6bb5cf72ee99cf03563384b05846e811d38ca5bbfd5e2017b3a8cb423cc0712e"
+      },
+      "D": {
+        "path": "/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/D/VID_20261102_161304_00_040.insv",
+        "sha256": "fe0a473afe5b45642712696acef213da1a1bdffec93c1d392564bed452ee4817"
+      }
+    }
+  },
+  "files": {
+    "calibration.json": "fa032ed8f14811e08674b799b23b12b87efd2df7ea85a99c17928e2ae76c6663"
+  }
+}

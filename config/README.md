@@ -6,12 +6,12 @@
 |---|---|---|
 | [calibration.yaml](calibration.yaml) | 标定算法、板检测、D 静止窗口、验收规则 | `umi-calib run / verify / recheck` |
 | [trajectory.yaml](trajectory.yaml) | 视频尺寸与编码、ORB、重建重试、IMU 融合、ZUPT、质量提醒 | `umi-scene`、内部逐段轨迹引擎及标定 C 段验证 |
-| [scene_parameters.yaml](scene_parameters.yaml) | 场景尺度/放置验收、固定坐标融合、原片配对与录制检查规则 | `umi-scene`；操作和覆盖方式见 [场景指南](../docs/场景处理.md) |
+| [scene_parameters.yaml](scene_parameters.yaml) | 场景尺度/放置验收、固定坐标融合、原片配对、宽度处理与录制检查规则 | `umi-scene`；操作和覆盖方式见 [场景指南](../docs/场景处理.md) |
 | 相机实测参数、时间差、TCP、遮手图 | `registry/` 中的相机与夹爪资产 | 按录像内部序列号选择，继续手动 `install` |
 | 输入/输出路径、CPU、并行数、保留中间文件 | 命令行请求 | 只影响执行方式，不写入算法配置 |
 | 原片规格、标定区域、像素变换与派生帧率规则 | `software/camera/x3/frame.py` | 相机图像规格；在结果中记录 |
 
-`config/scene_parameters.yaml` 保存算法默认参数；`scenes/<场景>/scene.yaml` 保存具体场景的地图模式和算法覆盖；建图原片与设备快照保存在各批次 manifest.yaml。场景定义中的 `parameters` 可以引用算法参数覆盖文件。
+`config/scene_parameters.yaml` 保存算法默认参数；`scenes/<场景>/scene.yaml` 保存具体场景的地图模式和算法覆盖；建图原片与设备快照保存在各批次 manifest.yaml。场景定义中的 `trajectory` 和 `parameters` 直接保存该场景的参数改动。
 
 ## 怎么使用
 
@@ -22,25 +22,21 @@
 ./umi-scene run scenes/shelf/20261105_001 --dry-run
 ```
 
-调整默认配置会影响以后使用默认配置的运行。做实验时，可以另写只包含变更项的覆盖文件，例如：
+调整默认配置会影响以后使用默认配置的运行。针对某个场景做实验时，直接在它的 `scene.yaml` 中写改动项：
 
 ```yaml
-video:
-  size_px: 960
-fusion:
-  node_stride: 3
+trajectory:
+  video:
+    size_px: 960
+  fusion:
+    node_stride: 3
+parameters:
+  minimum_localization_fraction: 0.6
 ```
 
-将这份文件命名为 `trajectory-tuning.yaml`，在所属场景的 `scene.yaml` 中设置：
+`trajectory` 覆盖本页的 `trajectory.yaml`，`parameters` 覆盖 `scene_parameters.yaml`；不需要额外的场景参数文件。场景配置版本默认 3，可省略 schema_version；历史 schema 2 的文件引用仍可读取，迁移时将原覆盖文件内容放入这两个映射。场景配置不再保存设备和建图录像，分别从 kit.yaml 和批次 mapping/ 读取。
 
-```yaml
-schema_version: 2
-trajectory_config: trajectory-tuning.yaml
-```
-
-相对路径以 `scene.yaml` 所在目录为基准。场景尺度、配对等参数可通过 `parameters: scene-tuning.yaml` 覆盖。标定算法覆盖使用 `umi-calib run --config <文件>`。
-
-优先级为项目默认 YAML → 显式覆盖文件。不会隐式搜索当前目录或用户主目录中的配置。`--jobs`、`--cores`、`--force` 属于执行选项，具体参数见对应命令的 `--help`。
+优先级为项目默认 YAML → 场景内联覆盖 → 显式 CLI 覆盖。标定的实验覆盖仍使用 `umi-calib run --config <文件>`，内部独立轨迹引擎仍支持自己的 `--config`；这些不是新的场景配置来源。`--jobs`、`--cores`、`--force` 只影响执行方式。
 
 ## 参数按流程组织
 
@@ -101,6 +97,18 @@ trajectory_validation:
 
 旧覆盖文件若包含上述字段，需删除后再运行，否则按未知字段报错。已有结果不会自动改写；旧配置快照与当前配置不同时，`recheck` 会拒绝，可用 `run --resume` 或 `verify --resume` 更新受影响的计算后再验收。固定值和推导规则由代码内容指纹追踪。
 
+## 夹爪宽度处理参数
+
+config/scene_parameters.yaml 管理宽度的处理策略，可在 scene.yaml 的 parameters 中直接覆盖。测量 JSON 只保存 anchors、verified 等实测信息。
+
+| 参数 | 默认值 | 作用 |
+|---|---|---|
+| gripper_width_max_gap_s | 0.2 | 宽度缺口两端最大间隔，秒；0 表示不填补 |
+| gripper_width_closed_threshold_mm | 3.0 | 闭合判定阈值，毫米；非负且小于该手标定最大开口 |
+| gripper_width_diagnostics | false | 输出原片逐帧诊断 CSV |
+
+这些参数参与任务结果身份，不参与建图身份。原片检测缓存仅由原片内容和检测器决定；测量、阈值和输出时间轴变化会复用检测。宽度报告统一保存在 episode.json，格式见[训练数据](../docs/训练数据.md#夹爪宽度标定与接入)。
+
 ## 重试与配置校验
 
 `trajectory.retry.maximum_scale_change_ratio` 控制重建的尺度发散保护：每个有位置约束的分段比较融合后尺度与自身初始化，使用 `max(后/前, 前/后)`，不同地图之间不直接比较。默认上限为 2 倍，超限轮次重试且不得选中，全部轮次不合格则失败。它不修改融合解，也不放宽 `calibration.checks`；当前上限是粗粒度保护，尚需多录像检验。C 的运行记录保存每轮视觉、对齐和尺度诊断，验收前保留子进程工作数据。
@@ -109,7 +117,7 @@ YAML 使用 1.2 规则，开关写 `true` / `false`，空覆盖写 `{}`；重复
 
 ## 视频处理参数
 
-`config/trajectory.yaml` 的 `video:` 统一配置 INSV → 镜头视频的处理。默认仍为：**3840×1920 原片 → 前/后镜头的已标定 1440×1440 区域 → 720×720 H.264 视频，每两帧取一帧**。修改场景专用覆盖文件也使用相同字段。
+`config/trajectory.yaml` 的 `video:` 统一配置 INSV → 镜头视频的处理。默认仍为：**3840×1920 原片 → 前/后镜头的已标定 1440×1440 区域 → 720×720 H.264 视频，每两帧取一帧**。在 scene.yaml 的 trajectory.video 中覆盖时也使用相同字段。
 
 ```yaml
 video:

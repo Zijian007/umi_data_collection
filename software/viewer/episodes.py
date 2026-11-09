@@ -10,6 +10,7 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 from software.scene import layout
+from software.scene.result_io import trajectory_path
 
 from software.viewer.data import ViewerDataError
 
@@ -73,7 +74,8 @@ def read_episode(directory: Path, contains) -> tuple[dict, dict[str, Path]]:
         if not isinstance(relative, str):
             raise ViewerDataError('共享场景手路径无效')
         path = (directory / relative).resolve()
-        if not path.is_relative_to(directory.resolve()) or not contains(path / 'traj_tcp.txt') or not (path / 'traj_tcp.txt').is_file():
+        tcp_path = trajectory_path(path)
+        if not path.is_relative_to(directory.resolve()) or not contains(tcp_path) or not tcp_path.is_file():
             raise ViewerDataError('共享场景手路径缺失或越界')
         arms[arm] = path
     return data, arms

@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 from ruamel.yaml.error import YAMLError
 
 from software.calibration import devices
@@ -31,6 +32,26 @@ def main(argv=None) -> int:
     """Parse arguments and call each command's owning module explicitly."""
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.cmd in ('preview-width', 'detect-width'):
+        from av.error import FFmpegError
+        from cv2 import error as OpenCVError
+        from software.gripper_width import preview
+        try:
+            if args.cmd == 'preview-width':
+                result = preview.render(args.video, args.out, roi=args.roi, contrast=args.contrast)
+            else:
+                from software.gripper_width import monitor
+                video_output = None if args.no_video else (args.video_out or args.video.with_name(args.video.stem + '_width_detect.mp4'))
+                result = monitor.run(args.video, args.roi, hz=args.hz, output=args.out,
+                                     benchmark=args.benchmark, video_output=video_output, contrast=args.contrast)
+        except (OSError, ValueError, RuntimeError, FFmpegError, OpenCVError) as error:
+            runtime.console.write(str(error), state='失败')
+            return 2
+        except KeyboardInterrupt:
+            runtime.console.write('宽度处理已中断', state='中断')
+            return 130
+        print(json.dumps(result, ensure_ascii=False, indent=2), file=sys.stderr if args.cmd == 'detect-width' else sys.stdout)
+        return 0
     if args.cmd == "run":
         try:
             request = inputs.parse_run_args(args)
@@ -43,11 +64,9 @@ def main(argv=None) -> int:
     if args.cmd == "recheck":
         return workflow.recheck(args.out, args.config)
     if args.cmd == "install":
-        return devices.install_bundle(Path(args.out), args.force, camera_serial=args.serial, gripper=args.gripper)
+        return devices.install_bundle(Path(args.out), args.force, camera_serial=args.serial)
     if args.cmd == "install-rear":
         return devices.install_rear(args.measurement)
-    if args.cmd == "install-gripper":
-        return devices.install_gripper(args.gripper_id, args.directory)
     if args.cmd in ("devices", "status"):
         return devices.list_devices()
     if args.cmd == "retire":
@@ -84,6 +103,24 @@ def main(argv=None) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="umi-calib", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="cmd")
+    width_preview = commands.add_parser('preview-width', help='从 INSV 生成标签框、ID 和像素距离叠加 MP4')
+    width_preview.add_argument('video', type=Path, help='X3 原始 3840×1920 INSV')
+    width_preview.add_argument('--out', type=Path, help='输出 MP4，默认原片旁的 <原名>_width_preview.mp4')
+    width_preview.add_argument('--roi', type=int, nargs=4, metavar=('LEFT', 'TOP', 'RIGHT', 'BOTTOM'),
+                               help='固定检测范围，使用原始 1920×1920 前镜头半幅坐标；先裁剪再检测')
+    width_detection = commands.add_parser('detect-width', help='固定 ROI 无界面检测，默认以 30 Hz 输出 CSV 并保存叠加 MP4')
+    width_detection.add_argument('video', type=Path, help='X3 原始 3840×1920 INSV')
+    width_detection.add_argument('--roi', type=int, nargs=4, required=True, metavar=('LEFT', 'TOP', 'RIGHT', 'BOTTOM'),
+                                 help='原始 1920×1920 前镜头半幅的固定检测范围')
+    width_detection.add_argument('--hz', type=float, default=30., help='视频时间上的采样频率，默认 30 Hz')
+    width_detection.add_argument('--out', type=Path, help='保存 CSV，默认逐条输出到终端；已有文件拒绝覆盖')
+    video_options = width_detection.add_mutually_exclusive_group()
+    video_options.add_argument('--video-out', type=Path, help='MP4 路径，默认原片旁的 <原名>_width_detect.mp4')
+    video_options.add_argument('--no-video', action='store_true', help='仅输出 CSV，关闭 MP4 编码')
+    width_detection.add_argument('--benchmark', action='store_true', help='不按原速等待，测量包含解码的最大处理频率')
+    for width_command in (width_preview, width_detection):
+        width_command.add_argument('--contrast', type=float, default=1.,
+                                   help='ROI 对比度增益，默认 1 不增强；暗光可尝试 2，同时增强检测补检和视频 ROI')
     run_parser = commands.add_parser("run", help="从 A/B/C/D 四段录像求解并验收前镜头标定")
     run_parser.add_argument("folder", nargs="?", help="标定目录：A/B/C/D 子目录各 1 个 .insv，或平铺 4 个 .insv（按文件名排序）")
     for segment in "abcd":
@@ -91,7 +128,6 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--out", help="结果目录（默认 <folder 或 A 录像所在目录>/calibration_result）")
     run_parser.add_argument("--compare-sample", action="store_true", help="额外用样例标定跑 C 段轨迹，仅作对照，默认不运行")
     run_parser.add_argument("--install", action="store_true", help="检查通过后按序列号写入设备档案")
-    run_parser.add_argument("--gripper", help="--install 登记时绑定的夹爪 id（默认 registry 的 default_gripper）")
     verify_parser = commands.add_parser("verify", help="用 C 段录像复查已有前镜头标定，不生成或启用新参数")
     verify_parser.add_argument("video", help="C 段录像（录法见 docs/标定.md 的“录 4 段”）")
     verify_parser.add_argument("--out", help="结果目录（默认 <录像名>_calibration_verification，在录像旁边）")
@@ -113,7 +149,6 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser = commands.add_parser("install", help="把一份通过检查的标定按序列号写入设备档案")
     install_parser.add_argument("out")
     install_parser.add_argument("--serial", help="核对测量所属序列号（不能改写）")
-    install_parser.add_argument("--gripper", help="夹爪 id（默认 registry 的 default_gripper）")
     install_parser.add_argument("--force", action="store_true", help="允许完整结果的质量拒绝；仍校验证据和身份，不能安装 INCOMPLETE")
     rear_parser = commands.add_parser("install-rear", help="登记通过验收的后镜头标定版本")
     rear_parser.add_argument("measurement", type=Path)
@@ -128,9 +163,6 @@ def build_parser() -> argparse.ArgumentParser:
     rear.add_argument('--resume', action='store_true', help='校验并复用已完成步骤')
     rear.add_argument('--force', action='store_true', help='清空指定结果目录后重算，不能与 --resume 同用')
     rear.add_argument('--workers', type=int, help='数据处理线程预算：图像准备/板检测默认最多 24，转 bag 解码最多 4，受 --cores 限制')
-    gripper_parser = commands.add_parser("install-gripper", help="登记夹爪几何版本，已有版本保留")
-    gripper_parser.add_argument("gripper_id")
-    gripper_parser.add_argument("directory", type=Path)
     upgrade = commands.add_parser('upgrade-device', help='把该设备旧标定包保存为 v2 新版本，不自动启用')
     upgrade.add_argument('serial')
     upgrade.add_argument('--dry-run', action='store_true', help='只校验来源并显示升级计划，不创建文件')

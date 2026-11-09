@@ -1,0 +1,28 @@
+# 复制到 scenes/<场景名>/scene.yaml；文件可省略，所有字段都有默认值。
+# 场景只保存模式和算法选项；场景名取自目录，无需填写。
+
+# 默认共享前镜头地图，支持左手、右手和双手。
+# dual 表示前后双镜头；需在 kit.yaml 为每台相机指定 rear_calibration，
+# 并在批次 mapping/left/、mapping/right/ 各放一段建图录像。
+mode: shared_front
+
+# 可选的场景说明。
+# description: 货架取放区域
+
+# dual 模式下的建图坐标参考，默认 left。
+# reference_arm: left
+
+# 可选：直接在这里覆盖 config/trajectory.yaml，只写要改的项。
+# trajectory:
+#   video:
+#     size_px: 720
+#   fusion:
+#     node_stride: 5
+
+# 可选：直接覆盖 config/scene_parameters.yaml，无需另建参数文件。
+# parameters:
+#   minimum_localization_fraction: 0.5
+#   maximum_visual_gap_s: 2.0
+
+# 批次选择的套件/使用手/地图版本写在 batch.yaml；设备与标定写在 kit.yaml。
+# 新格式默认 schema_version: 3，无需显式填写；不再填写 mapping、devices 或覆盖文件路径。

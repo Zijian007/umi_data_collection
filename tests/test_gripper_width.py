@@ -6,25 +6,26 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from registry_fakes import write_kit, write_batch
 from unittest.mock import patch
 
 import av
 import cv2
 import numpy as np
+from software.scene.result_io import pose_rows
 
-from software import registry
+from software import config, registry
 from software.dataset.export import build, load_episode
-from software.gripper_width import calibration, pipeline, series
-from software.scene.management import capture_config, episodes, inputs
-from software.scene import workflow
-from software.storage import write_json
+from software.gripper_width import calibration, detection, pipeline, series
+from software.scene.management import batches, episodes, inputs
+from software.scene import layout, workflow
+from software.storage import write_json, write_yaml
 import test_dataset as dataset_fixtures
 import test_scene_management as registry_fixtures
 
 
-def measurement(verified=False):
-    return dict(mapping=dict(status='test_fixture', anchors=[dict(x=200., mm=0.), dict(x=400., mm=100.)]),
-                verified=verified, closed_threshold_mm=3., max_gap_s=.2)
+def measurement():
+    return dict(mapping=dict(status='test_fixture', anchors=[dict(x=200., mm=0.), dict(x=400., mm=100.)]))
 
 
 class WidthNumericalTests(unittest.TestCase):
@@ -40,7 +41,7 @@ class WidthNumericalTests(unittest.TestCase):
             path = Path(folder) / 'calibration.json'
             data = measurement()
             write_json(path, data)
-            self.assertFalse(calibration.read(path)['verified'])
+            self.assertNotIn('verified', calibration.read(path))
             write_json(path, data['mapping'])
             self.assertEqual(calibration.read(path)['open_width_mm'], 100.)
             data['mapping']['anchors'][1]['x'] = 100.
@@ -65,24 +66,61 @@ class WidthNumericalTests(unittest.TestCase):
         sampled = series.resample(aligned, np.array([-.1, .14, .5, .8, 1.1]), .25)
         np.testing.assert_array_equal(sampled.valid, [False, True, False, False, False])
 
-    def test_cached_detection_reuses_video_clock_and_invalidates_calibration_change(self):
+    def test_detection_cache_survives_measurement_policy_and_clock_changes(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             path = root / 'width.json'
             write_json(path, measurement())
             output = root / 'result'
-            (output / 'details').mkdir(parents=True)
+            output.mkdir()
             times = np.arange(10)/60.
-            detected = (times, np.full(10, 20.), np.zeros(10, bool))
-            with patch.object(pipeline, 'detect', return_value=detected) as detect:
-                pipeline.process(root/'raw.insv', path, times[::2], -.12, output, root/'cache', 'a'*64)
-                pipeline.process(root/'raw.insv', path, times[::2], -.24, output, root/'cache', 'a'*64)
-                self.assertEqual(detect.call_count, 1)
-                measured = series.read(output/'gripper_width.csv')
+            detected = detection.DetectionSeries(times, np.full(10, 240.))
+            def process(offset=-.12, *, gap=.2, threshold=3., diagnostics=False, recording='a'*64):
+                return pipeline.process(root/'raw.insv', calibration.read(path), times[::2], offset, output, root/'cache', recording,
+                                        calibration_sha256=config.file_hash(path), max_gap_s=gap, closed_threshold_mm=threshold, diagnostics=diagnostics)
+            with patch.object(detection, 'detect', return_value=detected) as detect:
+                process()
+                self.assertFalse((output / 'details').exists())
+                result = process(-.24)
+                measured = result.samples
                 np.testing.assert_allclose(measured.times_s, times[::2]-.24, atol=1e-9)
-                write_json(path, measurement(verified=True))
-                pipeline.process(root/'raw.insv', path, times[::2], -.24, output, root/'cache', 'a'*64)
+                np.testing.assert_allclose(measured.width_mm, 20.)
+                updated = measurement()
+                updated['mapping']['anchors'][-1]['mm'] = 120.
+                write_json(path, updated)
+                result = process(gap=0., threshold=30., diagnostics=True)
+                measured = result.samples
+                np.testing.assert_allclose(measured.width_mm, 24.)
+                self.assertEqual(result.report['closed_fraction'], 1.)
+                self.assertFalse((output / 'gripper_width.csv').exists())
+                self.assertTrue((output / 'details/gripper_width_frames.csv').is_file())
+                self.assertFalse((output / 'details/gripper_width.json').exists())
+                self.assertNotIn('calibration_source', result.report)
+                self.assertEqual(detect.call_count, 1)
+                process(recording='b'*64)
                 self.assertEqual(detect.call_count, 2)
+                with patch.object(detection, 'identity', return_value=dict(detector='changed')):
+                    process()
+                self.assertEqual(detect.call_count, 3)
+
+    def test_detection_cache_rejects_tampering(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            measured = detection.DetectionSeries(np.array([0., .1]), np.array([240., np.nan]))
+            with patch.object(detection, 'detect', return_value=measured) as detect:
+                detection.cached(root / 'raw.insv', root, 'a'*64)
+                next(root.rglob('detections.npz')).write_bytes(b'tampered')
+                with self.assertRaisesRegex(ValueError, '缓存身份或哈希'):
+                    detection.cached(root / 'raw.insv', root, 'a'*64)
+                self.assertEqual(detect.call_count, 1)
+
+    def test_measurement_rejects_processing_options(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'width.json'
+            for field in ('max_gap_s', 'closed_threshold_mm'):
+                write_json(path, dict(measurement(), **{field: .2}))
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'scene.yaml'):
+                    calibration.read(path)
 
     def test_detector_reads_native_front_half_and_preserves_pts(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -103,46 +141,88 @@ class WidthNumericalTests(unittest.TestCase):
                         container.mux(packet)
                 for packet in stream.encode():
                     container.mux(packet)
-            calibrated = measurement()['mapping']
-            times, widths, above = pipeline.detect(path, calibrated)
-            np.testing.assert_allclose(times, np.arange(3)/30., atol=1e-8)
-            np.testing.assert_allclose(widths, 50., atol=1.)
-            self.assertFalse(above.any())
+            detected = detection.detect(path)
+            np.testing.assert_allclose(detected.times_s, np.arange(3)/30., atol=1e-8)
+            np.testing.assert_allclose(detected.distance_px, 300., atol=1.)
 
 
-class WidthRegistryTests(unittest.TestCase):
+class WidthKitTests(unittest.TestCase):
     def setUp(self):
         self.f = registry_fixtures.RegistryVersionTests()
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         registry.register('CAMERA_B', self.f.bundle)
         self.scene = self.f.root / 'scene'
-        from software.scene import cli
-        self.assertEqual(cli.main(['init', str(self.scene)]), 0)
-        self.width = self.f.root / 'width.json'
+        self.scene.mkdir()
+        self.width = inputs.KITS / 'rig/left_width.json'
         write_json(self.width, measurement())
+        self.arms = {
+            'left': dict(serial='CAMERA_A', calibration='001', gripper=dict(tcp='tcp_camera.json', width='left_width.json')),
+            'right': dict(serial='CAMERA_B', calibration='001', gripper=dict(tcp='tcp_camera.json')),
+        }
 
-    def test_kit_freezes_camera_owned_calibration_and_detects_tampering(self):
-        first = capture_config.register_kit('rig', dict(left='CAMERA_A', right='CAMERA_B'),
-                                           width=dict(left=self.width))
-        session = capture_config.create_session(self.scene, 'morning', kit='rig')
-        binding = first['arms']['left']
-        path = registry.width_path('CAMERA_A', binding['width_calibration'],
-            gripper=binding['gripper'], gripper_version=binding['gripper_version'])
-        before = path.read_bytes()
-        write_json(self.width, measurement(verified=True))
-        second = capture_config.register_kit('rig', dict(left='CAMERA_A', right='CAMERA_B'),
-                                            width=dict(left=self.width))
-        self.assertNotEqual(first['arms']['left']['width_calibration'], second['arms']['left']['width_calibration'])
-        self.assertEqual(inputs.read_session(session).kit, first)
-        self.assertEqual(path.read_bytes(), before)
-        with self.assertRaises(OSError):
-            registry.width_path('CAMERA_B', binding['width_calibration'],
-                gripper=binding['gripper'], gripper_version=binding['gripper_version'])
-        path.write_text('{}')
-        with self.assertRaisesRegex(registry.RegistryError, '哈希'):
-            registry.width_path('CAMERA_A', binding['width_calibration'],
-                gripper=binding['gripper'], gripper_version=binding['gripper_version'])
+    def test_kit_reads_relative_width_without_registry_registration(self):
+        kit = write_kit('rig', self.arms)
+        self.assertEqual(kit['arms']['left']['gripper']['width'], str(self.width))
+        self.assertEqual(inputs.read_yaml(self.width.parent / 'kit.yaml')['arms']['left']['gripper']['width'],
+                         'left_width.json')
+        manifest = write_batch(self.scene, 'morning', kit='rig')
+        batch = inputs.read_batch(manifest)
+        scene = replace(batch.scene, devices=batch.devices)
+        with patch.object(registry, 'read_insv_serial', return_value='CAMERA_A'):
+            selected = inputs.select_camera(self.f.root / 'recording.insv', scene)
+        self.assertEqual(selected.files['width'], self.width)
+        self.assertNotIn('width', inputs.camera_identity(selected)['assets'])
+        self.assertFalse((registry.CAMERAS / 'CAMERA_A/gripper_width').exists())
+
+    def test_missing_and_invalid_width_sources_are_rejected(self):
+        write_kit('rig', self.arms)
+        manifest = write_batch(self.scene, 'missing', kit='rig')
+        batch = inputs.read_batch(manifest)
+        scene = replace(batch.scene, devices=batch.devices)
+        with patch.object(registry, 'read_insv_serial', return_value='CAMERA_A'):
+            self.width.unlink()
+            with self.assertRaises(OSError):
+                inputs.select_camera(self.f.root / 'recording.insv', scene)
+            write_json(self.width, dict(anchors=[]))
+            with self.assertRaisesRegex(ValueError, 'anchors'):
+                inputs.select_camera(self.f.root / 'recording.insv', scene)
+
+    def test_user_width_paths_must_stay_inside_the_kit(self):
+        for filename in ('../escape.json', str(self.f.root / 'width.json'), '', 'left_width.yaml', None):
+            with self.subTest(filename=filename):
+                self.arms['left']['gripper']['width'] = filename
+                write_yaml(self.width.parent / 'kit.yaml', dict(arms=self.arms))
+                with self.assertRaisesRegex(ValueError, 'gripper.width'):
+                    inputs.read_kit('rig')
+        outside = self.f.root / 'outside.json'
+        write_json(outside, measurement())
+        (self.width.parent / 'linked.json').symlink_to(outside)
+        self.arms['left']['gripper']['width'] = 'linked.json'
+        write_yaml(self.width.parent / 'kit.yaml', dict(arms=self.arms))
+        with self.assertRaisesRegex(ValueError, '套件目录内'):
+            inputs.read_kit('rig')
+
+    def test_changed_width_file_is_read_without_editing_kit_yaml(self):
+        first = write_kit('rig', self.arms)
+        before = (self.width.parent / 'kit.yaml').read_bytes()
+        write_batch(self.scene, 'morning', kit='rig')
+        updated = measurement()
+        updated['mapping']['anchors'][-1]['mm'] = 120.
+        write_json(self.width, updated)
+        batch_inputs = batches.read_inputs(self.scene / 'morning', require_mapping=False)
+        self.assertEqual(batch_inputs.kit, first)
+        self.assertEqual(calibration.read(Path(first['arms']['left']['gripper']['width']))['open_width_mm'], 120.)
+        self.assertEqual((self.width.parent / 'kit.yaml').read_bytes(), before)
+
+    def test_install_width_cli_is_removed(self):
+        from contextlib import redirect_stderr
+        import io
+        from software.calibration import cli
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            cli.build_parser().parse_args(['install-width', 'CAMERA_A', str(self.width),
+                                          '--gripper', 'test', '--gripper-version', '001'])
+        self.assertEqual(error.exception.code, 2)
 
 
 class WidthWorkflowTests(unittest.TestCase):
@@ -151,21 +231,21 @@ class WidthWorkflowTests(unittest.TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.f = self.fixture.f
-        self.before = {arm: (self.f.episode_path.parent/'results'/arm/'traj_tcp.txt').read_bytes() for arm in ('left', 'right')}
+        self.before = {arm: list(pose_rows(self.f.episode_path.parent/'results'/arm/'trajectory.csv')) for arm in ('left', 'right')}
         for video, camera in list(self.f.cameras.items()):
             path = camera.files['front'].parent / 'width.json'
-            write_json(path, measurement(verified=True))
-            camera = replace(camera, files=dict(camera.files, width=path))
+            write_json(path, measurement())
+            camera = replace(camera, files=dict(camera.files, width=path), width_measurement=calibration.read(path))
             self.f.cameras[video] = camera
             self.f.prepared_recordings[video] = replace(self.f.prepared_recordings[video], camera=camera)
         self.gap = False
-        def detect(video, measurement):
+        def detect(video):
             times = np.arange(0., 8.01, .01)
-            widths = np.full(len(times), 20. if video == self.f.recording_paths['left'] else 40.)
+            distances = np.full(len(times), 240. if video == self.f.recording_paths['left'] else 280.)
             if self.gap:
-                widths[(times > 2) & (times < 3)] = np.nan
-            return times, widths, np.zeros(len(times), bool)
-        mocked = patch.object(pipeline, 'detect', side_effect=detect)
+                distances[(times > 2) & (times < 3)] = np.nan
+            return detection.DetectionSeries(times, distances)
+        mocked = patch.object(detection, 'detect', side_effect=detect)
         self.detect = mocked.start()
         self.addCleanup(mocked.stop)
 
@@ -174,18 +254,43 @@ class WidthWorkflowTests(unittest.TestCase):
         episodes.review(self.f.episode_path, accept=True, reviewer='test')
         output = self.f.episode_path.parent / 'results'
         for arm in ('left', 'right'):
-            self.assertEqual((output/arm/'traj_tcp.txt').read_bytes(), self.before[arm])
+            self.assertEqual(list(pose_rows(output/arm/'trajectory.csv')), self.before[arm])
+            self.assertFalse((output/arm/'traj_tcp.txt').exists())
+            self.assertFalse((output/arm/'gripper_width.csv').exists())
         return output
+
+    def test_diagnostics_and_threshold_changes_reuse_raw_detection(self):
+        first = self.run_and_accept()
+        for arm in ('left', 'right'):
+            self.assertFalse((first / arm / 'details/gripper_width.json').exists())
+            self.assertFalse((first / arm / 'details/gripper_width_frames.csv').exists())
+        self.assertEqual(self.detect.call_count, 2)
+        write_yaml(self.f.scene_path, dict(parameters=dict(gripper_width_max_gap_s=0.,
+            gripper_width_closed_threshold_mm=25., gripper_width_diagnostics=True)))
+        workflow.run_episode(self.f.episode_path)
+        self.assertEqual(self.detect.call_count, 2)
+        output = self.f.episode_path.parent / 'results'
+        manifest = json.loads((output / 'episode.json').read_text())
+        self.assertEqual(manifest['gripper_width']['left']['closed_fraction'], 1.)
+        self.assertEqual(manifest['inputs']['parameters']['gripper_width_closed_threshold_mm'], 25.)
+        for arm in ('left', 'right'):
+            self.assertTrue((output / arm / 'details/gripper_width_frames.csv').exists())
+        episodes.review(self.f.episode_path, accept=True, reviewer='test')
+        bundle = self.f.root / 'debug_bundle'
+        episodes.export([self.f.episode_path], bundle)
+        self.assertEqual(len(list(bundle.rglob('gripper_width_frames.csv'))), 2)
+        self.assertFalse(list(bundle.rglob('gripper_width.json')))
 
     def test_both_hands_share_episode_time_and_export_real_gripper_channels(self):
         output = self.run_and_accept()
         for arm, value in (('left', 20.), ('right', 40.)):
-            measured = series.read(output / arm / 'gripper_width.csv')
+            measured = series.read(output / arm / 'trajectory.csv')
             np.testing.assert_allclose(measured.width_mm, value)
             self.assertTrue(measured.valid.all())
-            times = np.loadtxt(output / arm / 'traj_tcp.txt', usecols=0)
+            times = np.array([float(row[0]) for row in pose_rows(output / arm / 'trajectory.csv')])
             np.testing.assert_allclose(measured.times_s, times, atol=1e-6)
-        build([self.f.episode_path], self.fixture.output, fps=20.)
+        with patch.object(series, 'read', side_effect=AssertionError('统一表已读取，宽度应复用内存数据')):
+            build([self.f.episode_path], self.fixture.output, fps=20.)
         entry = json.loads((self.fixture.output/'manifest.json').read_text())['episodes'][0]
         metadata, arrays = load_episode(self.fixture.output, entry['path'], require_training_ready=True)
         self.assertTrue(metadata['training_ready'])
@@ -194,12 +299,58 @@ class WidthWorkflowTests(unittest.TestCase):
             np.testing.assert_allclose(arrays[arm+'_gripper_close_01'], 1-opening/.1)
         bundle = self.f.root / 'bundle'
         episodes.export([self.f.episode_path], bundle)
-        self.assertTrue(list(bundle.rglob('gripper_width.csv')))
+        self.assertTrue(list(bundle.rglob('trajectory.csv')))
+
+    def test_historical_split_results_remain_readable(self):
+        from software.dataset import sampling, gripper
+        from software.pose_io import write_tum
+
+        output = self.run_and_accept()
+        manifest = json.loads((output / 'episode.json').read_text())
+        offsets = manifest['synchronization']['offsets_s']
+        current = {arm: sampling.read_arm(output / arm, offsets[arm]) for arm in ('left', 'right')}
+        query = current['left'].times_s
+        expected, expected_readiness = gripper.sample(output, manifest, current, query, .25)
+        for arm in current:
+            directory = output / arm
+            with (directory / 'trajectory.csv').open() as stream:
+                rows = list(csv.DictReader(stream))
+            poses = np.array(list(pose_rows(directory / 'trajectory.csv')), dtype=float)
+            write_tum(directory / 'traj_tcp.txt', poses[:, 0], poses[:, 1:4], poses[:, 4:], 'historical TCP')
+            with (directory / 'gripper_width.csv').open('w', newline='') as stream:
+                writer = csv.DictWriter(stream, fieldnames=['row', 't_video_s', 't_episode_s', 'width_mm',
+                                                           'close_01', 'closed', 'valid', 'source'], extrasaction='ignore')
+                writer.writeheader()
+                writer.writerows(rows)
+            (directory / 'trajectory.csv').unlink()
+        historical = {arm: sampling.read_arm(output / arm, offsets[arm]) for arm in current}
+        restored, readiness = gripper.sample(output, manifest, historical, query, .25)
+        for name in expected:
+            np.testing.assert_array_equal(restored[name], expected[name])
+        self.assertEqual(readiness['training_ready'], expected_readiness['training_ready'])
+
+    def test_width_source_edit_invalidates_result_and_preserves_historical_measurement(self):
+        previous = self.run_and_accept().resolve()
+        previous_manifest = (previous / 'episode.json').read_bytes()
+        original = json.loads(previous_manifest)
+        camera = self.f.cameras[self.f.recording_paths['left']]
+        replacement = measurement()
+        replacement['mapping']['anchors'][-1]['mm'] = 120.
+        write_json(camera.files['width'], replacement)
+        with self.assertRaisesRegex(ValueError, '输入或算法配置'):
+            episodes.accepted_run(inputs.read_episode(self.f.episode_path))
+        workflow.run_episode(self.f.episode_path)
+        current = json.loads((self.f.episode_path.parent / 'results/episode.json').read_text())
+        self.assertNotEqual(current['inputs']['gripper_width']['left']['sha256'],
+                            original['inputs']['gripper_width']['left']['sha256'])
+        self.assertEqual(current['gripper_width']['left']['calibration'], calibration.read(camera.files['width']))
+        self.assertEqual(original['gripper_width']['left']['calibration']['anchors'], measurement()['mapping']['anchors'])
+        self.assertEqual((previous / 'episode.json').read_bytes(), previous_manifest)
 
     def test_long_detection_gaps_remain_nan_and_block_training_readiness(self):
         self.gap = True
         output = self.run_and_accept()
-        with (output/'left/gripper_width.csv').open() as stream:
+        with (output/'left/trajectory.csv').open() as stream:
             rows = list(csv.DictReader(stream))
         invalid = [row for row in rows if row['valid'] == '0']
         self.assertTrue(invalid)
@@ -213,26 +364,15 @@ class WidthWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'gripper'):
             load_episode(self.fixture.output, entry['path'], require_training_ready=True)
 
-    def test_unverified_calibration_keeps_measurements_but_blocks_training(self):
-        camera = self.f.cameras[self.f.recording_paths['right']]
-        write_json(camera.files['width'], measurement(verified=False))
-        self.run_and_accept()
-        build([self.f.episode_path], self.fixture.output, fps=20.)
-        entry = json.loads((self.fixture.output/'manifest.json').read_text())['episodes'][0]
-        metadata, arrays = load_episode(self.fixture.output, entry['path'])
-        self.assertTrue(arrays['right_gripper_valid'].all())
-        self.assertFalse(metadata['training_ready'])
-        self.assertIn('right: gripper calibration unverified', metadata['not_ready_reasons'])
-
     def test_second_hand_width_failure_does_not_replace_previous_success(self):
         previous = (self.f.episode_path.parent/'results').resolve()
         successful = self.detect.side_effect
-        def detect(video, measurement):
+        def detect(video):
             if video == self.f.recording_paths['right']:
                 raise ValueError('right width extraction failed')
-            return successful(video, measurement)
+            return successful(video)
         self.detect.side_effect = detect
         with self.assertRaisesRegex(ValueError, 'right width'):
             workflow.run_episode(self.f.episode_path)
         self.assertEqual((self.f.episode_path.parent/'results').resolve(), previous)
-        self.assertEqual(episodes.read_state(self.f.episode_path.parent)['attempt']['status'], 'failed')
+        self.assertEqual(layout.read_state(self.f.episode_path.parent)['attempt']['status'], 'failed')

@@ -10,6 +10,8 @@ from scipy.spatial.transform import Rotation
 
 from software.camera.geometry import resample_pose_series
 from software.pose_io import read_tum
+from software.scene.result_io import TCP_COLUMNS, trajectory_path
+from software.gripper_width import series
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,7 @@ class ArmSamples:
     video_pts_s: np.ndarray
     full_constraint: np.ndarray
     front_tracked: np.ndarray
+    width_samples: series.WidthSeries | None = None
 
 
 def video_timestamps(path: Path) -> np.ndarray:
@@ -42,8 +45,17 @@ def validate_times(times: np.ndarray, label: str) -> None:
 
 
 def read_arm(directory: Path, offset_s: float) -> ArmSamples:
-    times, positions, quaternions = read_tum(directory / 'traj_tcp.txt')
-    validate_times(times, 'TCP 时间')
+    path = trajectory_path(directory)
+    width_samples = None
+    if path.suffix == '.csv':
+        with path.open(encoding='utf-8', newline='') as stream:
+            trajectory_rows = list(csv.DictReader(stream))
+        width_samples = series.from_rows(trajectory_rows)
+        values = np.array([[float(row[column]) for column in TCP_COLUMNS[1:]] for row in trajectory_rows])
+        times, positions, quaternions = width_samples.times_s, values[:, :3], values[:, 3:]
+    else:
+        times, positions, quaternions = read_tum(path)
+        validate_times(times, 'TCP 时间')
     if (positions.shape != (len(times), 3) or quaternions.shape != (len(times), 4)
             or not np.isfinite(positions).all() or not np.isfinite(quaternions).all()
             or not np.allclose(np.linalg.norm(quaternions, axis=1), 1., atol=1e-5)):
@@ -55,7 +67,8 @@ def read_arm(directory: Path, offset_s: float) -> ArmSamples:
     frame_times = np.array([float(row['t_scene_s']) for row in rows])
     capture_times = np.array([float(row['t_video_s']) for row in rows])
     validate_times(frame_times, '帧映射时间')
-    if not np.allclose(frame_times, times, atol=1e-6, rtol=0):
+    time_tolerance = 1e-8 if width_samples is not None else 1e-6  # 历史 TUM 时间只保存六位小数。
+    if not np.allclose(frame_times, times, atol=time_tolerance, rtol=0):
         raise ValueError('帧映射与 TCP 时间不一致')
     if not np.allclose(capture_times + offset_s, frame_times, atol=1e-8, rtol=0):
         raise ValueError('帧映射不符合 t_episode = t_video + offset')
@@ -70,7 +83,7 @@ def read_arm(directory: Path, offset_s: float) -> ArmSamples:
     poses[:, :3, :3] = Rotation.from_quat(quaternions).as_matrix()
     return ArmSamples(frame_times, poses, indices, pts,
                       np.array([row['constraint'] == 'full' for row in rows]),
-                      np.array([row['front_lens_tracked'] == '1' for row in rows]))
+                      np.array([row['front_lens_tracked'] == '1' for row in rows]), width_samples)
 
 
 def brackets(times: np.ndarray, query: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

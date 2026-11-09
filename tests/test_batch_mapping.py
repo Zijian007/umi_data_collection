@@ -4,11 +4,12 @@ import io
 import json
 from pathlib import Path
 import unittest
+from registry_fakes import write_kit, write_batch, write_task
 from unittest.mock import patch
 
 from software import registry
 from software.scene import cli, workflow
-from software.scene.management import capture_config, ingest, inputs
+from software.scene.management import ingest, inputs
 import test_scene as fixtures
 
 
@@ -24,7 +25,7 @@ class BatchMappingTests(unittest.TestCase):
         ):
             override.start()
             self.addCleanup(override.stop)
-        capture_config.register_kit('rig', dict(left='SERIAL_left', right='SERIAL_right'))
+        write_kit('rig', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(left='SERIAL_left', right='SERIAL_right')).items()})
 
     def prepare(self, session):
         for arm, path in session.scene.recordings.items():
@@ -33,13 +34,13 @@ class BatchMappingTests(unittest.TestCase):
             self.f.prepared_recordings[path] = self.f.prepared_recordings[original]
 
     def batch(self, name):
-        source = self.f.root / 'sd' / (name + '.insv')
-        source.parent.mkdir(exist_ok=True)
+        source = self.f.scene.root / name / 'mapping/map.insv'
+        source.parent.mkdir(parents=True, exist_ok=True)
         source.write_text('left_' + name)
-        manifest = capture_config.create_session(self.f.scene.root, name, kit='rig', mapping={'left': source})
-        session = inputs.read_session(manifest)
+        manifest = write_batch(self.f.scene.root, name, kit='rig')
+        session = inputs.read_batch(manifest)
         self.prepare(session)
-        episode = ingest.register_episode(session, 'take_001', self.f.recording_paths)
+        episode = write_task(session, 'take_001', self.f.recording_paths)
         for arm, path in inputs.read_episode(episode).recordings.items():
             original = self.f.recording_paths[arm]
             self.f.cameras[path] = self.f.cameras[original]
@@ -49,14 +50,15 @@ class BatchMappingTests(unittest.TestCase):
     def test_late_first_round_builds_its_own_map_instead_of_using_second_round(self):
         first, first_episode = self.batch('round_001')
         second, second_episode = self.batch('round_002')
-        capture_config.register_kit('rig', dict(left='SERIAL_left'))
-        self.assertEqual(set(inputs.read_session(first).kit['arms']), {'left', 'right'})
-        self.assertEqual(inputs.read_session(first).scene.devices['SERIAL_left'], self.f.device_pins['SERIAL_left'])
-        self.assertIsNone(inputs.read_session(first).map_version)
+        write_kit('rig', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(left='SERIAL_left')).items()})
+        self.assertEqual(set(inputs.read_batch(first).kit['arms']), {'left', 'right'})
+        self.assertEqual(inputs.read_batch(first).scene.devices['SERIAL_left'],
+                         dict(calibration='test', gripper=dict(tcp=str(inputs.KITS / 'rig/tcp_camera.json'))))
+        self.assertIsNone(inputs.read_batch(first).map_version)
         built_second = workflow.build_scene(second)
         frozen_second = second.read_bytes()
         result_first = workflow.run_episode(first_episode)
-        first_session = inputs.read_session(first)
+        first_session = inputs.read_batch(first)
         self.assertIsNotNone(first_session.map_version)
         self.assertNotEqual(first_session.map_version, built_second['version'])
         self.assertEqual(result_first['frame_id'], 'lab/' + first_session.map_version)
@@ -71,11 +73,11 @@ class BatchMappingTests(unittest.TestCase):
     def test_explicit_reuse_is_fixed_when_batch_is_created(self):
         first, _ = self.batch('round_001')
         built = workflow.build_scene(first)
-        reused = capture_config.create_session(self.f.scene.root, 'reuse', kit='rig', map_version=built['version'])
+        reused = write_batch(self.f.scene.root, 'reuse', kit='rig', map_version=built['version'])
         before = reused.read_bytes()
         second, _ = self.batch('round_002')
         workflow.build_scene(second)
-        self.assertEqual(inputs.read_session(reused).map_version, built['version'])
+        self.assertEqual(inputs.read_batch(reused).map_version, built['version'])
         self.assertEqual(workflow.build_scene(reused)['version'], built['version'])
         self.assertEqual(reused.read_bytes(), before)
 
@@ -84,10 +86,10 @@ class BatchMappingTests(unittest.TestCase):
         second, _ = self.batch('round_002')
         workflow.build_scene(second)
         pointer = (self.f.scene.root / '.umi/maps/current.json').read_bytes()
-        inputs.read_session(first).scene.recordings['left'].write_text('changed')
+        inputs.read_batch(first).scene.recordings['left'].write_text('changed')
         with self.assertRaisesRegex(ValueError, 'SHA256'):
             workflow.run_episode(episode)
-        self.assertIsNone(inputs.read_session(first).map_version)
+        self.assertIsNone(inputs.read_batch(first).map_version)
         self.assertEqual((self.f.scene.root / '.umi/maps/current.json').read_bytes(), pointer)
 
     def test_batch_build_preview_is_readonly_and_reports_batch_source(self):
@@ -98,19 +100,19 @@ class BatchMappingTests(unittest.TestCase):
         planned = json.loads(output.getvalue())
         self.assertEqual(planned['status'], 'planned')
         self.assertEqual(planned['inputs']['definition']['mapping'],
-                         {'left': str(inputs.read_session(manifest).scene.recordings['left'])})
+                         {'left': str(inputs.read_batch(manifest).scene.recordings['left'])})
         self.assertEqual({path: path.read_bytes() for path in self.f.root.rglob('*') if path.is_file()}, before)
 
     def test_mapping_clip_is_excluded_when_importing_entire_batch(self):
         manifest, _ = self.batch('scan')
         # 新一组任务只为导入测试使用；已有 take_001 会按内容去重。
-        session = inputs.read_session(manifest)
+        session = inputs.read_batch(manifest)
         mapping = session.scene.recordings['left']
-        infos = [ingest.RawVideoInfo(mapping, 'SERIAL_left', registry.sha256_file(mapping), 1000., 8.)]
+        infos = [ingest.RecordingMetadata(mapping, 'SERIAL_left', registry.sha256_file(mapping), 1000., 8.)]
         for arm, path in self.f.recording_paths.items():
-            infos.append(ingest.RawVideoInfo(path, 'SERIAL_' + arm, registry.sha256_file(path), 1000., 8.))
+            infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, registry.sha256_file(path), 1000., 8.))
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
-            result = ingest.ingest([manifest.parent], manifest)
+            result = ingest.register_recordings(inputs.read_batch(manifest))
         self.assertEqual(result['total_scanned'], 2)
         self.assertEqual(result['skipped'], ['take_001'])
         self.assertEqual(result['pending'], [])

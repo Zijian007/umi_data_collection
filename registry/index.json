@@ -1,15 +1,14 @@
 {
   "kind": "umi_device_registry",
   "version": 2,
-  "default_gripper": "handheld_v1",
   "devices": {
     "IAQEB26097M4CP": {
       "status": "active",
-      "calibration": "001"
+      "calibration": "002"
     },
     "IAQEB2609JPAR3": {
       "status": "active",
-      "calibration": "001"
+      "calibration": "002"
     }
   }
 }

@@ -1,34 +1,34 @@
-"""建图参数在归档原片或写配置前消除歧义。"""
+"""Only batches supply mapping inputs; the CLI has no second scene configuration writer."""
+from contextlib import redirect_stderr
+import io
+from pathlib import Path
 import tempfile
 import unittest
-from pathlib import Path
-from unittest.mock import patch
 from software.scene import cli
 
 
 class MappingArgumentsTests(unittest.TestCase):
-    def test_shared_mapping_uses_one_reference_without_assigning_task_handedness(self):
-        with tempfile.TemporaryDirectory() as name:
-            root = Path(name)/'scene'
-            args = cli.build_parser().parse_args(['build', str(root), '--mapping', 'camera.insv'])
-            with patch.object(cli.recordings, 'inspect', return_value=dict(serial='CAMERA', sha256='hash')), patch.object(cli.registry, 'pin', return_value={}):
-                request = cli.mapping_request(args, root)
-            self.assertEqual(request['recording_paths'], {'left': Path('camera.insv')})
-            self.assertEqual(request['data']['mode'], 'shared_front')
-            self.assertFalse(root.exists())
+    def test_build_accepts_a_batch_without_duplicate_mapping_arguments(self):
+        args = cli.build_parser().parse_args(['build', 'scenes/shelf/morning', '--dry-run'])
+        self.assertEqual(args.batch, Path('scenes/shelf/morning'))
+        self.assertTrue(args.dry_run)
 
-    def test_ambiguous_or_incomplete_interfaces_fail_before_reading_videos(self):
-        cases = [
-            ['--mapping', 'one.insv', '--mapping-left', 'two.insv'],
-            ['--mapping-left', 'one.insv', '--mapping-right', 'two.insv'],
-            ['--mode', 'dual', '--mapping', 'one.insv'],
-            ['--mode', 'dual', '--mapping-left', 'one.insv'],
-            ['--mapping', 'one.insv', '--rear-left', 'rear.json'],
-        ]
-        for extra in cases:
-            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as name:
-                args = cli.build_parser().parse_args(['build', str(Path(name)/'scene'), *extra])
-                with patch.object(cli.recordings, 'inspect') as inspect:
-                    with self.assertRaises(ValueError):
-                        cli.mapping_request(args, Path(name)/'scene')
-                    inspect.assert_not_called()
+    def test_old_scene_writers_and_duplicate_mapping_options_are_removed(self):
+        cases = [['init', 'scene'], ['session', 'scene', '--name', 'morning', '--kit', 'rig'],
+                 ['kit', 'rig', '--left', 'SERIAL'], ['kits'],
+                 ['batch', 'scene', '--name', 'morning', '--kit', 'rig'],
+                 ['episode', 'batch', '--name', 'take_001'],
+                 ['build', 'batch', '--mapping', 'one.insv'], ['build', 'batch', '--mode', 'dual'],
+                 ['ingest', 'sd', '--session', 'batch'],
+                 ['ingest', 'sd', '--batch', 'batch'],
+                 ['task', 'batch', '--name', 'take_001']]
+        for command in cases:
+            with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                cli.build_parser().parse_args(command)
+            self.assertEqual(error.exception.code, 2)
+
+    def test_build_without_a_batch_does_not_write_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'scene'
+            self.assertEqual(cli.main(['build', str(root), '--dry-run']), 2)
+            self.assertFalse(root.exists())

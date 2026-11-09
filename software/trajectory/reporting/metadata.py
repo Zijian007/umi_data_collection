@@ -23,12 +23,6 @@ def _sha12(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
 
 
-def _tcp_geometry_path(value: str | Path | None) -> Path:
-    if not value:
-        raise ValueError('缺少显式选择的夹爪几何 tcp_json；请先通过 registry 选择夹爪版本')
-    return Path(value)
-
-
 def _file_asset(path: Path, **extra) -> dict:
     path_obj = Path(path)
     asset_dict = {"path": str(path_obj), "sha256_12": _sha12(path_obj)}
@@ -72,13 +66,16 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
     """The settings and on-disk assets this run read. Written next to the trajectory as run_settings.json."""
     reconstruction_dir = Path(reconstruction_dir)
     calib_info = calib or {}
-    tcp_path = _tcp_geometry_path(calib_info.get('tcp_json'))
+    tcp_path = Path(calib_info['tcp_json']) if calib_info.get('tcp_json') else None
     json_path = Path(calib_info["json"]) if calib_info.get("json") else CALIB_IMU_CAM
     yaml_path = Path(calib_info["yaml"]) if calib_info.get("yaml") else HERE / "assets" / "config" / "front_x3_r1440_720.yaml"
     fuser_path = Path(calib_info["fuser"]) if calib_info.get("fuser") else FUSION_SCRIPT
     basalt = read_basalt(json_path)
     mask_path = Path(calib_info["mask"]) if calib_info.get("mask") else FRONT_MASK
-    cad_geometry = json.loads(tcp_path.read_text(encoding="utf-8"))
+    cad_geometry = calib_info.get("tcp_geometry")
+    if tcp_path is not None and cad_geometry is None:
+        from software.trajectory.calibration.selection import read_tcp_geometry
+        cad_geometry = read_tcp_geometry(tcp_path)
     env_cal = (os.environ.get("UMI_TRAJ_CALIB") or "").strip() or None
     source = calib_info.get("source") or "factory"
     slam_scalars = _yaml_scalars(yaml_path)
@@ -120,13 +117,6 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
             T_imu_cam={"p": basalt["p"], "q_xyzw": basalt["q_xyzw"]},
             cam_time_offset_ns=basalt["cam_time_offset_ns"],
         ),
-        "camera_tcp_geometry": _file_asset(
-            tcp_path,
-            note="CAD nominal closed-fingertip pose in the camera frame; umi-calib does not solve this",
-            status=cad_geometry.get("status"),
-            T_camera_tcp=cad_geometry.get("T_camera_tcp"),
-            tcp_frame=tcp_frame_definition(cad_geometry),
-        ),
         "orbslam3_front_settings": _file_asset(
             yaml_path,
             note=f"{size_px}x{size_px} KannalaBrandt8; intrinsics scaled from the calibrated crop with pixel-centre conversion",
@@ -142,6 +132,12 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
             source=_file_asset(Path(calib_info.get("source_mask") or mask_path)),
         ),
     }
+    if tcp_path is not None:
+        assets["camera_tcp_geometry"] = _file_asset(
+            tcp_path, status=cad_geometry.get("status"),
+            T_camera_tcp=cad_geometry["T_camera_tcp"], tcp_frame=tcp_frame_definition(cad_geometry),
+            note="kit installation geometry; camera calibration does not solve TCP",
+        )
     if mode == "dual":
         assets["orbslam3_rear_settings"] = _file_asset(
             Path(calib_info.get("rear_yaml") or REAR_YAML),
@@ -167,7 +163,6 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
             "selection": calib_info.get("selection"),
             "serial": calib_info.get("serial"),
             "status": calib_info.get("status"),
-            "gripper": calib_info.get("gripper"),
             "UMI_TRAJ_CALIB": env_cal,
             "id": calib_info.get("id") or _sha12(json_path),
             "dir": calib_info.get("dir") or str(HERE),
@@ -179,7 +174,7 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
         "pose_chain": {
             "formula": "T_W_tcp = T_W_imu * T_imu_cam * T_cam_tcp",
             "T_imu_cam": "Basalt p_imu = T_imu_cam p_cam, from camera_imu_calibration",
-            "T_cam_tcp": "from camera_tcp_geometry (CAD, unverified)",
+            "T_cam_tcp": "from explicit installation geometry" if tcp_path is not None else None,
             "world": "metric, z up (gravity -z); origin and heading arbitrary per recording",
             "clock": "video presentation time, first frame = 0; fusion canonical time = t + 1 s",
         },
@@ -189,15 +184,18 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
     }
 
 
-def load_extrinsics(calib_json: Path | None = None, tcp_json: Path | None = None) -> dict:
-    tcp_path = _tcp_geometry_path(tcp_json)
+def load_extrinsics(calib_json: Path | None = None, tcp_json: Path | None = None,
+                    *, geometry: dict | None = None) -> dict:
     calibration_data = json.loads(Path(calib_json or CALIB_IMU_CAM).read_text(encoding="utf-8"))
-    imu_cam_data = (calibration_data.get("value0") or calibration_data)["T_imu_cam"][0]
+    measured = calibration_data.get("value0", calibration_data)
+    imu_cam_data = measured["T_imu_cam"][0]
     T_imu_cam = imu_from_camera(dict(q_xyzw=[imu_cam_data["qx"], imu_cam_data["qy"], imu_cam_data["qz"], imu_cam_data["qw"]],
                                      p=[imu_cam_data["px"], imu_cam_data["py"], imu_cam_data["pz"]]))
-    cad_geometry = json.loads(tcp_path.read_text(encoding="utf-8"))
-    T_cam_tcp = camera_from_tcp(cad_geometry)
-    return {"T_imu_cam": T_imu_cam, "T_cam_tcp": T_cam_tcp, "cad_status": cad_geometry.get("status"),
-            "tcp_frame": tcp_frame_definition(cad_geometry),
-            "cam_time_offset_ns": (calibration_data.get("value0") or calibration_data).get("cam_time_offset_ns"),
-            "tcp_json": str(tcp_path)}
+    extrinsics = dict(T_imu_cam=T_imu_cam, cam_time_offset_ns=measured.get("cam_time_offset_ns"))
+    if tcp_json is not None:
+        if geometry is None:
+            from software.trajectory.calibration.selection import read_tcp_geometry
+            geometry = read_tcp_geometry(Path(tcp_json))
+        extrinsics.update(T_cam_tcp=camera_from_tcp(geometry), cad_status=geometry.get("status"),
+                          tcp_frame=tcp_frame_definition(geometry), tcp_json=str(tcp_json))
+    return extrinsics

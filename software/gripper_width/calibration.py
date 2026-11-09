@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 
 from typing import TypedDict
@@ -18,18 +17,15 @@ class Anchor(TypedDict):
 class WidthCalibration(TypedDict):
     anchors: list[Anchor]
     open_width_mm: float
-    closed_threshold_mm: float
-    max_gap_s: float
-    verified: bool
     status: str
-    detector: str
-    method: str
 
 
 def read(path: Path) -> WidthCalibration:
     data = json.loads(path.read_text(encoding='utf-8'))
     if not isinstance(data, dict):
         raise ValueError('夹爪宽度标定必须为 JSON 对象')
+    if {'closed_threshold_mm', 'max_gap_s'} & data.keys():
+        raise ValueError('宽度处理参数请移到 scene.yaml 的 parameters.gripper_width_*，测量文件只保存实测关系')
     mapping = data.get('mapping', data)
     if not isinstance(mapping, dict) or not isinstance(mapping.get('anchors'), list) or len(mapping['anchors']) < 2:
         raise ValueError('宽度标定需要至少两个 anchors，每项包含 x（像素）和 mm')
@@ -43,14 +39,5 @@ def read(path: Path) -> WidthCalibration:
     if (not np.isfinite(x).all() or not np.isfinite(mm).all() or x[0] <= 0 or mm[0] != 0
             or not np.all(np.diff(x) > 0) or not np.all(np.diff(mm) > 0)):
         raise ValueError('宽度标定锚点必须严格递增，首个宽度为 0 mm，像素距离为正')
-    closed = data.get('closed_threshold_mm', 3.)
-    max_gap = data.get('max_gap_s', .2)
-    if (type(closed) not in (int, float) or not math.isfinite(closed) or not 0 <= closed < mm[-1]
-            or type(max_gap) not in (int, float) or not math.isfinite(max_gap) or max_gap < 0):
-        raise ValueError('closed_threshold_mm 或 max_gap_s 无效')
-    verified = data.get('verified', False)
-    if type(verified) is not bool:
-        raise ValueError('宽度标定 verified 必须为布尔值')
-    return dict(anchors=anchors, open_width_mm=float(mm[-1]), closed_threshold_mm=float(closed),
-                max_gap_s=float(max_gap), verified=verified, status=mapping.get('status', 'unspecified'),
-                detector='DICT_4X4_50:0,1', method='main_width_4k60_two_tags')
+    return dict(anchors=anchors, open_width_mm=float(mm[-1]),
+                status=mapping.get('status', 'unspecified'))

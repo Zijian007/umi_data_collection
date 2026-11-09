@@ -1,6 +1,6 @@
 # 共享场景的默认算法参数；每次建图/任务结果保存完整快照与内容指纹。
-# 场景定义位于 scenes/<场景>/scene.yaml，可通过其中的 parameters 指定覆盖文件。
-# 覆盖文件只需写变更项；未知字段会被拒绝。
+# 场景定义位于 scenes/<场景>/scene.yaml，在 parameters 映射中内联填写覆盖项。
+# 只需写变更项；未知字段会被拒绝。
 # 场景对齐和视觉融合的生效范围见 config/README.md；与单段轨迹同类的阈值由这里独立管理。
 schema_version: 1
 
@@ -64,6 +64,13 @@ huber: 2.5
 # 相机命名以秒计时，允许少量启动和停止操作差异。超出时保留为待确认。
 pairing_start_tolerance_s: 2.0
 pairing_duration_tolerance_s: 1.0
+
+# 宽度处理：缺口两端最大间隔（秒，0 表示不填补）、闭合判定阈值（毫米）。
+# 实测 anchors / verified 保存在套件宽度 JSON，不在这里配置。
+gripper_width_max_gap_s: 0.2
+gripper_width_closed_threshold_mm: 3.0
+# 默认只输出对齐后的宽度 CSV；排障时附加原片逐帧检测 CSV。
+gripper_width_diagnostics: false
 
 # 原片检查的最短有效时长，单位秒。
 recording_min_duration_s: 3.0

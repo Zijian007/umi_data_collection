@@ -1,4 +1,4 @@
-"""场景任务结果：同场景 TUM、显式视频时钟、双手对齐表与易读报告。"""
+"""场景任务结果：位姿与宽度统一表、显式视频时钟、双手对齐与报告。"""
 from __future__ import annotations
 
 import csv
@@ -13,7 +13,7 @@ from scipy.spatial.transform import Rotation
 from software import config
 from software.camera.x3.frame import geometry_record
 from software.camera.geometry import (
-    imu_from_camera, camera_from_tcp, tcp_frame_definition, validate_transform,
+    imu_from_camera, camera_from_tcp, tcp_frame_definition,
     describe_tcp_frame, resample_pose_series,
 )
 from software.scene.models import Episode, PreparedRecording, ArmTrajectory
@@ -21,30 +21,51 @@ from software.scene.spatial import fusion
 from software.scene.management import inputs
 from software.storage import write_json
 from software.pose_io import write_tum
+from software.gripper_width.pipeline import WidthResult
+from software.gripper_width.series import SOURCE_NAMES
 
 
 def write_arm(arm: str, recording: PreparedRecording, result: fusion.FusionResult,
-              offset_s: float, scene_record: dict, directory: Path) -> ArmTrajectory:
-    directory.mkdir(parents=True)
+              offset_s: float, scene_record: dict, directory: Path,
+              *, width: WidthResult | None = None) -> ArmTrajectory:
+    directory.mkdir(parents=True, exist_ok=True)
     details = directory / 'details'
-    details.mkdir()
+    details.mkdir(exist_ok=True)
     camera = recording.camera
     video_parameters = recording.context.parameters.video
     measured = camera.measurements['front']
-    geometry = json.loads(camera.files['tcp'].read_text())
+    geometry = camera.selected.geometry
     tcp_frame = tcp_frame_definition(geometry)
     T_cam_tcp = camera_from_tcp(geometry)
-    validate_transform(T_cam_tcp)
     poses = dict(imu=result.T_scene_imu, camera=result.T_scene_imu @ imu_from_camera(measured))
     poses['tcp'] = poses['camera'] @ T_cam_tcp
     # 文件时间为统一任务视频时钟。IMU 求解使用的 cam_time_offset 不应叠加两次。
     times = recording.video_times_s + offset_s
-    for name, matrices in poses.items():
-        target = directory / 'traj_tcp.txt' if name == 'tcp' else details / f'traj_{name}.txt'
-        write_tum(target, times, matrices[:, :3, 3], Rotation.from_matrix(matrices[:, :3, :3]).as_quat(),
+    for name in ('camera', 'imu'):
+        matrices = poses[name]
+        write_tum(details / f'traj_{name}.txt', times, matrices[:, :3, 3], Rotation.from_matrix(matrices[:, :3, :3]).as_quat(),
             f'{name} pose: t x y z qx qy qz qw\nframe_id={scene_record["frame_id"]}; metres, Z up; t_episode=t_video+{offset_s:.9f}\n'
-            'Pose maps body coordinates to the fixed scene; no per-recording recentering.' +
-            ('\nTCP frame: ' + json.dumps(tcp_frame, ensure_ascii=False) if name == 'tcp' else ''))
+            'Pose maps body coordinates to the fixed scene; no per-recording recentering.')
+    quaternions = Rotation.from_matrix(poses['tcp'][:, :3, :3]).as_quat()
+    if width is not None:
+        width_valid = width.samples.valid
+        close_01 = np.clip(1 - width.samples.width_mm / width.report['calibration']['open_width_mm'], 0, 1)
+    with (directory / 'trajectory.csv').open('w', newline='', encoding='utf-8') as stream:
+        writer = csv.writer(stream)
+        writer.writerow(['row', 't_video_s', 't_episode_s', 'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw',
+                         'width_mm', 'close_01', 'closed', 'valid', 'source'])
+        for index, timestamp in enumerate(times):
+            opening = ['', '', '', 0, 'missing']
+            if width is not None:
+                valid = bool(width_valid[index])
+                measured_mm = width.samples.width_mm[index]
+                opening = [f'{measured_mm:.6f}' if valid else '',
+                    f'{close_01[index]:.9f}' if valid else '',
+                    int(measured_mm <= width.closed_threshold_mm) if valid else '',
+                    int(valid), SOURCE_NAMES[int(width.samples.source[index])]]
+            writer.writerow([index, f'{recording.video_times_s[index]:.9f}', f'{timestamp:.9f}',
+                *[f'{value:.6f}' for value in poses['tcp'][index, :3, 3]],
+                *[f'{value:.9f}' for value in quaternions[index]], *opening])
     with (details / 'frames.csv').open('w') as stream:
         stream.write('row,video_frame,source_video_frame,t_video_s,t_scene_s,constraint,front_lens_tracked\n')
         for k, time in enumerate(times):
@@ -101,6 +122,7 @@ def write_episode(episode: Episode, tracks: dict[str, ArmTrajectory], directory:
         f'同步：{episode.synchronization["method"]}；offsets_s={video_offsets_s}\n'
         f'同步确认：{episode.synchronization["confirmed"]}；依据：{episode.synchronization["note"]}\n'
         f'夹爪宽度：{", ".join(gripper_width or {}) or "未配置标定"}\n'
+        '每手 trajectory.csv 保存 TCP 位姿及夹爪宽度；宽度空值不代表闭合。\n'
         '轨迹共享米制坐标；左右手分别融合。\n实际误差：未测量；TCP 使用 CAD 名义几何。\n')
     # 预检先独立落盘，保证算法失败时也有证据；成功后收入唯一运行清单。
     preflight_path = directory / 'preflight_report.json'
@@ -123,7 +145,7 @@ def write_episode(episode: Episode, tracks: dict[str, ArmTrajectory], directory:
             f'视觉一致性 RMS：{data["fusion"]["visual_consistency_rms_m"] * 1000:.2f} mm（内部指标）',
         ]) + '\n'
     (directory / 'report.txt').write_text(text, encoding='utf-8')
-    assets = inputs.artifact_hashes(directory, tuple(tracks))
+    assets = inputs.artifact_hashes(directory, (*tracks, 'devices'))
     for name in ('report.txt', 'bimanual.csv'):
         if (directory / name).is_file():
             assets[name] = config.file_hash(directory / name)

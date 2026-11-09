@@ -20,7 +20,8 @@ class TrajectoryRequest:
     force: bool = False
     allow_irregular: bool | None = None
     device: str = ""
-    gripper: str = ""
+    tcp: Path | None = None
+    mask: Path | None = None
     config: Path | None = None
     dry_run: bool = False
     configuration: config.Configuration | None = None

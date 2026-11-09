@@ -1,7 +1,7 @@
 """轨迹处理的阅读入口：cli.main() -> run_batch() -> run_recording()。
 
 单段顺序：选择标定 → 判断是否复用 → 提取时间戳和 IMU → 准备镜头视频 → 重建并选择尝试
-         → 生成 TCP 轨迹 → 发布视频与报告 → 清理临时数据。
+         → 生成相机/TCP 轨迹 → 发布视频与报告 → 清理临时数据。
 重建内部按“建图 → 逐图定位与合并 → IMU 融合”执行，见 reconstruction.run_attempt()。
 """
 from __future__ import annotations
@@ -62,12 +62,12 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
     # 先验证设备标定和输入指纹；无有效标定时，即使 --force 也保留旧结果。
     try:
         request = config.resolve_trajectory_request(request)
-        selected = selection.select_calibration(video, device=request.device, gripper=request.gripper)
+        selected = selection.select_calibration(video, device=request.device, tcp=request.tcp, mask=request.mask or selection.DEFAULT_FRONT_MASK)
         if not request.dry_run:
             visual_runtime.validate_engines(dict(os.environ))
         fingerprint = reuse.run_fingerprint(video, selected, request)
         previous = None if request.force or request.dry_run else reuse.reuse_decision(paths.output, fingerprint, notes=request.configuration.values.notes)
-    except (registry.RegistryError, ProcessingError, OSError, ValueError) as error:
+    except (registry.RegistryError, ProcessingError, OSError, ValueError, KeyError, TypeError) as error:
         summary.update(reason=str(error), failed_stage="选择标定与检查复用")
         reports.show_recording(summary)
         return summary
@@ -138,7 +138,7 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
 
         # 4. 用本次选中的相机与夹爪几何，将融合结果转换为相机/TCP 轨迹。
         stage = "生成轨迹产物"
-        runtime.console.write("生成相机和 TCP 轨迹、地图、视频与报告", recording=recording_name, step=(4, 4))
+        runtime.console.write("生成轨迹、地图、视频与报告", recording=recording_name, step=(4, 4))
         calibration_record = selected.as_postprocess_dict(fingerprint["calibration"]["assets"])
         calibration_record.update(yaml=str(settings.front_settings), rear_yaml=str(settings.rear_settings),
                                   mask=str(settings.front_mask), source_mask=str(selected.assets.front_mask))
@@ -147,7 +147,7 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
             "parameters": provenance, "max_tries": request.max_tries, "chosen_try": attempt.chosen, "tries": attempt.attempts,
             "allow_irregular": request.allow_irregular, "keep_work": request.keep_work, "force": request.force, "cores": request.cores or None,
             "UMI_TRAJ_CALIB": os.environ.get("UMI_TRAJ_CALIB") or None,
-            "device": request.device or None, "gripper": request.gripper or None, "serial": selected.camera_serial,
+            "device": request.device or None, "tcp": str(request.tcp) if request.tcp else None, "serial": selected.camera_serial,
         })
         summary.update(metrics)
         # 轻量展示地图独立于 .osa；清理中间数据后仍可在查看器中显示。

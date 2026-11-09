@@ -7,7 +7,7 @@
 | 流程 | 阅读入口 |
 |---|---|
 | 标定 | [标定代码指南](../../software/calibration/README.md)：`cli.main()` → `workflow.run()` / `verify()` |
-| 共享场景 | [场景代码指南](../../software/scene/README.md)：`cli.main()` → `workflow.build_scene()` / `run_episode()`（架构子包：`management/`, `spatial/`, `pipeline/`） |
+| 共享场景 | [场景代码指南](../../software/scene/README.md)：`cli.main()` → `management.processing.run()` / `build()` → `workflow.build_scene()` / `run_episode()`（架构子包：`management/`, `spatial/`, `pipeline/`） |
 | 轨迹抽取 | [轨迹代码指南](../../software/trajectory/README.md)：`cli.main()` → `workflow.run_batch()` → `run_recording()`（架构子包：`calibration/`, `pipeline/`, `reporting/`, `algorithms/`） |
 | 三维查看 | [查看器代码指南](../../software/viewer/README.md)：`server.main()` → `RecordingCatalog` → 浏览器播放状态 |
 | 共用视觉 | [视觉代码指南](../../software/vision/README.md)：录像准备、ORB 建图/定位、视觉上下文与执行验收 |
@@ -24,7 +24,7 @@
 
 ## 命名和终端约定
 
-外围代码使用 `request`、`camera_serial`、`keep_work`、`return_code`、`reason`、`error`。数学符号使用对应领域的惯例。既有 CLI、JSON 与第三方接口保留其约定名称，例如 `--serial`、JSON 的 `serial` / `why`、`subprocess.returncode`。
+外围代码使用 `request`、`camera_serial`、`keep_work`、`return_code`、`reason`、`error`。数学符号使用对应领域的惯例。场景日常流程统一为手写 kit.yaml/batch.yaml、放置视频，再执行 run；内部自动登记逻辑位于 ingest.py，无独立登记 CLI。历史 JSON 与第三方接口继续按各自协议读取，例如 `serial` / `why`、`subprocess.returncode`；内部 Session/Episode 类型和 episode.json 文件名不表示还支持旧 CLI。
 
 [console.py](../../software/console.py) 统一输出格式，调用为 `runtime.console.write(...)`。阶段负责进度，报告负责结果；标签依次表示工具、录像、步骤、重建次数和执行状态。标定验收 `PASS` / `FAIL` 与执行“完成 / 失败”分别展示。引擎原始日志保留原文。
 
@@ -51,6 +51,20 @@ Node 只用于查看器前端测试，运行查看器不需要 Node。Python 测
 
 ## 文档怎么维护
 
-操作步骤写在用户指南，字段定义写在结果说明，模块关系写在对应代码目录的 README。修改参数、终端文案、目录或失败行为时，同步对应指南；用明确链接代替“见第几节”。历史变更只写入 `PROVENANCE.md`，不作为当前操作入口。
+[用户文档导航](../README.md)区分操作指南、字段参考和历史记录。更新现行行为时，修改对应主题的完整章节，合并重复段落并检查阅读顺序。
 
-历史资料：[建仓计划](archive/建仓计划.md)、[未迁入的实时预览方案](archive/QUICKSTART_X3_STREAM.md)。实时预览与当前 `umi-view` 的离线轨迹回放是两套功能。
+| 内容 | 维护位置 |
+|---|---|
+| 首次安装与一次采集的主流程 | 安装与日常使用.md |
+| 标定录制、求解、验收和登记 | 标定.md |
+| 场景/批次选项、配对、地图复用和排障 | 场景处理.md |
+| 查看器、人工验收、成果包和结果字段 | 结果查看与验收.md |
+| 训练输入、宽度测量、数组和就绪条件 | 训练数据.md |
+| 资产目录、版本、坐标约定 | 设备与坐标.md |
+| 算法过程与当前验证边界 | 算法原理.md |
+| 内部模块职责和引擎输出 | 对应 software 模块 README |
+| 日期、变更过程与当次验证证据 | PROVENANCE.md；长期实验材料放 archive/ |
+
+配置样例只在主流程保留必要示例，完整字段定义链接到对应参考。移动章节时同步本地链接与锚点；检查 shell 示例与当前 CLI 的参数一致。源码或功能变更后更新说明，避免在多个操作页面分别追加同一条兼容提示。
+
+历史资料：[轨迹引擎验证记录](archive/轨迹引擎验证记录.md)、[建仓计划](archive/建仓计划.md)、[未迁入的实时预览方案](archive/QUICKSTART_X3_STREAM.md)。实时预览与 umi-view 的离线轨迹回放是两套功能。

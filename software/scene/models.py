@@ -1,6 +1,8 @@
 """共享场景的参数、清单与阶段数据；此模块不读取清单或设备资产。"""
 from __future__ import annotations
 
+from functools import cached_property
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,6 +40,9 @@ class SceneParameters:
     huber: float
     pairing_start_tolerance_s: float
     pairing_duration_tolerance_s: float
+    gripper_width_max_gap_s: float
+    gripper_width_closed_threshold_mm: float
+    gripper_width_diagnostics: bool
     recording_min_duration_s: float
     recording_static_window_s: float
     recording_max_static_gyro_rad_s: float
@@ -147,6 +152,11 @@ class CalibratedCamera:
     selected: selection.SelectedCalibration
     measurements: dict[str, dict]
     files: dict[str, Path]
+    width_measurement: dict | None = None
+
+    @cached_property
+    def asset_hashes(self) -> dict[str, str]:
+        return {name: config.file_hash(path) for name, path in sorted(self.files.items())}
 
 
 @dataclass(frozen=True)

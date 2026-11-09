@@ -35,9 +35,11 @@ def sample(directory: Path, manifest: dict, arms: dict, query: np.ndarray, max_g
             missing = True
             reasons.append(f"{arm}: missing gripper")
             continue
-        measured = series.read(directory / arm / 'gripper_width.csv')
-        if len(measured.times_s) != len(trajectory.times_s) or not np.allclose(measured.times_s, trajectory.times_s, atol=1e-8, rtol=0):
-            raise ValueError(f'{arm} 夹爪宽度与 TCP 不在同一时间轴')
+        measured = trajectory.width_samples
+        if measured is None:  # 历史结果的宽度独立存放。
+            measured = series.read(directory / arm / 'gripper_width.csv')
+            if len(measured.times_s) != len(trajectory.times_s) or not np.allclose(measured.times_s, trajectory.times_s, atol=1e-8, rtol=0):
+                raise ValueError(f'{arm} 夹爪宽度与 TCP 不在同一时间轴')
         calibration = report['calibration']
         opening = calibration['open_width_mm']
         if np.any((measured.width_mm[measured.valid] < 0) | (measured.width_mm[measured.valid] > opening)):
@@ -53,8 +55,6 @@ def sample(directory: Path, manifest: dict, arms: dict, query: np.ndarray, max_g
             valid_fraction=float(sampled.valid.mean()),
             sources={name: int((sampled.source == code).sum()) for code, name in series.SOURCE_NAMES.items()}
         )
-        if not calibration['verified']:
-            reasons.append(f"{arm}: gripper calibration unverified")
         if not sampled.valid.all():
             reasons.append(f"{arm}: gripper contains missing or out-of-range samples")
     return arrays, dict(training_ready=not reasons, missing_channels=['gripper'] if missing else [],

@@ -4,8 +4,9 @@ import math
 import unittest
 
 import numpy as np
+from software.scene.result_io import pose_rows
 
-from software.scene.management import episodes, ingest, inputs
+from software.scene.management import episodes, inputs
 from software.scene import workflow
 from software.storage import write_json, write_yaml
 import test_scene as fixtures
@@ -50,11 +51,11 @@ class EpisodeAnnotationTests(unittest.TestCase):
         self.f.build_scene()
         workflow.run_episode(self.f.episode_path)
         output = self.f.episode_path.parent / 'results'
-        before = {arm: np.loadtxt(output / arm / 'traj_tcp.txt') for arm in ('left', 'right')}
+        before = {arm: np.array(list(pose_rows(output / arm / 'trajectory.csv')), dtype=float) for arm in ('left', 'right')}
         data = self.configure()
         workflow.run_episode(self.f.episode_path)
         for arm in ('left', 'right'):
-            current = np.loadtxt(output / arm / 'traj_tcp.txt')
+            current = np.array(list(pose_rows(output / arm / 'trajectory.csv')), dtype=float)
             np.testing.assert_allclose(current[:, 1:], before[arm][:, 1:], atol=1e-9)
             np.testing.assert_allclose(current[:, 0], before[arm][:, 0]+(0. if arm=='left' else -.12), atol=1e-6)
         result = json.loads((output / 'episode.json').read_text())
@@ -68,19 +69,20 @@ class EpisodeAnnotationTests(unittest.TestCase):
         self.assertEqual(manifest['episodes'][0]['instruction'], data['instruction'])
 
     def test_instruction_only_update_preserves_sync_and_invalidates_review(self):
-        data = self.configure()
-        state_path = self.f.episode_path.parent / '.umi/state.json'
-        write_json(state_path, dict(review=dict(decision='accepted')))
-        session = inputs.read_session(self.f.session_path)
-        ingest.register_episode(session, 'take_001', {}, instruction='拿起盒子')
-        changed = inputs.read_yaml(self.f.episode_path)
-        self.assertEqual(changed['recordings'], data['recordings'])
-        self.assertEqual(changed['synchronization'], data['synchronization'])
-        self.assertEqual(inputs.read_episode(self.f.episode_path).instruction, '拿起盒子')
-        self.assertFalse(state_path.exists())
-        before = self.f.episode_path.stat().st_mtime_ns
-        ingest.register_episode(session, 'take_001', {}, instruction='拿起盒子')
-        self.assertEqual(self.f.episode_path.stat().st_mtime_ns, before)
+        original = self.configure()
+        self.f.build_scene()
+        workflow.run_episode(self.f.episode_path)
+        episodes.review(self.f.episode_path, accept=True, reviewer='test')
+        changed = dict(original, instruction='拿起盒子')
+        write_yaml(self.f.episode_path, changed)
+        self.assertEqual(changed['recordings'], original['recordings'])
+        self.assertEqual(changed['synchronization'], original['synchronization'])
+        with self.assertRaisesRegex(ValueError, '成功结果'):
+            episodes.accepted_run(inputs.read_episode(self.f.episode_path))
+        workflow.run_episode(self.f.episode_path)
+        result = json.loads((self.f.episode_path.parent / 'results/episode.json').read_text())
+        self.assertEqual(result['instruction'], '拿起盒子')
+        self.assertEqual(result['synchronization']['offsets_s'], original['synchronization']['offsets_s'])
 
     def test_sync_change_invalidates_acceptance_and_no_overlap_is_rejected(self):
         self.configure()
@@ -95,12 +97,13 @@ class EpisodeAnnotationTests(unittest.TestCase):
             workflow.run_episode(self.f.episode_path)
 
     def test_instruction_update_keeps_single_hand_in_a_bimanual_kit(self):
-        session = inputs.read_session(self.f.session_path)
+        session = inputs.read_batch(self.f.session_path)
         data = inputs.read_yaml(self.f.episode_path)
         data['expected_arms'] = ['right']
         data['recordings'].pop('left')
         write_yaml(self.f.episode_path, data)
-        ingest.register_episode(session, 'take_001', {}, instruction='把盒子放入托盘')
+        data['instruction'] = '把盒子放入托盘'
+        write_yaml(self.f.episode_path, data)
         episode = inputs.read_episode(self.f.episode_path)
         self.assertEqual(episode.expected_arms, ('right',))
         self.assertEqual(episode.instruction, '把盒子放入托盘')

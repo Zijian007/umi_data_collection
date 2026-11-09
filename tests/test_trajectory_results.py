@@ -29,7 +29,7 @@ class ResultLayoutTests(unittest.TestCase):
         summary = dict(status='ok', video='VID.insv', run_settings='run_settings.json',
                        duration_s=34.7, rows=1041, tcp_path_length_m=2.96,
                        constraint_fraction={'full': 1.0},
-                       run_fingerprint=dict(version=2, recording={}, calibration={}, options={}, algorithm_parameters="test", code={}, engines={}, evaluation_hash="test"))
+                       run_fingerprint=dict(version=2, recording={}, calibration=dict(assets=dict(tcp_geometry='fixture')), options={}, algorithm_parameters="test", code={}, engines={}, evaluation_hash="test"))
         (self.root / 'summary.json').write_text(json.dumps(summary))
         for name in REQUIRED_OUTPUTS:
             (self.root / name).write_text(name)
@@ -38,6 +38,18 @@ class ResultLayoutTests(unittest.TestCase):
             (self.root / name).mkdir()
             (self.root / name / 'unique.dat').write_bytes(name.encode())
         return summary
+
+    def test_camera_only_result_reuses_without_tcp_but_requires_camera_trajectory(self):
+        summary = self.flat_result()
+        summary['pose_frame'] = 'camera'
+        summary['run_fingerprint']['calibration']['assets'].pop('tcp_geometry')
+        (self.root / 'summary.json').write_text(json.dumps(summary))
+        (self.root / 'traj_tcp.txt').unlink()
+        fingerprint = summary['run_fingerprint']
+        notes = config.load('trajectory').values.notes
+        self.assertIsNotNone(reuse_decision(self.root, fingerprint, notes=notes).summary)
+        (self.root / 'traj_camera.txt').unlink()
+        self.assertIsNone(reuse_decision(self.root, fingerprint, notes=notes).summary)
 
     def test_map_and_video_use_the_same_selected_attempt_and_layout_priority(self):
         summary = {'chosen_try': 2}

@@ -56,21 +56,13 @@ def resample(width_series: WidthSeries, query: np.ndarray, max_gap_s: float) -> 
     return WidthSeries(query, width, source)
 
 
-def write(path: Path, width_series: WidthSeries, calibration: dict, offset_s: float) -> None:
-    with path.open('w', newline='', encoding='utf-8') as stream:
-        writer = csv.writer(stream)
-        writer.writerow(['row', 't_video_s', 't_episode_s', 'width_mm', 'close_01', 'closed', 'valid', 'source'])
-        for k, (time, width, source, valid) in enumerate(
-            zip(width_series.times_s, width_series.width_mm, width_series.source, width_series.valid)
-        ):
-            writer.writerow([k, f'{time:.9f}', f'{time+offset_s:.9f}', f'{width:.6f}' if valid else '',
-                f'{np.clip(1-width/calibration["open_width_mm"], 0, 1):.9f}' if valid else '',
-                int(width <= calibration['closed_threshold_mm']) if valid else '', int(valid), SOURCE_NAMES[int(source)]])
-
-
 def read(path: Path) -> WidthSeries:
     with path.open(newline='', encoding='utf-8') as stream:
-        rows = list(csv.DictReader(stream))
+        return from_rows(list(csv.DictReader(stream)))
+
+
+def from_rows(rows: list[dict[str, str]]) -> WidthSeries:
+    """从轨迹表或历史宽度表的行读取，不重复加载文件。"""
     times = np.array([float(row['t_episode_s']) for row in rows])
     width = np.array([float(row['width_mm']) if row['width_mm'] else np.nan for row in rows])
     codes = {name: code for code, name in SOURCE_NAMES.items()}

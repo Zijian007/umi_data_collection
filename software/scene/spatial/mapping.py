@@ -12,7 +12,7 @@ from . import fusion, slam
 from .geometry import MapAlignmentError, alignment_parameters, metric_alignment, place_front
 from software.storage import write_json
 from software.camera.geometry import imu_from_camera
-from software.scene.models import PreparedRecording, CalibratedCamera, Scene
+from software.scene.models import PreparedRecording, Scene
 
 
 def definition(scene: Scene) -> dict:
@@ -23,7 +23,9 @@ def definition(scene: Scene) -> dict:
     fusion_parameters = alignment_parameters(scene.trajectory.values, scene.parameters)
     return dict(name=scene.name, mode=scene.mode, reference_arm=scene.reference_arm,
         mapping={arm: str(path) for arm, path in scene.recordings.items()},
-        devices=scene.devices,
+        devices={serial: dict(binding, gripper={key: value for key, value in binding.get('gripper', {}).items()
+                                              if key != 'width'})
+                 for serial, binding in scene.devices.items()},
         rear_calibrations={serial: config.file_hash(path) for serial, path in scene.rear_calibrations.items()},
         parameters={key: value for key, value in parameter_values.items() if key.startswith(names) or key == 'huber'},
         motion_segmentation={key: getattr(fusion_parameters, key) for key in
@@ -120,7 +122,7 @@ def build_maps(scene: Scene, prepared: dict[str, PreparedRecording], directory: 
     return maps
 
 
-def freeze_maps(maps: dict, cameras: dict[str, CalibratedCamera], directory: Path) -> tuple[dict, dict]:
+def freeze_maps(maps: dict, directory: Path) -> tuple[dict, dict]:
     frozen, display = {}, []
     for role, item in maps.items():
         target = directory / 'maps' / role
@@ -131,10 +133,5 @@ def freeze_maps(maps: dict, cameras: dict[str, CalibratedCamera], directory: Pat
         visual = slam.export_map(target / 'map.osa', item['index'], item['placement'], target)
         visual.update(index=len(display), label=role, lens=item['lens'])
         display.append(visual)
-    for camera in cameras.values():
-        for name, source in camera.files.items():
-            target = directory / 'devices' / camera.serial / (name + source.suffix)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
     return frozen, dict(kind='umi_map_view', schema_version=1, maps=display,
         note='固定场景地图；尺度与放置来自建图验收，残差为内部一致性指标，不是独立真值误差。')

@@ -1,0 +1,22 @@
+{
+  "status": "NOMINAL_CAD_CANDIDATE_UNVERIFIED",
+  "units": "metres",
+  "tcp_frame": {
+    "convention": "genie_omnipicker_axes_v1",
+    "origin": "closed-fingertip contact midpoint",
+    "axes": {
+      "x": "outer finger to inner finger (front image left)",
+      "y": "right-handed completion: z cross x",
+      "z": "gripper body toward fingertips"
+    },
+    "handedness": "right-handed"
+  },
+  "T_camera_tcp": {
+    "R_rows": [
+      [-1.0, 0.0, 0.0],
+      [0.0, -0.93041756788223, -0.36650122697764065],
+      [0.0, -0.36650122697764065, 0.93041756788223]
+    ],
+    "t_m": [-0.0001815, 0.0369877, 0.1650461]
+  }
+}

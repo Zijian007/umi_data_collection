@@ -71,7 +71,7 @@ def load_published(scene: Scene, *, version: str | None = None, manifest_sha256:
     uses_fixed_version = version is not None
     if not uses_fixed_version:
         if not (layout.maps(scene.root) / 'current.json').is_file():
-            raise ValueError('场景尚未发布地图，请先运行 umi-scene build <scene.yaml>')
+            raise ValueError('场景尚未发布地图，请先运行 umi-scene run <采集批次> 或 build <采集批次>')
         pointer = json.loads((layout.maps(scene.root) / 'current.json').read_text())
         version, manifest_sha256 = pointer['version'], pointer['manifest_sha256']
     if not isinstance(version, str) or not version or any(c not in '0123456789abcdef-_' for c in version):
@@ -99,7 +99,7 @@ def build_scene(path: Path, *, force=False, keep_work=False, cores='', dry_run=F
     session_path = layout.manifest(path, 'manifest.yaml') if path.is_dir() else path
     if session_path.name == 'manifest.yaml' and session_path.is_file():
         with nullcontext() if dry_run else locked(layout.owner(session_path), blocking=True):
-            session = inputs.read_session(session_path, verify_mapping=True)
+            session = inputs.read_batch(session_path, verify_mapping=True)
             configuration = inputs.configuration_identity(session.root)
             if session.map_version and not force:
                 try:
@@ -143,7 +143,7 @@ def mapping_inputs(scene: Scene, cameras: dict) -> dict:
 
 def _build_scene(scene: Scene, *, force=False, keep_work=False, cores='', dry_run=False) -> BuildSceneResult:
     if not scene.recordings:
-        raise ValueError('尚未登记建图录像，请用 build --mapping 指定原片；dual 使用 --mapping-left/--mapping-right')
+        raise ValueError('尚未登记建图录像，请将原片放入批次 mapping/；dual 使用 mapping/left/、right/')
     cameras = inputs.select_cameras(scene.recordings, scene, scene.recording_serials)
     runtime.validate_engines(dict(os.environ))
 
@@ -171,6 +171,7 @@ def _build_scene(scene: Scene, *, force=False, keep_work=False, cores='', dry_ru
         started = time.monotonic()
 
         try:
+            cameras = inputs.snapshot_cameras(cameras, map_dir)
             # --- Step 1: 准备建图录像与相机参数 ---
             console.write('准备建图录像与实测相机参数', step=(1, 3))
             prepared_recordings = {
@@ -193,7 +194,7 @@ def _build_scene(scene: Scene, *, force=False, keep_work=False, cores='', dry_ru
 
             # --- Step 3: 固定并发布场景地图 ---
             console.write('固定并发布场景地图', step=(3, 3))
-            frozen, display = mapping.freeze_maps(maps, cameras, map_dir)
+            frozen, display = mapping.freeze_maps(maps, map_dir)
             write_json(map_dir / 'map.json', display)
             assets = inputs.artifact_hashes(map_dir, ('maps', 'devices'))
             assets['map.json'] = config.file_hash(map_dir / 'map.json')
@@ -221,10 +222,6 @@ def _build_scene(scene: Scene, *, force=False, keep_work=False, cores='', dry_ru
             if input_identity['recordings'] != curr_rec_id:
                 raise ValueError('建图期间原始录像发生变化，拒绝发布')
 
-            curr_cam_id = {arm: inputs.camera_identity(inputs.select_camera(video, scene)) for arm, video in scene.recordings.items()}
-            if input_identity['cameras'] != curr_cam_id:
-                raise ValueError('建图期间设备标定发生变化，拒绝发布')
-
             write_json(map_dir / 'manifest.json', manifest)
             (map_dir / 'report.txt').write_text(
                 f'场景：{scene.name}\n版本：{version}\n坐标：{manifest["frame_id"]}\n'
@@ -251,7 +248,7 @@ def bind_map(episode, requested: str | None, dry_run: bool):
         else:
             build_scene(episode.session.path)
     with nullcontext() if dry_run else locked(episode.session.root, blocking=True):
-        session = inputs.read_session(episode.session.path)
+        session = inputs.read_batch(episode.session.path)
         version = requested or session.map_version
         if not version:
             raise ValueError('批次尚未绑定地图；请登记本轮 mapping/ 或显式指定 --map-version')
@@ -431,6 +428,7 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             if check_report is not None:
                 write_json(run_dir / 'preflight_report.json', asdict(check_report))
 
+            cameras = inputs.snapshot_cameras(cameras, run_dir)
             # Step 1: 准备录像与公共时间区间
             console.write('准备任务录像与时间轴', recording=name, step=(1, 3))
             prepared_recordings = prepare_episode_recordings(episode, cameras, video_offsets_s, cores=cores)
@@ -450,32 +448,37 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
                 fusion_result = reconstruct_arm_in_scene(
                     episode, arm, recording, map_dir, map_manifest,
                     diagnostic_dir=run_dir / arm)
-                tracks[arm] = results.write_arm(
-                    arm, recording, fusion_result, video_offsets_s[arm], scene_metadata, run_dir / arm
-                )
-
+                width_result = None
                 # 若配置了夹爪宽度标定，则执行指尖 ArUco 视觉测距
                 if 'width' in recording.camera.files:
                     console.write(f'{arm}：提取指尖标记开合宽度', recording=name)
-                    widths[arm] = width_pipeline.process(
+                    width_result = width_pipeline.process(
                         episode.recordings[arm],
-                        recording.camera.files['width'],
+                        recording.camera.width_measurement,
                         recording.video_times_s,
                         video_offsets_s[arm],
                         run_dir / arm,
                         layout.metadata(episode.root, 'cache/gripper_width'),
                         episode.recording_refs[arm]['sha256'],
+                        calibration_sha256=recording.camera.asset_hashes['width'],
+                        max_gap_s=scene.parameters.gripper_width_max_gap_s,
+                        closed_threshold_mm=scene.parameters.gripper_width_closed_threshold_mm,
+                        diagnostics=scene.parameters.gripper_width_diagnostics,
                     )
+                    widths[arm] = width_result.report
+                tracks[arm] = results.write_arm(
+                    arm, recording, fusion_result, video_offsets_s[arm], scene_metadata, run_dir / arm,
+                    width=width_result,
+                )
 
             # Step 3: 双手对齐、防篡改校验与原子发布
             console.write('写入轨迹、报告并发布结果', recording=name, step=(3, 3))
             common_interval_s = results.write_bimanual(tracks, run_dir)
 
-            # 最终安全校验：确保在耗时计算期间，原片文件或设备标定未被外部意外替换
-            curr_cameras = inputs.select_cameras(episode.recordings, device_scene, episode.serials)
-            latest_input_identity = inputs.episode_inputs(episode, curr_cameras, map_manifest)
-            if input_identity != latest_input_identity:
-                raise ValueError('任务期间录像或标定发生变化，拒绝发布')
+            # 安装资产已冻结；结束时只核对原片身份，不重新解析配置和校验标定。
+            current_recordings = {arm: inputs.recording_identity(video) for arm, video in episode.recordings.items()}
+            if input_identity['recordings'] != current_recordings:
+                raise ValueError('任务期间录像发生变化，拒绝发布')
 
             results.write_episode(
                 episode,
@@ -523,7 +526,7 @@ def run_episodes(paths: list[Path], *, jobs: int = 1, force=False, cores='', dry
             if not dry_run and path.is_file():
                 try:
                     episode = inputs.read_episode(path, verify=False)
-                    state = episodes.read_state(layout.owner(path))
+                    state = layout.read_state(layout.owner(path))
                     if state.get('attempt', {}).get('status') not in ('rejected_preflight', 'failed'):
                         episodes.record_attempt(episode, 'failed', None, reason=str(error))
                 except (OSError, ValueError, KeyError, RuntimeError, YAMLError):

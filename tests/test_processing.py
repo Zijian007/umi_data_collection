@@ -4,11 +4,12 @@ import io
 import json
 from pathlib import Path
 import unittest
+from registry_fakes import write_kit
 from unittest.mock import patch
 
 from software import registry
 from software.scene import cli, workflow
-from software.scene.management import capture_config, ingest, inputs, processing
+from software.scene.management import batches, ingest, inputs, processing
 from software.storage import write_yaml
 import test_scene as fixtures
 
@@ -24,7 +25,7 @@ class ProcessingTests(unittest.TestCase):
         ):
             override.start()
             self.addCleanup(override.stop)
-        capture_config.register_kit('rig', dict(left='SERIAL_left', right='SERIAL_right'))
+        write_kit('rig', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(left='SERIAL_left', right='SERIAL_right')).items()})
         self.batch = self.f.scene.root / 'prepared'
         write_yaml(self.batch / 'batch.yaml', dict(kit='rig'))
         mapping = self.batch / 'mapping/map.INSV'
@@ -37,7 +38,7 @@ class ProcessingTests(unittest.TestCase):
             path.parent.mkdir(parents=True)
             path.write_text(arm)
             self.bind_fake_video(path, arm)
-            self.infos.append(ingest.RawVideoInfo(path, 'SERIAL_' + arm, registry.sha256_file(path), None, 8.))
+            self.infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, registry.sha256_file(path), None, 8.))
         scan = patch.object(ingest, 'scan_raw_videos', side_effect=lambda sources: (
             [item for item in self.infos if item.path.exists()], []))
         scan.start()
@@ -49,15 +50,20 @@ class ProcessingTests(unittest.TestCase):
         self.f.prepared_recordings[path] = self.f.prepared_recordings[original]
 
     def test_one_command_reuses_unchanged_inputs_and_requires_current_kit(self):
+        declaration = self.batch / 'batch.yaml'
+        kit = inputs.KITS / 'rig/kit.yaml'
+        before = {path: path.read_bytes() for path in (declaration, kit)}
+        self.assertFalse((self.batch / '.umi').exists())
         with redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(cli.main(['run', str(self.batch / 'batch.yaml'), '--json']), 0)
+            self.assertEqual(cli.main(['run', str(declaration), '--json']), 0)
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
         result = json.loads(output.getvalue())
         self.assertEqual([item['status'] for item in result], ['ok'])
         manifest = self.batch / '.umi/manifest.yaml'
-        session = inputs.read_session(manifest)
+        session = inputs.read_batch(manifest)
         self.assertIsNotNone(session.map_version)
-        self.assertTrue((self.batch / 'take_001/results/left/traj_tcp.txt').is_file())
-        self.assertTrue((self.batch / 'take_001/results/right/traj_tcp.txt').is_file())
+        self.assertTrue((self.batch / 'take_001/results/left/trajectory.csv').is_file())
+        self.assertTrue((self.batch / 'take_001/results/right/trajectory.csv').is_file())
         snapshot = manifest.read_bytes()
         again = processing.run([self.batch])
         self.assertEqual([item['status'] for item in again], ['skipped'])
@@ -72,7 +78,7 @@ class ProcessingTests(unittest.TestCase):
         self.batch = new_scene / self.batch.name
         for index, item in enumerate(self.infos):
             path = self.batch / 'take_001' / ('left' if index == 0 else 'right') / 'VID.insv'
-            self.infos[index] = ingest.RawVideoInfo(path, item.serial, item.sha256, None, 8.)
+            self.infos[index] = ingest.RecordingMetadata(path, item.serial, item.sha256, None, 8.)
         before = {path: path.read_bytes() for path in new_scene.rglob('*') if path.is_file()}
         result = processing.run([new_scene], dry_run=True)
         self.assertEqual([item['status'] for item in result], ['planned'])
@@ -90,14 +96,77 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(episode.expected_arms, ('left', 'right'))
         self.assertEqual(set(episode.recordings), {'left'})
         self.assertFalse((self.batch / 'take_001/results').exists())
-        self.assertIsNone(inputs.read_session(self.batch).map_version)
+        self.assertIsNone(inputs.read_batch(self.batch).map_version)
 
     def test_changed_kit_declaration_is_used_on_next_run(self):
         processing.prepare_batch(self.batch)
-        capture_config.register_kit('another_kit', dict(left='SERIAL_left', right='SERIAL_right'))
+        write_kit('another_kit', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(left='SERIAL_left', right='SERIAL_right')).items()})
         write_yaml(self.batch / 'batch.yaml', dict(kit='another_kit'))
         processing.prepare_batch(self.batch)
-        self.assertEqual(inputs.read_session(self.batch).kit['id'], 'another_kit')
+        self.assertEqual(inputs.read_batch(self.batch).kit['id'], 'another_kit')
+
+    def test_run_preview_reads_current_kit_and_keeps_snapshot_unchanged(self):
+        processing.prepare_batch(self.batch)
+        write_kit('single', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(right='SERIAL_right')).items()})
+        write_yaml(self.batch / 'batch.yaml', dict(kit='single'))
+        before = {p: p.read_bytes() for p in self.batch.rglob('*') if p.is_file()}
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(cli.main(['run', str(self.batch), '--dry-run', '--json']), 1)
+        report = json.loads(output.getvalue())
+        mismatch = next(item for item in report if item['status'] == 'failed')
+        self.assertEqual(mismatch['details'][0]['serial'], 'SERIAL_left')
+        self.assertEqual(batches.read_inputs(self.batch).expected_arms, ('right',))
+        self.assertEqual({p: p.read_bytes() for p in self.batch.rglob('*') if p.is_file()}, before)
+
+    def test_build_preview_uses_declared_mapping_without_creating_a_snapshot(self):
+        before = {p: p.read_bytes() for p in self.batch.rglob('*') if p.is_file()}
+        planned = processing.build(self.batch, dry_run=True)
+        self.assertEqual(planned['status'], 'planned')
+        self.assertEqual(planned['inputs']['definition']['mapping'], {'left': str(self.batch / 'mapping/map.INSV')})
+        self.assertEqual({p: p.read_bytes() for p in self.batch.rglob('*') if p.is_file()}, before)
+        self.assertFalse((self.batch / '.umi').exists())
+
+    def test_preview_and_registration_agree_when_all_clips_are_already_registered(self):
+        processing.prepare_batch(self.batch)
+        before = {path: (path.read_bytes(), path.stat().st_mtime_ns)
+                  for path in self.batch.rglob('*') if path.is_file()}
+        preview = processing.prepare_batch(self.batch, dry_run=True)
+        self.assertEqual({path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before}, before)
+        actual = processing.prepare_batch(self.batch)
+        self.assertEqual(preview['episodes'], actual['episodes'])
+        self.assertEqual(preview['skipped'], ['take_001'])
+        self.assertEqual(preview['skipped'], actual['skipped'])
+
+    def test_preview_and_registration_both_reject_duplicate_clip_ownership(self):
+        processing.prepare_batch(self.batch)
+        task_record = inputs.read_yaml(self.batch / 'take_001/.umi/episode.yaml')
+        write_yaml(self.batch / 'take_002/.umi/episode.yaml', task_record)
+        before = {path: path.read_bytes() for path in self.batch.rglob('*') if path.is_file()}
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run), self.assertRaisesRegex(ValueError, '同一原片已属于多个任务'):
+                processing.prepare_batch(self.batch, dry_run=dry_run)
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+    def test_build_alone_generates_the_same_record_without_importing_tasks(self):
+        built = processing.build(self.batch)
+        self.assertEqual(built['status'], 'ok')
+        batch = inputs.read_batch(self.batch)
+        self.assertEqual(batch.kit['id'], 'rig')
+        self.assertEqual(batch.map_version, built['version'])
+        self.assertFalse((self.batch / 'take_001/.umi/episode.yaml').exists())
+
+    def test_dual_reference_is_resolved_from_scene_options_into_batch_record(self):
+        write_yaml(self.f.scene_path, dict(mode='dual', reference_arm='right'))
+        left = self.batch / 'mapping/left/VID.insv'
+        left.parent.mkdir()
+        (self.batch / 'mapping/map.INSV').rename(left)
+        right = self.batch / 'mapping/right/VID.insv'
+        right.parent.mkdir()
+        right.write_text('right_mapping')
+        request = batches.read_inputs(self.batch)
+        path = batches.save_record(request)
+        self.assertEqual(inputs.read_yaml(path)['mapping_reference_arm'], 'right')
+        self.assertEqual(inputs.read_batch(path).scene.reference_arm, 'right')
 
     def test_missing_mapping_never_adopts_other_batchs_current_map(self):
         self.f.build_scene()
@@ -113,7 +182,7 @@ class ProcessingTests(unittest.TestCase):
         with patch.object(workflow, 'build_scene', side_effect=AssertionError('unexpected map build')):
             result = processing.run([self.batch])
         self.assertEqual([item['status'] for item in result], ['ok'])
-        self.assertEqual(inputs.read_session(self.batch).map_version, built['version'])
+        self.assertEqual(inputs.read_batch(self.batch).map_version, built['version'])
 
     def test_explicit_map_override_does_not_leave_declared_batch_unrunnable(self):
         first = self.f.build_scene()
@@ -123,10 +192,10 @@ class ProcessingTests(unittest.TestCase):
         second = self.f.build_scene(force=True)
         result = processing.run([self.batch], map_version=second['version'])
         self.assertEqual([item['status'] for item in result], ['ok'])
-        self.assertEqual(inputs.read_session(self.batch).map_version, second['version'])
+        self.assertEqual(inputs.read_batch(self.batch).map_version, second['version'])
         again = processing.run([self.batch])
         self.assertEqual([item['status'] for item in again], ['ok'])
-        self.assertEqual(inputs.read_session(self.batch).map_version, first['version'])
+        self.assertEqual(inputs.read_batch(self.batch).map_version, first['version'])
         self.assertEqual(processing.run([self.batch])[0]['status'], 'skipped')
 
     def test_ambiguous_mapping_and_unknown_config_fields_fail_before_writing(self):

@@ -98,7 +98,7 @@ class ReconstructionTests(unittest.TestCase):
 
         record = run_metadata.collect_run_settings(self.paths.output, {}, 'handheld', 'VID.insv',
             calib=dict(yaml=str(settings.front_settings), mask=str(settings.front_mask),
-                       tcp_json=registry.gripper_paths('handheld_v1')['tcp_json'],
+                       tcp_json=str(Path(__file__).parent / 'fixtures/tcp_camera.json'),
                        source_mask=str(runtime.HERE / 'assets/config/front_hand_mask.png')),
             command=dict(parameters={'configuration': configuration.snapshot()}))
         self.assertEqual(record['frame_geometry']['slam_video_px'], [960, 960])

@@ -6,8 +6,9 @@ kit:
     left:
       serial: CAMERA_SERIAL
       calibration: '001'
-      gripper: handheld_v1
-      gripper_version: '003'
+      gripper:
+        # 自动解析记录保存绝对路径；用户在 kit.yaml 中填写相对路径。
+        tcp: /path/to/umi_data_collection/kits/example_kit/tcp_camera.json
 mapping:
   serial: CAMERA_SERIAL
   path: mapping/VID_YYYYMMDD_HHMMSS_00_001.insv

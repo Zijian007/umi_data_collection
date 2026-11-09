@@ -83,7 +83,7 @@ class InternalLayoutTests(unittest.TestCase):
         take = episode.root
         old_run = episode.output.resolve()
         run_name = old_run.name
-        pose = (old_run / 'left/traj_tcp.txt').read_bytes()
+        pose = (old_run / 'left/trajectory.csv').read_bytes()
         source = {p: (p.read_bytes(), p.stat().st_ino) for p in fixture.recording_paths.values()}
         # 构造升级前的位置；内容和固定地图清单保持原值。
         layout.maps(fixture.scene.root).rename(fixture.scene.root / 'maps')
@@ -102,7 +102,7 @@ class InternalLayoutTests(unittest.TestCase):
         self.assertEqual(current.path, take / '.umi/episode.yaml')
         self.assertEqual(current.session.path.read_bytes(), manifest)
         self.assertEqual(current.output.resolve(), take / '.umi/runs' / run_name)
-        self.assertEqual((current.output / 'left/traj_tcp.txt').read_bytes(), pose)
+        self.assertEqual((current.output / 'left/trajectory.csv').read_bytes(), pose)
         self.assertEqual({p: (p.read_bytes(), p.stat().st_ino) for p in fixture.recording_paths.values()}, source)
         data = json.loads((current.output / 'episode.json').read_text())
         inputs.validate_assets(current.output, data['assets'])

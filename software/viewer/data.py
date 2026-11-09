@@ -10,7 +10,7 @@ from pathlib import Path
 
 from software.trajectory.reporting.results import front_video_path, load_summary, result_path
 from software.scene import layout
-from software.scene.result_io import read_arm_summary
+from software.scene.result_io import read_arm_summary, trajectory_path, pose_rows
 
 
 class ViewerDataError(ValueError):
@@ -19,25 +19,22 @@ class ViewerDataError(ValueError):
 
 def read_trajectory(path: Path) -> dict:
     times, positions, quaternions = [], [], []
-    with path.open(encoding='utf-8') as source:
-        for line_number, line in enumerate(source, 1):
-            if not line.strip() or line.lstrip().startswith('#'):
-                continue
-            try:
-                values = list(map(float, line.split()))
-                if len(values) != 8 or not all(math.isfinite(v) for v in values):
-                    raise ValueError('需要 8 个有限数值')
-                if times and values[0] <= times[-1]:
-                    raise ValueError('时间戳必须严格递增')
-                q = values[4:]
-                norm = math.sqrt(sum(v * v for v in q))
-                if not 0.9 < norm < 1.1:
-                    raise ValueError('姿态四元数不是单位四元数')
-            except ValueError as error:
-                raise ViewerDataError(f'{path.name} 第 {line_number} 行：{error}') from error
-            times.append(values[0])
-            positions.append(values[1:4])
-            quaternions.append([v / norm for v in q])
+    for line_number, row in enumerate(pose_rows(path), 1):
+        try:
+            values = list(map(float, row))
+            if len(values) != 8 or not all(math.isfinite(v) for v in values):
+                raise ValueError('需要 8 个有限数值')
+            if times and values[0] <= times[-1]:
+                raise ValueError('时间戳必须严格递增')
+            q = values[4:]
+            norm = math.sqrt(sum(v * v for v in q))
+            if not 0.9 < norm < 1.1:
+                raise ValueError('姿态四元数不是单位四元数')
+        except ValueError as error:
+            raise ViewerDataError(f'{path.name} 第 {line_number} 行：{error}') from error
+        times.append(values[0])
+        positions.append(values[1:4])
+        quaternions.append([v / norm for v in q])
     if len(times) < 2:
         raise ViewerDataError(f'{path.name} 至少需要两个轨迹点')
     distances = [math.dist(a, b) for a, b in zip(positions, positions[1:])]
@@ -163,10 +160,10 @@ class RecordingCatalog:
                 except (ViewerDataError, OSError, ValueError, KeyError):
                     continue
                 continue
-            if 'traj_tcp.txt' not in files:
+            if not {'traj_tcp.txt', 'trajectory.csv'} & set(files):
                 continue
             children[:] = []
-            if not self.contains(directory) or not self.contains(directory / 'traj_tcp.txt'):
+            if not self.contains(directory) or not self.contains(trajectory_path(directory)):
                 continue
             key = hashlib.sha256(str(directory.resolve()).encode()).hexdigest()[:20]
             directories[key] = directory
@@ -217,7 +214,7 @@ class RecordingCatalog:
             from software.viewer.episodes import load_episode
             return load_episode(self, key, directory)
         summary = self.summary(directory)
-        tcp_path = directory / 'traj_tcp.txt'
+        tcp_path = trajectory_path(directory)
         if not self.contains(tcp_path):
             raise ViewerDataError('轨迹文件超出当前数据目录。')
         tcp = read_trajectory(tcp_path)

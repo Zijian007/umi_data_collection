@@ -202,7 +202,7 @@ def describe(bundle_dir: Path, source: str) -> dict:
             raise CalibrationError(f'无法读取标定包 {bundle_dir}：{error}') from error
     return {'source': source, 'dir': str(bundle_dir), 'json': str(json_path),
             'yaml': str(FRONT_SETTINGS_TEMPLATE), 'fuser': str(FUSION_SCRIPT), 'id': _sha12(json_path),
-            'bundle_schema_version': version,
+            'bundle_schema_version': version, 'measurement': calib_info,
             'cam_time_offset_ns': calib_info['cam_time_offset_ns'],
             'T_imu_cam': {'p': calib_info['p'], 'q_xyzw': calib_info['q_xyzw']}}
 

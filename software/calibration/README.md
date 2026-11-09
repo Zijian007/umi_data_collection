@@ -122,3 +122,5 @@ Basalt 保留 bag 输入、KB4、噪声先验和 `--fixed-scale-opt-offset`。�
 ```
 
 测试覆盖真实 D 工具、时间匹配、灰度像素、数值后镜头后端、恢复/中断、安装边界和只读报告。真实回归状态见 [架构与验证](../../docs/dev/标定架构与验证.md)，不能用模拟替代前后镜头整套实测。操作见 [标定指南](../../docs/标定.md)，配置见 [参数说明](../../config/README.md)。
+
+宽度测量辅助入口 `preview-width` 调用 [gripper_width/preview.py](../gripper_width/preview.py) 输出标签视频；`detect-width` 调用 [gripper_width/monitor.py](../gripper_width/monitor.py) 在固定 ROI 内进行无界面采样检测，输出 CSV 并默认保存带标签和 ROI 框的 MP4。两者均使用基础环境，不进入相机标定求解或设备登记流程。

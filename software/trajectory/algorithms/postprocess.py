@@ -32,20 +32,24 @@ def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_di
     n = len(tc)
     t = canonical_to_video_seconds(tc)
     user_cal = bool(calib) and calib.get("source") not in (None, "factory")
-    ex = load_extrinsics(calib["json"] if calib else None, (calib or {}).get("tcp_json"))
+    ex = load_extrinsics(calib["json"] if calib else None, (calib or {}).get("tcp_json"),
+                         geometry=(calib or {}).get("tcp_geometry"))
     p_cam, q_cam = compose_pose_series(p_imu, q_imu, ex["T_imu_cam"])
-    p_tcp, q_tcp = compose_pose_series(p_imu, q_imu, ex["T_imu_cam"] @ ex["T_cam_tcp"])
+    pose_frame = "tcp" if "T_cam_tcp" in ex else "camera"
+    positions, orientations = (compose_pose_series(p_cam, q_cam, ex["T_cam_tcp"])
+                               if pose_frame == "tcp" else (p_cam, q_cam))
     q_imu = q_imu.copy()
     q_imu[q_imu[:, 3] < 0] *= -1
 
     common = (f"t = video time in s (first video frame = 0; row k = source video frame {parameters.video.frame_step}k). W: metric, z up (gravity -z), origin and\n"
               "heading arbitrary per recording. Pose maps body coordinates to W; quaternion x y z w.\n"
               "Source: %s, X3 trajectory tool (front-lens map relocalization + IMU fusion), mode %s." % (name, mode))
-    write_tum(out_dir / "traj_tcp.txt", t, p_tcp, q_tcp,
-              "TCP pose  t x y z qx qy qz qw\n" + common +
-              "\nT_W_tcp = T_W_imu * T_imu_cam (%s) * T_cam_tcp (nominal CAD, status %s)."
-              % ("user calibration %s" % calib["id"] if user_cal else "sample calibration calibration_r1440.json", ex["cad_status"]) +
-              "\nTCP frame: " + json.dumps(ex['tcp_frame'], ensure_ascii=False))
+    if pose_frame == "tcp":
+        write_tum(out_dir / "traj_tcp.txt", t, positions, orientations,
+                  "TCP pose  t x y z qx qy qz qw\n" + common +
+                  "\nT_W_tcp = T_W_imu * T_imu_cam (%s) * T_cam_tcp (nominal CAD, status %s)."
+                  % ("user calibration %s" % calib["id"] if user_cal else "sample calibration calibration_r1440.json", ex["cad_status"]) +
+                  "\nTCP frame: " + json.dumps(ex['tcp_frame'], ensure_ascii=False))
     write_tum(out_dir / "traj_camera.txt", t, p_cam, q_cam,
               "front-lens camera pose (optical frame: x right, y down, z forward)  t x y z qx qy qz qw\n" + common +
               "\nT_W_cam = T_W_imu * T_imu_cam (%s)."
@@ -59,7 +63,7 @@ def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_di
         for k in range(n):
             f.write("%d,%d,%d,%.6f,%s,%d\n" % (k, k, parameters.video.frame_step * k, t[k], kind[k], int(tracked[k])))
 
-    seg_len = np.linalg.norm(np.diff(p_tcp, axis=0), axis=1)
+    seg_len = np.linalg.norm(np.diff(positions, axis=0), axis=1)
     dt = np.diff(t)
     speed = seg_len / np.where(dt > 0, dt, np.nan)
     tr = tracked_counts(reconstruction_dir / "logs" / "run.txt")
@@ -84,9 +88,10 @@ def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_di
         "camera_map_chains": len(full_runs),
         "longest_stretch_without_map_position_s": round(longest_gap, 2),
         "map_position_starts_at_s": round(lead, 2),
-        "tcp_path_length_m": round(float(seg_len.sum()), 4),
-        "tcp_extent_m": [round(float(v), 4) for v in (p_tcp.max(0) - p_tcp.min(0))],
-        "tcp_speed_m_s": {"median": round(float(np.nanmedian(speed)), 4), "p99": round(float(np.nanpercentile(speed, 99)), 4)},
+        "pose_frame": pose_frame,
+        pose_frame + "_path_length_m": round(float(seg_len.sum()), 4),
+        pose_frame + "_extent_m": [round(float(v), 4) for v in (positions.max(0) - positions.min(0))],
+        pose_frame + "_speed_m_s": {"median": round(float(np.nanmedian(speed)), 4), "p99": round(float(np.nanpercentile(speed, 99)), 4)},
         "quality_evidence": {"full_fraction": float((kind == "full").mean()),
                              "map_position_starts_at_s": lead},
         "notes": [],
@@ -94,21 +99,22 @@ def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_di
         "fusion": {k: info.get(k) for k in ("init_lens", "segments", "zupt_frames", "nodes", "timing_s", "seg_scale_range", "scale_consistency")},
         "calibration": {"imu_cam": ("registry %s serial %s (%s)" % (calib["id"], calib.get("serial"), calib["dir"]) if user_cal
                                     else CALIB_IMU_CAM.name + " (sample calibration, one X3, 2026-09-04)"),
-                        "cam_tcp": Path(ex["tcp_json"]).name + " (" + str(ex["cad_status"]) + ")",
+                        "cam_tcp": (Path(ex["tcp_json"]).name + " (" + str(ex["cad_status"]) + ")") if pose_frame == "tcp" else None,
                         "cam_imu_time_offset_ns": ex["cam_time_offset_ns"],
-                        "serial": (calib or {}).get("serial"), "gripper": (calib or {}).get("gripper")},
-        "conventions": "see the header of traj_tcp.txt",
-        "tcp_frame": ex['tcp_frame'],
+                        "serial": (calib or {}).get("serial")},
+        "conventions": "see the header of traj_" + pose_frame + ".txt",
         "run_settings": "run_settings.json",
     }
+    if pose_frame == 'tcp':
+        summary['tcp_frame'] = ex['tcp_frame']
     summary['quality_notes'] = evaluate_notes(summary, parameters.notes)
     summary['notes'] = list(summary['quality_notes'])
     settings = collect_run_settings(reconstruction_dir, extract_manifest, mode, name, calib, command, info)
     (out_dir / "run_settings.json").write_text(json.dumps(settings, indent=1, ensure_ascii=False), encoding="utf-8")
-    title = "%s  |  %.1f s  |  TCP path %.2f m  |  map position on %.0f%% of frames" % (
-        summary["video"], summary["duration_s"], summary["tcp_path_length_m"], 100 * frac["full"])
+    title = ("%s  |  %.1f s  |  " + pose_frame + " path %.2f m  |  map position on %.0f%% of frames") % (
+        summary["video"], summary["duration_s"], summary[pose_frame + "_path_length_m"], 100 * frac["full"])
     try:
-        plot(out_dir / "trajectory.png", t, p_tcp, kind, title)
+        plot(out_dir / "trajectory.png", t, positions, kind, title)
     except Exception as e:                     # a missing font or backend must not lose the trajectory
         summary["notes"].append("plot failed: %r" % (e,))
     return summary

@@ -4,7 +4,8 @@ import os
 import sys
 from pathlib import Path
 import numpy as np
-from software import registry
+from software import config
+from software.trajectory.calibration.selection import DEFAULT_FRONT_MASK
 from software.environment import python_executable
 from software.calibration.algorithms import board_pnp, trajectory_metrics
 from software.calibration.pipeline import runtime
@@ -13,9 +14,8 @@ from software.calibration.validation import trajectory_diagnostics
 
 
 def trajectory_assets() -> dict:
-    """子进程通过 UMI_TRAJ_CALIB 选择相机，夹爪和遮手图仍取当前默认资产。"""
-    gripper = registry.attach_gripper({})
-    return dict(gripper={key: gripper[key] for key in ('gripper', 'gripper_version', 'tcp_sha256', 'mask_sha256')})
+    """相机验收只依赖相机测量和通用遮罩，无夹爪安装依赖。"""
+    return dict(front_mask_sha256=config.file_hash(DEFAULT_FRONT_MASK))
 
 def read_camera_positions(traj_camera: Path) -> tuple[np.ndarray, np.ndarray]:
     rows = [l.split() for l in traj_camera.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]

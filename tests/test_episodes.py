@@ -6,7 +6,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from software.scene.management import inputs, episodes
-from software.scene import cli, workflow
+from software.scene import cli, layout, workflow
 from software.storage import write_yaml
 from software.viewer.data import RecordingCatalog
 import test_scene as scene_fixtures
@@ -20,7 +20,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
     def test_same_named_tasks_in_different_batches_remain_distinct_in_viewer_and_export(self):
         other_session = self.f.scene.root / '20261025_002/manifest.yaml'
         session_data = inputs.read_yaml(self.f.session_path)
-        session_data['kit'] = self.f.write_kit('other_kit', inputs.read_session(self.f.session_path).kit['arms'])
+        session_data['kit'] = self.f.write_kit('other_kit', inputs.read_batch(self.f.session_path).kit['arms'])
         write_yaml(other_session, session_data)
         other_episode = other_session.parent / 'take_001/episode.yaml'
         episode_data = inputs.read_yaml(self.f.episode_path)
@@ -44,7 +44,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
         write_yaml(self.f.episode_path,data)
         result=workflow.run_episode(self.f.episode_path)
         output=self.f.episode_path.parent/'results'
-        self.assertTrue((output/'right/traj_tcp.txt').is_file())
+        self.assertTrue((output/'right/trajectory.csv').is_file())
         self.assertFalse((output/'left').exists())
         self.assertFalse((output/'bimanual.csv').exists())
         episodes.review(self.f.episode_path,accept=True,reviewer='reviewer')
@@ -72,7 +72,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'retry fusion'):
                 workflow.run_episode(self.f.episode_path,force=True)
         self.assertEqual((self.f.episode_path.parent/'results').resolve(),output)
-        state = episodes.read_state(self.f.episode_path.parent)
+        state = layout.read_state(self.f.episode_path.parent)
         self.assertEqual(set(state), {'attempt'})
         self.assertNotIn('recording_checks', state['attempt'])
         report = self.f.episode_path.parent / state['attempt']['preflight_report']
@@ -95,9 +95,9 @@ class EpisodeLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'right arm failed'):
                 workflow.run_episode(self.f.episode_path, force=True)
         self.assertEqual((self.f.episode_path.parent/'results').resolve(), output)
-        state = episodes.read_state(self.f.episode_path.parent)
+        state = layout.read_state(self.f.episode_path.parent)
         failed_run = self.f.episode_path.parent/state['attempt']['run']
-        self.assertTrue((failed_run/'left/traj_tcp.txt').is_file())
+        self.assertTrue((failed_run/'left/trajectory.csv').is_file())
         self.assertFalse((failed_run/'episode.json').exists())
         self.assertEqual(state['attempt']['status'], 'failed')
 
@@ -110,13 +110,13 @@ class EpisodeLifecycleTests(unittest.TestCase):
                 workflow.run_episode(self.f.episode_path, force=True)
         self.assertEqual((self.f.episode_path.parent/'results').resolve(), output)
         self.assertEqual((output/'episode.json').read_bytes(), before)
-        state = episodes.read_state(self.f.episode_path.parent)
+        state = layout.read_state(self.f.episode_path.parent)
         self.assertEqual(state['attempt']['status'], 'failed')
         failure = self.f.episode_path.parent/state['attempt']['run']/'error.json'
         self.assertEqual(json.loads(failure.read_text())['reason'], 'report write failed')
 
     def test_first_processing_binds_map_and_dry_run_does_not(self):
-        version = inputs.read_session(self.f.session_path).map_version
+        version = inputs.read_batch(self.f.session_path).map_version
         data=inputs.read_yaml(self.f.session_path);data['map']=None;write_yaml(self.f.session_path,data)
         before=self.f.session_path.read_bytes()
         with self.assertRaisesRegex(ValueError, '尚未绑定地图'):
@@ -124,7 +124,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
         workflow.run_episode(self.f.episode_path,dry_run=True, map_version=version)
         self.assertEqual(self.f.session_path.read_bytes(),before)
         workflow.run_episode(self.f.episode_path, map_version=version)
-        self.assertIsNotNone(inputs.read_session(self.f.session_path).map_version)
+        self.assertIsNotNone(inputs.read_batch(self.f.session_path).map_version)
 
     def test_concurrent_first_tasks_bind_the_same_session_map(self):
         data = inputs.read_yaml(self.f.session_path)
@@ -152,7 +152,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
     def test_success_state_references_one_result_manifest_with_preflight(self):
         workflow.run_episode(self.f.episode_path)
         episodes.review(self.f.episode_path, accept=True, reviewer='reviewer')
-        state = episodes.read_state(self.f.episode_path.parent)
+        state = layout.read_state(self.f.episode_path.parent)
         self.assertEqual(set(state), {'attempt', 'review'})
         self.assertNotIn('recording_checks', state['attempt'])
         self.assertEqual(set(state['attempt']), {'status', 'run', 'reason', 'manifest_sha256', 'session_sha256'})

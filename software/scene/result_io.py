@@ -1,9 +1,14 @@
 """只读场景结果适配；新结果从任务清单取值，兼容旧的各手 JSON。"""
 from __future__ import annotations
 
+from collections.abc import Iterator
+import csv
 import json
 import os
 from pathlib import Path
+
+
+TCP_COLUMNS = ('t_episode_s', 'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw')
 
 
 def _manifest(directory: Path, manifest: dict | None) -> dict | None:
@@ -52,3 +57,21 @@ def read_arm_settings(directory: Path, manifest: dict | None = None) -> dict:
         T_camera_tcp=data['T_camera_tcp'], tcp_frame=manifest['tcp_frames'][arm],
         video_time_offset_s=manifest['synchronization']['offsets_s'][arm],
         video_parameters=manifest['inputs']['trajectory_parameters']['video'], frame_geometry=data['frame_geometry'])
+
+
+def trajectory_path(directory: Path) -> Path:
+    """新场景使用统一表；独立引擎和历史结果保留 TUM 文件。"""
+    combined = directory / 'trajectory.csv'
+    return combined if combined.is_file() else directory / 'traj_tcp.txt'
+
+
+def pose_rows(path: Path) -> Iterator[list[str]]:
+    """按相同顺序提供 TCP 数值列；无需为查看器引入数值计算依赖。"""
+    with path.open(encoding='utf-8', newline='') as stream:
+        if path.suffix == '.csv':
+            for row in csv.DictReader(stream):
+                yield [row[column] for column in TCP_COLUMNS]
+        else:
+            for line in stream:
+                if line.strip() and not line.lstrip().startswith('#'):
+                    yield line.split()

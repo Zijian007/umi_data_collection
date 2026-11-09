@@ -39,8 +39,8 @@ class DeviceCommandTests(unittest.TestCase):
 
     def test_install_flags_map_to_explicit_device_parameters(self):
         with patch.object(devices, 'install_bundle', return_value=0) as install:
-            self.assertEqual(cli.main(['install', '/result', '--serial', 'camera', '--gripper', 'handheld_v1', '--force']), 0)
-            install.assert_called_once_with(Path('/result'), True, camera_serial='camera', gripper='handheld_v1')
+            self.assertEqual(cli.main(['install', '/result', '--serial', 'camera', '--force']), 0)
+            install.assert_called_once_with(Path('/result'), True, camera_serial='camera')
 
     def test_help_contains_only_supported_device_commands(self):
         self.assertNotIn('adopt-sample', cli.build_parser().format_help())
@@ -155,7 +155,7 @@ class FullWorkflowTests(unittest.TestCase):
         args = Namespace(config=None, dry_run=False, folder=None, a=root / "A.insv", b=root / "B.insv",
                          c=root / "C.insv", d=root / "D.insv", out=str(root / "out"),
                          force=False, cores=None, tag_size_mm=24.0,
-                         keep_work=False, install=False, gripper=None, compare_sample=False, workers=1)
+                         keep_work=False, install=False, compare_sample=False, workers=1)
         for stage in "ABCD":
             (root / f"{stage}.insv").write_bytes(b"recording")
         commands = []
@@ -640,7 +640,7 @@ class FullWorkflowTests(unittest.TestCase):
                     args.install = True
                     self.assertEqual(workflow.run(inputs.parse_run_args(args)), expected)
                     if expected == 0:
-                        install.assert_called_once_with(Path(args.out), force=False, camera_serial="camera", gripper=None)
+                        install.assert_called_once_with(Path(args.out), force=False, camera_serial="camera")
                     else:
                         install.assert_not_called()
 

@@ -29,7 +29,6 @@ class CalibrationRequest:
     keep_work: bool = False
     force: bool = False
     install: bool = False
-    gripper: str | None = None
     compare_sample: bool = False
     config: Path | None = None
     dry_run: bool = False

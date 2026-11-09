@@ -11,7 +11,8 @@ scenes/shelf/
     ├── mapping/原始建图文件名.insv
     ├── .umi/                      # 自动保存的批次快照和导入报告
     └── take_001/
-        ├── videos/left/、right/   # 本次操作原片
+        ├── left/                  # 左手操作原片
+        ├── right/                 # 右手操作原片；单手任务只放对应一侧
         ├── results/               # 成功后生成
         └── .umi/                  # 任务清单、缓存、状态和运行记录
 ```
@@ -20,8 +21,35 @@ scenes/shelf/
 
 预先分好的 take 保留名称与分组，本地原片直接引用。未分组原片可放批次 `pending/`，只有唯一配对后才归入 take；缺片或歧义会报告并保留。标定原片仍放 `recordings/calibration/`，套件放全局 `kits/`。
 
-`example_scene/` 的 `.example.yaml` 仅展示输入与生成文件的区别，包含占位符，不作为真实数据运行。复制 [batch.example.yaml](example_scene/20261104_001/batch.example.yaml) 为真实批次的 `batch.yaml` 后填写套件即可。场景配置无需模板。
+`example_scene/` 的 `.example.yaml` 是可复制的示例，不作为真实数据运行。复制 [batch.example.yaml](example_scene/20261104_001/batch.example.yaml) 为真实批次的 `batch.yaml` 后填写套件。
+
+## 场景配置模板
+
+新建场景可复制带注释的 [scene.example.yaml](example_scene/scene.example.yaml) 到场景根目录，命名为 `scene.yaml`，例如 `scenes/test_shelf/scene.yaml`。模板中的默认配置可直接使用；也允许完全省略此文件。
+
+```yaml
+mode: shared_front
+
+# 如需调参，直接在同一文件填写，仅列改动项：
+trajectory:
+  video:
+    size_px: 720
+parameters:
+  minimum_localization_fraction: 0.5
+```
+
+`shared_front` 支持左手、右手和双手采集；`dual` 表示前后镜头双路处理，需要套件登记实测后镜头标定及双路建图原片。场景名称由目录名确定；版本字段可省略。
+
+`trajectory` 对应 `config/trajectory.yaml`，`parameters` 对应 `config/scene_parameters.yaml`。两者直接填写映射，不用再创建或引用覆盖文件。新场景配置只管理选项；建图原片归批次 `mapping/`，设备版本归套件。
+
+全部可选字段、单位和生效范围见 [参数说明](../config/README.md)。套件仍填在批次 `batch.yaml`，设备和标定版本仍填在 `kits/<套件>/kit.yaml`。
 
 完整操作见[日常使用](../docs/安装与日常使用.md)。
 
 日常只需关注配置、原片和 `results/`。无变化的导入不写新报告，相同输入和原因的失败记录去重；旧批次首次实际运行时自动迁移内部文件，`--dry-run` 保持只读。指令与同步可通过任务 `.umi/episode.yaml` 补充。
+
+## 配置与命令迁移
+
+kit.yaml、batch.yaml 手动填写；任务按 take 放好视频，由 `run <批次>` 自动登记和处理。补片后重跑；任务指令和同步填写在生成的 `.umi/episode.yaml` 中。`build <批次>` 仅单独建图，和 run 读取同一份 batch.yaml。
+
+历史 schema 2 的 scene.yaml 和原有结果仍可读取。新配置使用默认 schema 3，不再保存 mapping/devices，也不再引用参数文件；将旧参数文件中的改动项分别移入 trajectory、parameters 即可，不要将旧的场景建图元数据复制到新配置。

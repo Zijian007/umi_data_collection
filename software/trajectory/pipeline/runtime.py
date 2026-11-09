@@ -92,7 +92,7 @@ def check() -> int:
         line(bool(rows), "设备档案", "%d 台相机" % len(rows))
         for device in rows:
             line(bool(device.get("ok")), "  " + str(device.get("serial")),
-                 ("状态 %s；标定 %s；夹爪 %s" % (device.get("status"), device.get("calib_id"), device.get("gripper")))
+                 ("状态 %s；标定 %s" % (device.get("status"), device.get("calib_id")))
                  if device.get("ok") else device.get("error", ""))
     except Exception as error:
         line(False, "设备档案", repr(error))

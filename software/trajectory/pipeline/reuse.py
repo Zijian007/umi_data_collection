@@ -29,7 +29,7 @@ def run_fingerprint(video: Path, selected: SelectedCalibration, request: Traject
     fingerprint = {
         'version': 2,
         'recording': dict(path=str(video.resolve()), bytes=stat.st_size, mtime_ns=stat.st_mtime_ns),
-        'calibration': dict(serial=selected.camera_serial, gripper=selected.gripper_id, assets=assets),
+        'calibration': dict(serial=selected.camera_serial, assets=assets),
         'options': dict(mode=request.mode, allow_irregular=request.allow_irregular,
                         max_tries=request.max_tries),
         'algorithm_parameters': request.configuration.computation_hash,
@@ -67,7 +67,9 @@ def reuse_decision(output: Path, fingerprint: dict, *, notes: config.NoteParamet
     ):
         if previous.get(key) != fingerprint[key]:
             return ReuseDecision(None, reason)
-    for name in REQUIRED_OUTPUTS:
+    required = REQUIRED_OUTPUTS if 'tcp_geometry' in fingerprint['calibration']['assets'] else tuple(
+        name for name in REQUIRED_OUTPUTS if name != 'traj_tcp.txt')
+    for name in required:
         path = result_path(output, name)
         if not path.is_file() or path.stat().st_size == 0:
             return ReuseDecision(None, '轨迹产物缺失或为空')

@@ -2,16 +2,21 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from pathlib import Path
-import json
 
 import numpy as np
 
 from software import config
-from software.camera.x3.frame import SRC_H, SRC_W
-from software.gripper_width import calibration, series
-from software.gripper_width.width_4k60 import detector, width_mm
-from software.storage import atomic_file, write_json
+from software.gripper_width import detection, series
+from software.gripper_width.width_4k60 import width_mm
+
+
+@dataclass(frozen=True)
+class WidthResult:
+    samples: series.WidthSeries
+    report: dict
+    closed_threshold_mm: float
 
 
 def identity() -> dict:
@@ -19,41 +24,7 @@ def identity() -> dict:
 
     directory = Path(__file__).parent
     return dict(opencv=cv2.__version__, files={name: config.file_hash(directory/name)
-        for name in ('calibration.py', 'series.py', 'pipeline.py', 'width_4k60.py')})
-
-
-def detect(video: Path, measurement: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    import av
-
-    det = detector()
-    times, distances = [], []
-    with av.open(str(video)) as container:
-        stream = container.streams.video[0]
-        if (stream.codec_context.width, stream.codec_context.height) != (SRC_W, SRC_H):
-            raise ValueError('夹爪宽度估计需要 X3 原始 3840×1920 前镜头画面')
-        for frame in container.decode(stream):
-            if frame.pts is None or frame.time_base is None:
-                raise ValueError('宽度检测原片缺少帧时间戳')
-            gray = frame.to_ndarray(format='gray')[:, SRC_W//2:]
-            corners, ids, _ = det.detectMarkers(gray)
-            centres = {}
-            if ids is not None:
-                values = ids.flatten()
-                for tag in (0, 1):
-                    matches = np.flatnonzero(values == tag)
-                    if len(matches) == 1:
-                        centres[tag] = corners[int(matches[0])][0].mean(axis=0)
-            times.append(float(frame.pts * frame.time_base))
-            distances.append(float(np.linalg.norm(centres[0] - centres[1])) if len(centres) == 2 else np.nan)
-    times = np.asarray(times)
-    if len(times) < 2 or not np.isfinite(times).all() or not np.all(np.diff(times) > 0):
-        raise ValueError('宽度检测视频时间无效或非递增')
-    distance = np.asarray(distances)
-    found = np.isfinite(distance)
-    widths = np.full(len(times), np.nan)
-    above = np.zeros(len(times), dtype=bool)
-    widths[found], above[found] = width_mm(distance[found], measurement['anchors'])
-    return times, widths, above
+        for name in ('calibration.py', 'detection.py', 'series.py', 'pipeline.py', 'width_4k60.py')})
 
 
 def align(times: np.ndarray, widths: np.ndarray, above: np.ndarray,
@@ -85,39 +56,32 @@ def align(times: np.ndarray, widths: np.ndarray, above: np.ndarray,
     return series.WidthSeries(query, values, source)
 
 
-def process(video: Path, calibration_path: Path, video_times_s: np.ndarray, offset_s: float,
-            output: Path, cache: Path, recording_sha256: str) -> dict:
-    measurement = calibration.read(calibration_path)
-    provenance = dict(recording_sha256=recording_sha256, calibration_sha256=config.file_hash(calibration_path),
-                      code=identity())
-    key = config.canonical_hash(provenance)[:20]
-    cached = cache / key
-    marker = cached / 'ready.json'
-    data_path = cached / 'frames.npz'
-    if marker.is_file():
-        saved = json.loads(marker.read_text())
-        if saved['inputs'] != provenance or config.file_hash(data_path) != saved['sha256']:
-            raise ValueError('夹爪宽度缓存身份或哈希变化')
-        with np.load(data_path, allow_pickle=False) as data:
-            times, widths, above = data['times'], data['width_mm'], data['above_top']
-    else:
-        times, widths, above = detect(video, measurement)
-        cached.mkdir(parents=True, exist_ok=True)
-        with atomic_file(data_path) as temporary, temporary.open('wb') as stream:
-            np.savez_compressed(stream, times=times, width_mm=widths, above_top=above)
-        write_json(marker, dict(inputs=provenance, sha256=config.file_hash(data_path)))
-    aligned = align(times, widths, above, video_times_s, measurement['max_gap_s'])
-    series.write(output / 'gripper_width.csv', aligned, measurement, offset_s)
-    details = output / 'details'
-    with (details / 'gripper_width_frames.csv').open('w', newline='', encoding='utf-8') as stream:
-        writer = csv.writer(stream)
-        writer.writerow(['source_video_frame', 't_video_s', 'width_mm', 'above_top_anchor'])
-        for k, (time, width, top) in enumerate(zip(times, widths, above)):
-            writer.writerow([k, f'{time:.9f}', f'{width:.6f}' if np.isfinite(width) else '', int(top)])
-    report = dict(status='ok', calibration=measurement, inputs=provenance,
-                  valid_fraction=float(aligned.valid.mean()), rows=len(aligned.times_s),
-                  sources={name: int((aligned.source == code).sum()) for code, name in series.SOURCE_NAMES.items()},
-                  closed_fraction=float((aligned.width_mm[aligned.valid] <= measurement['closed_threshold_mm']).mean())
-                  if aligned.valid.any() else None)
-    write_json(details / 'gripper_width.json', report)
-    return report
+def process(video: Path, measurement: dict, video_times_s: np.ndarray, offset_s: float,
+            output: Path, cache: Path, recording_sha256: str, *, calibration_sha256: str, max_gap_s: float,
+            closed_threshold_mm: float, diagnostics: bool = False) -> WidthResult:
+    if not np.isfinite(closed_threshold_mm) or not 0 <= closed_threshold_mm < measurement['open_width_mm']:
+        raise ValueError('gripper_width_closed_threshold_mm 必须在零与标定最大开口之间')
+    raw = detection.cached(video, cache, recording_sha256)
+    found = np.isfinite(raw.distance_px)
+    widths = np.full(len(raw.times_s), np.nan)
+    above = np.zeros(len(raw.times_s), dtype=bool)
+    widths[found], above[found] = width_mm(raw.distance_px[found], measurement['anchors'])
+    aligned = align(raw.times_s, widths, above, video_times_s, max_gap_s)
+    if diagnostics:
+        details = output / 'details'
+        details.mkdir(parents=True, exist_ok=True)
+        with (details / 'gripper_width_frames.csv').open('w', newline='', encoding='utf-8') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(['source_video_frame', 't_video_s', 'distance_px', 'width_mm', 'above_top_anchor'])
+            for index, (timestamp, distance, width, top) in enumerate(zip(raw.times_s, raw.distance_px, widths, above)):
+                writer.writerow([index, f'{timestamp:.9f}', f'{distance:.6f}' if np.isfinite(distance) else '',
+                                 f'{width:.6f}' if np.isfinite(width) else '', int(top)])
+    report = dict(status='ok', calibration=measurement,
+                inputs=dict(recording_sha256=recording_sha256,
+                            calibration_sha256=calibration_sha256, code=identity()),
+                valid_fraction=float(aligned.valid.mean()), rows=len(aligned.times_s),
+                sources={name: int((aligned.source == code).sum()) for code, name in series.SOURCE_NAMES.items()},
+                closed_fraction=float((aligned.width_mm[aligned.valid] <= closed_threshold_mm).mean())
+                if aligned.valid.any() else None)
+    return WidthResult(series.WidthSeries(aligned.times_s + offset_s, aligned.width_mm, aligned.source),
+                       report, closed_threshold_mm)

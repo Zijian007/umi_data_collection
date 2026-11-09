@@ -24,21 +24,16 @@ class CameraGeometryTests(unittest.TestCase):
         self.assertNotIn('measured x direction', describe_tcp_frame(frame))
         self.assertEqual(describe_tcp_frame(dict(convention='asset_defined', description='legacy axes')), 'legacy axes')
 
-    def test_missing_selected_geometry_is_rejected_without_an_implicit_default(self):
+    def test_camera_extrinsics_do_not_require_or_invent_tcp(self):
         from software.trajectory.reporting import metadata as run_metadata
-        with tempfile.TemporaryDirectory() as temp:
-            output = Path(temp) / 'uncreated'
-            with patch('software.registry.gripper_paths', side_effect=AssertionError('must not choose a default')):
-                with self.assertRaisesRegex(ValueError, 'tcp_json'):
-                    run_metadata.load_extrinsics()
-                with self.assertRaisesRegex(ValueError, 'tcp_json'):
-                    run_metadata.collect_run_settings(output, {}, 'handheld', 'VID.insv')
-            self.assertFalse(output.exists())
+        extrinsics = run_metadata.load_extrinsics()
+        self.assertIn('T_imu_cam', extrinsics)
+        self.assertNotIn('T_cam_tcp', extrinsics)
 
     def test_optical_parallel_tcp_keeps_fingertip_positions_and_changes_only_basis(self):
         root = Path(__file__).resolve().parents[1]
-        new = json.loads((root / 'registry/grippers/handheld_v1/002/t_tcp_camera.json').read_text())
-        old_path = root / 'registry/grippers/handheld_v1/001/t_tcp_camera.json'
+        new = json.loads((root / 'hardware/grippers/archive/handheld_v1/002/t_tcp_camera.json').read_text())
+        old_path = root / 'hardware/grippers/archive/handheld_v1/001/t_tcp_camera.json'
         old = json.loads(old_path.read_text())
         np.testing.assert_array_equal(new['T_camera_tcp']['t_m'], old['T_camera_tcp']['t_m'])
         positions = np.array([[3., -2., 1.], [-1., 4., .2], [2., 3., 4.]])
@@ -55,8 +50,8 @@ class CameraGeometryTests(unittest.TestCase):
 
     def test_robot_tcp_axes_keep_position_and_point_x_toward_image_left(self):
         root = Path(__file__).resolve().parents[1]
-        new = json.loads((root / 'registry/grippers/handheld_v1/003/t_tcp_camera.json').read_text())
-        legacy = json.loads((root / 'registry/grippers/handheld_v1/001/t_tcp_camera.json').read_text())
+        new = json.loads((root / 'hardware/grippers/archive/handheld_v1/003/t_tcp_camera.json').read_text())
+        legacy = json.loads((root / 'hardware/grippers/archive/handheld_v1/001/t_tcp_camera.json').read_text())
         extrinsic = camera_from_tcp(new)
         expected = Rotation.from_euler('x', 21.5, degrees=True).as_matrix() @ np.diag([-1., -1., 1.])
         np.testing.assert_allclose(extrinsic[:3, :3], expected, atol=1e-8)
@@ -88,11 +83,11 @@ class CameraGeometryTests(unittest.TestCase):
         from software.trajectory.algorithms import postprocess
 
         root = Path(__file__).resolve().parents[1]
-        source = root / 'registry/grippers/handheld_v1/003/t_tcp_camera.json'
+        source = root / 'hardware/grippers/archive/handheld_v1/003/t_tcp_camera.json'
         new = json.loads(source.read_text())
         sources = (
-            (root / 'registry/grippers/handheld_v1/001/t_tcp_camera.json', 'asset_defined'),
-            (root / 'registry/grippers/handheld_v1/002/t_tcp_camera.json', 'front_optical_parallel_v1'),
+            (root / 'hardware/grippers/archive/handheld_v1/001/t_tcp_camera.json', 'asset_defined'),
+            (root / 'hardware/grippers/archive/handheld_v1/002/t_tcp_camera.json', 'front_optical_parallel_v1'),
             (source, 'genie_omnipicker_axes_v1'),
         )
         with tempfile.TemporaryDirectory() as temporary:
@@ -121,6 +116,38 @@ class CameraGeometryTests(unittest.TestCase):
             camera = np.loadtxt(output / 'traj_camera.txt')
             np.testing.assert_allclose(Rotation.from_quat(outputs[2][:, 4:]).as_matrix(),
                                        Rotation.from_quat(camera[:, 4:]).as_matrix() @ camera_from_tcp(new)[:3, :3], atol=1e-8)
+
+    def test_camera_only_export_matches_camera_poses_without_tcp_artifacts(self):
+        from software.trajectory.algorithms import postprocess
+        from software.trajectory.reporting.metadata import load_extrinsics
+        from software.trajectory.reporting import reports
+        from software.pose_io import write_tum, read_tum
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            fuse = directory / 'reconstruction/fuse'
+            fuse.mkdir(parents=True)
+            (fuse / 'fuse_info.json').write_text('{}')
+            times = np.arange(4) / 29.97 + 1.
+            positions = np.array([[2., 1., .5], [2.1, 1., .5], [2.2, 1.1, .5], [2.3, 1., .5]])
+            rotations = Rotation.from_euler('xyz', [[0., .1, 0.], [.1, .2, .3], [-.2, .4, 1.], [.3, -.2, 1.5]])
+            write_tum(fuse / 'traj_tum.txt', times, positions, rotations.as_quat(), 'test')
+            with patch.object(postprocess, 'plot'):
+                summary = postprocess.export_trajectories(fuse.parent, {}, directory, 'handheld', 'camera.insv')
+            _, camera_positions, camera_quaternions = read_tum(directory / 'traj_camera.txt')
+            expected_positions, expected_quaternions = compose_pose_series(
+                positions, rotations.as_quat(), load_extrinsics()['T_imu_cam'])
+            np.testing.assert_allclose(camera_positions, expected_positions, atol=5.1e-7)  # TUM 位置保存六位小数。
+            np.testing.assert_allclose(camera_quaternions, expected_quaternions, atol=1e-8)
+            self.assertFalse((directory / 'traj_tcp.txt').exists())
+            self.assertEqual(summary['pose_frame'], 'camera')
+            self.assertIn('camera_path_length_m', summary)
+            self.assertNotIn('tcp_frame', summary)
+            settings = json.loads((directory / 'run_settings.json').read_text())
+            self.assertNotIn('camera_tcp_geometry', settings['assets'])
+            reports.show_recording(dict(summary, wall_s=1., out=str(directory)))
+            reports.write_result_report(directory, summary)
+            self.assertIn('相机', (directory / 'report.txt').read_text())
 
     def test_shared_geometry_is_fingerprinted_for_both_workflows(self):
         for domain in ('scene', 'trajectory'):

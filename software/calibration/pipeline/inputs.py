@@ -72,7 +72,7 @@ def parse_run_args(args: Namespace) -> CalibrationRequest:
         folder=Path(args.folder).expanduser() if args.folder else None,
         recordings=recordings, output=Path(args.out).expanduser() if args.out else None,
         tag_size_mm=args.tag_size_mm, cores=args.cores, keep_work=args.keep_work,
-        force=args.force, install=args.install, gripper=args.gripper, compare_sample=args.compare_sample,
+        force=args.force, install=args.install, compare_sample=args.compare_sample,
         config=args.config, dry_run=args.dry_run,
         resume=getattr(args, 'resume', False), workers=getattr(args, 'workers', None),
     )

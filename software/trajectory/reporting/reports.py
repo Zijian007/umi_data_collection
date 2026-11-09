@@ -25,16 +25,19 @@ def write_result_report(output: Path, summary: dict) -> None:
                   f"覆盖参数：{json.dumps(configuration['overrides'], ensure_ascii=False)}",
                   '完整参数与来源：details/run_settings.json']
     if success:
+        pose = summary.get("pose_frame", "tcp")
+        label = "夹爪尖" if pose == "tcp" else "相机"
         def metric(value, spec):
             return format(value, spec) if isinstance(value, (int, float)) else '未记录'
 
         lines += [f"时长：{metric(summary.get('duration_s'), '.2f')} 秒；轨迹点数：{summary.get('rows', '未记录')}",
-                  f"夹爪尖累计路径长度：{metric(summary.get('tcp_path_length_m'), '.3f')} m",
+                  f"{label}累计路径长度：{metric(summary.get(pose + '_path_length_m'), '.3f')} m",
                   f"有地图位置约束的帧比例：{metric(summary.get('constraint_fraction', {}).get('full'), '.1%')}",
                   f"重建尝试：{len(summary.get('tries', []))} 次；采用第 {summary.get('chosen_try', '未知')} 次",
-                  '', '主要结果：traj_tcp.txt（时间秒、位置米、姿态四元数 qx qy qz qw）',
+                  '', f'主要结果：{"traj_tcp.txt" if pose == "tcp" else "details/traj_camera.txt"}（时间秒、位置米、姿态四元数 qx qy qz qw）',
                   '坐标：本段录像独立的世界坐标系，Z 轴朝上，原点和水平朝向由本次处理确定。',
-                  'TCP 自身坐标：' + describe_tcp_frame(summary.get('tcp_frame', {})),
+                  ('TCP 自身坐标：' + describe_tcp_frame(summary.get('tcp_frame', {})) if pose == 'tcp'
+                   else '相机坐标：X 向右、Y 向下、Z 向前。'),
                   '实际误差：本次抽取未与独立真值对照，未测量；地图约束比例不代表真实精度。']
         if (output / 'trajectory.png').is_file():
             lines.append('预览：trajectory.png')
@@ -72,7 +75,7 @@ def show_batch(summaries: list[dict]) -> None:
 def show_calibration(selected: SelectedCalibration, *, recording: str) -> None:
     source = SELECTION_LABELS.get(selected.selection, selected.selection)
     runtime.console.write(f"相机 {selected.camera_serial or '未知'}；标定 {selected.calibration_id}；"
-                          f"夹爪 {selected.gripper_id}；来源：{source}（{selected.directory}）", recording=recording)
+                          f"来源：{source}（{selected.directory}）", recording=recording)
 
 
 def show_recording(summary: dict) -> None:
@@ -81,7 +84,9 @@ def show_recording(summary: dict) -> None:
     output = Path(summary["out"])
     state = STATUS_LABELS[summary["status"]]
     if summary["status"] == "ok":
-        runtime.console.write(f"耗时 {summary['wall_s']:.0f} 秒；TCP 路径 {summary['tcp_path_length_m']:.2f} m；"
+        pose = summary.get('pose_frame', 'tcp')
+        label = 'TCP' if pose == 'tcp' else '相机'
+        runtime.console.write(f"耗时 {summary['wall_s']:.0f} 秒；{label}路径 {summary[pose + '_path_length_m']:.2f} m；"
                               f"地图位置约束覆盖 {summary['constraint_fraction']['full']:.0%} 的帧",
                               recording=name, state=state)
         if len(summary.get("tries", [])) > 1:

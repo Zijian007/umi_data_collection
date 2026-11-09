@@ -1,11 +1,12 @@
 """内部逐段轨迹引擎，供标定 C 验证和开发测试使用。
 
     python -m software.trajectory <video.insv | folder> [more ...] [--out DIR] [--mode handheld|dual] [--jobs N] [--keep-work] [--force]
-                                         [--device SERIAL] [--gripper ID]
+                                         [--device SERIAL] [--tcp FILE] [--mask FILE]
     python -m software.trajectory check                         # 检查运行环境
 
 目录输入处理该目录直接包含的全部 .insv。结果写入 <输出目录>/<录像名>/，
-默认输出目录为第一项输入旁的 umi_traj_out/。主要产物为 traj_tcp.txt、front.mp4、trajectory.png 和 report.txt，辅助产物在 details/。
+默认输出目录为第一项输入旁的 umi_traj_out/。相机轨迹位于 details/traj_camera.txt；提供 --tcp 时额外输出 traj_tcp.txt。
+同时生成 front.mp4、trajectory.png 和 report.txt。
 录像、标定和处理选项均一致时复用已有成功结果；--force 强制重新处理。"""
 
 from __future__ import annotations
@@ -40,12 +41,13 @@ def main(argv=None) -> int:
     parser.add_argument("--allow-irregular", action=argparse.BooleanOptionalAction, default=None,
                     help="允许处理丢帧录像，使用真实帧时间（该路径尚未验证）")
     parser.add_argument("--device", default="", help="设备档案序列号（默认从 .insv 读取）")
-    parser.add_argument("--gripper", default="", help="夹爪 ID（默认使用设备档案中的配置）")
+    parser.add_argument("--tcp", type=Path, help="相机—TCP 安装外参 JSON；省略时只输出相机与 IMU 轨迹")
+    parser.add_argument("--mask", type=Path, help="前镜头遮罩 PNG（默认通用夹爪遮罩）")
     parser.add_argument("--config", type=Path, help="显式 YAML 覆盖配置（默认 config/trajectory.yaml）")
     parser.add_argument("--dry-run", action="store_true", help="只检查输入、标定和生效参数，不创建输出或运行算法")
     args = parser.parse_args(argv)
     request = TrajectoryRequest(mode=args.mode, max_tries=args.max_tries, cores=args.cores, keep_work=args.keep_work,
-                     force=args.force, allow_irregular=args.allow_irregular, device=args.device, gripper=args.gripper, config=args.config, dry_run=args.dry_run)
+                     force=args.force, allow_irregular=args.allow_irregular, device=args.device, tcp=args.tcp, mask=args.mask, config=args.config, dry_run=args.dry_run)
     return workflow.run_batch(args.inputs, args.out, request, jobs=args.jobs)
 
 

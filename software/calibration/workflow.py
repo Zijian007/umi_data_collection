@@ -265,7 +265,7 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
     finally:
         resources.close()
     if code == 0 and request.install:
-        return devices.install_bundle(paths.output, force=False, camera_serial=source.camera_serial, gripper=request.gripper)
+        return devices.install_bundle(paths.output, force=False, camera_serial=source.camera_serial)
     return code
 
 

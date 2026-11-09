@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+from software.scene.result_io import pose_rows
 from scipy.spatial.transform import Rotation
 
 from software import config, registry
@@ -133,7 +134,7 @@ class SceneWorkflowTests(unittest.TestCase):
         self.recording_paths = {arm: self.source / (arm+'.insv') for arm in models.ARMS}
         for arm, video in self.recording_paths.items():
             video.write_bytes(arm.encode())
-        self.device_pins = {f'SERIAL_{arm}': dict(calibration='test', gripper='test', gripper_version='test') for arm in models.ARMS}
+        self.device_pins = {f'SERIAL_{arm}': dict(calibration='test', gripper=dict(tcp=str(self.source / arm / 'tcp.json'))) for arm in models.ARMS}
         write_yaml(self.scene_path, dict(schema_version=2,
                    mapping=dict(left=self.ref('left')), devices=self.device_pins))
         self.scene = inputs.read_scene(self.scene_path)
@@ -157,11 +158,11 @@ class SceneWorkflowTests(unittest.TestCase):
             data['T_imu_cam'] = [dict(px=0., py=0., pz=0., qx=0., qy=0., qz=0., qw=1.)]
             data['cam_time_offset_ns'] = 0
             write_json(asset_dir / 'front.json', front)
-            write_json(asset_dir / 'tcp.json', dict(T_camera_tcp=dict(R_rows=np.eye(3).tolist(), t_m=[0., 0., 0.]), status='test'))
+            write_json(asset_dir / 'tcp.json', dict(units='metres', T_camera_tcp=dict(R_rows=np.eye(3).tolist(), t_m=[0., 0., 0.]), status='test'))
             (asset_dir / 'mask.png').write_bytes(b'mask')
             assets = selection.CalibrationAssets(asset_dir / 'front.json', asset_dir / 'tcp.json', asset_dir / 'mask.png')
             selected = selection.SelectedCalibration(assets, asset_dir, 'calib-'+arm, 'SERIAL_'+arm,
-                'test_gripper', 'registry', 'scene_registry', 'active', 0)
+                'registry', 'scene_registry', 'active', 0, geometry=json.loads(assets.tcp_geometry.read_text()))
             camera = models.CalibratedCamera('SERIAL_'+arm, selected, dict(front=calibration_assets.read_basalt(assets.camera_json)),
                 dict(front=assets.camera_json, tcp=assets.tcp_geometry, mask=assets.front_mask))
             self.cameras[self.recording_paths[arm]] = camera
@@ -174,12 +175,12 @@ class SceneWorkflowTests(unittest.TestCase):
                 SimpleNamespace(parameters=self.scene.trajectory.values),
                 (LensVideo('front', encoded, asset_dir / 'settings.yaml', None),), times, imu)
         self.patches = [patch('software.scene.management.inputs.registry.rear_path', side_effect=lambda serial, version: self.rear_files[serial]),
-            patch('software.scene.management.inputs.registry.pin', side_effect=lambda serial: dict(calibration='test', gripper='test', gripper_version='test')),
+            patch('software.scene.management.inputs.registry.pin', side_effect=lambda serial: dict(calibration='test')),
             patch('software.scene.pipeline.recording_checks.check_episode', return_value=recording_checks.EpisodeCheckReport(passed=True)),
-            patch('software.scene.management.inputs.select_camera', side_effect=lambda video, scene: self.cameras[video]),
+            patch('software.scene.management.inputs.select_camera', side_effect=self.select_camera),
             patch('software.scene.workflow.runtime.validate_engines', return_value=(self.root, self.root)),
             patch('software.scene.workflow.config.engine_identity', return_value=dict(orb_library='fixture')),
-            patch('software.scene.pipeline.recordings.prepare_recording', side_effect=lambda video, *args, **kwargs: self.prepared_recordings[video]),
+            patch('software.scene.pipeline.recordings.prepare_recording', side_effect=lambda video, camera, *args, **kwargs: replace(self.prepared_recordings[video], camera=camera)),
             patch('software.scene.spatial.slam.build', side_effect=self.build),
             patch('software.scene.spatial.slam.atlas_candidates', side_effect=lambda rec, lens, *args: iter([(0, self.observations(rec, lens))])),
             patch('software.scene.spatial.slam.localize', side_effect=lambda rec, lens, *args: self.observations(rec, lens)),
@@ -189,15 +190,20 @@ class SceneWorkflowTests(unittest.TestCase):
         for item in self.patches:
             item.start(); self.addCleanup(item.stop)
 
+    def select_camera(self, video, scene):
+        from software.gripper_width import calibration as width_calibration
+        camera = self.cameras[video]
+        return replace(camera,
+            selected=replace(camera.selected, geometry=selection.read_tcp_geometry(camera.files['tcp'])),
+            width_measurement=width_calibration.read(camera.files['width']) if 'width' in camera.files else None)
+
     def ref(self, arm):
         video = self.recording_paths[arm]
         return dict(path=str(video), serial='SERIAL_'+arm, sha256=registry.sha256_file(video))
 
     def write_kit(self, name, arms):
-        arms = {arm: arms[arm] for arm in models.ARMS if arm in arms}
-        snapshot = dict(id=name, arms=arms)
-        write_yaml(inputs.KITS / name / 'kit.yaml', dict(arms=arms))
-        return snapshot
+        from registry_fakes import write_kit
+        return write_kit(name, {arm: arms[arm] for arm in models.ARMS if arm in arms})
 
     def build_scene(self, **kwargs):
         built = workflow.build_scene(self.scene_path, **kwargs)
@@ -258,7 +264,9 @@ class SceneWorkflowTests(unittest.TestCase):
         names = {str(path.relative_to(output)) for path in output.rglob('*') if path.is_file()}
         expected = {'report.txt', 'episode.json', 'bimanual.csv'} | {
             f'{arm}/{name}' for arm in ('left', 'right') for name in (
-                'traj_tcp.txt', 'front.mp4', 'details/traj_camera.txt', 'details/traj_imu.txt', 'details/frames.csv')}
+                'trajectory.csv', 'front.mp4', 'details/traj_camera.txt', 'details/traj_imu.txt', 'details/frames.csv')}
+        expected |= {f'devices/SERIAL_{arm}/{name}' for arm in ('left', 'right')
+                     for name in ('front.json', 'tcp.json', 'mask.png')}
         self.assertEqual(names, expected)
         metadata = json.loads((output / 'episode.json').read_text())
         self.assertEqual(metadata['schema_version'], 3)
@@ -338,8 +346,9 @@ class SceneWorkflowTests(unittest.TestCase):
         camera = self.cameras[self.recording_paths['left']]
         rear = self.source / 'unverified.json'
         content = json.loads(camera.files['front'].read_text())
-        record = dict(serial=camera.serial, status='active', json=str(camera.files['front']), tcp_json=str(camera.files['tcp']),
-            mask=str(camera.files['mask']), dir=str(camera.selected.directory), id='test', gripper='test', source='registry', cam_time_offset_ns=0)
+        record = dict(serial=camera.serial, status='active', json=str(camera.files['front']),
+            dir=str(camera.selected.directory), id='test', source='registry', cam_time_offset_ns=0,
+            measurement=camera.measurements['front'])
         scene = replace(self.scene, mode='dual', rear_calibrations={camera.serial: rear})
         with patch('software.scene.management.inputs.registry.read_insv_serial', return_value=camera.serial), patch('software.scene.management.inputs.registry.get', return_value=record):
             write_json(rear, content)
@@ -388,7 +397,7 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertIs(scene_parameters, episode.scene.parameters)
 
     def test_robot_tcp_convention_is_written_with_bimanual_results(self):
-        source = Path(__file__).resolve().parents[1] / 'registry/grippers/handheld_v1/003/t_tcp_camera.json'
+        source = Path(__file__).resolve().parents[1] / 'hardware/grippers/archive/handheld_v1/003/t_tcp_camera.json'
         for camera in self.cameras.values():
             camera.files['tcp'].write_bytes(source.read_bytes())
         self.build_scene()
@@ -400,8 +409,7 @@ class SceneWorkflowTests(unittest.TestCase):
             self.assertEqual(tcp_frame['convention'], 'genie_omnipicker_axes_v1')
             settings = read_arm_settings(output / arm)
             self.assertEqual(settings['tcp_frame'], tcp_frame)
-            self.assertIn('genie_omnipicker_axes_v1', (output / arm / 'traj_tcp.txt').read_text())
-            tcp, camera = np.loadtxt(output / arm / 'traj_tcp.txt'), np.loadtxt(output / arm / 'details/traj_camera.txt')
+            tcp, camera = np.array(list(pose_rows(output / arm / 'trajectory.csv')), dtype=float), np.loadtxt(output / arm / 'details/traj_camera.txt')
             np.testing.assert_allclose(Rotation.from_quat(tcp[:, 4:]).as_matrix(),
                                        Rotation.from_quat(camera[:, 4:]).as_matrix()
                                        @ np.asarray(json.loads(source.read_text())['T_camera_tcp']['R_rows']), atol=1e-8)
@@ -427,7 +435,7 @@ class SceneWorkflowTests(unittest.TestCase):
             rows = list(csv.DictReader(stream))
         gaps = [np.linalg.norm([float(row['right_'+axis])-float(row['left_'+axis]) for axis in 'xyz']) for row in rows]
         np.testing.assert_allclose(gaps, .6, atol=.002)
-        left = np.loadtxt(output / 'left/traj_tcp.txt')
+        left = np.array(list(pose_rows(output / 'left/trajectory.csv')), dtype=float)
         self.assertGreater(left[0, 1], 2.)
         self.assertGreater(left[0, 0], .09)
         # 同场景第二个任务沿用原地图，原始 .osa 哈希和版本始终不变。
@@ -584,7 +592,7 @@ class SceneWorkflowTests(unittest.TestCase):
 
         # 换设备先在采集清单中固定新的套件配置，再复用地图。
         session_data=inputs.read_yaml(self.session_path)
-        arms = inputs.read_session(self.session_path).kit['arms']
+        arms = inputs.read_batch(self.session_path).kit['arms']
         arms['right']['serial'] = swapped_serial
         session_data['kit'] = self.write_kit('test_kit', arms)
         write_yaml(self.session_path,session_data)

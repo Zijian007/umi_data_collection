@@ -56,12 +56,12 @@ def _installable(output, lens, *, force=False, camera_serial=None):
     return doc
 
 
-def install_bundle(output: Path, force: bool, camera_serial: str | None = None, gripper: str | None = None) -> int:
+def install_bundle(output: Path, force: bool, camera_serial: str | None = None) -> int:
     output = Path(output).expanduser().resolve()
     try:
         with locked(output.parent, name=f'.{output.name}.calibration.lock'):
             doc = _installable(output, 'front', force=force, camera_serial=camera_serial)
-            device = registry.register(doc['subject']['serial'], output, gripper=gripper,
+            device = registry.register(doc['subject']['serial'], output,
                 status='active', note=f'umi-calib install from {output}')
             doc['activation'] = activation_status(doc)
             result_io.write(output, doc)
@@ -102,26 +102,15 @@ def install_rear(measurement: Path) -> int:
     return 0
 
 
-def install_gripper(gripper_id: str, directory: Path) -> int:
-    try:
-        result = registry.register_gripper(gripper_id, directory)
-    except (OSError, ValueError, KeyError, registry.RegistryError) as error:
-        runtime.console.write(str(error), state="失败")
-        return 2
-    runtime.console.write(f"已登记夹爪几何：{gripper_id}；版本 {result['version']}", state="完成")
-    return 0
-
-
 def list_devices() -> int:
     rows = registry.list_devices()
     if not rows:
         runtime.console.write("设备档案是空的")
         return 1
-    print("%-20s %-8s %-14s %s" % ("相机序列号", "状态", "标定", "夹爪"))
+    print("%-20s %-8s %s" % ("相机序列号", "状态", "标定"))
     status_labels = {"active": "已启用", "sample": "样例", "retired": "已停用"}
     for device in rows:
-        print("%-20s %-8s %-14s %s" % (device.get("serial"), status_labels.get(device.get("status"), device.get("status")), device.get("calib_id") or "?",
-                                       device.get("gripper") or ""))
+        print("%-20s %-8s %s" % (device["serial"], status_labels.get(device["status"], device["status"]), device.get("calib_id") or "?"))
         if not device.get("ok"):
             print("  ", device.get("error"))
     return 0 if all(device.get("ok") for device in rows) else 1

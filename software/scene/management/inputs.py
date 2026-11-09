@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, fields, replace
 import json
 import math
+import shutil
 from pathlib import Path
 import re
 
@@ -108,20 +109,27 @@ def read_recordings(base: Path, data: dict, *, verify: bool = True) -> tuple[dic
     return recording_paths, serials
 
 
-def load_scene_parameters(path: Path | None) -> SceneParameters:
+def load_scene_parameters(path: Path | None = None, *, overrides: dict | None = None) -> SceneParameters:
     data = read_yaml(ROOT / 'config/scene_parameters.yaml')
     if path is not None:
         overlay = read_yaml(path)
-        if overlay.keys() - data.keys():
-            raise ValueError(f'未知场景参数：{sorted(overlay.keys() - data.keys())}')
-        data.update(overlay)
+        data = config._merge(data, overlay, 'parameters.')
+    if overrides is not None:
+        data = config._merge(data, overrides, 'parameters.')
     if data.keys() != {field.name for field in fields(SceneParameters)}:
         raise ValueError('场景参数字段不完整')
     for field in fields(SceneParameters):
         value = data[field.name]
+        if field.type == 'bool':
+            if type(value) is not bool:
+                raise ValueError(f'{field.name} 必须为布尔值')
+            continue
         typ = int if field.type == 'int' else float
-        if type(value) not in ((int,) if typ is int else (int, float)) or not math.isfinite(value) or value <= 0:
-            raise ValueError(f'{field.name} 必须为正的 {typ.__name__}')
+        allows_zero = field.name in {'gripper_width_max_gap_s', 'gripper_width_closed_threshold_mm'}
+        if (type(value) not in ((int,) if typ is int else (int, float)) or not math.isfinite(value)
+                or value < 0 or value == 0 and not allows_zero):
+            bound = '非负' if allows_zero else '正的'
+            raise ValueError(f'{field.name} 必须为{bound} {typ.__name__}')
         data[field.name] = typ(value)
     parameters = SceneParameters(**data)
     if parameters.schema_version != 1 or parameters.minimum_alignment_nodes < 5 or parameters.minimum_pose_pairs < 3:
@@ -131,16 +139,40 @@ def load_scene_parameters(path: Path | None) -> SceneParameters:
     return parameters
 
 
-def read_devices(data: dict) -> dict[str, dict]:
-    if not isinstance(data, dict) or not data:
-        raise ValueError('devices 需要按完整序列号固定设备版本')
-    for serial, device_binding in data.items():
+def gripper_paths(declaration: dict, directory: Path | None = None) -> dict[str, str]:
+    """kit 中使用相对路径；持久化快照使用解析后的绝对路径。"""
+    require_keys(declaration, {'tcp', 'width', 'mask'}, {'tcp'}, 'gripper')
+    resolved = {}
+    for asset, filename in declaration.items():
+        if not isinstance(filename, str) or not filename.strip():
+            raise ValueError(f'gripper.{asset} 需要文件路径')
+        path = Path(filename)
+        if directory is not None:
+            if path.is_absolute():
+                raise ValueError(f'gripper.{asset} 请填写相对 kit.yaml 的文件路径')
+            path = (directory / path).resolve()
+            if not path.is_relative_to(directory.resolve()):
+                raise ValueError(f'gripper.{asset} 必须位于套件目录内')
+        elif not path.is_absolute():
+            raise ValueError('资产快照需要已解析的绝对路径')
+        suffix = '.png' if asset == 'mask' else '.json'
+        if path.suffix.lower() != suffix:
+            raise ValueError(f'gripper.{asset} 需要 {suffix} 文件')
+        resolved[asset] = str(path)
+    return resolved
+
+
+def read_devices(bindings: dict) -> dict[str, dict]:
+    if not isinstance(bindings, dict) or not bindings:
+        raise ValueError('devices 需要按完整序列号固定设备配置')
+    devices = {}
+    for serial, binding in bindings.items():
         registry.validate_id(serial)
-        require_keys(device_binding, {'calibration', 'gripper', 'gripper_version', 'rear_calibration', 'width_calibration'},
-                     {'calibration', 'gripper', 'gripper_version'}, '设备版本')
-        for value in device_binding.values():
-            registry.validate_id(value)
-    return data
+        require_keys(binding, {'calibration', 'gripper', 'rear_calibration'}, {'calibration'}, '设备配置')
+        devices[serial] = {field: registry.validate_id(value) for field, value in binding.items() if field != 'gripper'}
+        if 'gripper' in binding:
+            devices[serial]['gripper'] = gripper_paths(binding['gripper'])
+    return devices
 
 
 def rear_files(devices: dict[str, dict]) -> dict[str, Path]:
@@ -150,6 +182,21 @@ def rear_files(devices: dict[str, dict]) -> dict[str, Path]:
 
 def scene_definition(data: dict, name: str) -> dict:
     """在内存中补齐场景默认值，目录是场景身份的来源。"""
+    version = data.get('schema_version', 3)
+    if type(version) is not int or version not in (2, 3):
+        raise ValueError('场景配置需要 schema_version: 3；历史 schema 2 仍可读取')
+    if version == 3:
+        require_keys(data, {'schema_version', 'mode', 'reference_arm', 'description', 'trajectory', 'parameters'}, set(), 'scene')
+        normalized = dict(schema_version=3, name=validate_name(name), mode='shared_front', reference_arm='left',
+                          description='', trajectory={}, parameters={}, mapping={}, devices={})
+        normalized.update(data)
+        for key in ('trajectory', 'parameters'):
+            if not isinstance(normalized[key], dict):
+                raise ValueError(f'scene.{key} 必须直接填写参数映射，不再引用覆盖文件')
+        if not isinstance(normalized['description'], str):
+            raise ValueError('场景 description 必须为字符串')
+        return normalized
+    # Read historical standalone-map definitions without creating new copies of them.
     require_keys(data, {'schema_version', 'name', 'mode', 'reference_arm', 'mapping', 'devices',
                         'trajectory_config', 'parameters', 'description'},
                  {'schema_version'}, 'scene')
@@ -169,21 +216,13 @@ def scene_definition(data: dict, name: str) -> dict:
     return normalized
 
 
-def compact_scene(data: dict) -> dict:
-    """仅持久化实际输入和非默认选项。"""
-    default_reference = next((arm for arm in ARMS if arm in data['mapping']), 'left')
-    defaults = dict(name=data['name'], mode='shared_front', reference_arm=default_reference,
-                    mapping={}, devices={}, description='', trajectory_config=None, parameters=None)
-    return {key: value for key, value in data.items() if key not in defaults or value != defaults[key]}
-
-
 def read_scene(path: Path, *, verify_mapping: bool = False, load_mapping: bool = True) -> Scene:
     path = path.expanduser().resolve()
     if path.is_dir():
         path /= 'scene.yaml'
     if not path.parent.is_dir():
         raise ValueError(f'场景目录不存在：{path.parent}')
-    data = scene_definition(read_yaml(path) if path.is_file() else dict(schema_version=2), path.parent.name)
+    data = scene_definition(read_yaml(path) if path.is_file() else {}, path.parent.name)
     if not load_mapping:
         data.update(mapping={}, devices={})
     if data['mode'] not in ('shared_front', 'dual'):
@@ -196,10 +235,15 @@ def read_scene(path: Path, *, verify_mapping: bool = False, load_mapping: bool =
     device_bindings = read_devices(data['devices']) if data['devices'] else {}
     if set(serials.values()) - device_bindings.keys():
         raise ValueError('建图录像设备未登记到场景 devices')
-    optional = lambda name: resolve_path(path.parent, data[name]) if data.get(name) else None
-    trajectory_config = config.load('trajectory', optional('trajectory_config'))
+    if data['schema_version'] == 2:
+        optional = lambda name: resolve_path(path.parent, data[name]) if data.get(name) else None
+        trajectory_config = config.load('trajectory', optional('trajectory_config'))
+        parameters = load_scene_parameters(optional('parameters'))
+    else:
+        trajectory_config = config.load('trajectory', inline=data['trajectory'])
+        parameters = load_scene_parameters(overrides=data['parameters'])
     return Scene(path, validate_name(data['name']), data['mode'], data['reference_arm'], recording_paths,
-                 rear_files(device_bindings), trajectory_config, load_scene_parameters(optional('parameters')), device_bindings, serials)
+                 rear_files(device_bindings), trajectory_config, parameters, device_bindings, serials)
 
 
 def read_arms(value: list | tuple, available=ARMS) -> tuple[str, ...]:
@@ -208,34 +252,34 @@ def read_arms(value: list | tuple, available=ARMS) -> tuple[str, ...]:
     return tuple(arm for arm in ARMS if arm in value)
 
 
-def validate_kit(data: dict, *, name: str | None = None) -> dict:
-    """当前套件和批次快照使用相同结构；相机标定、夹爪测量仍固定实际版本。"""
-    require_keys(data, {'id', 'arms', 'description'}, {'arms'} if name is not None else {'id', 'arms'}, '套件')
-    identity = name if name is not None else data['id']
-    if data.get('id', identity) != identity:
+def validate_kit(declaration: dict, *, name: str | None = None) -> dict:
+    """统一解析人工套件与运行快照；安装资产在选择相机时读取一次。"""
+    require_keys(declaration, {'id', 'arms', 'description'}, {'arms'} if name is not None else {'id', 'arms'}, '套件')
+    identity = name if name is not None else declaration['id']
+    if declaration.get('id', identity) != identity:
         raise ValueError('套件目录与配置 ID 不一致')
     validate_name(identity)
-    if not isinstance(data.get('description', ''), str):
+    if not isinstance(declaration.get('description', ''), str):
         raise ValueError('套件 description 必须为字符串')
-    if not isinstance(data['arms'], dict) or not data['arms'] or set(data['arms'].keys()) - set(ARMS):
+    arms = declaration['arms']
+    if not isinstance(arms, dict) or not arms or arms.keys() - set(ARMS):
         raise ValueError('套件至少配置一只手：left 或 right')
-    serials = []
-    for item in data['arms'].values():
-        require_keys(item, {'serial', 'calibration', 'gripper', 'gripper_version', 'rear_calibration', 'width_calibration'},
-                     {'serial', 'calibration', 'gripper', 'gripper_version'}, '套件设备')
-        for value in item.values():
-            registry.validate_id(value)
-        serials.append(item['serial'])
-    if len(set(serials)) != len(serials):
+    resolved = {}
+    for arm, binding in arms.items():
+        require_keys(binding, {'serial', 'calibration', 'gripper', 'rear_calibration'},
+                     {'serial', 'calibration', 'gripper'}, '套件设备')
+        camera = {field: registry.validate_id(value) for field, value in binding.items() if field != 'gripper'}
+        camera['gripper'] = gripper_paths(binding['gripper'], KITS / name if name is not None else None)
+        resolved[arm] = camera
+    if len({camera['serial'] for camera in resolved.values()}) != len(resolved):
         raise ValueError('套件的左右手必须使用不同相机')
-    kit = dict(id=identity, arms=data['arms'])
-    if data.get('description'):
-        kit['description'] = data['description']
+    kit = dict(id=identity, arms=resolved)
+    if declaration.get('description'):
+        kit['description'] = declaration['description']
     return kit
 
 
 def read_kit(name: str) -> dict:
-    """读取当前套件配置；run 用它更新本次解析记录。"""
     path = KITS / validate_name(name) / 'kit.yaml'
     return validate_kit(read_yaml(path), name=name)
 
@@ -247,10 +291,14 @@ def mapping_records(source: dict) -> dict:
     return {'left': source} if 'path' in source else source
 
 
-def read_session(path: Path, *, verify_mapping=False) -> Session:
+def read_batch(path: Path, *, verify_mapping=False) -> Session:
     path = layout.manifest(path, 'manifest.yaml')
+    return batch_from_record(path, read_yaml(path), verify_mapping=verify_mapping)
+
+
+def batch_from_record(path: Path, data: dict, *, verify_mapping=False) -> Session:
+    """Parse the same resolved batch record in read-only previews and persisted runs."""
     root = layout.owner(path)
-    data = read_yaml(path)
     require_keys(data, {'schema_version', 'scene', 'map', 'mapping', 'mapping_reference_arm', 'kit', 'expected_arms', 'description'},
                  {'schema_version', 'kit'}, 'session')
     if type(data['schema_version']) is not int or data['schema_version'] not in (4, 5):
@@ -267,12 +315,12 @@ def read_session(path: Path, *, verify_mapping=False) -> Session:
         read_arms(list(source))
         refs, devices = {}, {}
         for arm, item in source.items():
-            require_keys(item, {'serial', 'path', 'sha256', 'calibration', 'gripper', 'gripper_version', 'rear_calibration'},
+            require_keys(item, {'serial', 'path', 'sha256', 'calibration', 'gripper', 'rear_calibration'},
                          {'serial', 'path', 'sha256'}, '批次建图录像')
             refs[arm] = {key: item[key] for key in ('serial', 'path', 'sha256')}
             binding = {key: value for key, value in item.items() if key not in ('serial', 'path', 'sha256')}
             if not binding:
-                binding = next(({key: value for key, value in camera.items() if key not in ('serial', 'width_calibration')}
+                binding = next(({key: value for key, value in camera.items() if key != 'serial'}
                                 for camera in kit['arms'].values() if camera['serial'] == item['serial']), None)
                 if binding is None:
                     raise ValueError('套件外的建图相机必须固定独立测量版本')
@@ -335,7 +383,7 @@ def read_episode(path: Path, *, verify: bool = True) -> Episode:
     session_path = layout.manifest(root.parent, 'manifest.yaml')
     if 'session' in data and layout.manifest(resolve_path(root, data['session']), 'manifest.yaml') != session_path:
         raise ValueError('任务必须直接位于所属采集批次目录下')
-    session = read_session(session_path)
+    session = read_batch(session_path)
     if root.parent != session.root:
         raise ValueError('任务必须直接位于采集批次的 <任务>/ 目录')
     validate_episode_name(root.name)
@@ -358,19 +406,29 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
     if serial not in scene.devices:
         raise ValueError(f'相机 {serial} 未固定到场景/采集套件，请先登记设备配置')
     device_binding = scene.devices[serial]
-    device_record = registry.get(serial, allow_retired=True, **{key: device_binding[key] for key in ('calibration', 'gripper', 'gripper_version')})
+    device_record = registry.get(serial, calibration=device_binding['calibration'], allow_retired=True)
     if not re.fullmatch(r'[A-Za-z0-9_-]+', device_record['serial']):
         raise ValueError('相机序列号包含非法路径字符')
     if device_record['status'] not in ('active', 'retired') or device_record.get('calibration_owner', serial) != serial:
         raise ValueError('共享场景需要已启用的实测相机标定，不能使用 sample')
-    assets = selection.CalibrationAssets(Path(device_record['json']), Path(device_record['tcp_json']), Path(device_record['mask']))
-    calibration_selection = selection.SelectedCalibration(assets, Path(device_record['dir']), device_binding['calibration'], device_record['serial'],
-        device_record['gripper'], device_record['source'], 'scene_registry', device_record['status'], int(device_record['cam_time_offset_ns']))
-    asset_paths = dict(front=assets.camera_json, tcp=assets.tcp_geometry, mask=assets.front_mask)
-    if 'width_calibration' in device_binding:
-        asset_paths['width'] = registry.width_path(serial, device_binding['width_calibration'],
-            gripper=device_binding['gripper'], gripper_version=device_binding['gripper_version'])
-    lens_calibrations = dict(front=calibration_assets.read_basalt(assets.camera_json))
+    gripper = device_binding.get('gripper', {})
+    tcp_path = Path(gripper['tcp']) if 'tcp' in gripper else None
+    geometry = selection.read_tcp_geometry(tcp_path) if tcp_path is not None else None
+    assets = selection.CalibrationAssets(Path(device_record['json']), tcp_path,
+                                        Path(gripper['mask']) if 'mask' in gripper else selection.DEFAULT_FRONT_MASK)
+    calibration_selection = selection.SelectedCalibration(
+        assets=assets, directory=Path(device_record['dir']), calibration_id=device_binding['calibration'],
+        camera_serial=device_record['serial'], source=device_record['source'], selection='scene_registry',
+        status=device_record['status'], time_offset_ns=int(device_record['cam_time_offset_ns']), geometry=geometry)
+    asset_paths = dict(front=assets.camera_json, mask=assets.front_mask)
+    if tcp_path is not None:
+        asset_paths['tcp'] = tcp_path
+    width_measurement = None
+    if 'width' in gripper:
+        from software.gripper_width import calibration as width_calibration
+        asset_paths['width'] = Path(gripper['width'])
+        width_measurement = width_calibration.read(asset_paths['width'])
+    lens_calibrations = dict(front=device_record['measurement'])
     if scene.mode == 'dual':
         rear_calibration_path = scene.rear_calibrations.get(device_record['serial'])
         if rear_calibration_path is None:
@@ -384,12 +442,27 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
             raise ValueError(f'{rear_calibration_path} 缺少通过验收的后镜头测量；请运行 umi-calib calibrate-rear')
         lens_calibrations['rear'] = calibration_assets.read_basalt(rear_calibration_path)
         asset_paths['rear'] = rear_calibration_path
-    return CalibratedCamera(device_record['serial'], calibration_selection, lens_calibrations, asset_paths)
+    return CalibratedCamera(device_record['serial'], calibration_selection, lens_calibrations, asset_paths, width_measurement)
+
+
+def snapshot_cameras(cameras: dict[str, CalibratedCamera], directory: Path) -> dict[str, CalibratedCamera]:
+    """每次运行只复制一次小型资产，计算与结果均引用这份独立副本。"""
+    snapshots = {}
+    for arm, camera in cameras.items():
+        files = {}
+        for name, source in camera.files.items():
+            target = directory / 'devices' / camera.serial / (name + source.suffix)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            files[name] = target
+        assets = selection.CalibrationAssets(files['front'], files.get('tcp'), files['mask'])
+        snapshots[arm] = replace(camera, selected=replace(camera.selected, assets=assets), files=files)
+    return snapshots
 
 
 def camera_identity(camera: CalibratedCamera) -> dict:
-    return dict(serial=camera.serial, gripper=camera.selected.gripper_id,
-                assets={name: config.file_hash(path) for name, path in sorted(camera.files.items()) if name != 'width'})
+    return dict(serial=camera.serial,
+                assets={name: digest for name, digest in camera.asset_hashes.items() if name != 'width'})
 
 
 def recording_identity(path: Path) -> dict:
@@ -423,7 +496,7 @@ def validate_assets(directory: Path, hashes: dict) -> None:
 def algorithm_identity() -> dict:
     identity = config.code_identity('scene')
     return {name: digest for name, digest in identity.items() if Path(name).name not in {
-        'cli.py', 'capture_config.py', 'ingest.py', 'recording_checks.py', 'episodes.py', '__main__.py'}}
+        'cli.py', 'batches.py', 'ingest.py', 'recording_checks.py', 'episodes.py', '__main__.py'}}
 
 
 def configuration_identity(batch_root: Path) -> str | None:
@@ -437,7 +510,7 @@ def configuration_identity(batch_root: Path) -> str | None:
 def episode_inputs(episode, cameras, map_manifest) -> dict:
     from software.gripper_width import pipeline as width_pipeline
 
-    widths = {arm: dict(version=camera.files['width'].parent.name, sha256=config.file_hash(camera.files['width']))
+    widths = {arm: dict(sha256=camera.asset_hashes['width'])
               for arm, camera in cameras.items() if 'width' in camera.files}
     current_configuration = configuration_identity(episode.session.root)
     return dict(configuration=current_configuration, map_mode=map_manifest['mode'], scene_version=map_manifest['version'], frame_id=map_manifest['frame_id'], scene_assets=map_manifest['assets'],

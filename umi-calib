@@ -7,6 +7,8 @@
 #   ./umi-calib install /path/to/calibration/calibration_result
 #   ./umi-calib calibrate-rear /path/to/rear  # 后镜头标定，需先登记前镜头
 #   ./umi-calib devices              # 查询设备及当前标定
+#   ./umi-calib preview-width /path/to/width.insv  # 输出标签框、ID 与像素距离预览 MP4
+#   ./umi-calib detect-width /path/to/width.insv --roi 600 980 1350 1250  # 30 Hz 无界面检测
 #   ./umi-calib retire <完整序列号>   # 停用设备
 #   ./umi-calib check                # 检查标定运行环境
 #   ./umi-calib <命令> --help        # 查看该命令的参数
@@ -41,7 +43,7 @@ CMD=${1:-}
 # 设备管理、报告重评、帮助与只读预检无需启动求解器，使用基础轨迹环境。
 # 其他命令使用 calib_env；环境或 Basalt 缺失时先调用标定组件安装脚本。
 NEED_CALIB=1
-case "$CMD" in verify|devices|status|retire|install|install-rear|install-gripper|upgrade-device|activate-calibration|recheck) NEED_CALIB=0 ;; esac
+case "$CMD" in verify|preview-width|detect-width|devices|status|retire|install|install-rear|upgrade-device|activate-calibration|recheck) NEED_CALIB=0 ;; esac
 for ARG in "$@"; do
   case "$ARG" in --dry-run|--help|-h) NEED_CALIB=0 ;; esac
 done
