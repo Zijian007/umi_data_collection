@@ -22,8 +22,8 @@ bash install.sh
 ./umi-scene check
 
 ./umi-calib run recordings/calibration/CAMERA_SERIAL/20261105/front --tag-size-mm 24.0
-# 阅读 front/umi_calib_out/report.txt 后登记
-./umi-calib install recordings/calibration/CAMERA_SERIAL/20261105/front/umi_calib_out
+# 阅读 front/calibration_result/report.txt 后登记
+./umi-calib install recordings/calibration/CAMERA_SERIAL/20261105/front/calibration_result
 ```
 
 每台相机单独在 `front/A/`、`B/`、`C/`、`D/` 放对应原片。登记结果保存在 `registry/`，由程序维护。然后填写 `kits/kit_001/kit.yaml`，字段见[套件配置说明](kits/README.md)。
@@ -37,10 +37,10 @@ kits/kit_001/kit.yaml
 scenes/shelf/20261105_001/
 ├── batch.yaml                       # kit: kit_001
 ├── mapping/原始建图文件名.insv
-├── take_001/videos/
+├── take_001/
 │   ├── left/原始任务文件名.insv
 │   └── right/原始任务文件名.insv
-└── take_002/videos/...
+└── take_002/...
 ```
 
 ```bash

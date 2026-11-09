@@ -61,17 +61,30 @@ def validate_batch_name(value: str) -> str:
     return value
 
 
+def task_video_sources(task: Path) -> list[Path]:
+    """原片直接放在任务的左右手目录；旧 videos/ 仍可原地读取。"""
+    roots = [task / arm for arm in ARMS] + [task / 'videos']
+    return [path for path in roots if path.is_dir()]
+
+
+def batch_task_directories(batch: Path) -> list[Path]:
+    if not batch.is_dir():
+        return []
+    tasks = []
+    for task in sorted(batch.iterdir()):
+        try:
+            validate_episode_name(task.name)
+        except ValueError:
+            continue
+        if task.is_dir() and task_video_sources(task):
+            tasks.append(task)
+    return tasks
+
+
 def batch_video_sources(batch: Path) -> list[Path]:
     """只发现任务原片和待配对原片，跳过缓存、结果及其他内部目录。"""
     sources = [batch / 'pending'] if (batch / 'pending').is_dir() else []
-    for videos in sorted(batch.glob('*/videos')):
-        try:
-            validate_episode_name(videos.parent.name)
-        except ValueError:
-            continue
-        if videos.is_dir():
-            sources.append(videos)
-    return sources
+    return sources + [source for task in batch_task_directories(batch) for source in task_video_sources(task)]
 
 
 def read_recordings(base: Path, data: dict, *, verify: bool = True) -> tuple[dict[str, Path], dict[str, str]]:

@@ -119,7 +119,7 @@ class NewLayoutTests(unittest.TestCase):
         self.assertEqual(episodes.episode_paths([manifest]), [path])
         episode = inputs.read_episode(path)
         for video in episode.recordings.values():
-            self.assertEqual(video.parent.parent, self.f.scene.root / '20261104_001/take_001/videos')
+            self.assertEqual(video.parent.parent, self.f.scene.root / '20261104_001/take_001')
         self.prepare_imported(path)
         data = inputs.read_yaml(path)
         data.update(instruction='双手把盒子放入托盘', synchronization=dict(

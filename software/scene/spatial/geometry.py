@@ -124,6 +124,17 @@ class MapAlignmentError(ValueError):
         self.diagnostics = diagnostics
 
 
+def alignment_parameters(trajectory_parameters: config.TrajectoryParameters,
+                         scene_parameters: SceneParameters, *, gravity: float | None = None) -> config.FusionParameters:
+    """Share the alignment algorithm; the scene owns its map acceptance thresholds."""
+    parameters = trajectory_parameters.fusion
+    return replace(parameters,
+        gravity_m_s2=parameters.gravity_m_s2 if gravity is None else gravity,
+        maximum_relative_scale_std=scene_parameters.maximum_scale_relative_std,
+        gravity_tolerance_m_s2=scene_parameters.gravity_tolerance_m_s2,
+        maximum_acc_bias_m_s2=scene_parameters.maximum_acc_bias_m_s2)
+
+
 def metric_alignment(obs: VisualObservations, T_cam_imu: np.ndarray, imu: np.ndarray,
                      gyro_bias: np.ndarray, gravity: float, scene_parameters: SceneParameters,
                      *, trajectory_parameters: config.TrajectoryParameters | None = None) -> dict:
@@ -138,11 +149,8 @@ def metric_alignment(obs: VisualObservations, T_cam_imu: np.ndarray, imu: np.nda
         raise ValueError('地图有效定位太少，无法估计米制尺度')
     if obs.imu_times_s[0] < imu[0, 0] or obs.imu_times_s[-1] > imu[-1, 0]:
         raise ValueError('IMU 未覆盖视觉时间区间；检查相机–IMU 时间偏移')
-    parameters = (trajectory_parameters or config.load('trajectory').values).fusion
-    parameters = replace(parameters, gravity_m_s2=gravity,
-        maximum_relative_scale_std=scene_parameters.maximum_scale_relative_std,
-        gravity_tolerance_m_s2=scene_parameters.gravity_tolerance_m_s2,
-        maximum_acc_bias_m_s2=scene_parameters.maximum_acc_bias_m_s2)
+    parameters = alignment_parameters(trajectory_parameters or config.load('trajectory').values,
+                                      scene_parameters, gravity=gravity)
     times = np.interp(np.arange(int(obs.indices[-1]) + 1), obs.indices, obs.imu_times_s)
     observations = {int(k): (pose[:3, 3], pose[:3, :3])
                     for k, pose in zip(obs.indices, obs.T_reference_camera)}

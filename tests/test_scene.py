@@ -19,6 +19,7 @@ from software.camera.geometry import imu_from_camera
 from software.scene.management import inputs
 from software.scene.spatial import slam, fusion, geometry, mapping
 from software.scene import models, workflow
+from software.scene.result_io import read_arm_settings, read_arm_summary
 from software.scene.pipeline import recording_checks, results
 from software.scene.management.inputs import select_camera
 from software.storage import write_json, write_yaml
@@ -47,6 +48,18 @@ class SceneNumericalTests(unittest.TestCase):
     def setUp(self):
         self.p = inputs.load_scene_parameters(None)
         self.trajectory = config.load('trajectory').values
+
+    def test_scene_thresholds_override_only_their_alignment_settings(self):
+        trajectory = replace(self.trajectory, fusion=replace(self.trajectory.fusion,
+            maximum_relative_scale_std=.9, gravity_tolerance_m_s2=9., maximum_acc_bias_m_s2=8., step=7))
+        scene_parameters = replace(self.p, maximum_scale_relative_std=.15,
+            gravity_tolerance_m_s2=.4, maximum_acc_bias_m_s2=1.5)
+        actual = geometry.alignment_parameters(trajectory, scene_parameters)
+        self.assertEqual((actual.maximum_relative_scale_std, actual.gravity_tolerance_m_s2,
+                          actual.maximum_acc_bias_m_s2, actual.step), (.15, .4, 1.5, 7))
+        self.assertEqual(trajectory.fusion.maximum_acc_bias_m_s2, 8.)
+        self.assertEqual(actual.acc_noise, trajectory.fusion.acc_noise)
+        self.assertEqual(geometry.alignment_parameters(trajectory, scene_parameters, gravity=9.8).gravity_m_s2, 9.8)
 
     def test_recovers_metric_scale_and_rejects_unobservable_motion(self):
         times, poses, imu = motion()
@@ -212,6 +225,80 @@ class SceneWorkflowTests(unittest.TestCase):
         rear[:, :3, 3] /= 2.3
         return geometry.VisualObservations(obs.imu_times_s, rear, obs.indices, 'visual_map')
 
+    def make_legacy_result(self):
+        """把测试结果还原成 schema 2，覆盖历史读取、验收和导出。"""
+        output = self.episode_path.parent / 'results'
+        metadata = json.loads((output / 'episode.json').read_text())
+        for arm in metadata['arms']:
+            summary, settings = read_arm_summary(output / arm), read_arm_settings(output / arm)
+            write_json(output / arm / 'details/summary.json', summary)
+            write_json(output / arm / 'details/run_settings.json', settings)
+            (output / arm / 'report.txt').write_text(f'{arm} 历史轨迹报告\n')
+        metadata['schema_version'] = 2
+        preflight = metadata.pop('preflight')
+        if preflight is not None:
+            write_json(output / 'preflight_report.json', preflight)
+        metadata.pop('arm_results')
+        metadata.pop('map')
+        metadata['assets'] = inputs.artifact_hashes(output, tuple(metadata['arms']))
+        for name in ('report.txt', 'bimanual.csv', 'preflight_report.json'):
+            if (output / name).is_file():
+                metadata['assets'][name] = config.file_hash(output / name)
+        write_json(output / 'episode.json', metadata)
+        return output
+
+    def test_compact_result_has_one_report_and_one_metadata_file(self):
+        self.build_scene()
+        check = recording_checks.CheckResult('initial_static', 'WARN', '开头静止质量不足')
+        report = recording_checks.EpisodeCheckReport(passed=True, videos=dict(
+            left=recording_checks.RecordingCheckReport('left.insv', True, checks=[check])))
+        with patch.object(recording_checks, 'check_episode', return_value=report):
+            workflow.run_episode(self.episode_path)
+        output = self.episode_path.parent / 'results'
+        names = {str(path.relative_to(output)) for path in output.rglob('*') if path.is_file()}
+        expected = {'report.txt', 'episode.json', 'bimanual.csv'} | {
+            f'{arm}/{name}' for arm in ('left', 'right') for name in (
+                'traj_tcp.txt', 'front.mp4', 'details/traj_camera.txt', 'details/traj_imu.txt', 'details/frames.csv')}
+        self.assertEqual(names, expected)
+        metadata = json.loads((output / 'episode.json').read_text())
+        self.assertEqual(metadata['schema_version'], 3)
+        self.assertEqual(metadata['preflight']['videos']['left']['checks'][0]['status'], 'WARN')
+        text = (output / 'report.txt').read_text()
+        for value in ('left 场景轨迹', 'right 场景轨迹', '最长无视觉', '开头静止质量不足'):
+            self.assertIn(value, text)
+        inputs.validate_assets(output, metadata['assets'])
+        self.assertEqual(set(metadata['assets']), names - {'episode.json'})
+        before = {path: path.read_bytes() for path in output.rglob('*') if path.is_file()}
+        self.assertEqual(workflow.run_episode(self.episode_path)['status'], 'skipped')
+        self.assertEqual({path: path.read_bytes() for path in output.rglob('*') if path.is_file()}, before)
+
+    def test_legacy_scene_results_remain_readable_and_reusable_without_rewriting(self):
+        self.build_scene()
+        workflow.run_episode(self.episode_path)
+        output = self.episode_path.parent / 'results'
+        expected = {arm: (read_arm_summary(output / arm), read_arm_settings(output / arm)) for arm in ('left', 'right')}
+        self.make_legacy_result()
+        before = {path: path.read_bytes() for path in output.rglob('*') if path.is_file()}
+        self.assertEqual(workflow.run_episode(self.episode_path)['status'], 'skipped')
+        for arm, (summary, settings) in expected.items():
+            self.assertEqual(read_arm_summary(output / arm), summary)
+            self.assertEqual(read_arm_settings(output / arm), settings)
+        catalog = RecordingCatalog(self.scene.root)
+        key = catalog.scan()['recordings'][0]['id']
+        self.assertIn('camera', catalog.load(key)['tracks'])
+        self.assertEqual(catalog.map_data(key)['kind'], 'umi_map_view')
+        from software.scene.management import episodes
+        episodes.review(self.episode_path, accept=True, reviewer='test')
+        episodes.export([self.episode_path], self.root / 'legacy_export')
+        self.assertEqual({path: path.read_bytes() for path in output.rglob('*') if path.is_file()}, before)
+
+    def test_skip_preflight_is_recorded_in_compact_metadata(self):
+        self.build_scene()
+        workflow.run_episode(self.episode_path, check_recordings=False)
+        output = self.episode_path.parent / 'results'
+        self.assertIsNone(json.loads((output / 'episode.json').read_text())['preflight'])
+        self.assertIn('原片检查：跳过', (output / 'report.txt').read_text())
+
     def test_dual_scene_builds_three_maps_and_keeps_both_hands_in_rear_frame(self):
         data = inputs.read_yaml(self.scene_path)
         data.update(mode='dual', mapping={arm: self.ref(arm) for arm in self.recording_paths})
@@ -311,7 +398,7 @@ class SceneWorkflowTests(unittest.TestCase):
         for arm in ('left', 'right'):
             tcp_frame = metadata['tcp_frames'][arm]
             self.assertEqual(tcp_frame['convention'], 'genie_omnipicker_axes_v1')
-            settings = json.loads((output / arm / 'details/run_settings.json').read_text())
+            settings = read_arm_settings(output / arm)
             self.assertEqual(settings['tcp_frame'], tcp_frame)
             self.assertIn('genie_omnipicker_axes_v1', (output / arm / 'traj_tcp.txt').read_text())
             tcp, camera = np.loadtxt(output / arm / 'traj_tcp.txt'), np.loadtxt(output / arm / 'details/traj_camera.txt')
@@ -331,7 +418,7 @@ class SceneWorkflowTests(unittest.TestCase):
         shared_map = self.scene.root / '.umi/maps/versions' / built['version'] / 'map.json'
         for arm in ('left', 'right'):
             self.assertFalse((output / arm / 'details/map.json').exists())
-            summary = json.loads((output / arm / 'details/summary.json').read_text())
+            summary = read_arm_summary(output / arm)
             self.assertEqual(summary['tcp_frame']['convention'], 'asset_defined')
             self.assertEqual(metadata['tcp_frames'][arm], summary['tcp_frame'])
             self.assertEqual((output / arm / summary['map']['path']).resolve(), shared_map)
@@ -417,6 +504,15 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertEqual(workflow.load_published(self.scene, check_definition=True)[1], manifest)
         self.assertEqual(self.build_scene()['status'], 'skipped')
 
+    def test_map_definition_tracks_scene_thresholds_and_ignores_shadowed_trajectory_values(self):
+        original = mapping.definition(self.scene)
+        tuned = replace(self.scene.trajectory, values=replace(self.scene.trajectory.values,
+            fusion=replace(self.scene.trajectory.values.fusion, maximum_relative_scale_std=.7,
+                           gravity_tolerance_m_s2=8., maximum_acc_bias_m_s2=5.)))
+        self.assertEqual(mapping.definition(replace(self.scene, trajectory=tuned)), original)
+        self.assertNotEqual(mapping.definition(replace(self.scene, parameters=replace(
+            self.scene.parameters, maximum_scale_relative_std=.1))), original)
+
     def test_map_version_rejects_path_characters(self):
         for version in ('../abcdef', '/abcdef', 'abcdef/123456', 'abcdef\\123456', '', 'abc def', 'abc\n'):
             with self.subTest(version=version), self.assertRaisesRegex(ValueError, '场景版本指针无效'):
@@ -499,10 +595,9 @@ class SceneWorkflowTests(unittest.TestCase):
         self.build_scene()
         workflow.run_episode(self.episode_path)
         output = self.episode_path.parent / 'results'
-        summary_path = output / 'right/details/summary.json'
-        summary = json.loads(summary_path.read_text())
-        summary['scene']['frame_id'] = 'other-frame'
-        write_json(summary_path, summary)
+        metadata = json.loads((output / 'episode.json').read_text())
+        metadata['scene']['frame_id'] = 'other-frame'
+        write_json(output / 'episode.json', metadata)
         catalog = RecordingCatalog(self.scene.root)
         key = catalog.scan()['recordings'][0]['id']
         with self.assertRaisesRegex(ViewerDataError, '场景坐标'):

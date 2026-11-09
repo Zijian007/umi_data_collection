@@ -1,253 +1,338 @@
-"""标定流程的阅读入口：cli.main() 直接调用 run() 或 verify()。
+"""Shared orchestration: prepare → solve A/B → measure D/C → evaluate → publish.
 
-全套标定 run：
-    检查输入 → 提取四段录像 → A 内参 → B 相机–IMU → D 重力检查
-             → 生成标定包 → C 轨迹验证 → 判定并写报告
-单段验证 verify：
-    选择现有标定 → 提取 C → 检测标定板 → 计算轨迹误差 → 判定并写报告
-
-A/B 求解参数，D/C 验证结果。阶段函数返回测量，checks 将测量转为检查项，
-本模块决定最终结论，reports 负责记录和展示。
-两个入口均在生成报告后清理工作目录；中断时也通过 finally 执行清理。
+Measurements, execution checkpoints, policy and device activation have separate owners.
+Rear calibration supplies only a trajectory generator and its pinned input identity.
 """
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
+from dataclasses import asdict, replace
 from pathlib import Path
 
-from software import config, registry
-from software.calibration import (
-    camera_imu, checks, devices, inputs, intrinsics, recording_data, reports, runtime, validation,
-)
+from software import config
+from software.storage import atomic_file, locked
+from software.calibration import acceptance, devices, reports, result_io
 from software.calibration.algorithms import aprilgrid_detect, board_pnp
-from software.calibration.models import CalibrationRequest, RunPaths, StageContext, StageError, VerificationRequest
-from software.trajectory.calibration import assets as trajectory_calibration
+from software.calibration.models import (CalibrationRequest, VerificationRequest, RunPaths,
+    ExecutionOptions, Step, ROLE_STEPS, Decision)
+from software.calibration.pipeline import board_detection, inputs, recordings, runtime
+from software.calibration.pipeline.steps import StageRunner
+from software.calibration.solve import basalt
+from software.calibration.validation import gravity, trajectory
+from software.trajectory.calibration import assets
 from software.vision.runtime import write_error_log
 
 
-def run(request: CalibrationRequest) -> int:
-    """从 A/B/C/D 生成并验证一份标定，默认由用户手动启用。
+def parameter_record(configuration, trajectory_configuration):
+    return dict(configuration=configuration.snapshot(), trajectory_validation=trajectory_configuration.snapshot(),
+        code=config.code_identity('calibration'), engines=config.engine_identity('calibration'),
+        trajectory_code=config.code_identity('trajectory'), trajectory_engines=config.engine_identity('trajectory'))
 
-    返回码：0 = 验收通过，1 = 执行失败或验收未通过，2 = 环境或输入准备失败。
-    显式指定 --install 时，通过后返回设备安装操作的退出码。
-    """
-    # 所有配置校验先于依赖检查、CPU 设置和 --force 清理。
+
+def _document(paths, subject, sources, provenance, *, operation, resume):
+    previous = result_io.read(paths.output) if resume else {}
+    if previous and (previous['operation'] != operation or
+            any(previous['subject'][k] != subject[k] for k in ('serial', 'lens'))):
+        raise ValueError('恢复目录的操作、设备或镜头不一致，请选择新输出目录')
+    doc = previous or dict(measurements={}, execution=dict(steps={}), evaluation=None, evaluation_history=[])
+    if previous and any(doc[k] != value for k, value in (('inputs', sources), ('computation', provenance), ('subject', subject))):
+        if doc.get('evaluation'):
+            doc['evaluation_history'].append(doc['evaluation'])
+        doc['evaluation'] = None
+    doc.update(operation=operation, subject=subject, inputs=sources, computation=provenance, output=str(paths.output))
+    doc['execution'].update(status='running', error=None, details={})
+    result_io.write(paths.output, doc)
+    return doc
+
+
+def _prepare(role, video, execution, runner, identity, lens):
+    directory = execution.paths.work / 'ds' / role
+    def build():
+        recordings.build(video, directory, with_images=role != 'D', lens=lens, workers=execution.workers)
+        return dict(directory=str(directory.relative_to(execution.paths.output)), imu=recordings.imu_stats(directory))
+    runner.run(ROLE_STEPS[role], dict(source=identity), build)
+    prepared = runner.timings[ROLE_STEPS[role]]['status'] != 'reused'
+    def ensure():
+        # Work is disposable. Only a stage which actually needs it regenerates it.
+        nonlocal prepared
+        if not prepared:
+            recordings.build(video, directory, with_images=role != 'D', lens=lens, workers=execution.workers)
+            prepared = True
+        return directory
+    return ensure
+
+
+def _detect_board(dataset, execution, board, role, source_identity, *, cancelled=None, background=False):
+    if background:
+        # Linux niceness is per thread; the detector pool inherits this lower priority.
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 15)
+    step = {'A': board.intrinsics_step, 'C': board.validation_step}[role]
+    timings = {}
+    label = f'{role} 板检测'
+    if background:
+        label += '（后台，与 A 求解并行）' if role == 'A' else '（后台，与 A/B 并行）'
+    with runtime.timed(timings, 'detect', label=label):
+        found = board_detection.detect_cached(dataset, aprilgrid_detect.GridDetector,
+            cache=execution.paths.work/f'{role}_board.npz', source_identity=source_identity,
+            step=step, workers=execution.workers, up=board.detection_upscale, cancelled=cancelled)
+    return found, dict(timings['detect'], background=background, workers=execution.workers)
+
+
+def _coverage(directory, path, execution, grid, board, *, role, source_identity, detection=None):
+    with runtime.timed(execution.timings, role + '.detect_wait'):
+        found, timing = (detection.result() if detection is not None else
+                        _detect_board(directory, execution, board, role, source_identity))
+    execution.timings[role + '.detect'] = timing
+    with runtime.timed(execution.timings, role + '.pnp'):
+        return board_pnp.measure_board_coverage(found, board_pnp.read_kb4(path), grid, parameters=board)
+
+
+def _validate(video, dataset, execution, runner, identity, parameter_file, bundle, *,
+              grid, board, trajectory_configuration, generator=None, sample=False, detection=None):
+    step = Step.SAMPLE if sample else Step.TRAJECTORY
+    def measure():
+        try:
+            with runtime.timed(execution.timings, ('sample' if sample else 'candidate') + '.detect_wait'):
+                found, timing = (detection.result() if detection is not None else
+                    _detect_board(dataset, execution, board, 'C', identity['source']))
+            execution.timings.setdefault('C.detect', timing)
+            return trajectory.trajectory_check(video, found, execution, grid=grid, board=board,
+                trajectory_configuration=trajectory_configuration, calibration_json=parameter_file,
+                bundle=bundle, tag='sample' if sample else 'candidate', generator=generator)
+        except Exception as error:
+            if not sample:
+                raise
+            write_error_log(execution.paths.logs/'sample_error.log', error)
+            return dict(status='comparison_failed', reason=str(error))
+    return runner.run(step, identity, measure,
+        reusable=lambda value: value.get('status') in ('ok', 'insufficient'))
+
+
+def _finish(paths, doc, configuration, *, keep_work):
+    parameters = (assets.read_basalt(paths.calibration) if doc['operation'] == 'calibrate'
+                  and Step.CAMERA_IMU in doc['measurements'] and doc['subject'].get('parameter_sha256') else None)
     try:
-        configuration = config.load('calibration', request.config)
-        trajectory_configuration = configuration.load_trajectory_validation()
-        if not request.dry_run and not runtime.prepare(request.cores):
-            return 2
-        calibration_inputs = inputs.prepare_inputs(request)
-        output = request.output or (request.folder or calibration_inputs.recordings.a.parent) / 'umi_calib_out'
-        paths = RunPaths(output)
-        # 样例参数用于 A/B 的健全性检查；C 段的位置参考来自标定板。
-        sample_parameters = trajectory_calibration.read_basalt(trajectory_calibration.SAMPLE_CAMERA_JSON)
-        provenance = parameter_record(configuration, trajectory_configuration)
-        provenance['options'] = dict(compare_sample=request.compare_sample)
-        provenance['measurements'] = dict(grid=calibration_inputs.grid, sample_camera=sample_parameters,
-                                          recordings={name: dict(path=str(path.resolve()), bytes=path.stat().st_size,
-                                                                  mtime_ns=path.stat().st_mtime_ns)
-                                                      for name, path in calibration_inputs.recordings.items()})
-        provenance['computation_hash'] = computation_hash(provenance)
-        if request.dry_run:
-            print(json.dumps(dict(camera_serial=calibration_inputs.camera_serial, output=str(output), **provenance),
-                             indent=2, ensure_ascii=False))
-            return 0
-        # 四段输入及序列号确认无误后，才允许 --force 清理旧输出。
-        runtime.prepare_output(paths, force=request.force)
-        paths.board.write_text(json.dumps(calibration_inputs.grid, indent=1), encoding='utf-8')
-        # context 集中传递路径、板尺寸、CPU 和检测并发数。
-        context = StageContext(paths, calibration_inputs.grid, request.cores, recording_data.n_workers(),
-                               configuration.values, trajectory_configuration)
-        report = reports.CalibrationReport(calibration_inputs, request, sample_parameters)
-        report.payload["parameters"] = provenance
-    except (registry.RegistryError, OSError, ValueError) as error:
-        runtime.console.write(f"准备标定失败：{error}", state="失败")
-        return 2
+        assessment = acceptance.evaluate(doc, configuration.values.checks, parameters)
+    except Exception as error:
+        doc['execution'].update(status='failed', error=dict(step='evaluation', reason=str(error)))
+        write_error_log(paths.logs/'stage_error.log', error)
+        assessment = dict(decision=Decision.INCOMPLETE.value, checks=[], policy_version=acceptance.POLICY_VERSION)
+    assessment.update(configuration=configuration.snapshot())
+    result_io.commit_evaluation(paths.output, doc, assessment)
+    doc['activation'] = devices.activation_status(doc)
+    result_io.write(paths.output, doc)
+    reports.write_report(paths.output, doc)
+    accepted = Decision(assessment['decision']).installable
+    if doc['subject']['lens'] == 'rear':
+        if accepted:
+            result_io.publish_rear(paths.output, doc)
+        else:
+            (paths.output/'rear_calibration.json').unlink(missing_ok=True)
+    runtime.console.write(f"{Decision(assessment['decision']).label}；报告：{paths.output/'report.txt'}", state='完成')
+    if accepted and not keep_work:
+        shutil.rmtree(paths.work, ignore_errors=True)
+    return 0 if accepted else 1
 
-    # 主流程持有验收状态。检查项即使出现 FAIL，也继续收集后续阶段证据；
-    # 阶段执行抛出异常时才停止，最后统一决定结论。
-    check_results = []
-    stage_error = None
-    stage = '读取录像'
-    # 内层捕获执行异常并记录失败；外层 finally 保证报告写入、安装或中断后都能收尾。
+
+def run(request: CalibrationRequest, *, trajectory_generator=None, backend_identity=None) -> int:
+    resources = ExitStack()
+    try:
+        if request.resume and request.force:
+            raise ValueError('--resume 和 --force 不能同时使用')
+        if request.lens not in ('front', 'rear') or (request.lens == 'rear' and trajectory_generator is None):
+            raise ValueError('后镜头需要显式轨迹后端')
+        configuration = config.load('calibration', request.config)
+        source = inputs.prepare_inputs(request)
+        trajectory_configuration = configuration.load_trajectory_validation(tag_size_m=source.grid['tagSize'])
+        paths = RunPaths((request.output or (request.folder or source.recordings.a.parent)/'calibration_result').expanduser().resolve())
+        provenance = parameter_record(configuration, trajectory_configuration)
+        provenance['backend'] = backend_identity or dict(kind='front')
+        sample = assets.read_basalt(assets.SAMPLE_CAMERA_JSON) if request.lens == 'front' else None
+        sources = dict(grid=source.grid, sample_camera=sample,
+            recordings={role: dict(path=str(video.resolve()), sha256=config.file_hash(video)) for role, video in source.recordings.items()})
+        if request.dry_run:
+            print(json.dumps(dict(serial=source.camera_serial, lens=request.lens, output=str(paths.output), inputs=sources,
+                                 computation=provenance), ensure_ascii=False, indent=2))
+            return 0
+        if not runtime.prepare(request.cores, solve=True):
+            return 2
+        workers = recordings.n_workers(request.workers)
+        resources.enter_context(runtime.output_directory(paths, force=request.force, resume=request.resume))
+        subject = dict(serial=source.camera_serial, lens=request.lens, parameter_file='calibration.json', parameter_sha256=None)
+        if request.resume:
+            previous = result_io.read(paths.output)
+            subject['parameter_sha256'] = previous.get('subject', {}).get('parameter_sha256')
+        doc = _document(paths, subject, sources, provenance, operation='calibrate', resume=request.resume)
+        execution = ExecutionOptions(paths, request.cores, workers, doc['execution']['details'])
+        runner = StageRunner(paths.output, doc)
+    except (OSError, ValueError, RuntimeError) as error:
+        resources.close()
+        runtime.console.write(f'准备标定失败：{error}', state='失败')
+        return 2
     try:
         try:
-            # 1. 原始 INSV 转阶段数据：A/B/C 提取时间戳、IMU 和图像，D 不解码图像。
-            datasets = recording_data.extract_recordings(calibration_inputs.recordings, context)
-            report.record_data(datasets)
-
-            # 2. 用 A 求镜头内参，并检查板覆盖范围与重投影误差。
-            stage = 'A 内参'
-            intrinsics_result = intrinsics.solve_intrinsics(datasets.segments.a, context)
-            report.record_intrinsics(intrinsics_result)
-            check_results.extend(checks.assess_intrinsics(intrinsics_result, sample_parameters, configuration.values.checks))
-
-            # 3. 使用 A 的内参，将 B 的视觉运动与 IMU 对齐，求外参和时间差。
-            stage = 'B 相机–IMU'
-            camera_imu_result = camera_imu.solve_camera_imu(datasets.segments.b, intrinsics_result, context)
-            report.record_camera_imu(camera_imu_result)
-            check_results.extend(checks.assess_camera_imu(camera_imu_result, datasets.imu_metrics['B'], sample_parameters, configuration.values.checks))
-
-            # 4. 用 D 的多朝向静止数据检查重力一致性，此步骤只检查、不改参数。
-            stage = 'D 重力检查'
-            gravity_result = validation.validate_gravity(datasets.segments.d, camera_imu_result.calibration_json, context)
-            report.record_gravity(gravity_result)
-            check_results.extend(checks.assess_gravity(gravity_result, configuration.values.checks))
-
-            # 5. 封装 内部轨迹引擎读取的标定包，让下一步 C 使用真实的轨迹处理入口。
-            stage = '生成标定包'
-            bundle = camera_imu.build_bundle(camera_imu_result, context, recordings=calibration_inputs.recordings,
-                                             tag_size_mm=request.tag_size_mm)
-            report.record_bundle(bundle)
-
-            # 6. 用独立的 C 录像对照标定板验证新标定；样例轨迹对照由选项控制。
-            stage = 'C 轨迹验证'
-            trajectory_result = validation.validate_trajectory(calibration_inputs.recordings.c, datasets.segments.c,
-                                                               bundle, context, compare_sample=request.compare_sample)
-            report.record_trajectory(trajectory_result)
-            check_results.extend(checks.assess_trajectory(trajectory_result, configuration.values.checks))
-        except Exception as error:
-            # 保留阶段函数给出的详细归因（如“读取 B 段”）；其他异常用当前 stage 归因。
-            stage_error = error if isinstance(error, StageError) else StageError(stage, str(error))
-            report.record_failure(stage_error)
-            write_error_log(paths.logs / 'stage_error.log', error)
-
-        # 执行异常直接判失败；正常执行结束后，由全部检查项决定 PASS / 提醒 / FAIL。
-        conclusion = 'FAIL' if stage_error else checks.verdict(check_results)
-        reason = str(stage_error) if stage_error else '；'.join(check['check'] for check in check_results if check['result'] == 'FAIL')
-        report.finish(paths.output, conclusion, check_results=check_results, reason=reason)
-        if not conclusion.startswith('PASS'):
-            return 1
-        # 默认只展示启用状态；只有显式 --install 且验收通过才写入设备档案。
-        if request.install:
-            return devices.install_bundle(paths.output, force=False, camera_serial=calibration_inputs.camera_serial, gripper=request.gripper)
-        report.announce_activation(paths.output)
-        return 0
+            identities = {role: recordings.preparation_identity(video, role != 'D', request.lens)
+                          for role, video in source.recordings.items()}
+            data = {role: _prepare(role, video, execution, runner, identities[role], request.lens)
+                    for role, video in source.recordings.items()}
+            detection = None
+            available = len(os.sched_getaffinity(0))
+            completed = doc['execution']['steps']
+            # Only overlap a cold solve. A C-only rerun should use all requested detector workers.
+            if (available >= 8 and workers >= 2 and Step.TRAJECTORY not in completed
+                    and not all(step in completed for step in (Step.INTRINSICS, Step.CAMERA_IMU))):
+                cancelled = threading.Event()
+                pool = resources.enter_context(ThreadPoolExecutor(max_workers=1, thread_name_prefix='calibration-C'))
+                resources.callback(cancelled.set)
+                background = replace(execution, workers=min(workers, available // 4, 8), timings={})
+                detection = pool.submit(_detect_board, data['C'], background, configuration.values.board,
+                    'C', identities['C'], cancelled=cancelled, background=True)
+            common = dict(code=provenance['code'], engines=provenance['engines'], grid=source.grid, lens=request.lens)
+            board = asdict(configuration.values.board)
+            def board_identity(selected):
+                return {k: v for k, v in board.items() if not k.endswith('_step') or k == selected}
+            prepared_bag = None
+            def solve_a():
+                nonlocal prepared_bag
+                directory = data['A']()
+                a_detection = None
+                if available >= 16 and workers >= 4:
+                    # A corners then B bag share one lane, alongside the existing C detector.
+                    # Only start here: a reused A must not launch disposable work.
+                    cancelled_ab = threading.Event()
+                    prefetch = ThreadPoolExecutor(max_workers=1, thread_name_prefix='calibration-AB')
+                    resources.callback(prefetch.shutdown, wait=True, cancel_futures=True)
+                    resources.callback(cancelled_ab.set)
+                    background_ab = replace(execution, workers=min(workers, available // 4, 8), timings={})
+                    a_detection = prefetch.submit(_detect_board, directory, background_ab, configuration.values.board,
+                        'A', identities['A'], cancelled=cancelled_ab, background=True)
+                    prepared_bag = prefetch.submit(basalt.prepare_bag, data['B'](), background_ab,
+                        name='camera_imu', log_name='camera_imu.log', cancelled=cancelled_ab)
+                    resources.callback(prepared_bag.cancel)
+                solved = basalt.estimate_intrinsics(directory, source.grid, execution)
+                return result_io.intrinsics_measurement(replace(solved, board_metrics=
+                    _coverage(directory, solved.calibration_json, execution, source.grid, configuration.values.board,
+                        role='A', source_identity=identities['A'], detection=a_detection)))
+            a = runner.run(Step.INTRINSICS, dict(common, source=identities['A'], board=board_identity('intrinsics_step')), solve_a)
+            def solve_b():
+                initial = result_io.intrinsics_result(paths.output, a)
+                with atomic_file(initial.calibration_json) as temp:
+                    temp.write_text(a['calibration_snapshot'], encoding='utf-8')
+                directory = data['B']()
+                prepared = None
+                if prepared_bag is not None:
+                    with runtime.timed(execution.timings, 'camera_imu.bag_wait'):
+                        prepared = prepared_bag.result()
+                solved = basalt.estimate_camera_imu(directory, source.grid, initial, configuration.values.imu, execution,
+                    prepared_bag=prepared)
+                return dict(solver=solved.solver_metrics)
+            b = runner.run(Step.CAMERA_IMU, dict(common, source=identities['B'], intrinsics=config.canonical_hash(a),
+                imu=asdict(configuration.values.imu)), solve_b, artifacts=(paths.calibration,))
+            solved = result_io.camera_imu_result(paths.output, b)
+            result_io.publish_candidate(paths.output, solved, source.camera_serial, request.lens, source.grid, sources['recordings'])
+            digest = config.file_hash(paths.calibration)
+            doc['subject']['parameter_sha256'] = digest
+            runner.run(Step.GRAVITY, dict(common, source=identities['D'], calibration=digest,
+                gravity=asdict(configuration.values.gravity)),
+                lambda: asdict(gravity.validate_gravity(data['D'](), paths.calibration, configuration.values.gravity, execution)))
+            c_identity = dict(common, source=identities['C'], calibration=digest, board=board_identity('validation_step'),
+                trajectory=trajectory_configuration.computation_hash, backend=provenance['backend'],
+                trajectory_code=provenance['trajectory_code'], trajectory_engines=provenance['trajectory_engines'],
+                assets=trajectory.trajectory_assets() if request.lens == 'front' else backend_identity)
+            _validate(source.recordings.c, data['C'], execution, runner, c_identity, paths.calibration, str(paths.output), grid=source.grid, board=configuration.values.board,
+                trajectory_configuration=trajectory_configuration, generator=trajectory_generator, detection=detection)
+            if request.compare_sample and request.lens == 'front':
+                _validate(source.recordings.c, data['C'], execution, runner,
+                    dict(c_identity, calibration=config.file_hash(assets.SAMPLE_CAMERA_JSON)), assets.SAMPLE_CAMERA_JSON, 'factory', grid=source.grid, board=configuration.values.board,
+                    trajectory_configuration=trajectory_configuration, sample=True, detection=detection)
+            else:
+                runner.invalidate(Step.SAMPLE)
+            doc['execution'].update(status='complete', error=None)
+        except BaseException as error:
+            doc['execution'].update(status='interrupted' if isinstance(error, KeyboardInterrupt) else 'failed')
+            if not doc['execution'].get('error'):
+                doc['execution']['error'] = dict(step='workflow', reason=str(error))
+            write_error_log(paths.logs/'stage_error.log', error)
+            if not isinstance(error, Exception):
+                _finish(paths, doc, configuration, keep_work=True)
+                raise
+        code = _finish(paths, doc, configuration, keep_work=request.keep_work)
     finally:
-        # 只清理可再生成的 work；标定包、报告和日志继续保留。
-        if not request.keep_work:
-            shutil.rmtree(paths.work, ignore_errors=True)
+        resources.close()
+    if code == 0 and request.install:
+        return devices.install_bundle(paths.output, force=False, camera_serial=source.camera_serial, gripper=request.gripper)
+    return code
 
 
 def verify(request: VerificationRequest) -> int:
-    """用一段 C 检查现有标定的轨迹误差，不执行 A/B 求解或设备安装。
-
-    返回码同 run()：0 = 验证通过，1 = 验证失败，2 = 环境或输入准备失败。
-    """
+    resources = ExitStack()
     try:
-        configuration = config.load("calibration", request.config)
-        trajectory_configuration = configuration.load_trajectory_validation()
-        if not request.dry_run and not runtime.prepare(request.cores):
-            return 2
-        # 先确定录像、设备身份和使用的标定，再准备输出目录，保护已有结果。
-        verification_inputs = inputs.prepare_verification(request)
-        video = verification_inputs.video
-        selected_calibration = verification_inputs.calibration
-        calibration_name = verification_inputs.calibration_name
-        paths = RunPaths(request.output or video.parent / (video.stem + '_umi_calib_verify'))
+        if request.resume and request.force:
+            raise ValueError('--resume 和 --force 不能同时使用')
+        configuration = config.load('calibration', request.config)
+        source = inputs.prepare_verification(request)
+        trajectory_configuration = configuration.load_trajectory_validation(tag_size_m=source.grid['tagSize'])
+        paths = RunPaths((request.output or source.video.parent/(source.video.stem+'_calibration_verification')).expanduser().resolve())
+        parameter_file = Path(source.calibration['json']).resolve()
+        subject = dict(serial=source.camera_serial, lens='front', parameter_file=str(parameter_file),
+                       parameter_sha256=config.file_hash(parameter_file), name=source.calibration_name)
         provenance = parameter_record(configuration, trajectory_configuration)
-        provenance['measurements'] = dict(grid=verification_inputs.grid, calibration=selected_calibration,
-                                          recording=dict(path=str(video.resolve()), bytes=video.stat().st_size,
-                                                         mtime_ns=video.stat().st_mtime_ns))
-        provenance['computation_hash'] = computation_hash(provenance)
+        sources = dict(grid=source.grid, recordings=dict(C=dict(path=str(source.video.resolve()), sha256=config.file_hash(source.video))),
+                       calibration=source.calibration)
         if request.dry_run:
-            print(json.dumps(dict(camera_serial=verification_inputs.camera_serial, output=str(paths.output), **provenance),
-                             indent=2, ensure_ascii=False))
+            print(json.dumps(dict(subject=subject, inputs=sources, computation=provenance, output=str(paths.output)), ensure_ascii=False, indent=2))
             return 0
-        runtime.prepare_output(paths, force=request.force)
-        context = StageContext(paths, verification_inputs.grid, request.cores, recording_data.n_workers(),
-                               configuration.values, trajectory_configuration)
-        report = reports.VerificationReport(verification_inputs, request)
-        report.payload["parameters"] = provenance
-    except (registry.RegistryError, OSError, ValueError) as error:
-        runtime.console.write(f"准备标定失败：{error}", state="失败")
+        if not runtime.prepare(request.cores, solve=False):
+            return 2
+        workers = recordings.n_workers(request.workers)
+        resources.enter_context(runtime.output_directory(paths, force=request.force, resume=request.resume))
+        doc = _document(paths, subject, sources, provenance, operation='verify', resume=request.resume)
+        execution = ExecutionOptions(paths, request.cores, workers, doc['execution']['details'])
+        runner = StageRunner(paths.output, doc)
+    except (OSError, ValueError, RuntimeError) as error:
+        resources.close()
+        runtime.console.write(f'准备验证失败：{error}', state='失败')
         return 2
-
-    runtime.console.write(f'用 {calibration_name} 验证 {video.name}（序列号 {verification_inputs.camera_serial}）')
-    # stage 随执行步骤更新，保证读取、板检测和轨迹计算的异常分别归因。
-    check_results = []
-    stage_error = None
-    stage = '读取 C 段'
     try:
         try:
-            # 1. 提取与画面对应的时间戳和 IMU，准备板检测所需图像。
-            runtime.console.write('读取 C 段时间戳、IMU 和画面', step=(1, 3))
-            recording_data.build(video, paths.work / 'ds', with_images=True)
-
-            # 2. 检测板角点，下一步据此计算独立的参考相机位置。
-            stage = 'C 标定板检测'
-            runtime.console.write('C 段：检测标定板', step=(2, 3))
-            detections = board_pnp.detect_all(paths.work / 'ds', aprilgrid_detect.GridDetector,
-                                             step=configuration.values.board.validation_step, workers=context.workers,
-                                             up=configuration.values.board.detection_upscale)
-
-            # 3. 用选中的标定跑轨迹，将相机位置与板参考对齐后计算误差。
-            stage = 'C 轨迹验证'
-            runtime.console.write('C 段：抽取轨迹，对照标定板计算误差', step=(3, 3))
-            bundle = 'factory' if selected_calibration['source'] == 'factory' else selected_calibration['dir']
-            trajectory_result = validation.trajectory_check(video, detections, context,
-                                                             calibration_json=Path(selected_calibration['json']),
-                                                             bundle=bundle, tag='current')
-            report.record_trajectory(trajectory_result)
-            check_results.extend(checks.assess_verification(trajectory_result, calibration_name, configuration.values.checks))
-        except Exception as error:
-            # 所有阶段采用同一收尾方式，同时保留真实原因和完整异常堆栈。
-            stage_error = error if isinstance(error, StageError) else StageError(stage, str(error))
-            report.record_failure(stage_error)
-            write_error_log(paths.logs / 'stage_error.log', error)
-            # 失败也生成一条验收项，报告中同时显示执行原因与 FAIL 检查项。
-            failed_measurement = {'status': 'failed', 'reason': str(stage_error)}
-            check_results.extend(checks.assess_verification(failed_measurement, calibration_name, configuration.values.checks))
-
-        # workflow 决定结论，报告对象接收检查项并负责格式化、计时和落盘。
-        conclusion = 'FAIL' if stage_error else checks.verdict(check_results)
-        report.finish(paths.output, conclusion, check_results=check_results)
-        return 0 if conclusion.startswith('PASS') else 1
+            identity = recordings.preparation_identity(source.video, True, 'front')
+            dataset = _prepare('C', source.video, execution, runner, identity, 'front')
+            _validate(source.video, dataset, execution, runner, dict(source=identity, calibration=subject['parameter_sha256'],
+                board=asdict(configuration.values.board), grid=source.grid, trajectory=trajectory_configuration.computation_hash,
+                code=provenance['code'], trajectory_code=provenance['trajectory_code'],
+                engines=provenance['trajectory_engines'], assets=trajectory.trajectory_assets()), parameter_file, str(source.calibration['dir']), grid=source.grid, board=configuration.values.board,
+                trajectory_configuration=trajectory_configuration)
+            doc['execution'].update(status='complete', error=None)
+        except BaseException as error:
+            doc['execution'].update(status='interrupted' if isinstance(error, KeyboardInterrupt) else 'failed')
+            if not doc['execution'].get('error'):
+                doc['execution']['error'] = dict(step='workflow', reason=str(error))
+            write_error_log(paths.logs/'stage_error.log', error)
+            if not isinstance(error, Exception):
+                _finish(paths, doc, configuration, keep_work=True)
+                raise
+        return _finish(paths, doc, configuration, keep_work=request.keep_work)
     finally:
-        # 正常完成或已记录失败时，报告先落盘；中断时同样按配置清理工作目录。
-        if not request.keep_work:
-            shutil.rmtree(paths.work, ignore_errors=True)
-
-
-def parameter_record(configuration: config.Configuration, trajectory_configuration: config.Configuration) -> dict:
-    """Record both the calibration stages and the C trajectory engine configuration."""
-    record = dict(configuration=configuration.snapshot(), trajectory_validation=trajectory_configuration.snapshot(),
-                  code=config.code_identity('calibration'), engines=config.engine_identity('calibration'),
-                  trajectory_code=config.code_identity('trajectory'), trajectory_engines=config.engine_identity('trajectory'))
-    return record
-
+        resources.close()
 
 
 def recheck(output: Path, config_path: Path | None) -> int:
-    """Re-evaluate complete stored evidence without running solvers or installing."""
+    output = Path(output).expanduser().resolve()
     try:
         configuration = config.load('calibration', config_path)
-        trajectory_configuration = configuration.load_trajectory_validation()
-        report = reports.load_report(output)
-        provenance = report['parameters']
-        previous = provenance['configuration']
-        if (previous['computation_hash'] != configuration.computation_hash or
+        with locked(output.parent, name=f'.{output.name}.calibration.lock'):
+            doc = result_io.load_result(output, complete=True)
+            trajectory_configuration = configuration.load_trajectory_validation(tag_size_m=doc['inputs']['grid']['tagSize'])
+            provenance = doc['computation']
+            if (provenance['configuration']['computation_hash'] != configuration.computation_hash or
                 provenance['trajectory_validation']['computation_hash'] != trajectory_configuration.computation_hash):
-            raise ValueError('算法参数发生变化，需要重新运行标定或 verify；recheck 只更新验收规则')
-        check_results = checks.reassess_report(report, configuration.values.checks)
-    except (KeyError, TypeError, OSError, ValueError) as error:
-        runtime.console.write(f'无法重新验收：{error}；旧报告保持不变', state='失败')
+                raise ValueError('计算参数发生变化；recheck 只更新验收规则，请重新运行')
+            return _finish(RunPaths(output), doc, configuration, keep_work=True)
+    except (KeyError, TypeError, OSError, ValueError, RuntimeError) as error:
+        runtime.console.write(f'无法重新验收：{error}', state='失败')
         return 2
-    report.setdefault('evaluation_history', []).append(dict(evaluation_hash=previous['evaluation_hash'], verdict=report['verdict']))
-    provenance['configuration'] = configuration.snapshot()
-    report.update(checks=check_results, verdict=checks.verdict(check_results))
-    if report['kind'] == 'umi_calib_verify_report':
-        report['advice'] = reports.verification_advice(report['verdict'], True, report['serial'])
-    else:
-        report['why'] = '；'.join(check['check'] for check in check_results if check['result'] == 'FAIL')
-    reports.write_report(output, report, verification=report['kind'] == 'umi_calib_verify_report')
-    runtime.console.write(f"已重新验收：{report['verdict']}；报告：{output / 'report.txt'}", state='完成')
-    return 0 if report['verdict'].startswith('PASS') else 1
-
-
-def computation_hash(record: dict) -> str:
-    return config.canonical_hash(dict(configuration=record['configuration']['computation_hash'],
-                                     trajectory_configuration=record['trajectory_validation']['computation_hash'], options=record.get('options', {}),
-                                     **{key: record[key] for key in ('code', 'engines', 'trajectory_code', 'trajectory_engines', 'measurements')}))

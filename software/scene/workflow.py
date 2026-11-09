@@ -451,7 +451,7 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
                     episode, arm, recording, map_dir, map_manifest,
                     diagnostic_dir=run_dir / arm)
                 tracks[arm] = results.write_arm(
-                    arm, recording, fusion_result, video_offsets_s[arm], scene_metadata, display_map_path, run_dir / arm
+                    arm, recording, fusion_result, video_offsets_s[arm], scene_metadata, run_dir / arm
                 )
 
                 # 若配置了夹爪宽度标定，则执行指尖 ArUco 视觉测距
@@ -486,6 +486,7 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
                 input_identity=input_identity,
                 video_offsets_s=video_offsets_s,
                 elapsed_s=time.monotonic() - started,
+                map_path=display_map_path,
                 gripper_width=widths,
             )
             # 原子更新结果指针：创建 results 软链接指向本次 run_dir

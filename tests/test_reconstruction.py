@@ -141,6 +141,31 @@ class ReconstructionTests(unittest.TestCase):
         for number in (1, 2):
             self.assertEqual((self.paths.attempt(number) / 'front/front.mp4').resolve(), self.paths.lens_videos / 'front.mp4')
 
+    def test_scale_divergence_retries_despite_full_tracking_and_retains_rejection(self):
+        self.engines.scale_changes = {1: 3.27}
+        result = self.run_stages()
+        self.assertEqual(result.chosen, 2)
+        rejected = result.attempts[0]
+        self.assertEqual(rejected['full_fraction'], 1.)
+        self.assertFalse(rejected['usable'])
+        self.assertIn('3.270', rejected['reason'])
+        self.assertEqual([kind for kind, *_ in self.engines.calls].count('map'), 2)
+        self.assertTrue((self.paths.attempt(1)/'fuse/fuse_info.json').is_file())
+
+    def test_all_divergent_attempts_fail_without_selecting_least_bad(self):
+        self.engines.scale_changes = {1: 3.27, 2: .3, 3: 2.1}
+        result = self.run_stages()
+        self.assertIsNone(result.chosen)
+        self.assertEqual(result.failed_stage, '重建质量检查')
+        self.assertEqual(len(result.attempts), 3)
+        self.assertTrue(all(not q['usable'] for q in result.attempts))
+        self.assertIn('尺度', result.reason)
+
+    def test_invalid_scale_cannot_displace_usable_but_fragmented_attempt(self):
+        self.engines.bad_tries = {1}
+        self.engines.scale_changes = {2: 3., 3: 3.}
+        self.assertEqual(self.run_stages().chosen, 1)
+
     def test_engine_returncode_with_valid_artifact_matches_legacy_policy(self):
         self.engines.map_returncode = 139
         result = self.run_stages()

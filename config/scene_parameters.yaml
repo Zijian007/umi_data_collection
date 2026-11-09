@@ -1,6 +1,7 @@
 # 共享场景的默认算法参数；每次建图/任务结果保存完整快照与内容指纹。
 # 场景定义位于 scenes/<场景>/scene.yaml，可通过其中的 parameters 指定覆盖文件。
 # 覆盖文件只需写变更项；未知字段会被拒绝。
+# 场景对齐和视觉融合的生效范围见 config/README.md；与单段轨迹同类的阈值由这里独立管理。
 schema_version: 1
 
 # 用间隔约 0.25 秒的可靠视觉节点检查共享尺度的可观测性。
@@ -17,16 +18,19 @@ minimum_alignment_nodes: 12
 maximum_alignment_condition: 100000000.0
 
 # 米制尺度的相对标准差上限；也是可靠段相对共享尺度的最大偏差，0.2 即 20%。
+# 场景建图时取代 trajectory.fusion.maximum_relative_scale_std。
 maximum_scale_relative_std: 0.2
 
 # 自由估计重力大小与轨迹配置重力常数的允许差值，单位 m/s²。
 # 可靠段与共享估计的重力向量差也必须不超过此值。
+# 场景建图时取代 trajectory.fusion.gravity_tolerance_m_s2。
 gravity_tolerance_m_s2: 0.5
 
 # 对齐位置方程的 RMS 上限，单位米；同时用于固定尺度下其余可检查段的复核。
 maximum_alignment_rms_m: 0.05
 
 # 对齐得到的加速度计零偏各分量绝对值上限，单位 m/s²。
+# 场景建图时取代 trajectory.fusion.maximum_acc_bias_m_s2。
 maximum_acc_bias_m_s2: 2.0
 
 # 同时看到前、后地图时，用于确定前地图场景放置的最少位姿对。
@@ -48,6 +52,7 @@ minimum_localization_fraction: 0.5
 maximum_visual_gap_s: 2.0
 
 # 场景融合中的视觉位置噪声，单位米；旋转噪声单位度。
+# 固定场景任务使用这里的视觉噪声和 huber，不使用 trajectory.fusion 的对应视觉参数。
 front_position_sigma_m: 0.015
 rear_position_sigma_m: 0.020
 visual_rotation_sigma_deg: 1.0

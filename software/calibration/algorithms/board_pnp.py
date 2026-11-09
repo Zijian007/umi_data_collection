@@ -1,4 +1,4 @@
-"""Per-frame camera pose from the AprilGrid board (KB4 intrinsics + PnP), and comparison of a trajectory against it.
+"""Per-frame camera pose from the AprilGrid board (KB4 intrinsics + PnP), coverage and a metric trajectory reference.
 
 SQPnP and the two IPPE solutions are candidates. Outliers are rejected on normalised reprojection error, then SQPnP
 is solved again and refined with Levenberg-Marquardt. The board pose is metric and independent of the IMU and of the
@@ -8,24 +8,26 @@ trajectory, so the C recording can check a new calibration against it.
 from __future__ import annotations
 
 import json
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from software import config
+from software.calibration.models import Kb4
+from software.camera.x3.frame import SRC_H
+
+# Half the original square lens image; independent of the 1440 calibration crop.
+COVERAGE_RADIUS_PX = SRC_H / 2
 
 
-def read_kb4(calib_json: Path) -> list[float]:
+def read_kb4(calib_json: Path) -> Kb4:
     d = json.loads(Path(calib_json).read_text(encoding="utf-8"))
     k = (d.get("value0") or d)["intrinsics"][0]["intrinsics"]
-    return [k["fx"], k["fy"], k["cx"], k["cy"], k["k1"], k["k2"], k["k3"], k["k4"]]
+    return Kb4(*(float(k[name]) for name in Kb4._fields))
 
 
-
-def kb4_unproject(uv: np.ndarray, kb4: list[float]) -> np.ndarray:
+def kb4_unproject(uv: np.ndarray, kb4: Kb4) -> np.ndarray:
     fx, fy, cx, cy, k1, k2, k3, k4 = kb4
     K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], float)
     D = np.array([k1, k2, k3, k4], float)
@@ -48,7 +50,7 @@ def grid_points_3d(grid: dict) -> dict:
     return out
 
 
-def pnp_from_detections(dets: dict, kb4: list[float], pts3d: dict, *, parameters: config.BoardParameters | None = None) -> dict | None:
+def pnp_from_detections(dets: dict, kb4: Kb4, pts3d: dict, *, parameters: config.BoardParameters | None = None) -> dict | None:
     """dets = {tag_id: 4x2 pixel corners (BL,BR,TR,TL)} -> camera pose in the board frame T_bc (metres)."""
     parameters = parameters or config.load("calibration").values.board
     min_tags, inlier_thresh = parameters.minimum_pnp_tags, parameters.normalized_inlier_threshold
@@ -101,51 +103,8 @@ def pnp_from_detections(dets: dict, kb4: list[float], pts3d: dict, *, parameters
             "reproj_deg_med": float(np.median(ang)), "reproj_deg_p95": float(np.percentile(ang, 95))}
 
 
-def umeyama(src, dst, with_scale=True):
-    mu_s, mu_d = src.mean(0), dst.mean(0)
-    S, D = src - mu_s, dst - mu_d
-    H = S.T @ D / len(src)
-    U, sig, Vt = np.linalg.svd(H)
-    d = np.sign(np.linalg.det(Vt.T @ U.T))
-    Dm = np.diag([1, 1, d])
-    R = Vt.T @ Dm @ U.T
-    s = float(np.trace(np.diag(sig) @ Dm) / ((S ** 2).sum() / len(src))) if with_scale else 1.0
-    t = mu_d - s * R @ mu_s
-    return s, R, t
-
-
-def detect_up(gray: np.ndarray, det, up: float | None = None) -> dict:
-    """Detection on a bicubic-upsampled image, corners mapped back to native pixels."""
-    up = config.load("calibration").values.board.detection_upscale if up is None else up
-    g = cv2.resize(gray, None, fx=up, fy=up, interpolation=cv2.INTER_CUBIC) if up != 1.0 else gray
-    dets = det.detect(g)
-    # cv2.resize maps source pixel centre x to (x + 0.5) * up - 0.5 -> invert exactly (no constant +0.25 px bias at 2x)
-    return {k: (np.asarray(v, float) + 0.5) / up - 0.5 for k, v in dets.items()} if up != 1.0 else dets
-
-
-def detect_all(euroc: Path, make_detector, step: int = 1, workers: int = 4, up: float | None = None) -> dict:
-    """AprilGrid detections (detect_up) on every `step`-th frame of an EuRoC folder.  Detection is the slow part (close to
-    1 s a frame at 2x) and frames are independent, so a few threads share the work, each with its own detector (same
-    result as one by one).  Returns {"n_frames": frames listed, "shape": (h, w), "dets": {frame index: {tag_id: 4x2 corners}}}."""
-    up = config.load("calibration").values.board.detection_upscale if up is None else up
-    rows = [l.split(",") for l in (Path(euroc) / "mav0" / "cam0" / "data.csv").read_text(encoding="utf-8").splitlines()
-            if l and not l.startswith("#")]
-    loc = threading.local()
-
-    def one(k: int):
-        if not hasattr(loc, "det"):
-            loc.det = make_detector()
-        g = cv2.imread(str(Path(euroc) / "mav0" / "cam0" / "data" / rows[k][1].strip()), cv2.IMREAD_GRAYSCALE)
-        return (k, None, None) if g is None else (k, detect_up(g, loc.det, up), g.shape)
-
-    with ThreadPoolExecutor(max(1, workers)) as ex:
-        res = list(ex.map(one, range(0, len(rows), step)))
-    return {"n_frames": len(rows), "shape": next((sh for _, _, sh in res if sh is not None), None),
-            "dets": {k: d for k, d, _ in res if d is not None}}
-
-
-def board_reference(found: dict, kb4: list[float], grid: dict, *, parameters: config.BoardParameters | None = None) -> dict:
-    """PnP camera pose for every frame of `found` (from detect_all) with at least `min_tags_keep` decoded tags (PnP itself
+def board_reference(found: dict, kb4: Kb4, grid: dict, *, parameters: config.BoardParameters | None = None) -> dict:
+    """PnP camera pose for every frame of `found` (raw board detections) with at least `min_tags_keep` decoded tags (PnP itself
     runs with minimum_pnp_tags and the pose is kept or dropped afterwards).
     Returns {"idx": frame indices, "p": Nx3 camera positions in the board frame, "reproj_deg_med": ..., "n_frames": total}."""
     parameters = parameters or config.load("calibration").values.board
@@ -159,34 +118,19 @@ def board_reference(found: dict, kb4: list[float], grid: dict, *, parameters: co
         idx.append(k)
         pos.append(r["T_bc"][:3, 3])
         rep.append(r["reproj_deg_med"])
-    return {"idx": np.array(idx, int), "p": np.array(pos, float).reshape(-1, 3), "reproj_deg_med": rep, "n_frames": found["n_frames"]}
+    return {"idx": np.array(idx, int), "p": np.array(pos, float).reshape(-1, 3), "reproj_deg_med": rep, "n_frames": found["n_frames"],
+            "video_time_s": np.asarray(found["video_time_s"])[idx]}
 
 
-def compare(ref: dict, p_cam_traj: np.ndarray, *, parameters: config.BoardParameters | None = None) -> dict:
-    """ref from board_reference; p_cam_traj[k] = camera position of frame k from the trajectory tool (its own world frame).
-    One global rigid alignment without scale (the tool's output is supposed to be metric), plus the Sim(3) scale as a check."""
-    parameters = parameters or config.load("calibration").values.board
-    idx = ref["idx"][ref["idx"] < len(p_cam_traj)]
-    ok = np.all(np.isfinite(p_cam_traj[idx]), axis=1)
-    idx = idx[ok]
-    pr = ref["p"][: len(ref["idx"])][np.isin(ref["idx"], idx)]
-    pt = p_cam_traj[idx]
-    if len(idx) < parameters.minimum_comparison_frames:
-        return {"n": int(len(idx)), "note": "too few frames with both a board pose and a trajectory pose"}
-    s3, R3, t3 = umeyama(pt, pr, with_scale=True)
-    _, R1, t1 = umeyama(pt, pr, with_scale=False)
-    e1 = np.linalg.norm((R1 @ pt.T).T + t1 - pr, axis=1)
-    e3 = np.linalg.norm((s3 * (R3 @ pt.T)).T + t3 - pr, axis=1)
-    return {"n": int(len(idx)), "ate_se3_rmse_mm": float(np.sqrt(np.mean(e1 ** 2)) * 1e3), "ate_se3_p95_mm": float(np.percentile(e1, 95) * 1e3),
-            "ate_sim3_rmse_mm": float(np.sqrt(np.mean(e3 ** 2)) * 1e3), "scale_board_over_trajectory": float(s3),
-            "board_extent_m": float(np.linalg.norm(pr.max(0) - pr.min(0)))}
+def measure_board_coverage(found: dict, kb4: Kb4, grid: dict, *, parameters: config.BoardParameters | None = None) -> dict:
+    """How well a recording shows the board (found = raw board detections).
 
-
-def measure_board_coverage(found: dict, kb4: list[float], grid: dict, *, parameters: config.BoardParameters | None = None) -> dict:
-    """How well a recording shows the board (found = board_pnp.detect_all): share of sampled frames with a board pose, how
-    far from the lens centre the board corners reach (r = distance from the principal point / lens radius) and in how many
-    of the four image directions, distance range.  A recording whose board stays near the lens centre (r about 0.23)
-    produces degenerate intrinsics."""
+    Every radius is r = corner distance from the principal point / coverage_radius_px.  Per frame the farthest corner
+    counts; ``reach_radius_percentile`` is the ``coverage_percentile``-th percentile of those per-frame maxima, and
+    ``frames_reaching_by_direction`` counts frames whose farthest corner has r >= ``coverage_reach``, by image direction.
+    Both parameter values are stored next to the metrics.  Also returns the share of sampled frames with a board pose and
+    the camera-to-board distance range.  A recording whose board stays near the lens centre (r about 0.23) produces
+    degenerate intrinsics."""
     parameters = parameters or config.load("calibration").values.board
     ref = board_reference(found, kb4, grid, parameters=parameters)
     n = len(found["dets"])
@@ -195,15 +139,18 @@ def measure_board_coverage(found: dict, kb4: list[float], grid: dict, *, paramet
     for dets in found["dets"].values():
         if not dets:
             continue
-        uv = np.concatenate(list(dets.values()), 0) - np.array(kb4[2:4])
-        r = np.linalg.norm(uv, axis=1) / parameters.coverage_radius_px
+        uv = np.concatenate(list(dets.values()), 0) - np.array(kb4.principal_point)
+        r = np.linalg.norm(uv, axis=1) / COVERAGE_RADIUS_PX
         i = int(np.argmax(r))
         reach.append(float(r[i]))
         if r[i] >= parameters.coverage_reach:
             x, y = uv[i]
             by_dir[("right" if x > 0 else "left") if abs(x) >= abs(y) else ("down" if y > 0 else "up")] += 1
-    return {"frames_sampled": n, "frames_with_board_pose": int(len(ref["idx"])), "board_pose_fraction": round(len(ref["idx"]) / max(1, n), 3),
-            "reach_r_p99": round(float(np.percentile(reach, parameters.coverage_percentile)), 3) if reach else 0.0, "frames_reaching_r0p5_by_direction": by_dir,
-            "coverage_reach_threshold": parameters.coverage_reach, "coverage_percentile": parameters.coverage_percentile,
+    return {"frames_sampled": n, "frames_with_board_pose": int(len(ref["idx"])),
+            "board_pose_fraction": round(len(ref["idx"]) / max(1, n), 3),
+            "reach_radius_percentile": round(float(np.percentile(reach, parameters.coverage_percentile)), 3) if reach else 0.0,
+            "coverage_percentile": parameters.coverage_percentile,
+            "coverage_radius_px": COVERAGE_RADIUS_PX,
+            "frames_reaching_by_direction": by_dir, "coverage_reach_threshold": parameters.coverage_reach,
             "directions_reached": int(sum(v >= parameters.minimum_direction_frames for v in by_dir.values())),
             "board_distance_m": [round(float(dist.min()), 2), round(float(dist.max()), 2)] if len(dist) else None}

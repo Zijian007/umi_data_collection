@@ -104,15 +104,15 @@ class RegistryVersionTests(unittest.TestCase):
         registry.version_assets(parent / '999')
 
     def test_upgrade_is_previewable_immutable_and_requires_explicit_activation(self):
-        from software.calibration import migration
+        from software.calibration import devices
         registry.register('CAMERA_OLD', self.legacy_bundle)
         pinned = registry.pin('CAMERA_OLD')
         old = registry.get('CAMERA_OLD', **pinned)
         before = {str(p.relative_to(registry.ROOT)): p.read_bytes() for p in registry.ROOT.rglob('*') if p.is_file()}
-        planned = migration.upgrade_device('CAMERA_OLD', dry_run=True)
+        planned = devices.upgrade_device('CAMERA_OLD', dry_run=True)
         self.assertEqual(planned['status'], 'planned')
         self.assertEqual(before, {str(p.relative_to(registry.ROOT)): p.read_bytes() for p in registry.ROOT.rglob('*') if p.is_file()})
-        stored = migration.upgrade_device('CAMERA_OLD')
+        stored = devices.upgrade_device('CAMERA_OLD')
         self.assertEqual(pinned['calibration'], '001')
         self.assertEqual(stored['version'], '002')
         self.assertEqual(planned['version'], stored['version'])
@@ -121,8 +121,8 @@ class RegistryVersionTests(unittest.TestCase):
         self.assertEqual(modern['bundle_schema_version'], 2)
         self.assertEqual(Path(old['json']).read_bytes(), Path(modern['json']).read_bytes())
         self.assertEqual({p.name for p in Path(modern['dir']).iterdir()}, {'bundle.json', 'calibration_r1440.json'})
-        self.assertEqual(migration.upgrade_device('CAMERA_OLD')['version'], stored['version'])
-        migration.activate_calibration('CAMERA_OLD', stored['version'])
+        self.assertEqual(devices.upgrade_device('CAMERA_OLD')['version'], stored['version'])
+        devices.activate_calibration('CAMERA_OLD', stored['version'])
         self.assertEqual(registry.pin('CAMERA_OLD')['calibration'], stored['version'])
         self.assertEqual(registry.get('CAMERA_OLD', **pinned)['json'], old['json'])
         for name, contents in before.items():
@@ -219,7 +219,7 @@ class RecordingImportTests(unittest.TestCase):
             video = root / 'sd/VID_001.insv'
             video.parent.mkdir(); video.write_bytes(b'original')
             managed = root / 'recordings'
-            destination = managed / 'market/20261025_001/videos/left'
+            destination = managed / 'market/20261025_001/take_001/left'
             with patch.object(registry, 'read_insv_serial', return_value='CAMERA_A'):
                 metadata = recordings.inspect(video)
                 imported = recordings.import_video(video, destination, metadata=metadata)
@@ -336,7 +336,7 @@ class SessionManagementTests(unittest.TestCase):
         src = self.f.root / 'video_to_link.insv'
         src.write_bytes(b'test_link_content')
         meta = dict(serial='CAM_LINK', sha256=registry.sha256_file(src))
-        dest = self.f.root / 'test_scene/videos/left'
+        dest = self.f.root / 'test_scene/take_001/left'
         imported = recordings.import_video(src, dest, metadata=meta, link=True)
         self.assertEqual(os.stat(src).st_ino, os.stat(imported).st_ino)
 

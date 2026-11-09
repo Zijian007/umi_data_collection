@@ -8,10 +8,12 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software.calibration import runtime, validation as calibration_validation
+from software.calibration.pipeline import runtime
+from software.calibration.validation import trajectory as calibration_validation
 from software.calibration.algorithms import board_pnp
 from software import config
-from software.calibration.models import RunPaths, StageContext
+from software.calibration.algorithms import trajectory_metrics
+from software.calibration.models import RunPaths, ExecutionOptions
 from software.trajectory.reporting import map_data, results
 from software.trajectory.models import RecordingPaths
 from software.trajectory.pipeline.reuse import REQUIRED_OUTPUTS, reuse_decision
@@ -199,21 +201,22 @@ class ResultLayoutTests(unittest.TestCase):
             with self.subTest(layout=layout), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 video = root / 'VID.insv'
-                context = StageContext(RunPaths(root), {}, '2-3', 1, config.load('calibration').values, config.load('trajectory'))
+                context = ExecutionOptions(RunPaths(root), '2-3', 1)
                 output = context.paths.work / 'C_traj_test/VID'
                 output.mkdir(parents=True)
                 details = output if layout == 'flat' else output / layout
                 details.mkdir(exist_ok=True)
                 (details / 'summary.json').write_text(json.dumps(dict(status='ok', constraint_fraction={'full': 1})))
                 (details / 'traj_camera.txt').write_text('0 1 2 3 0 0 0 1\n')
-                with patch.object(runtime, 'run_logged', return_value=0) as runner, patch.object(board_pnp, 'read_kb4', return_value=[]), patch.object(board_pnp, 'board_reference', return_value={'idx': [0], 'n_frames': 1}), patch.object(board_pnp, 'compare', return_value={'ate_se3_rmse_mm': 5.0}) as compare:
+                with patch.object(runtime, 'run_logged', return_value=0) as runner, patch.object(board_pnp, 'read_kb4', return_value=[]), patch.object(board_pnp, 'board_reference', return_value={'idx': [0], 'n_frames': 1}), patch.object(trajectory_metrics, 'compare', return_value={'status':'ok', 'ate_se3_rmse_mm': 5.0}) as compare:
                     check = calibration_validation.trajectory_check(video, {}, context,
-                                                                     calibration_json=root / 'calib.json', bundle='factory', tag='test')
+                                                                     calibration_json=root / 'calib.json', bundle='factory', tag='test',
+                        grid={}, board=config.load('calibration').values.board, trajectory_configuration=config.load('trajectory'))
                 self.assertEqual(runner.call_args.args[0][-2:], ['--cores', '2-3'])
                 self.assertEqual(runner.call_args.kwargs['environment']['UMI_TRAJ_CALIB'], 'factory')
                 self.assertEqual(check['status'], 'ok')
                 self.assertEqual(check['ate_se3_rmse_mm'], 5.0)
-                np.testing.assert_equal(compare.call_args.args[1], [[1, 2, 3]])
+                np.testing.assert_equal(compare.call_args.args[2], [[1, 2, 3]])
 
 
 if __name__ == '__main__':

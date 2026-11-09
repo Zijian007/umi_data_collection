@@ -86,10 +86,10 @@ class EpisodeLifecycleTests(unittest.TestCase):
         output = (self.f.episode_path.parent/'results').resolve()
         reconstruct = workflow.reconstruct_arm_in_scene
 
-        def solve(episode, arm, *args):
+        def solve(episode, arm, *args, **kwargs):
             if arm == 'right':
                 raise ValueError('right arm failed')
-            return reconstruct(episode, arm, *args)
+            return reconstruct(episode, arm, *args, **kwargs)
 
         with patch.object(workflow, 'reconstruct_arm_in_scene', side_effect=solve):
             with self.assertRaisesRegex(ValueError, 'right arm failed'):
@@ -149,14 +149,16 @@ class EpisodeLifecycleTests(unittest.TestCase):
         self.assertEqual(entry['review'], 'unreviewed')
         self.assertTrue(entry['available'])
 
-    def test_state_only_contains_attempt_review_and_report_reference(self):
+    def test_success_state_references_one_result_manifest_with_preflight(self):
         workflow.run_episode(self.f.episode_path)
         episodes.review(self.f.episode_path, accept=True, reviewer='reviewer')
         state = episodes.read_state(self.f.episode_path.parent)
         self.assertEqual(set(state), {'attempt', 'review'})
         self.assertNotIn('recording_checks', state['attempt'])
-        self.assertEqual(set(state['attempt']), {'status', 'run', 'reason', 'manifest_sha256', 'session_sha256', 'preflight_report'})
-        self.assertTrue((self.f.episode_path.parent / state['attempt']['preflight_report']).is_file())
+        self.assertEqual(set(state['attempt']), {'status', 'run', 'reason', 'manifest_sha256', 'session_sha256'})
+        run = self.f.episode_path.parent / state['attempt']['run']
+        self.assertTrue(json.loads((run / 'episode.json').read_text())['preflight']['passed'])
+        self.assertFalse((run / 'preflight_report.json').exists())
         self.assertEqual(episodes.task_status(self.f.episode_path)['review'], 'accepted')
 
     def test_viewer_reads_pending_and_incomplete_tasks_without_state_snapshot(self):

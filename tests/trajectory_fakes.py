@@ -4,6 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from software.trajectory.algorithms.fusion_quality import scale_consistency
 
 REAL_RUN = subprocess.run
 
@@ -13,6 +14,7 @@ class FakeEngines:
         self.root, self.frames = root, frames
         self.calls = []
         self.bad_tries = set()
+        self.scale_changes = {}
         self.failures = {}
         self.map_returncode = 0
         self.map_count = 1
@@ -80,6 +82,8 @@ class FakeEngines:
             if number in self.bad_tries:
                 chains = [[[0, self.frames//2-1], 'full'], [[self.frames//2, self.frames-1], 'full']]
             (directory / 'fuse_info.json').write_text(json.dumps(dict(
+                scale_consistency=scale_consistency([dict(lens='front', chain=0, sid=0,
+                    scale_initial=1., scale_final=self.scale_changes.get(number, 1.))]),
                 frames=self.frames, init_lens='front', chains=dict(front=chains))))
             (directory / 'traj_tum.txt').write_text(''.join(
                 f'{1+k*1001/30000:.9f} {k*.01:.6f} 0 0 0 0 0 1\n' for k in range(self.frames)))

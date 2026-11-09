@@ -24,7 +24,6 @@ REPO = HERE.parents[1]
 SAMPLE_CAMERA_JSON = HERE / "assets" / "calib" / "calibration_r1440.json"
 FRONT_SETTINGS_TEMPLATE = HERE / "assets" / "config" / "front_x3_r1440_720.yaml"
 FUSION_SCRIPT = HERE / "algorithms" / "fusion_cli.py"
-USER_DIR = REPO / "calibration_user"
 
 
 class CalibrationError(Exception):
@@ -124,6 +123,26 @@ def make_bundle(calib_json: Path, out_dir: Path, note: dict | None = None) -> di
     return describe(out_dir, 'user')
 
 
+def make_result(calib_json: Path, out_dir: Path, *, provenance: dict) -> dict:
+    """新标定结果只携带最终参数和身份清单，不复制数值摘要或算法。"""
+    from software.storage import write_json
+    measured = read_basalt(calib_json)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / 'calibration.json'
+    if calib_json.resolve() != target.resolve():
+        shutil.copyfile(calib_json, target)
+    write_json(out_dir / 'manifest.json', dict(kind='umi_camera_calibration_result', schema_version=3,
+        camera_serial=provenance['camera_serial'], lens=provenance.get('lens', 'front'),
+        camera_model=measured['camera_type'], resolution=measured['resolution'],
+        provenance={key: value for key, value in provenance.items() if key not in ('camera_serial', 'lens')},
+        files={'calibration.json': hashlib.sha256(target.read_bytes()).hexdigest()}))
+    return describe(out_dir, 'user')
+
+
+def calibration_path(directory: Path) -> Path:
+    return directory / ('calibration.json' if (directory / 'manifest.json').is_file() else 'calibration_r1440.json')
+
+
 def _check_legacy(bundle_dir: Path, calib_info: dict) -> None:
     """Read literal extrinsics from v1 code without importing or executing it.
 
@@ -158,18 +177,24 @@ def _check_legacy(bundle_dir: Path, calib_info: dict) -> None:
 
 
 def describe(bundle_dir: Path, source: str) -> dict:
-    json_path = SAMPLE_CAMERA_JSON if source == 'factory' else bundle_dir / 'calibration_r1440.json'
+    json_path = SAMPLE_CAMERA_JSON if source == 'factory' else calibration_path(bundle_dir)
     calib_info = read_basalt(json_path)
     version = 2
     if source != 'factory':
         try:
-            meta = json.loads((bundle_dir / 'bundle.json').read_text())
+            modern = json_path.name == 'calibration.json'
+            meta = json.loads((bundle_dir / ('manifest.json' if modern else 'bundle.json')).read_text())
             if not isinstance(meta, dict):
                 raise ValueError('标定包元数据必须是对象')
             version = meta.get('schema_version', 1)
-            if type(version) is not int or version not in (1, 2):
+            if type(version) is not int or version not in ((3,) if modern else (1, 2)):
                 raise ValueError(f'不支持标定包版本 {version}')
-            if meta['calibration_sha256'] != hashlib.sha256(json_path.read_bytes()).hexdigest():
+            if modern and (meta.get('kind') != 'umi_camera_calibration_result'
+                           or not isinstance(meta.get('camera_serial'), str) or not meta['camera_serial']
+                           or meta.get('lens') not in ('front', 'rear')):
+                raise ValueError('标定清单缺少有效的相机身份或镜头')
+            digest = meta['files']['calibration.json'] if modern else meta['calibration_sha256']
+            if digest != hashlib.sha256(json_path.read_bytes()).hexdigest():
                 raise ValueError('原始标定 JSON 校验失败')
             if version == 1:
                 _check_legacy(bundle_dir, calib_info)

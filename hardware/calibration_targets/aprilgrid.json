@@ -1,6 +1,7 @@
 {
+ "family": "tag36h11",
+ "black_border_bits": 2,
  "tagCols": 6,
  "tagRows": 6,
- "tagSize": 0.036,
  "tagSpacing": 0.3
 }

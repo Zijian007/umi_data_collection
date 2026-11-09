@@ -33,7 +33,7 @@ class ProcessingTests(unittest.TestCase):
         self.bind_fake_video(mapping, 'left')
         self.infos = []
         for arm in ('left', 'right'):
-            path = self.batch / 'take_001/videos' / arm / 'VID.insv'
+            path = self.batch / 'take_001' / arm / 'VID.insv'
             path.parent.mkdir(parents=True)
             path.write_text(arm)
             self.bind_fake_video(path, arm)
@@ -71,7 +71,7 @@ class ProcessingTests(unittest.TestCase):
         self.batch.rename(new_scene / self.batch.name)
         self.batch = new_scene / self.batch.name
         for index, item in enumerate(self.infos):
-            path = self.batch / 'take_001/videos' / ('left' if index == 0 else 'right') / 'VID.insv'
+            path = self.batch / 'take_001' / ('left' if index == 0 else 'right') / 'VID.insv'
             self.infos[index] = ingest.RawVideoInfo(path, item.serial, item.sha256, None, 8.)
         before = {path: path.read_bytes() for path in new_scene.rglob('*') if path.is_file()}
         result = processing.run([new_scene], dry_run=True)
@@ -166,7 +166,7 @@ class ProcessingTests(unittest.TestCase):
 
     def test_rear_calibration_belongs_to_calibration_entry(self):
         from software.calibration import cli as calibration_cli
-        with patch('software.scene.spatial.rear_calibration.run', return_value=dict(status='planned')) as run, redirect_stdout(io.StringIO()):
+        with patch('software.scene.spatial.rear_calibration.run', return_value=dict(status='planned', exit_code=0)) as run, redirect_stdout(io.StringIO()):
             code = calibration_cli.main(['calibrate-rear', str(self.f.source), '--dry-run', '--tag-size-mm', '36'])
         self.assertEqual(code, 0)
         self.assertEqual(run.call_args.args, (self.f.source,))

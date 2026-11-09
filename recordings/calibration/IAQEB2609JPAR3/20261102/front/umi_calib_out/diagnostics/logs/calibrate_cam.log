@@ -1,4 +1,4 @@
-$ nice -n 10 /home/zijian/umi_data_collection/.deps/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/lib/ld-linux-x86-64.so.2 --library-path /home/zijian/umi_data_collection/.deps/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/lib /home/zijian/umi_data_collection/.deps/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/bin/basalt_calibrate --dataset-path /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/work/A.bag --dataset-type bag --aprilgrid /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/aprilgrid.json --result-path /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam --cache-name cam-A --cam-types kb4 --no-gui
+$ nice -n 10 /home/zijianwang/umi_data_collection/.deps/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/lib/ld-linux-x86-64.so.2 --library-path /home/zijianwang/umi_data_collection/.deps/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/lib /home/zijianwang/umi_data_collection/.deps/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/bin/basalt_calibrate --dataset-path /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/work/A.bag --dataset-type bag --aprilgrid /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/aprilgrid.json --result-path /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam --cache-name cam-A --cam-types kb4 --no-gui
 imu_topic: /imu0
 mocap_topic: 
 cam_topics: /cam0/image_raw 
@@ -10,12 +10,12 @@ No pre-processed detected corners found
 No pre-processed initial poses found
 No calibration found
 Started detecting corners
-Done detecting corners. Saved them here: /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam/cam-A_detected_corners.cereal
+Done detecting corners. Saved them here: /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam/cam-A_detected_corners.cereal
 Started camera intrinsics initialization
 Done camera intrinsics initialization:
-Cam 0: 522.471 522.471   719.5   719.5       0       0       0       0
+Cam 0: 519.642 519.642   719.5   719.5       0       0       0       0
 Started initial camera pose computation 
-Done initial camera pose computation. Saved them here: /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam/cam-A_init_poses.cereal
+Done initial camera pose computation. Saved them here: /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam/cam-A_init_poses.cereal
 Done camera extrinsics initialization:
 T_c0_c0:
 1 0 0 0
@@ -23,124 +23,123 @@ T_c0_c0:
 0 0 1 0
 0 0 0 1
 Initialized optimization.
-RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=387946 sum_norm=1732838.06626 sum_sq=20340231.1246 mean=4.46669914438 rms=7.24089587917
-[LINEARIZE] Error: 9.35885e+06 num points 387946
-	[ACCEPTED] lambda:1e-06 step_quality: 2.14027 max_inc: 15.2662 Error: 3.05736e+06 num points 387946
-RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=387946 sum_norm=860740.754776 sum_sq=3640693.92301 mean=2.21871279708 rms=3.06341930787
+RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=385850 sum_norm=1767558.12096 sum_sq=20448386.0951 mean=4.58094627693 rms=7.27981371257
+[LINEARIZE] Error: 9.62664e+06 num points 385850
+	[ACCEPTED] lambda:1e-06 step_quality: 2.1067 max_inc: 17.7764 Error: 3.25224e+06 num points 385850
+RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=385850 sum_norm=894513.302148 sum_sq=3873874.77583 mean=2.31829286549 rms=3.16857168293
 ==================================
-intrinsics 0:     537.737     536.538     717.503     722.991   0.0734282  -0.0361804  0.00982736 -0.00121272
+intrinsics 0:     537.418     536.229     717.469     722.989   0.0726208  -0.0348652   0.0090233 -0.00101134
 T_i_c0:
 1 0 0 0
 0 1 0 0
 0 0 1 0
 0 0 0 1
-Current error: 3.05736e+06 num_points 387946 mean_error 7.8809 reprojection_error 860741 mean reprojection 2.21871 opt_time 41ms.
+Current error: 3.25224e+06 num_points 385850 mean_error 8.42877 reprojection_error 894513 mean reprojection 2.31829 opt_time 31ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=387946 sum_norm=860740.754776 sum_sq=3640693.92301 mean=2.21871279708 rms=3.06341930787
-[LINEARIZE] Error: 3.05736e+06 num points 387946
-	[ACCEPTED] lambda:3.33333e-07 step_quality: 2.4793 max_inc: 10.3061 Error: 373492 num points 387946
-RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=387946 sum_norm=330947.519402 sum_sq=373499.673681 mean=0.853076251338 rms=0.981204370966
+RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=385850 sum_norm=894513.302148 sum_sq=3873874.77583 mean=2.31829286549 rms=3.16857168293
+[LINEARIZE] Error: 3.25224e+06 num points 385850
+	[ACCEPTED] lambda:3.33333e-07 step_quality: 2.49252 max_inc: 9.99361 Error: 369835 num points 385850
+RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=385850 sum_norm=328571.046311 sum_sq=369842.459057 mean=0.851551240926 rms=0.979037060077
 ==================================
-intrinsics 0:     527.431     526.361     718.881     723.675   0.0898965  -0.0358409  0.00959712 -0.00139651
+intrinsics 0:      527.424      526.351      718.915      723.667    0.0892235   -0.0335979   0.00710762 -0.000515396
 T_i_c0:
 1 0 0 0
 0 1 0 0
 0 0 1 0
 0 0 0 1
-Current error: 373492 num_points 387946 mean_error 0.962743 reprojection_error 330948 mean reprojection 0.853076 opt_time 34ms.
+Current error: 369835 num_points 385850 mean_error 0.958495 reprojection_error 328571 mean reprojection 0.851551 opt_time 26ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=387946 sum_norm=330947.519402 sum_sq=373499.673681 mean=0.853076251338 rms=0.981204370966
-[LINEARIZE] Error: 373492 num points 387946
-	[ACCEPTED] lambda:1.11111e-07 step_quality: 2.00381 max_inc: 0.238375 Error: 367284 num points 387946
-RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=387946 sum_norm=329558.495622 sum_sq=367285.229451 mean=0.849495794831 rms=0.973007286374
+RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=385850 sum_norm=328571.046311 sum_sq=369842.459057 mean=0.851551240926 rms=0.979037060077
+[LINEARIZE] Error: 369835 num points 385850
+	[ACCEPTED] lambda:1.11111e-07 step_quality: 2.00366 max_inc: 0.182867 Error: 364346 num points 385850
+RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=385850 sum_norm=327442.438918 sum_sq=364347.131642 mean=0.848626250921 rms=0.971736297036
 ==================================
-intrinsics 0:     527.193     526.127      718.92     723.792   0.0900881  -0.0360208   0.0102361 -0.00160595
+intrinsics 0:      527.242      526.173      718.957      723.792    0.0893901   -0.0339956   0.00814774 -0.000907701
 T_i_c0:
 1 0 0 0
 0 1 0 0
 0 0 1 0
 0 0 0 1
-Current error: 367284 num_points 387946 mean_error 0.94674 reprojection_error 329558 mean reprojection 0.849496 opt_time 38ms.
+Current error: 364346 num_points 385850 mean_error 0.944268 reprojection_error 327442 mean reprojection 0.848626 opt_time 22ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=387946 sum_norm=329558.495622 sum_sq=367285.229451 mean=0.849495794831 rms=0.973007286374
-[LINEARIZE] Error: 367284 num points 387946
-	[ACCEPTED] lambda:3.7037e-08 step_quality: 2.06934 max_inc: 0.00474034 Error: 367284 num points 387946
-RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=387946 sum_norm=329564.902061 sum_sq=367284.768583 mean=0.849512308571 rms=0.97300667591
+RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=385850 sum_norm=327442.438918 sum_sq=364347.131642 mean=0.848626250921 rms=0.971736297036
+[LINEARIZE] Error: 364346 num points 385850
+	[ACCEPTED] lambda:3.7037e-08 step_quality: 2.08082 max_inc: 0.00510519 Error: 364345 num points 385850
+RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=385850 sum_norm=327448.754601 sum_sq=364346.71282 mean=0.848642619154 rms=0.971735738523
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900885   -0.036018    0.010231 -0.00160406
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893844   -0.0339757   0.00812586 -0.000900668
 T_i_c0:
 1 0 0 0
 0 1 0 0
 0 0 1 0
 0 0 0 1
-Current error: 367284 num_points 387946 mean_error 0.946739 reprojection_error 329565 mean reprojection 0.849512 opt_time 34ms.
+Current error: 364345 num_points 385850 mean_error 0.944267 reprojection_error 327449 mean reprojection 0.848643 opt_time 23ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=387946 sum_norm=329564.902061 sum_sq=367284.768583 mean=0.849512308571 rms=0.97300667591
-[LINEARIZE] Error: 367284 num points 387946
-	[ACCEPTED] lambda:1.23457e-08 step_quality: 2.13819 max_inc: 0.000125681 Error: 367284 num points 387946
-RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=387946 sum_norm=329565.196254 sum_sq=367284.758829 mean=0.849513066905 rms=0.973006662991
+RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=385850 sum_norm=327448.754601 sum_sq=364346.71282 mean=0.848642619154 rms=0.971735738523
+[LINEARIZE] Error: 364345 num points 385850
+	[ACCEPTED] lambda:1.23457e-08 step_quality: 2.14381 max_inc: 9.88167e-05 Error: 364345 num points 385850
+RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=385850 sum_norm=327449.05454 sum_sq=364346.705014 mean=0.8486433965 rms=0.971735728114
 ==================================
-intrinsics 0:    527.197    526.132    718.924    723.796  0.0900883 -0.0360169  0.0102298 -0.0016037
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893839   -0.0339736   0.00812358 -0.000899945
 T_i_c0:
 1 0 0 0
 0 1 0 0
 0 0 1 0
 0 0 0 1
-Current error: 367284 num_points 387946 mean_error 0.946739 reprojection_error 329565 mean reprojection 0.849513 opt_time 35ms.
+Current error: 364345 num_points 385850 mean_error 0.944267 reprojection_error 327449 mean reprojection 0.848643 opt_time 22ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=387946 sum_norm=329565.196254 sum_sq=367284.758829 mean=0.849513066905 rms=0.973006662991
-[LINEARIZE] Error: 367284 num points 387946
-	[ACCEPTED] lambda:4.11523e-09 step_quality: 2.16279 max_inc: 1.37371e-05 Error: 367284 num points 387946
-RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=387946 sum_norm=329565.214031 sum_sq=367284.758218 mean=0.849513112729 rms=0.973006662182
+RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=385850 sum_norm=327449.05454 sum_sq=364346.705014 mean=0.8486433965 rms=0.971735728114
+[LINEARIZE] Error: 364345 num points 385850
+	[ACCEPTED] lambda:4.11523e-09 step_quality: 2.16511 max_inc: 1.55543e-05 Error: 364345 num points 385850
+RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=385850 sum_norm=327449.073652 sum_sq=364346.704542 mean=0.848643446034 rms=0.971735727484
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734   0.00812341 -0.000899893
 T_i_c0:
 1 0 0 0
 0 1 0 0
 0 0 1 0
 0 0 0 1
-Current error: 367284 num_points 387946 mean_error 0.946739 reprojection_error 329565 mean reprojection 0.849513 opt_time 36ms.
+Current error: 364345 num_points 385850 mean_error 0.944267 reprojection_error 327449 mean reprojection 0.848643 opt_time 21ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=387946 sum_norm=329565.214031 sum_sq=367284.758218 mean=0.849513112729 rms=0.973006662182
-[LINEARIZE] Error: 367284 num points 387946
-	[ACCEPTED] lambda:1.37174e-09 step_quality: 2.18347 max_inc: 9.4127e-07 Error: 367284 num points 387946
-RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=387946 sum_norm=329565.215276 sum_sq=367284.758175 mean=0.849513115939 rms=0.973006662124
+RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=385850 sum_norm=327449.073652 sum_sq=364346.704542 mean=0.848643446034 rms=0.971735727484
+[LINEARIZE] Error: 364345 num points 385850
+	[ACCEPTED] lambda:1.37174e-09 step_quality: 2.17644 max_inc: 1.09908e-06 Error: 364345 num points 385850
+RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=385850 sum_norm=327449.075021 sum_sq=364346.704508 mean=0.84864344958 rms=0.971735727438
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:     527.247     526.178     718.961     723.796   0.0893838  -0.0339734   0.0081234 -0.00089989
 T_i_c0:
 1 0 0 0
 0 1 0 0
 0 0 1 0
 0 0 0 1
-Current error: 367284 num_points 387946 mean_error 0.946739 reprojection_error 329565 mean reprojection 0.849513 opt_time 40ms.
+Current error: 364345 num_points 385850 mean_error 0.944267 reprojection_error 327449 mean reprojection 0.848643 opt_time 22ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=387946 sum_norm=329565.215276 sum_sq=367284.758175 mean=0.849513115939 rms=0.973006662124
-[LINEARIZE] Error: 367284 num points 387946
-	[ACCEPTED] lambda:4.57247e-10 step_quality: 0.596296 max_inc: 8.34041e-08 Error: 367284 num points 387946
-RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=387946 sum_norm=329565.21537 sum_sq=367284.758171 mean=0.849513116181 rms=0.97300666212
+RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=385850 sum_norm=327449.075021 sum_sq=364346.704508 mean=0.84864344958 rms=0.971735727438
+[LINEARIZE] Error: 364345 num points 385850
+	[ACCEPTED] lambda:4.57247e-10 step_quality: 2.33549 max_inc: 1.00599e-07 Error: 364345 num points 385850
+RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=385850 sum_norm=327449.075126 sum_sq=364346.704505 mean=0.848643449853 rms=0.971735727435
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
 1 0 0 0
 0 1 0 0
 0 0 1 0
 0 0 0 1
-Current error: 367284 num_points 387946 mean_error 0.946739 reprojection_error 329565 mean reprojection 0.849513 opt_time 37ms.
+Current error: 364345 num_points 385850 mean_error 0.944267 reprojection_error 327449 mean reprojection 0.848643 opt_time 22ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=387946 sum_norm=329565.21537 sum_sq=367284.758171 mean=0.849513116181 rms=0.97300666212
-[LINEARIZE] Error: 367284 num points 387946
-	[ACCEPTED] lambda:4.53981e-10 step_quality: 207.764 max_inc: 6.9191e-09 Error: 367284 num points 387946
-RMS_REPROJ_EVIDENCE stage=cam eval=accepted n=387946 sum_norm=329565.215378 sum_sq=367284.758171 mean=0.849513116201 rms=0.973006662119
+RMS_REPROJ_EVIDENCE stage=cam eval=linearize n=385850 sum_norm=327449.075126 sum_sq=364346.704505 mean=0.848643449853 rms=0.971735727435
+[LINEARIZE] Error: 364345 num points 385850
+	[REJECTED] lambda:1.52416e-10 step_quality: -54.0046 max_inc: 8.42536e-09 Error: 364345 num points 385850
 [CONVERGED]
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
 1 0 0 0
 0 1 0 0
 0 0 1 0
 0 0 0 1
-Current error: 367284 num_points 387946 mean_error 0.946739 reprojection_error 329565 mean reprojection 0.849513 opt_time 35ms.
+Current error: 364345 num_points 385850 mean_error 0.944267 reprojection_error 327449 mean reprojection 0.848643 opt_time 21ms.
 Optimization Converged !!
 ==================================
-Saved vignette png files to /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam/
-Saved calibration in /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam/calibration.json
+Saved vignette png files to /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam/
+Saved calibration in /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam/calibration.json

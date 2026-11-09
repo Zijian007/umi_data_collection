@@ -70,6 +70,7 @@ class RetryParameters:
     max_tries: int
     minimum_full_fraction: float
     maximum_placements: int
+    maximum_scale_change_ratio: float
 
 
 @dataclass(frozen=True)
@@ -160,7 +161,6 @@ class TrajectoryParameters:
 @dataclass(frozen=True)
 class BoardParameters:
     intrinsics_step: int
-    camera_imu_step: int
     validation_step: int
     detection_upscale: float
     minimum_pnp_tags: int
@@ -169,7 +169,6 @@ class BoardParameters:
     minimum_bearing_z: float
     refinement_iterations: int
     minimum_comparison_frames: int
-    coverage_radius_px: float
     coverage_reach: float
     coverage_percentile: float
     minimum_direction_frames: int
@@ -306,6 +305,8 @@ def _validate(values) -> None:
             raise ValueError('orb.aruco_dictionary 必须在 0–20 之间（当前 OpenCV 引擎）')
         if 0 < p.fusion.group_scale_ratio < 1:
             raise ValueError('fusion.group_scale_ratio 必须为 0（关闭）或 >= 1')
+        if p.retry.maximum_scale_change_ratio <= 1:
+            raise ValueError('retry.maximum_scale_change_ratio 必须 > 1')
         if p.fusion.initial_bias_min_samples > p.fusion.initial_bias_max_samples:
             raise ValueError('fusion.initial_bias_min_samples 不能大于 initial_bias_max_samples')
         for key, value in [('retry.minimum_full_fraction', p.retry.minimum_full_fraction),
@@ -364,14 +365,14 @@ class Configuration:
                     cli_overrides=json.loads(self.cli_overrides_json),
                     computation_hash=self.computation_hash, evaluation_hash=self.evaluation_hash)
 
-    def load_trajectory_validation(self) -> Configuration:
+    def load_trajectory_validation(self, *, tag_size_m: float | None = None) -> Configuration:
+        """Resolve C's config; its initialization tag shares the measured board size."""
         path = self.values.trajectory_validation.config
-        if not path:
-            return load('trajectory')
-        target = Path(path).expanduser()
-        if not target.is_absolute():
+        target = Path(path).expanduser() if path else None
+        if target is not None and not target.is_absolute():
             target = Path(self.sources[-1]).parent / target
-        return load('trajectory', target)
+        overrides = {'orb': {'initial_tag_size_m': tag_size_m}} if tag_size_m is not None else None
+        return load('trajectory', target, overrides)
 
 
 def _read_yaml(path: Path) -> dict:

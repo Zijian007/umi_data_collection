@@ -312,9 +312,9 @@ class WorkflowTests(RecordingFixture):
     def test_retry_ranks_attempts_and_reuses_prepared_lens_videos(self):
         paths = RecordingPaths(self.root / 'attempt-output')
         paths.logs.mkdir(parents=True)
-        qualities = [dict(placements=2, full_fraction=1.0, suspicious=True),
-                     dict(placements=1, full_fraction=0.90, suspicious=True),
-                     dict(placements=1, full_fraction=0.80, suspicious=True)]
+        qualities = [dict(placements=2, full_fraction=1.0, suspicious=True, usable=True),
+                     dict(placements=1, full_fraction=0.90, suspicious=True, usable=True),
+                     dict(placements=1, full_fraction=0.80, suspicious=True, usable=True)]
         request = TrajectoryRequest(mode='dual', cores='0-3')
         settings = runtime.reconstruction_settings(dict(os.environ), camera_json=self.selected.assets.camera_json,
                                                    front_mask=self.selected.assets.front_mask,

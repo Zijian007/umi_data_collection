@@ -78,9 +78,10 @@ def validate_new_batch(directory: Path) -> None:
         try:
             inputs.validate_episode_name(path.name)
         except ValueError:
-            raise ValueError(f'未登记批次只允许 mapping/、pending/ 或 <任务>/videos/：{directory}') from None
-        if not path.is_dir() or not (path / 'videos').is_dir() or any(child.name != 'videos' for child in path.iterdir()):
-            raise ValueError(f'未登记任务只允许预先放置 videos/：{path}')
+            raise ValueError(f'未登记批次只允许 mapping/、pending/ 或 <任务>/left/、right/：{directory}') from None
+        if (not path.is_dir() or not inputs.task_video_sources(path) or
+                any(child.name not in {*ARMS, 'videos'} or not child.is_dir() for child in path.iterdir())):
+            raise ValueError(f'未登记任务只允许预先放置 left/、right/ 原片目录（兼容旧 videos/）：{path}')
 
 
 def mapping_paths(batch: Path, mode: str) -> dict[str, Path]:

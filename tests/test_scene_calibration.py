@@ -12,7 +12,12 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from software.calibration import recording_data
+from software.calibration.pipeline import board_detection
+from software.calibration.pipeline import recordings
+from software.calibration import workflow, result_io
+from software.calibration.solve import basalt
+from software.calibration.validation import gravity
+from software.calibration.algorithms import board_pnp
 from software.calibration.models import CalibrationInputs, CameraImuResult, GravityResult, IntrinsicsResult, SegmentPaths
 from software.scene.spatial import rear_calibration
 from software.storage import write_json
@@ -31,42 +36,46 @@ class RearCalibrationTests(unittest.TestCase):
         self.inputs = CalibrationInputs(recordings, self.front.serial, dict(tagCols=6, tagRows=6, tagSize=.024, tagSpacing=.3))
         self.poses = scene_fixtures.motion()[1]
 
-    def solve_b(self, dataset, a, context):
+    def solve_b(self, dataset, grid, a, parameters, context, *, prepared_bag=None):
         write_json(context.paths.calibration, json.loads(self.front.files['front'].read_text()))
-        return CameraImuResult(context.paths.calibration, self.front.measurements['front'], self.metrics(), self.coverage())
+        return CameraImuResult(context.paths.calibration, self.front.measurements['front'], self.metrics())
 
     @staticmethod
     def metrics():
-        return dict(corners_per_frame=1000., mean_reprojection_px=.1)
+        return dict(corners_per_frame=1000., mean_reprojection_px=.1, rms_reprojection_px=.12)
 
     @staticmethod
     def coverage():
-        return dict(reach_r_p99=1., frames_reaching_r0p5_by_direction=dict(right=50, left=50, down=50, up=50),
+        return dict(reach_radius_percentile=1., coverage_percentile=99.0, coverage_reach_threshold=0.5, frames_reaching_by_direction=dict(right=50, left=50, down=50, up=50),
                     board_pose_fraction=1., board_distance_m=[.2, .5])
 
     def prepare(self, video, camera, *args, **kwargs):
+        self.assertAlmostEqual(args[0].trajectory.values.orb.initial_tag_size_m, self.inputs.grid['tagSize'])
         rec = self.fixture.prepared_recordings[video]
         return replace(rec, camera=camera, lens_videos=(LensVideo('rear', rec.lens_videos[0].path, rec.lens_videos[0].settings, None),))
 
-    def run_rear(self, scale):
+    def run_rear(self, scale, *, tag_size_mm=24.):
+        self.inputs = replace(self.inputs, grid=dict(self.inputs.grid, tagSize=tag_size_mm/1000.))
         output = self.fixture.root / 'rear_output'
         def dataset(video, target, **kwargs):
             target.mkdir(parents=True)
         a = IntrinsicsResult(self.front.files['front'], [350., 350., 720., 720., 0., 0., 0., 0.], self.metrics(), self.coverage())
-        reference = dict(idx=np.arange(len(self.poses)), p=scale*self.poses[:, :3, 3], n_frames=len(self.poses), reproj_deg_med=[])
+        reference = dict(video_time_s=self.fixture.prepared_recordings[self.video].video_times_s, idx=np.arange(len(self.poses)), p=scale*self.poses[:, :3, 3], n_frames=len(self.poses), reproj_deg_med=[])
         with patch.object(rear_calibration.registry, 'pin', return_value=self.fixture.device_pins[self.front.serial]), \
              patch.object(rear_calibration.calibration_inputs, 'prepare_inputs', return_value=self.inputs), \
              patch.object(rear_calibration.inputs, 'select_camera', return_value=self.front), \
-             patch.object(rear_calibration.runtime, 'prepare', return_value=True), \
-             patch.object(rear_calibration.recording_data, 'build', side_effect=dataset) as build, \
-             patch.object(rear_calibration.recording_data, 'imu_stats', return_value=dict(gyro_norm_p95_rad_s=1.)), \
-             patch.object(rear_calibration.intrinsics, 'solve_intrinsics', return_value=a), \
-             patch.object(rear_calibration.camera_imu, 'solve_camera_imu', side_effect=self.solve_b), \
-             patch.object(rear_calibration.validation, 'validate_gravity', return_value=GravityResult('CONSISTENT', 6, 6, .01)), \
+             patch.object(workflow.runtime, 'prepare', return_value=True), \
+             patch.object(recordings, 'build', side_effect=dataset) as build, \
+             patch.object(recordings, 'imu_stats', return_value=dict(gyro_norm_p95_rad_s=1.)), \
+             patch.object(basalt, 'estimate_intrinsics', return_value=a), \
+             patch.object(basalt, 'prepare_bag', return_value=(output/'run/work/camera_imu.bag', dict(elapsed_s=0.))), \
+             patch.object(basalt, 'estimate_camera_imu', side_effect=self.solve_b), \
+             patch.object(gravity, 'validate_gravity', return_value=GravityResult('REPORT_ONLY', 6, 6, .01)), \
              patch.object(rear_calibration.recordings, 'prepare_recording', side_effect=self.prepare), \
-             patch.object(rear_calibration.board_pnp, 'detect_all', return_value={}), \
-             patch.object(rear_calibration.board_pnp, 'board_reference', return_value=reference):
-            result = rear_calibration.run(self.fixture.source, output=output)
+             patch.object(board_detection, 'detect_cached', return_value={}), \
+             patch.object(workflow, '_coverage', return_value=self.coverage()), \
+             patch.object(board_pnp, 'board_reference', return_value=reference):
+            result = rear_calibration.run(self.fixture.source, output=output, tag_size_mm=tag_size_mm)
         self.assertEqual(build.call_count, 4)
         self.assertTrue(all(call.kwargs['lens'] == 'rear' for call in build.call_args_list))
         self.assertEqual([call.kwargs['with_images'] for call in build.call_args_list], [True, True, True, False])
@@ -86,8 +95,14 @@ class RearCalibrationTests(unittest.TestCase):
         result, output = self.run_rear(1.5)
         self.assertEqual(result['status'], 'FAIL')
         self.assertFalse((output / 'rear_calibration.json').exists())
-        self.assertTrue((output / 'diagnostics/work').exists())
-        self.assertEqual(json.loads((output / 'report.json').read_text())['status'], 'FAIL')
+        self.assertTrue((output / 'run/work').exists())
+        self.assertEqual(result_io.load_result(output)['evaluation']['decision'], 'rejected')
+
+    def test_rear_validation_passes_measured_a3_size_to_scene_preparation(self):
+        result, output = self.run_rear(1., tag_size_mm=35.7)
+        self.assertTrue(result['status'].startswith('PASS'))
+        snapshot = result_io.load_result(output)['computation']['trajectory_validation']
+        self.assertAlmostEqual(snapshot['values']['orb']['initial_tag_size_m'], .0357)
 
 
 class RearPixelsTests(unittest.TestCase):
@@ -105,9 +120,13 @@ class RearPixelsTests(unittest.TestCase):
                 path = out / 'mav0/cam0'
                 path.mkdir(parents=True)
                 (path / 'data.csv').write_text('#timestamp,filename\n1000000000,1000000000.png\n')
-            with patch.object(recording_data.extraction, 'extract', side_effect=extract):
-                recording_data.build(video, root / 'front', lens='front')
-                recording_data.build(video, root / 'rear', lens='rear')
+                imu = out / 'mav0/imu0'
+                imu.mkdir()
+                (imu / 'data.csv').write_text('#t,wx,wy,wz,ax,ay,az\n1000000000,0,0,0,0,0,9.81\n')
+                (out / 'extract_manifest.json').write_text('{}')
+            with patch.object(recordings.extraction, 'extract', side_effect=extract):
+                recordings.build(video, root / 'front', lens='front')
+                recordings.build(video, root / 'rear', lens='rear')
             front = cv2.imread(str(root / 'front/mav0/cam0/data/1000000000.png'), cv2.IMREAD_GRAYSCALE)
             rear = cv2.imread(str(root / 'rear/mav0/cam0/data/1000000000.png'), cv2.IMREAD_GRAYSCALE)
             self.assertEqual(front.shape, (1440, 1440))

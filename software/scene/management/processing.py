@@ -156,7 +156,7 @@ def run(paths: list[Path], *, jobs=1, force=False, cores='', dry_run=False,
             else:
                 ready.extend(registered)
             if not imported['episodes'] and not registered and not problems:
-                raise ValueError(f'没有任务原片，请放入 {batch}/take_001/videos/')
+                raise ValueError(f'没有任务原片，请放入 {batch}/take_001/left/ 或 right/')
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, YAMLError) as error:
             summaries.append(dict(path=str(batch), name=batch.name, status='failed', error=str(error)))
     # 已登记的旧批次和显式任务路径继续使用相同的处理引擎。
@@ -186,5 +186,5 @@ def run(paths: list[Path], *, jobs=1, force=False, cores='', dry_run=False,
         summaries.extend(workflow.run_episodes(ready, jobs=jobs, force=force, cores=cores, dry_run=dry_run,
             check_recordings=check_recordings, map_version=map_version))
     if not summaries:
-        raise ValueError('没有找到批次配置或任务清单；请准备 batch.yaml 和 take_001/videos/')
+        raise ValueError('没有找到批次配置或任务清单；请准备 batch.yaml 和 take_001/left/、right/ 原片')
     return summaries

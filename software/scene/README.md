@@ -23,7 +23,7 @@ software/scene/
 │   ├── fusion.py              视觉与 IMU 融合、初始陀螺仪零偏
 │   ├── geometry.py            坐标变换、惯性对齐与几何计算
 │   ├── mapping.py             地图选择、米制对齐、场景放置与资产冻结
-│   ├── rear_calibration.py    后镜头标定与独立 C 验收
+│   ├── rear_calibration.py    后镜头轨迹生成，接共享标定 workflow
 │   └── slam.py                ORB 建图、定位、图集导出
 └── pipeline/                  原片预处理、质量预检与轨迹结果交付
     ├── recording_checks.py    原片和任务完整性检查
@@ -106,7 +106,9 @@ run → workflow.run_episode()
 
 地图清单的建图定义只存于 `inputs.definition`，读取旧清单也使用此字段。地图成功导出后移除原始展示 JSON 和空日志，保留有内容的日志及失败现场；已发布版本不因整理而改写。
 
-`results.write_arm()` 接收共享展示地图路径，在每只手的 summary.map 中记录相对路径与内容哈希；不读取或写入地图点副本。它返回 `ArmTrajectory`，直接携带任务时间、`T_scene_tcp`、场景坐标 ID 和 TCP 轴向定义。双手表与任务元数据消费这个对象，不重新读取刚写出的摘要。查看器校验地图路径、版本、固定坐标与内容身份后直接加载共享文件。
+`results.write_arm()` 返回 `ArmTrajectory`，携带任务时间、`T_scene_tcp`、场景坐标 ID、TCP 轴向定义和各手运行元数据。`write_episode()` 将各手指标/测量合并到 schema 3 的 `episode.json.arm_results`，共享地图引用仅保存在任务层 `map`；预检全文收入 `preflight` 后移除临时检查文件，人工报告只保留根 `report.txt`。双手表与任务元数据直接消费内存对象，不重新读取刚写出的文件。
+
+`software.scene.result_io` 提供只读的摘要和设置适配，查看器及训练导出共用；新结果从任务清单取值，旧结果继续读取各手 `details/summary.json` 和 `details/run_settings.json`，不改写历史结果。查看器校验地图路径、版本、固定坐标与内容身份后直接加载共享地图。
 
 ## 命名和时间
 
@@ -152,7 +154,9 @@ KIWI 方法来源和许可证见 [NOTICE.md](NOTICE.md)，运行时不依赖本�
 
 ## 原片位置
 
-建图原片位于 `scenes/<场景>/<批次>/mapping/`，任务原片位于 `scenes/<场景>/<批次>/<任务>/videos/left/`、`right/`。`import_video()` 直接引用指定原片目录中已有的文件，外部文件复制或显式硬链接到该目录；没有全局场景原片根目录。向导和批次创建允许先准备视频目录再登记清单。
+建图原片位于 `scenes/<场景>/<批次>/mapping/`，任务原片直接位于 `scenes/<场景>/<批次>/<任务>/left/`、`right/`。`inputs.task_video_sources()` 与 `batch_task_directories()` 统一发现任务原片目录，`batch_video_sources()` 再加入批次 `pending/`；不递归扫描任务的 `results/` 和 `.umi/`。配对依据序列号，预分组任务的左右手共用同一任务身份。
+
+`import_video()` 直接引用本任务内已有原片，外部文件复制或显式硬链接到 `<任务>/<手>/`；没有全局场景原片根目录。旧 `<任务>/videos/` 作为兼容输入继续原地读取，已有清单不因布局变化改写，新导入或补齐的原片采用扁平布局。两种布局同一侧出现多个不同原片仍按歧义处理。向导和批次创建允许先准备左右手目录再登记清单。
 
 `plan_tasks()` 保留已明确分组的 take；未分组原片通过时间与时长规则配对。`pending/` 仅暂存无确定任务归属的原片，任务清单写入成功后才删除已归位的 pending 副本。预览使用同一规划逻辑，不写文件。
 
@@ -161,3 +165,5 @@ KIWI 方法来源和许可证见 [NOTICE.md](NOTICE.md)，运行时不依赖本�
 `processing.batch_request()` 每次读取当前 batch.yaml、kit.yaml 与 mapping/；`refresh_record()` 更新最新解析记录，不让旧快照覆盖配置。单段 mapping 在 schema 5 中直接保存录像引用，dual 保留左右两段；read_session 兼容旧 schema 4，算法内部展开参考槽位。run <任务> 也先刷新所属批次。
 
 `build_scene(<批次>)` 校验完整建图输入身份后复用或构建地图；map 字段仅是复用候选。成功结果保存当时的 kit 和完整输入身份；失败 error.json 保存 batch 与 inputs。计算期间 batch/kit 变化会拒绝绑定或发布，历史结果不改写。旧的无 batch.yaml 清单仍可作为显式历史输入读取；日常配置驱动流程以 batch.yaml 和 kit.yaml 为准。
+
+后镜头 `umi-calib calibrate-rear` 的 A/B/D、恢复、验收和记录均复用 `calibration/workflow.py`。scene 只负责纯视觉建图、米制对齐和 IMU 融合，返回视频时间上的相机位置；板参考时间匹配和误差比较由标定模块统一计算。通过后生成的 `rear_calibration.json` 保持已有登记/消费接口，并绑定本次运行证据。

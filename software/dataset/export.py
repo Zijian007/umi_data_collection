@@ -10,6 +10,7 @@ import tempfile
 import numpy as np
 
 from software import config
+from software.scene.result_io import read_arm_settings
 from software.storage import locked, write_json
 from software.dataset import gripper, sampling, source
 
@@ -44,7 +45,7 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
                 np.savez_compressed(target / 'samples.npz', **arrays)
                 tcp_geometry = {}
                 for arm in arms:
-                    settings = json.loads((item.run / arm / 'details/run_settings.json').read_text())
+                    settings = read_arm_settings(item.run / arm, item.manifest)
                     tcp_geometry[arm] = dict(T_camera_tcp=settings['T_camera_tcp'], cad_status=settings['cad_status'])
                     video = target / 'videos' / f'{arm}.mp4'
                     video.parent.mkdir(exist_ok=True)

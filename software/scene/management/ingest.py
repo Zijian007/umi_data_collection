@@ -115,10 +115,10 @@ def plan_tasks(recording_infos: list[RawVideoInfo], arms: dict[str, str], parame
     """尊重用户已分好的 take；只有未分组原片参与自动时间配对。"""
     existing = existing or {}
     grouped, unassigned = {}, []
-    video_dirs = [videos for videos in inputs.batch_video_sources(batch) if videos.name == 'videos']
+    task_sources = [(source.resolve(), layout.manifest(task, 'episode.yaml'))
+                    for task in inputs.batch_task_directories(batch) for source in inputs.task_video_sources(task)]
     for item in recording_infos:
-        owner = next((layout.manifest(videos.parent, 'episode.yaml') for videos in video_dirs
-                      if item.path.is_relative_to(videos.resolve())), None)
+        owner = next((manifest for source, manifest in task_sources if item.path.is_relative_to(source)), None)
         if owner is not None:
             grouped.setdefault(owner, []).append(item)
         else:
@@ -214,11 +214,10 @@ def register_episode(session, name: str, recording_paths: dict[str, Path], *, ex
             for arm, item in metadata.items():
                 if arm in recording_refs and recording_refs[arm]['sha256'] != item['sha256']:
                     raise ValueError('不能替换已有任务原片，请建立新任务')
-        raw = directory / 'videos'
         for arm, video in recording_paths.items():
             if arm in recording_refs:
                 continue
-            imported = recordings.import_video(video, raw / arm, metadata=metadata[arm], link=link, owned_root=raw)
+            imported = recordings.import_video(video, directory / arm, metadata=metadata[arm], link=link, owned_root=directory)
             recording_refs[arm] = dict(metadata[arm], path=os.path.relpath(imported, directory))
         _write_episode(session, target, recording_refs, expected, instruction)
         for arm, video in recording_paths.items():
@@ -274,7 +273,7 @@ def ingest(raw_paths: list[Path], session_path: Path, *, expected_arms=None, dry
             entry = dict(name=layout.owner(path).name, path=str(path), status='planned' if dry_run else 'imported', arms=list(plan))
             created.append(entry)
             if not dry_run:
-                raw = layout.owner(path) / 'videos'
+                raw = layout.owner(path)
                 for arm, item in plan.items():
                     target = recordings.import_video(item.path, raw / arm,
                         metadata=dict(serial=item.serial, sha256=item.sha256), link=link, owned_root=raw)
@@ -283,12 +282,14 @@ def ingest(raw_paths: list[Path], session_path: Path, *, expected_arms=None, dry
                 _write_episode(session, path, recording_refs, expected)
                 for item in plan.values():
                     _remove_pending_source(item.path, imported[item.sha256].path, pending_root, item.sha256)
+        task_sources = [source.resolve() for task in inputs.batch_task_directories(batch)
+                        for source in inputs.task_video_sources(task)]
         for item in pending:
             if item['sha256'] in imported:
                 item['path'] = str(imported[item['sha256']].path)
             elif not dry_run and item['sha256'] not in existing:
                 source = Path(item['path'])
-                if not any(source.is_relative_to(videos.resolve()) for videos in inputs.batch_video_sources(batch) if videos.name == 'videos'):
+                if not any(source.is_relative_to(root) for root in task_sources):
                     item['path'] = str(recordings.import_video(source, pending_root / serial_arms[item['serial']],
                         metadata=item, link=link, owned_root=pending_root))
         result = dict(status='planned' if dry_run else ('pending' if pending or errors else 'ok'),

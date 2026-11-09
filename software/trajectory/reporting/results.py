@@ -170,6 +170,7 @@ def publish_logs(reconstruction_dir: Path, logs: Path) -> None:
         (reconstruction_dir / 'logs/tracking.json', logs / 'tracking.json'),
         (reconstruction_dir / 'logs/fuse.log', logs / 'fuse.log'),
         (reconstruction_dir / 'fuse/fuse_info.json', logs / 'fuse_info.json'),
+        (reconstruction_dir / 'fuse/seg_placement.csv', logs / 'seg_placement.csv'),
         (reconstruction_dir / 'front/map/log.txt', logs / 'front_map_log.txt'),
         (reconstruction_dir / 'front/loc/frames.csv', logs / 'front_loc_frames.csv'),
     ):

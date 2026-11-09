@@ -9,7 +9,7 @@ import numpy as np
 
 from software import config
 from . import fusion, slam
-from .geometry import MapAlignmentError, metric_alignment, place_front
+from .geometry import MapAlignmentError, alignment_parameters, metric_alignment, place_front
 from software.storage import write_json
 from software.camera.geometry import imu_from_camera
 from software.scene.models import PreparedRecording, CalibratedCamera, Scene
@@ -20,7 +20,7 @@ def definition(scene: Scene) -> dict:
     parameter_values = asdict(scene.parameters)
     names = ('alignment_', 'minimum_alignment', 'maximum_alignment', 'maximum_scale', 'gravity_',
              'maximum_acc_bias', 'minimum_pose', 'placement_', 'maximum_placement')
-    fusion_parameters = scene.trajectory.values.fusion
+    fusion_parameters = alignment_parameters(scene.trajectory.values, scene.parameters)
     return dict(name=scene.name, mode=scene.mode, reference_arm=scene.reference_arm,
         mapping={arm: str(path) for arm, path in scene.recordings.items()},
         devices=scene.devices,

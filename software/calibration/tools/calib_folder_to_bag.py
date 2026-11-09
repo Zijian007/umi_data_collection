@@ -1,4 +1,4 @@
-"""calib_folder_to_bag — 把 recording_data.py 产出的 EuRoC 目录（mav0/cam0 + mav0/imu0，单目）转成 ROS1 bag，
+"""calib_folder_to_bag — 把 pipeline/recordings.py 产出的 EuRoC 目录（mav0/cam0 + mav0/imu0，单目）转成 ROS1 bag，
 供 Basalt 0.1.7 官方 `--dataset-type bag`（RosbagIO）与 Kalibr 使用。**不依赖 ROS**：用纯 Python 库 `rosbags`（Ternaris）
 写 rosbag v2.0，连接头含正确 md5sum/msgdef（Basalt 内置 rosbag 读取器 instantiate<> 校验 md5）。
 
@@ -16,6 +16,7 @@ Basalt calibration.hpp 约定），IMU 不变——因为 basalt_vio 不应用 c
 若 `rosbags` 不可用：退出码 8 并打印 BLOCKED_FOR_MONO_BAG_CONVERSION（不得宣称一键可跑）。
 用法：python -m software.calibration.tools.calib_folder_to_bag --euroc <root> --out <file.bag> [--cam-time-offset-ns 0] [--compression lz4|bz2|none] [--cam-topic /cam0/image_raw] [--imu-topic /imu0]
 默认 LZ4 chunk 压缩（Basalt 内置 rosbag 读取器编译了 roslz4；未压缩 60–90 s×1440² mono 达数 GB）。
+--workers 默认 4；并行读 PNG，预读队列最多为线程数的两倍，按时间顺序串行写入 bag。
 """
 
 from __future__ import annotations
@@ -25,6 +26,9 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
 
 import cv2
 import numpy as np
@@ -86,7 +90,7 @@ def ros_lz4_compress(x: bytes) -> bytes:
 
 
 def write_mono_bag(euroc: Path, out_bag: Path, cam_time_offset_ns: int = 0, cam_topic: str = "/cam0/image_raw", imu_topic: str = "/imu0",
-                   frame_id_cam: str = "cam0", frame_id_imu: str = "imu0", compression: str = "lz4") -> dict:
+                   frame_id_cam: str = "cam0", frame_id_imu: str = "imu0", compression: str = "lz4", *, workers: int = 4) -> dict:
     """compression: lz4（默认）| bz2 | none（仅测试）。60–90 s × 1440² mono8 未压缩约 4–5 GB。
     LZ4 帧标志必须与 ROS roslz4 写法一致（FLG=0x64：block independence=1、无 content-size 字段、content checksum=1、4 MB block）：
     Basalt 内置 rosbag 读取器（roslz4，libbasalt.so 含 rosbag::Bag::decompressLz4Chunk）在官方 0.1.7 二进制上实测——
@@ -96,6 +100,8 @@ def write_mono_bag(euroc: Path, out_bag: Path, cam_time_offset_ns: int = 0, cam_
         raise RuntimeError(f"{BLOCKED}: python package 'rosbags' unavailable ({_BACKEND_ERR})")
     if compression not in COMPRESSIONS:
         raise ValueError(f"compression must be one of {COMPRESSIONS}")
+    if type(workers) is not int or workers < 1:
+        raise ValueError("workers must be a positive integer")
     euroc, out_bag = Path(euroc), Path(out_bag)
     if out_bag.exists():
         raise FileExistsError(f"{out_bag} exists — refuse to overwrite")
@@ -126,34 +132,43 @@ def write_mono_bag(euroc: Path, out_bag: Path, cam_time_offset_ns: int = 0, cam_
         # 按时间交错写入（bag time 单调有助于读取器）；图像时间加偏移
         events = [(t + cam_time_offset_ns, 0, i) for i, (t, _) in enumerate(imgs)] + [(int(imu[j, 0]), 1, j) for j in range(len(imu))]
         events.sort()
-        seq_img = seq_imu = 0
-        for t_ns, kind, idx in events:
-            if kind == 0:
-                name = imgs[idx][1]
-                g = cv2.imread(str(euroc / "mav0" / "cam0" / "data" / name), cv2.IMREAD_UNCHANGED)
-                if g is None:
-                    raise FileNotFoundError(f"image {name} missing")
-                if g.ndim == 3:
-                    g = cv2.cvtColor(g, cv2.COLOR_BGR2GRAY)
-                if g.dtype == np.uint16:
-                    enc, step, data = "mono16", g.shape[1] * 2, np.ascontiguousarray(g).view(np.uint8).reshape(-1)
+        # Decode only a bounded window; the main thread writes messages in timestamp order.
+        image_paths = iter(euroc / "mav0" / "cam0" / "data" / imgs[i][1]
+                           for _, kind, i in events if kind == 0)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            pending = deque(pool.submit(cv2.imread, str(path), cv2.IMREAD_UNCHANGED)
+                            for path in islice(image_paths, 2 * workers))
+            seq_img = seq_imu = 0
+            for t_ns, kind, idx in events:
+                if kind == 0:
+                    name = imgs[idx][1]
+                    g = pending.popleft().result()
+                    path = next(image_paths, None)
+                    if path is not None:
+                        pending.append(pool.submit(cv2.imread, str(path), cv2.IMREAD_UNCHANGED))
+                    if g is None:
+                        raise FileNotFoundError(f"image {name} missing")
+                    if g.ndim == 3:
+                        g = cv2.cvtColor(g, cv2.COLOR_BGR2GRAY)
+                    if g.dtype == np.uint16:
+                        enc, step, data = "mono16", g.shape[1] * 2, np.ascontiguousarray(g).view(np.uint8).reshape(-1)
+                    else:
+                        g = g.astype(np.uint8, copy=False)
+                        enc, step, data = "mono8", g.shape[1], np.ascontiguousarray(g).reshape(-1)
+                    shape = [int(g.shape[1]), int(g.shape[0]), enc]
+                    msg = Image(header=Header(seq=seq_img, stamp=stamp(t_ns), frame_id=frame_id_cam), height=int(g.shape[0]), width=int(g.shape[1]),
+                                encoding=enc, is_bigendian=0, step=int(step), data=data)
+                    w.write(c_img, int(t_ns), ts.serialize_ros1(msg, Image.__msgtype__))
+                    seq_img += 1
+                    n_img += 1
                 else:
-                    g = g.astype(np.uint8)
-                    enc, step, data = "mono8", g.shape[1], np.ascontiguousarray(g).reshape(-1)
-                shape = [int(g.shape[1]), int(g.shape[0]), enc]
-                msg = Image(header=Header(seq=seq_img, stamp=stamp(t_ns), frame_id=frame_id_cam), height=int(g.shape[0]), width=int(g.shape[1]),
-                            encoding=enc, is_bigendian=0, step=int(step), data=data)
-                w.write(c_img, int(t_ns), ts.serialize_ros1(msg, Image.__msgtype__))
-                seq_img += 1
-                n_img += 1
-            else:
-                r = imu[idx]
-                msg = Imu(header=Header(seq=seq_imu, stamp=stamp(int(r[0])), frame_id=frame_id_imu),
-                          orientation=Quat(x=0.0, y=0.0, z=0.0, w=1.0), orientation_covariance=np.full(9, -1.0),
-                          angular_velocity=Vec3(x=float(r[1]), y=float(r[2]), z=float(r[3])), angular_velocity_covariance=np.zeros(9),
-                          linear_acceleration=Vec3(x=float(r[4]), y=float(r[5]), z=float(r[6])), linear_acceleration_covariance=np.zeros(9))
-                w.write(c_imu, int(r[0]), ts.serialize_ros1(msg, Imu.__msgtype__))
-                seq_imu += 1
+                    r = imu[idx]
+                    msg = Imu(header=Header(seq=seq_imu, stamp=stamp(int(r[0])), frame_id=frame_id_imu),
+                              orientation=Quat(x=0.0, y=0.0, z=0.0, w=1.0), orientation_covariance=np.full(9, -1.0),
+                              angular_velocity=Vec3(x=float(r[1]), y=float(r[2]), z=float(r[3])), angular_velocity_covariance=np.zeros(9),
+                              linear_acceleration=Vec3(x=float(r[4]), y=float(r[5]), z=float(r[6])), linear_acceleration_covariance=np.zeros(9))
+                    w.write(c_imu, int(r[0]), ts.serialize_ros1(msg, Imu.__msgtype__))
+                    seq_imu += 1
     finally:
         w.close()
     man = {"kind": "mono_rosbag_from_euroc_folder", "backend": BAG_BACKEND, "source_euroc": str(euroc.resolve()), "bag": str(out_bag.resolve()),
@@ -175,11 +190,15 @@ def main() -> int:
     ap.add_argument("--cam-topic", default="/cam0/image_raw")
     ap.add_argument("--imu-topic", default="/imu0")
     ap.add_argument("--compression", choices=COMPRESSIONS, default="lz4", help="rosbag chunk 压缩：lz4（默认，Basalt 可读）| bz2 | none（仅测试）")
+    ap.add_argument("--workers", type=int, default=4, help="图像解码线程数（默认 4，预读最多为线程数的 2 倍）")
     a = ap.parse_args()
+    if a.workers < 1:
+        ap.error("--workers 必须为正整数")
+    cv2.setNumThreads(1)
     if _BagWriter is None:
         print(f"{BLOCKED}: python package 'rosbags' unavailable ({_BACKEND_ERR}); install with `pip install rosbags` (pure Python, ~150 KB)")
         return 8
-    man = write_mono_bag(a.euroc, a.out, a.cam_time_offset_ns, a.cam_topic, a.imu_topic, compression=a.compression)
+    man = write_mono_bag(a.euroc, a.out, a.cam_time_offset_ns, a.cam_topic, a.imu_topic, compression=a.compression, workers=a.workers)
     print(json.dumps({k: man[k] for k in ("n_images", "n_imu", "image_wh_encoding", "cam_time_offset_ns_applied", "compression", "bag_bytes", "bag_sha256")}))
     return 0
 

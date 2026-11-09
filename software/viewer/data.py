@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
 
 from software.trajectory.reporting.results import front_video_path, load_summary, result_path
 from software.scene import layout
+from software.scene.result_io import read_arm_summary
 
 
 class ViewerDataError(ValueError):
@@ -92,6 +94,14 @@ class RecordingCatalog:
         return path.resolve().is_relative_to(self.root)
 
     def summary(self, directory: Path) -> dict:
+        manifest = directory.parent / 'episode.json'
+        if manifest.is_file() and self.contains(manifest):
+            try:
+                metadata = json.loads(manifest.read_text(encoding='utf-8'))
+                if metadata.get('schema_version', 1) >= 3:
+                    return read_arm_summary(directory, metadata)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                raise ViewerDataError(f'场景运行元数据无效：{error}') from error
         path = result_path(directory, 'summary.json')
         if not self.contains(path):
             raise ViewerDataError('摘要文件超出当前数据目录。')
@@ -107,7 +117,7 @@ class RecordingCatalog:
         for current, children, files in os.walk(self.root, followlinks=False):
             directory = Path(current)
             children[:] = sorted(name for name in children if name not in {
-                '.git', '.deps', 'node_modules', 'details', 'debug', 'diagnostics', 'work', 'bundle', 'umi_calib_out', '__pycache__',
+                '.git', '.deps', 'node_modules', 'details', 'debug', 'diagnostics', 'work', 'bundle', 'umi_calib_out', 'calibration_result', 'run', '__pycache__',
                 'runs', 'versions', 'archive', 'cache', 'imports', 'mapping', 'videos', 'pending',
             } and not name.startswith('.'))
             capture = {}

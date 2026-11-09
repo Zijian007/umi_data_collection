@@ -1,5 +1,6 @@
-# 标定参数：按 B 噪声先验 → A/B/C 板检测 → D 静止检查 → C 轨迹配置 → 验收规则阅读。
-# A/B 实际求解仍使用完整的数据集；这里的检测步长只控制额外的板检测与质量评估。
+# 标定参数：按 B 噪声先验 → A/C 板检测 → D 静止检查 → C 轨迹配置 → 验收规则阅读。
+# A/B 求解使用准备后的全部图像；board 的检测步长仅控制 A 覆盖评估与 C 板参考，不减少求解图像。
+# 标定图像准备固定每 2 个原始帧取 1 帧，约 30 Hz；board 的步长以这个准备后的序列计数。
 # noise / bias_rw 是连续时间模型参数；不是直接从一帧 IMU 读数得到的标准差。
 # 下方 checks 只改变判定，不会改善求解出的标定。配置覆盖方法见 config/README.md。
 
@@ -20,14 +21,12 @@ imu:
   # 加速度计 bias 随机游走强度，(m/s²)/√s；调大允许零偏随时间变化更多。
   acc_bias_rw: 0.003
 
-# A/B/C：检测 AprilGrid，并用 PnP 从板角点求独立的相机位姿。
+# A/C：检测 AprilGrid，并用 PnP 从板角点求独立的相机位姿。
+# 板布局和打印文件见 hardware/calibration_targets/README.md；实测边长通过 --tag-size-mm 输入。
 # “标签数”指完整识别出的方块个数；每个标签提供 4 个角点。
 board:
   # A 段质量评估每隔多少帧检测一次；越大越快，但覆盖统计越稀疏。
   intrinsics_step: 5
-
-  # B 段质量评估的检测步长，单位为帧；不会减少 Basalt 的求解图像。
-  camera_imu_step: 15
 
   # C 段参考轨迹的检测步长，单位为帧；1 表示逐帧检测，调大会减少误差评估证据。
   validation_step: 1
@@ -56,16 +55,12 @@ board:
   # 调大要求更多比较证据；不足时不会返回有效误差结果。
   minimum_comparison_frames: 30
 
-  # 覆盖率统计的归一化半径，单位 px，用于 1440×1440 裁切图中的角点坐标。
-  # 默认 960 来自原始 1920×1920 镜头半幅的半宽，并非裁切图的半宽 720。
-  # r = 角点距主点的像素距离 / 此值；增大分母会使同一画面的覆盖比例变小。
-  coverage_radius_px: 960.0
-
-  # 将一帧计入“扫到边缘的右/左/下/上方向”统计时，最远角点至少达到的半径比例。
-  # 0.5 表示上述归一化半径的一半；调大更难计入。A 的验收门限另见 checks。
+  # 将一帧计入“扫到边缘的右/左/下/上方向”统计（frames_reaching_by_direction）时，最远角点至少达到的半径比例。
+  # 半径按原始镜头半宽 960 px 归一化，由图像规格推导；0.5 即 480 px。
+  # 调大更难计入。A 的验收门限另见 checks。
   coverage_reach: 0.5
 
-  # 先取每帧最远角点的归一化半径，再取跨帧的该百分位（0–100）。
+  # 先取每帧最远角点的归一化半径，再取跨帧的该百分位（0–100），记为 reach_radius_percentile。
   # 99 表示第 99 百分位；调大更容易受少量极端角点影响，不是“99% 覆盖率”。
   coverage_percentile: 99.0
 
@@ -126,18 +121,20 @@ checks:
   # 与 board.minimum_comparison_frames 不同：后者是能否计算误差的最低匹配帧数。
   minimum_board_frames: 100
 
-  # C 参与比较的板参考相机位置包围盒对角线长度下限，单位 m；不足给 WARN。
+  # C 参与比较的板参考相机位置包围盒对角线长度下限，单位 m；不足为 INCOMPLETE，不可安装。
   # 衡量移动范围，不是累计路径长度；范围太小，尺度比较容易不稳定。
   minimum_board_extent_m: 0.15
 
-  # A 求解器平均每帧实际使用的角点数下限；不足给 WARN，不是每帧必须达到的数量。
+  # A 平均每帧角点数下限 = Basalt 最后一轮的角点总数 / 图像张数；分母含没拍到板的帧。
+  # 不足给 WARN，不是每帧必须达到的数量。
   intrinsics_minimum_corners: 30
 
   # A 的最远角点半径百分位指标下限，无量纲；低于此值给 WARN。
-  # 指标由 board.coverage_radius_px 和 coverage_percentile 定义；0.5 表示半径比例 50%。
+  # 指标按固定图像规格的半径和 board.coverage_percentile 定义；0.5 表示半径比例 50%。
   intrinsics_minimum_reach: 0.5
 
-  # A 平均重投影误差的提醒上限，单位 px；超过给 WARN。
+  # A 重投影误差均值的提醒上限，单位 px；超过给 WARN。
+  # 均值 = 每个角点像素误差范数的算术平均；报告另列 RMS，仅供参考（RMS 不小于均值）。
   intrinsics_reprojection_px: 1.0
 
   # 内参 fx 相对样例 fx 的偏差提醒界限，无量纲；这里只比较 fx，0.03 即 3%。
@@ -149,13 +146,13 @@ checks:
   # 主点 (cx, cy) 与样例主点的二维距离上限，单位 px；超过给 WARN。
   principal_point_warn_px: 40.0
 
-  # B 求解器平均每帧实际使用的角点数下限；不足给 WARN。
+  # B 平均每帧角点数下限，口径同 intrinsics_minimum_corners；不足给 WARN。
   camera_imu_minimum_corners: 25
 
   # B 角速度模长第 95 百分位的下限，单位 rad/s；不足给 WARN，提示运动激励偏弱。
   minimum_gyro_p95_rad_s: 0.8
 
-  # B 平均重投影误差的提醒上限，单位 px；超过给 WARN。
+  # B 重投影误差均值的提醒上限，单位 px，口径同 intrinsics_reprojection_px；超过给 WARN。
   camera_imu_reprojection_px: 1.2
 
   # 相机在 IMU 系中的平移向量，与样例平移向量之差的模长提醒界限，单位 mm。
@@ -174,7 +171,7 @@ checks:
   time_offset_warn_ms: 5.0
 
   # D 所有合格静止窗口中，|平均校准加速度模长 - gravity.gravity_m_s2| 的最大值上限。
-  # 单位 m/s²；任一合格窗口超过即 FAIL，不能用不同朝向的正负残差相互抵消。
+  # 单位 m/s²；本流程只记录诊断，超限给 WARN；执行失败则为 INCOMPLETE。
   gravity_residual_m_s2: 0.3
 
   # D 至少应统计出的不同静止朝向数；不足给 WARN，录制仍建议覆盖六个明显不同朝向。

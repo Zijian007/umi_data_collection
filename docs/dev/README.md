@@ -14,7 +14,9 @@
 | 相机数据 | [extraction.py](../../software/camera/x3/extraction.py) 提取时间戳和 IMU；[frame.py](../../software/camera/x3/frame.py) 定义录制几何、裁剪、帧率和时钟约定 |
 | 设备选择 | [registry.py](../../software/registry.py) 读取内部序列号、选择标定与夹爪并核对哈希 |
 
-`workflow.py` 展示顺序、阶段衔接与失败收尾；阶段函数返回具名结果。标定的 `checks.py` 决定验收，`reports.py` 负责展示。第三方进程、依赖与日志放在 `runtime.py`，数值计算在 `algorithms/`，独立命令在 `tools/`，安装资源在 `setup/`。
+`workflow.py` 展示顺序、阶段衔接与失败收尾；阶段函数返回具名结果。标定的 `acceptance.py` 决定验收，`result_io.py` 保存和校验记录，`reports.py` 只负责展示。标定第三方进程、依赖与日志放在 `pipeline/runtime.py`，Basalt 适配在 `solve/basalt.py`，数值计算在 `algorithms/`，独立命令在 `tools/`，安装资源在 `setup/`。
+
+标定的完整数据流、状态、恢复与登记契约，以及实测缺口见[标定架构与验证](标定架构与验证.md)。
 
 ## 参数管理
 

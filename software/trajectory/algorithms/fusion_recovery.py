@@ -12,6 +12,7 @@ from software.trajectory.algorithms.fusion_alignment import AlignmentResult, sum
 from software.trajectory.algorithms.fusion_placement import MapPlacements
 from software.trajectory.algorithms.fusion_graph import OptimizedGraph, segment_keys
 from software.trajectory.algorithms.fusion_factors import logR
+from software.trajectory.algorithms.fusion_quality import scale_consistency
 
 
 def recover_trajectory(aligned: AlignmentResult, placements: MapPlacements,
@@ -49,13 +50,16 @@ def recover_trajectory(aligned: AlignmentResult, placements: MapPlacements,
             full_rate_states[k] = (gtsam.Pose3(Rk, gtsam.Point3(*(Pk.translation() + w * dp))), vk + w * dv, ba_)
     recovery_finished_s = time.time()
 
-    segment_rows = []
+    segment_rows, scale_segments = [], []
     for m in lenses:
         for segment in segments[m]:
             scale_key, rotation_key, translation_key = segment_keys(m, segment["sid"])
             placement = chain_placements[m][segment["chain"]]
             dR = np.degrees(np.linalg.norm(logR(placement["R"].T @ res.atRot3(rotation_key).matrix())))
             t = res.atVector(translation_key)
+            if placement['kind'] == 'full':
+                scale_segments.append(dict(lens=m, chain=segment['chain'], sid=segment['sid'],
+                    scale_initial=float(placement['s']), scale_final=float(np.exp(res.atVector(scale_key)[0]))))
             segment_rows.append((m, segment["chain"], segment["sid"], segment["k0"], segment["k1"], video_times_s[segment["k0"]], video_times_s[segment["k1"]],
                                  placement["s"], np.exp(res.atVector(scale_key)[0]), dR, t[0], t[1], t[2]))
     sc_final = {m: [float(np.exp(res.atVector(segment_keys(m, segment["sid"])[0])[0])) for segment in segments[m]] for m in lenses}
@@ -68,7 +72,7 @@ def recover_trajectory(aligned: AlignmentResult, placements: MapPlacements,
         accept_rms=fusion_parameters.other_lens_rms_m, accept_rot_deg=fusion_parameters.other_lens_rotation_deg,
         **optimized.evidence['params'])
     info = dict(optimized.evidence, version='kiwi_fuse3s', init_lens=initial_lens, frames=frame_count,
-        dropped=placements.dropped, gates=placements.gates,
+        dropped=placements.dropped, gates=placements.gates, scale_consistency=scale_consistency(scale_segments),
         chains={m: [[list(lenses[m]["chains"][i]), placement["kind"]] for i, placement in sorted(chain_placements[m].items())] for m in lenses},
         stage1={m: summarize_alignment(alignment_estimates[m], lenses[m]['chains']) for m in lenses},
         segments={m: len(segments[m]) for m in lenses},

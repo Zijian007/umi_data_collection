@@ -15,6 +15,8 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from software import config
+
 BLACK_BORDER_BITS = 2  # Kalibr / Basalt blackTagBorder
 # OpenCV ArUco 检测角序 → Kalibr (BL,BR,TR,TL)
 _OPENCV_TO_KALIBR = [1, 0, 3, 2]
@@ -43,3 +45,12 @@ class GridDetector:
         for c, i in zip(corners, ids.ravel()):
             out[int(i)] = c.reshape(4, 2).astype(float)[_OPENCV_TO_KALIBR]
         return out
+
+
+def detect_up(gray: np.ndarray, det, up: float | None = None) -> dict:
+    """Detection on a bicubic-upsampled image, corners mapped back to native pixels."""
+    up = config.load("calibration").values.board.detection_upscale if up is None else up
+    g = cv2.resize(gray, None, fx=up, fy=up, interpolation=cv2.INTER_CUBIC) if up != 1.0 else gray
+    dets = det.detect(g)
+    # cv2.resize maps source pixel centre x to (x + 0.5) * up - 0.5 -> invert exactly (no constant +0.25 px bias at 2x)
+    return {k: (np.asarray(v, float) + 0.5) / up - 0.5 for k, v in dets.items()} if up != 1.0 else dets

@@ -11,11 +11,13 @@
 from __future__ import annotations
 
 import os
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from software.calibration.models import RecordingData, SegmentPaths, StageContext, StageError
-from software.calibration import runtime
+from software import config
+from software.storage import write_json
+from software.calibration.pipeline import runtime
 
 import cv2
 import numpy as np
@@ -31,22 +33,61 @@ def _write_png(path: Path, g: np.ndarray) -> None:
         raise RuntimeError(f"无法写入图像 {path}；请检查磁盘空间和目录权限")
 
 
-def n_workers() -> int:
+def n_workers(requested: int | None = None) -> int:
     try:
         n = len(os.sched_getaffinity(0))
     except AttributeError:
         n = os.cpu_count() or 2
-    return max(1, min(8, n - 1))
+    if requested is not None and (type(requested) is not int or requested < 1):
+        raise ValueError('--workers 必须为正整数')
+    return max(1, min(requested, n)) if requested is not None else max(1, min(24, n - 1))
 
 
-def build(insv: Path, out: Path, with_images: bool = True, *, lens: str = 'front') -> None:
+def preparation_identity(insv: Path, with_images: bool, lens: str) -> str:
+    return config.canonical_hash(dict(path=str(insv.resolve()), sha256=config.file_hash(insv),
+        images=with_images, lens=lens, code={str(path): config.file_hash(path) for path in (
+            Path(__file__), *sorted(Path(extraction.__file__).parent.glob('*.py')))}))
+
+
+def _reuse(out: Path, identity: str) -> bool:
+    try:
+        saved = json.loads((out / 'extract_manifest.json').read_text())['preparation']
+        if saved['input_hash'] != identity:
+            return False
+        for relative, expected in saved['files'].items():
+            path = (out / relative).resolve()
+            if not path.is_relative_to(out.resolve()):
+                return False
+            stat = path.stat()
+            if [stat.st_size, stat.st_mtime_ns] != expected:
+                return False
+        return bool(saved['files'])
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def _mark_ready(out: Path, identity: str, images: list[Path]) -> None:
+    manifest = out / 'extract_manifest.json'
+    saved = json.loads(manifest.read_text())
+    paths = [out / 'mav0/cam0/data.csv', out / 'mav0/imu0/data.csv', *images]
+    saved['preparation'] = dict(input_hash=identity, files={str(path.relative_to(out)):
+        [path.stat().st_size, path.stat().st_mtime_ns] for path in paths})
+    write_json(manifest, saved)
+
+
+def build(insv: Path, out: Path, with_images: bool = True, *, lens: str = 'front', workers: int | None = None) -> None:
     """Writes <out>/mav0/{cam0/data.csv, imu0/data.csv[, cam0/data/*.png]} and preserves the extraction manifest."""
     insv, out = Path(insv), Path(out)
     if lens not in ('front', 'rear'):
         raise ValueError('lens 必须为 front 或 rear')
+    identity = preparation_identity(insv, with_images, lens)
+    if _reuse(out, identity):
+        runtime.console.write(f'复用录像准备：{insv.name}', state='复用')
+        return
     crop_x, crop_y, crop_w, crop_h = crop_xywh('right' if lens == 'front' else 'left')
     extraction.extract(insv, out, with_sha256=True)           # raises software.camera.x3.extraction.Refused with the reason
     if not with_images:
+        _mark_ready(out, identity, [])
         return
     names = [l.split(",")[1].strip() for l in (out / "mav0" / "cam0" / "data.csv").read_text(encoding="utf-8").splitlines()
              if l and not l.startswith("#")]
@@ -54,7 +95,7 @@ def build(insv: Path, out: Path, with_images: bool = True, *, lens: str = 'front
     img_dir.mkdir(parents=True, exist_ok=True)
     import av
 
-    n_out, nw, pending = 0, n_workers(), []
+    n_out, nw, pending = 0, n_workers(workers), []
     with ThreadPoolExecutor(nw) as pool, av.open(str(insv)) as c:
         st = c.streams.video[0]
         st.thread_type = "AUTO"
@@ -83,6 +124,7 @@ def build(insv: Path, out: Path, with_images: bool = True, *, lens: str = 'front
             f.result()
     if n_out != len(names):
         raise RuntimeError(f"{insv.name} 容器记录 {len(names)} 帧，实际解码 {n_out} 帧")
+    _mark_ready(out, identity, [img_dir / name for name in names])
 
 
 def imu_stats(euroc: Path) -> dict:
@@ -91,19 +133,3 @@ def imu_stats(euroc: Path) -> dict:
     return {"duration_s": round(float((a[-1, 0] - a[0, 0]) / 1e9), 1), "accel_norm_std_m_s2": round(float(acc.std()), 3),
             "accel_norm_p95_minus_p5_m_s2": round(float(np.percentile(acc, 95) - np.percentile(acc, 5)), 3),
             "gyro_norm_p95_rad_s": round(float(np.percentile(gyr, 95)), 3)}
-
-
-@runtime.stage_errors("读取录像")
-def extract_recordings(recordings: SegmentPaths, context: StageContext) -> RecordingData:
-    """INSV -> EuRoC timestamps/IMU/images; D deliberately has no decoded images."""
-    datasets, metrics = {}, {}
-    for stage, video in recordings.items():
-        runtime.console.write(f"读取 {stage} 段" + ("（时间戳、IMU 和画面）" if stage != "D" else "（IMU）"), step=(1, 6))
-        destination = context.paths.work / "ds" / stage
-        try:
-            build(video, destination, with_images=stage != "D")
-            metrics[stage] = imu_stats(destination)
-        except (RuntimeError, OSError, ValueError) as error:
-            raise StageError(f"读取 {stage} 段", f"{stage} 段读取失败：{error}", imu_metrics=metrics) from error
-        datasets[stage.lower()] = destination
-    return RecordingData(SegmentPaths(**datasets), metrics)

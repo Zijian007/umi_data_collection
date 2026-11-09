@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# umi-calib：按相机序列号求解、验收并手动登记前镜头标定。
+# umi-calib：按相机序列号求解、验收并登记前后镜头标定。
 #
 # 常用命令：
 #   ./umi-calib run /path/to/calibration --tag-size-mm 24.0
-#   ./umi-calib install /path/to/calibration/umi_calib_out
+#   ./umi-calib run /path/to/calibration --tag-size-mm 24.0 --resume
+#   ./umi-calib install /path/to/calibration/calibration_result
+#   ./umi-calib calibrate-rear /path/to/rear  # 后镜头标定，需先登记前镜头
 #   ./umi-calib devices              # 查询设备及当前标定
 #   ./umi-calib retire <完整序列号>   # 停用设备
 #   ./umi-calib check                # 检查标定运行环境
@@ -15,13 +17,15 @@
 # 流程按 A → B → D → C 执行：
 #   A 求内参；B 求相机–IMU 外参和时间差；D 检查六朝向重力一致性；
 #   C 用新标定抽取轨迹，与标定板 PnP 位姿比较，最后汇总验收报告。
-# 输出：默认 <标定录像目录>/umi_calib_out/，--out 可指定目录。
-#   report.txt 供阅读，其他报告、标定资产和中间数据由工作流统一管理。
+# run 输出：默认 <标定录像目录>/calibration_result/，--out 可指定目录。
+#   report.txt 看结论，calibration.json 取参数，manifest.json 标识来源，run/ 保存过程。
 # 启用：run 默认只生成和验收；手动 install 后写入 registry/cameras/<序列号>/。
 #   也可显式传 run --install，在验收通过后登记；后续新处理按设备档案选用标定。
 # 可选：verify 检查现有标定；recheck 按当前验收规则重评已有完整报告。
+# --resume 校验并复用已完成阶段；失败或中断默认保留 work，成功后清理。
+# --workers 设置数据处理线程预算（转 bag 解码最多 4）；--cores 限制进程及子进程可用 CPU。
 #
-# 录像要求与操作说明：docs/标定/说明.md。
+# 录像要求与操作说明：docs/标定.md。
 # 代码阅读：本脚本 → software/calibration/__main__.py → cli.py。
 #   run / verify / recheck → workflow.py；设备登记与查询 → devices.py。
 # 本脚本只选择运行环境，必要时安装标定组件；求解流程在 Python 模块中。
@@ -37,13 +41,13 @@ CMD=${1:-}
 # 设备管理、报告重评、帮助与只读预检无需启动求解器，使用基础轨迹环境。
 # 其他命令使用 calib_env；环境或 Basalt 缺失时先调用标定组件安装脚本。
 NEED_CALIB=1
-case "$CMD" in devices|status|retire|install|install-rear|install-gripper|upgrade-device|activate-calibration|migrate-legacy|uninstall|recheck) NEED_CALIB=0 ;; esac
+case "$CMD" in verify|devices|status|retire|install|install-rear|install-gripper|upgrade-device|activate-calibration|recheck) NEED_CALIB=0 ;; esac
 for ARG in "$@"; do
   case "$ARG" in --dry-run|--help|-h) NEED_CALIB=0 ;; esac
 done
 if [ "$NEED_CALIB" = 1 ]; then
   if [ ! -x "$DEPS/calib_env/bin/python" ] || [ ! -x "$DEPS/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/bin/basalt_calibrate_imu" ]; then
-    echo "第一次使用 umi-calib，先安装标定组件（1-3 分钟）..." >&2
+    echo "标定组件不完整，开始安装；耗时取决于网络和机器性能..." >&2
     bash "$ROOT/software/calibration/setup/install.sh" >&2 || exit 2
   fi
 fi

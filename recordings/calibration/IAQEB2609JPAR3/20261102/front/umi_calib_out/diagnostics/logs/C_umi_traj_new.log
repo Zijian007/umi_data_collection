@@ -1,16 +1,16 @@
-$ /home/zijian/umi_data_collection/.deps/env/bin/python -m software.trajectory /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/C/VID_20261102_161145_00_039.insv --out /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/work/C_traj_new --force --config /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/work/trajectory.yaml
-17:00:26 [轨迹] 共 1 段录像；模式 handheld；并行数 1；输出：/home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/work/C_traj_new
-17:00:26 [轨迹][VID_20261102_161145_00_039] 相机 IAQEB2609JPAR3；标定 fa0d2d72ef52；夹爪 handheld_v1；来源：环境变量覆盖（/home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/bundle）
-17:00:26 [轨迹][VID_20261102_161145_00_039][1/4] 读取录像时间戳和 IMU
-17:00:28 [轨迹][VID_20261102_161145_00_039] 2009 帧；时长 67.0 秒
-17:00:28 [轨迹][VID_20261102_161145_00_039][2/4] 准备镜头视频，供所有重建尝试共用
-17:01:09 [轨迹][VID_20261102_161145_00_039][3/4] 重建轨迹：建图 → 逐图定位与合并 → IMU 融合
-17:01:09 [轨迹][VID_20261102_161145_00_039][第 1 次] 建图
-17:03:10 [轨迹][VID_20261102_161145_00_039][第 1 次] 逐图定位与合并
-17:05:14 [轨迹][VID_20261102_161145_00_039][第 1 次] IMU 融合
-17:05:19 [轨迹][VID_20261102_161145_00_039][4/4] 生成相机和 TCP 轨迹、地图、视频与报告
-17:05:24 [轨迹][VID_20261102_161145_00_039][完成] 耗时 296 秒；TCP 路径 4.28 m；地图位置约束覆盖 100% 的帧
-17:05:24 [轨迹][VID_20261102_161145_00_039] 报告：/home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/work/C_traj_new/VID_20261102_161145_00_039/report.txt；日志：/home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/work/C_traj_new/VID_20261102_161145_00_039/debug/logs
+$ /home/zijianwang/umi_data_collection/.deps/env/bin/python -m software.trajectory /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/C/VID_20261102_161145_00_039.insv --out /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/work/C_traj_new --force --config /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/work/trajectory.yaml
+15:44:15 [轨迹] 共 1 段录像；模式 handheld；并行数 1；输出：/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/work/C_traj_new
+15:44:15 [轨迹][VID_20261102_161145_00_039] 相机 IAQEB2609JPAR3；标定 b4ab6b8a4f4b；夹爪 handheld_v1；来源：环境变量覆盖（/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/bundle）
+15:44:15 [轨迹][VID_20261102_161145_00_039][1/4] 读取录像时间戳和 IMU
+15:44:16 [轨迹][VID_20261102_161145_00_039] 2009 帧；时长 67.0 秒
+15:44:16 [轨迹][VID_20261102_161145_00_039][2/4] 准备镜头视频，供所有重建尝试共用
+15:44:38 [轨迹][VID_20261102_161145_00_039][3/4] 重建轨迹：建图 → 逐图定位与合并 → IMU 融合
+15:44:38 [轨迹][VID_20261102_161145_00_039][第 1 次] 建图
+15:45:53 [轨迹][VID_20261102_161145_00_039][第 1 次] 逐图定位与合并
+15:47:04 [轨迹][VID_20261102_161145_00_039][第 1 次] IMU 融合
+15:47:10 [轨迹][VID_20261102_161145_00_039][4/4] 生成相机和 TCP 轨迹、地图、视频与报告
+15:47:14 [轨迹][VID_20261102_161145_00_039][完成] 耗时 179 秒；TCP 路径 4.28 m；地图位置约束覆盖 100% 的帧
+15:47:14 [轨迹][VID_20261102_161145_00_039] 报告：/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/work/C_traj_new/VID_20261102_161145_00_039/report.txt；日志：/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/work/C_traj_new/VID_20261102_161145_00_039/debug/logs
 
 录像                                       状态       报告 / 原因
-VID_20261102_161145_00_039.insv          完成       /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/work/C_traj_new/VID_20261102_161145_00_039/report.txt
+VID_20261102_161145_00_039.insv          完成       /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/work/C_traj_new/VID_20261102_161145_00_039/report.txt

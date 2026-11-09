@@ -91,7 +91,7 @@ def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_di
                              "map_position_starts_at_s": lead},
         "notes": [],
         "notes_basis": "rules of thumb, not a validated accuracy test; the accuracy evidence is in docs (README)",
-        "fusion": {k: info.get(k) for k in ("init_lens", "segments", "zupt_frames", "nodes", "timing_s", "seg_scale_range")},
+        "fusion": {k: info.get(k) for k in ("init_lens", "segments", "zupt_frames", "nodes", "timing_s", "seg_scale_range", "scale_consistency")},
         "calibration": {"imu_cam": ("registry %s serial %s (%s)" % (calib["id"], calib.get("serial"), calib["dir"]) if user_cal
                                     else CALIB_IMU_CAM.name + " (sample calibration, one X3, 2026-09-04)"),
                         "cam_tcp": Path(ex["tcp_json"]).name + " (" + str(ex["cad_status"]) + ")",

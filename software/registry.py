@@ -2,8 +2,8 @@
 
 The trajectory engine looks up the serial in the recording's INSV trailer. Missing serial, missing record,
 retired device, or hash mismatch is a refusal -- never a silent fall-back to the lab sample.
-``UMI_TRAJ_CALIB`` remains an engineer override (used by ``umi-calib`` while it is solving a new
-bundle). ``calibration_user/`` is no longer consulted.
+``UMI_TRAJ_CALIB`` explicitly selects calibration assets for an engine invocation, including
+candidate validation by ``umi-calib``.
 """
 
 from __future__ import annotations
@@ -147,7 +147,7 @@ def register_gripper(gripper_id: str, source: Path) -> dict:
 
 
 def bundle_sha256(bundle_dir: Path) -> str:
-    return sha256_file(Path(bundle_dir) / "calibration_r1440.json")
+    return sha256_file(traj_calib.calibration_path(Path(bundle_dir)))
 
 
 def measurement_version(parent: Path, files: dict[str, Path], *, identity: dict, asset_prefix='') -> str:
@@ -337,9 +337,15 @@ def register(serial: str, bundle_dir: Path, *, gripper: str | None = None, statu
     serial = validate_id(serial.strip())
     if serial == SAMPLE_SERIAL or status not in ('active', 'retired'):
         raise RegistryError('不能覆盖样例设备，状态应为 active 或 retired')
-    traj_calib.describe(bundle_dir, 'registry')
+    description = traj_calib.describe(bundle_dir, 'registry')
+    if description['bundle_schema_version'] == 3:
+        metadata = json.loads((bundle_dir / 'manifest.json').read_text())
+        if metadata['camera_serial'] != serial or metadata['lens'] != 'front':
+            raise RegistryError('标定清单的相机序列号或镜头与登记目标不一致')
     grip = gripper_paths(gripper or load_index()['default_gripper'])
-    files = {'bundle/'+path.name: path for path in bundle_dir.iterdir() if path.is_file()}
+    names = ('calibration.json', 'manifest.json') if (bundle_dir / 'manifest.json').is_file() else tuple(
+        path.name for path in bundle_dir.iterdir() if path.is_file())
+    files = {'bundle/'+name: bundle_dir / name for name in names}
     with locked(ROOT, '.registry.lock'):
         parent = CAMERAS / serial / 'calibrations'
         version = measurement_version(parent, files,

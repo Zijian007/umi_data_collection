@@ -13,7 +13,10 @@
   "cores": null,
   "keep_work": false,
   "force": false,
-  "install": false
+  "install": false,
+  "resume": true,
+  "workers": 24,
+  "opencv_threads": 1
  },
  "basalt": "7573abdfd6a868b76375c08f7bce7de86179ea6b",
  "factory_calibration": "e3ef0e5b79eb",
@@ -83,7 +86,7 @@
     }
    },
    "sources": [
-    "/home/zijian/umi_data_collection/config/calibration.yaml"
+    "/home/zijianwang/umi_data_collection/config/calibration.yaml"
    ],
    "overrides": {},
    "cli_overrides": {},
@@ -100,9 +103,20 @@
      "allow_irregular": false
     },
     "video": {
+     "crop": {
+      "size_px": 1440,
+      "offset_x_px": 0,
+      "offset_y_px": 0
+     },
+     "frame_step": 2,
      "size_px": 720,
+     "codec": "libx264",
+     "pixel_format": "yuv420p",
+     "resize_filter": "area",
      "crf": 10,
-     "preset": "medium"
+     "preset": "medium",
+     "keep_audio": false,
+     "audio_bitrate_kbps": 128
     },
     "orb": {
      "features": 1250,
@@ -181,57 +195,58 @@
     }
    },
    "sources": [
-    "/home/zijian/umi_data_collection/config/trajectory.yaml"
+    "/home/zijianwang/umi_data_collection/config/trajectory.yaml"
    ],
    "overrides": {},
    "cli_overrides": {},
-   "computation_hash": "6be1526149587a8e71a71c83dc1c73be9067d258a62d939f8372a1c0ac68892d",
+   "computation_hash": "be4e92e99cd16c725e644b70561faafa6f3ee0b785d8e36171b0dc17ec14ecc5",
    "evaluation_hash": "6d6ac28178e2574fb6efceef1e25961d81dbb04f2d70ca60b3062db5754f7823"
   },
   "code": {
    "software/pose_io.py": "1b17edda3dbe0f18a756f016ce6248b7fc4f42b4c1bacf9f72e5e14bc2f6806f",
-   "software/config.py": "823f92a18a8d726890de08ef94bcf7776036996293e38adf9463315f86dad5b5",
-   "software/registry.py": "0d6f215d96529efbcde49e7acd48f2ffb1c96427fb72ba1c1582298efcbfc667",
+   "software/config.py": "d86cfc9420b5d06193a53d201ca302eeb9baf93eebfdf8bbbd56840478a58a83",
+   "software/registry.py": "6decc1aff08daf5fc00e9da97b1b44ba0b9ebd3b3381db398e24d58e96e7ad0d",
    "software/storage.py": "961cebf48e845a705c61fb4e3665a50a21534dce817e803b5edf727dd0cf6beb",
    "software/environment.py": "7429fb869e56a2f248b2421e7672a903f0258700c04c5529a96d78e88a6bee2f",
    "software/calibration/__init__.py": "43b4f0bf324feac952b351486a43aa97e1d7980aa4f05a9f1d92b9d58c24cec0",
    "software/calibration/__main__.py": "624f7b369a63eeecbfe8b097a588cbb25e2141a213d69056f06df65406ea05da",
    "software/calibration/algorithms/__init__.py": "2387fb038b191f42c007cbbbc9018e5fc72eb403768d3ca33e14779122083f0e",
    "software/calibration/algorithms/aprilgrid_detect.py": "a9a0b9439029f2387785efc0c9b164726f18d3aff514c815e077a70ea8de2594",
-   "software/calibration/algorithms/board_pnp.py": "6229d683e5c9fd329b88312c11d007df74300b22b5dc197568fd387c8ff8737f",
-   "software/calibration/camera_imu.py": "0a89a5aa005310b5ceef85fb5dfbf6a3767144d93fe2b46268b95f3a7c92664c",
+   "software/calibration/algorithms/board_pnp.py": "9abac698c18d03a8e093b1eeab1cf7b5df3ea0710e09ce455d2d8f8b46e9f743",
+   "software/calibration/camera_imu.py": "0d3839ba7f044f15f874bfccdec32899e6e83b98227f67e75969e87c9970a6f0",
    "software/calibration/checks.py": "ecbf2fd5e7d5496b418c32d020cf6d8d7373863860362fef3f807ed625393941",
-   "software/calibration/cli.py": "239464afa829242db6f94b723b40b24092a2aa62247c78da9f8a8c7ee45aa24c",
-   "software/calibration/devices.py": "ba54576af3c6446a82877467911f541b06a67f232ba95b594ca49a98050d88f2",
-   "software/calibration/inputs.py": "e083fbc62ed92c9f3880ed4f1295041b73e9172838c9e84c2c3faf45bef47af9",
-   "software/calibration/intrinsics.py": "4d777229c38ec04adce5ec1a82742dbe7a94e930339a1334be9b353e567e14e2",
-   "software/calibration/migration.py": "9bd3cd8ecbf27a8472ae619b145801cac1e392bb6a25e4bd045f4d245f0cc83a",
-   "software/calibration/models.py": "f000be17a600e81960ba79bf8b0769557dba8b46e648a4485fdf60fe3b4471df",
-   "software/calibration/recording_data.py": "7e5b071fab96251954a0adc915230be13185f250c7542f7a9907167d05185a37",
-   "software/calibration/reports.py": "0d656c45f6d641810c5448c9bf33b59242eb1a4f32d522fa0ed35f9a88c60233",
-   "software/calibration/runtime.py": "751a126189e68efb73cdabdac00dd0b5bc97cd523f22117164c32eecc5ef5693",
+   "software/calibration/cli.py": "1908c4f7b1b9e3d90e543cc6e356295cb9dab719dbc5f4604b60cc474a1de363",
+   "software/calibration/devices.py": "5a8e773d96b638a3903801449aeeca7bd2f1ddf66cca64cb5c70f8bd174718c5",
+   "software/calibration/execution.py": "e0426752f569ba766581b4a94be8a4824a9dbf0a50616463146d702ba5bc45c5",
+   "software/calibration/inputs.py": "a1acfccdebc2d387bbf84ef54fa4709457d90188f6d8e590ca23deb8c2b3a109",
+   "software/calibration/intrinsics.py": "2921d3b5c0c5d96cfd3cce70bc226f12b65117d6a5aa2d858983176a1786cf26",
+   "software/calibration/migration.py": "90fee558f601886696808292d67905ede9d5e0927ce87fbe5a0dd068bcdb4fc9",
+   "software/calibration/models.py": "656d1651885c9ddf08d9d7e48727c63c2e8210b2ea36612ccc9a005ee3c3e965",
+   "software/calibration/recording_data.py": "b5bd4e787d7ecf6e978f2b417195375e905560da9c6093ba66bc844d9892dedb",
+   "software/calibration/reports.py": "9e47e506361490c29091b1a5876d6022b4042f556860f62dc72bd7762aea3966",
+   "software/calibration/runtime.py": "dc5f0b855806d839705cd466556d398a21dbbc9e440d62fa787edc14097369ad",
    "software/calibration/tools/__init__.py": "ed64db81a719b412d847994009cf6a6c4619ed2eb889c96058b9ba27cfeba212",
    "software/calibration/tools/calib_folder_to_bag.py": "55175fdcc614817d054d4e4144ed683b61a06568917007882f9fd3d792a842c2",
    "software/calibration/tools/imu_calib_physical_check.py": "df28fe27d34e3c1fcb9d21e087df9b4d817e90e6c1e4f1d23abd9d568a906f8a",
-   "software/calibration/validation.py": "de4d65f695f659845773b07ca57cd8dcc78b4bee8b9bd2919ce359ec39195f9e",
-   "software/calibration/workflow.py": "dbc272eeddd7f6895551763ef338bf7b82693e5686068498e6a6d4fba967df87",
+   "software/calibration/validation.py": "85784d36a63a98eaed3e830f75065f144c1a78c60da176a4f1f1e4c83491bb12",
+   "software/calibration/workflow.py": "d8b5ef08489d94a8268feae1f8a28c25f7c8e4ddc1c39133bb25b844949748a1",
    "software/camera/__init__.py": "24685657541bd79982e1a27f2acd018d183bce3196fe65d81d5badd99a3072de",
-   "software/camera/geometry.py": "fbe772276c517ff44db2acf4ecb3d6175916410eb5958b3e4bae73d9e0f870bb",
-   "software/camera/images.py": "aefe4ff3ea559fc20ee8f910f0e1180596f327c3ef7c400eb01dbb951c01f248",
+   "software/camera/geometry.py": "7a607fa08f452f5d8c2ba487b2621c93a5e11a334e1824e8a40a4c556c8191b0",
+   "software/camera/images.py": "975b3572bd268ea7d12ff1916e9cf270b3d68c11ef1dc48ec8f015728766cdd8",
    "software/camera/timing.py": "407dc3d2fa556ade54ed9acab798ec0921ed0262f6bd052b3e32af4c431202b5",
    "software/camera/x3/__init__.py": "3dce41ded244e85f0fd55c9e13cc59212859304d716f354c3d3ea98580b90aaf",
-   "software/camera/x3/extraction.py": "c316e45e2a20201a0f9967e8089f56e52e91f6f4f38cec2a9dc49a778ab46a84",
-   "software/camera/x3/frame.py": "09d84aa7a94d3ce8b894aae6168c262d51ecf40e38603bc42a712ffb837e0e7d",
+   "software/camera/x3/extraction.py": "92d5a8553d285a2d1fec82c835a6b353a0cb3a7eea023e0c486031bff5069788",
+   "software/camera/x3/frame.py": "2cdb6a0d1a4f59b20e15b6e488379afa488720c4e981482b496a075d7bcca472",
    "software/camera/x3/imu_reader.py": "a53930a7913c2ed69d3d59352f1e8264ef87869acbaecc3b7bb331912f60eee0",
    "software/camera/x3/insv_reader.py": "793fc95ca45a0812b2c442c70e5ce1890f5c14d1313f76e34a9a65216a384e90",
    "software/vision/__init__.py": "a801b36a9fb8df0b9c1490eb764dd5cae28e6cbe508e13b6d0e18de19ea915ce",
    "software/vision/models.py": "45502ac26e95b7a6c610454e10ff1ca40582c048a88f97a4ddb89a0016a37668",
    "software/vision/paths.py": "612e208e08ec939fafc0fd592bcd7e2025bc70b4d62a4e91931b80b518fc9a38",
-   "software/vision/recordings.py": "de48613afb4f6a4bf3453745e9ebed29475e0a7a42a04ce4972c76d1f604419b",
-   "software/vision/runtime.py": "d91f91c6c94f6e1533df943b342c6840ff4a09406ce387eb12160b22e5ea1136",
-   "software/vision/slam.py": "1f52515dfd7ca3fe71a0a6ad32c8da72a53be4831e7e60a641129d0d047b2b5a",
+   "software/vision/recordings.py": "34558a2a4326349d01d19962998a8208d2b343d3c282a19b2c263b36dc1218e8",
+   "software/vision/runtime.py": "f9a6b0209cfa41b7825a8e4b135a66cab1b1a923535836f8e6812ba9cd1b7bf4",
+   "software/vision/slam.py": "dddc2aec8ff1e20428ecad5975c39ee84f180a465440f204b45bab359a545917",
    "software/vision/tools/__init__.py": "6ec21129eb0c594ccec2765fb33322b97261d1f1231cd363a741d362c706db88",
-   "software/vision/tools/make_lens_video.py": "5e65ffd225e3112eedd71141bda67c66df54876f7fc4970a49adcdfa809dcb73",
+   "software/vision/tools/make_lens_video.py": "069e3797856f8feb66b376805cc0348bf9236542d971b7b30e5720fea7145c2c",
    "software/vision/tools/merge_frames.py": "5c8c2376c8869e498b5243c0096a239aa9f358014450275bde0284ad3e68ae8d"
   },
   "engines": {
@@ -245,73 +260,70 @@
    "env/opencv_python-4.12.0.dist-info": "c5f2e23ea894a890f8d6f8e99459c1a8a770f1c2abed17614ac1e6bfb5b964dc",
    "env/opencv_python_headless-4.12.0.dist-info": "508847f6cc5849a3533e5c4107ccf97bda15826568d77f04c3f51458546923f0",
    "env/scipy-1.17.1.dist-info": "1d0a8a19a3144ca6b9a582f0ba5241dbe0f8f5841247bcb6f3241db2ebb86e93",
-   "ffmpeg": "c4385d1433a5a9440c6e6a6129f8784b146347386f1899f05b3dbfae857d216a",
-   "ffprobe": "3b0db28d25eeebe714def62c4772b6decf84b1edd889ae2e7caa8d58288d1e1e",
-   "fusion_python": "56d6a1cc9fb557f649bf42317a33f62b5170b895885cac34f310d2ae5caa2ed0"
+   "ffmpeg": "8bf7da63d4d7fd3035ebcbfbed39fbfabd5d3c0083deb7f4c0ba660629c6c0e2",
+   "ffprobe": "a78e8a409c5d5620305460cd101d371886608806ea6e3b9a80ad9547a0a9c7fc",
+   "fusion_python": "9f8bd340adc813b48f2d76f228d939f057fe6611cba7217fdd222ea74f0b3dcd"
   },
   "trajectory_code": {
    "software/pose_io.py": "1b17edda3dbe0f18a756f016ce6248b7fc4f42b4c1bacf9f72e5e14bc2f6806f",
-   "software/config.py": "823f92a18a8d726890de08ef94bcf7776036996293e38adf9463315f86dad5b5",
-   "software/registry.py": "0d6f215d96529efbcde49e7acd48f2ffb1c96427fb72ba1c1582298efcbfc667",
+   "software/config.py": "d86cfc9420b5d06193a53d201ca302eeb9baf93eebfdf8bbbd56840478a58a83",
+   "software/registry.py": "6decc1aff08daf5fc00e9da97b1b44ba0b9ebd3b3381db398e24d58e96e7ad0d",
    "software/storage.py": "961cebf48e845a705c61fb4e3665a50a21534dce817e803b5edf727dd0cf6beb",
    "software/environment.py": "7429fb869e56a2f248b2421e7672a903f0258700c04c5529a96d78e88a6bee2f",
-   "software/trajectory/__init__.py": "46d24db08d03e9546b48821290011715122394d452538cf9b1637ae83be54838",
+   "software/trajectory/__init__.py": "57292c234ac34b62d98638c04347f0e322540d097028972690772db0afd1d514",
    "software/trajectory/__main__.py": "fed71b513338b7a5bac984986ddb421c2c6b0f08297b9d156fab378c3a410f89",
    "software/trajectory/algorithms/__init__.py": "028fbae67c1c959de015e2dd26b0010a9a8d70c07bd71689b9be1239ecb850b7",
    "software/trajectory/algorithms/fusion.py": "9ae2a53641a8c35fd88d92f517e6fc3c48e81c8cfb438792bbdbb238585ec80f",
-   "software/trajectory/algorithms/fusion_alignment.py": "fc09f2500dbd9648428c5909cdffbb3a0e4435e7dd8affb637bcd3c4ab7fc684",
+   "software/trajectory/algorithms/fusion_alignment.py": "d608ce466911d078258b87f2ba0630a157bb880b0f59785033132a2ff1626993",
    "software/trajectory/algorithms/fusion_cli.py": "5bcca7b26b1f6a240991541a381777ea58be94b277a3254650d76fb1297e9b63",
    "software/trajectory/algorithms/fusion_data.py": "9e0c9fa3f73be5055e682b3408e851332a83f0f533cf31a9966650ecf450cda6",
    "software/trajectory/algorithms/fusion_factors.py": "ee35b14601c16961428d94ac3223e0387256611937609cf8887f116a294bd7a8",
-   "software/trajectory/algorithms/fusion_graph.py": "d70d7a14daab69b0df836e8e6bbc045802ecf2a79db384dc85cf1a7fca770d77",
-   "software/trajectory/algorithms/fusion_placement.py": "b8092098ae148277738775a5365a47dfd62661a0cdf056f55a30eab10ea8a00b",
+   "software/trajectory/algorithms/fusion_graph.py": "fab534176ccf200680f1815535890f7d8d7929921bd6e36802e748d5497db5be",
+   "software/trajectory/algorithms/fusion_placement.py": "888028004c3318b76ab2cf38f2bc644bf84bf34841e0d0eb37c56b9ed901c622",
    "software/trajectory/algorithms/fusion_recovery.py": "90ceeaad676f78dcf73fcc0859a2d826fa668af01a4a8c127e9966ba53b403a6",
-   "software/trajectory/algorithms/kiwi_fuse3s.py": "c018b308766eda4dc56898809b661f7e0ab783b57086bc8621829f10e0f1702d",
-   "software/trajectory/algorithms/postprocess.py": "2bc9dcbf9c38fa7af7ae5c6b4f2d9315c8f67379dd70b62562f71389187bedaa",
-   "software/trajectory/calibration/__init__.py": "2218fd8e01daa6f9c4333d50a7d95b61a6ab33535da4984ad7936000b1cd9497",
-   "software/trajectory/calibration/assets.py": "2e5a0d1b6c4f0be125bf1e284abcedd9b90688a376417f4494601cb095e84a08",
-   "software/trajectory/calibration/selection.py": "14186aaa8dbbae170fbb91772544dab87d9e54a8a019842ff706ddf0f0798dae",
-   "software/trajectory/cli.py": "2d188193e0c95db05a89c73f3a0247424a8ce158548b04d58a3f0aeb134b3b57",
+   "software/trajectory/algorithms/postprocess.py": "ccd523d6e405c7b9ea2889c5359c32cc0b70ad88cf72a3797a9d91accefa9981",
+   "software/trajectory/calibration/__init__.py": "69c0ef67d96f1c8022b366d69f4ff85d0d9b48875907be0500d86d62e9ac05b2",
+   "software/trajectory/calibration/assets.py": "1652c17f57e22c37dd4b86435106a2b5a836bbfd2db40b242372475ab9ad1c21",
+   "software/trajectory/calibration/selection.py": "2a51052bed094d58a876e97092ea1c62ab3c2b803e87f007375845cf813f7b35",
+   "software/trajectory/cli.py": "31fbb7260bdd1330b41f0dda6bce8baa7a0039449a2d139376e3110f69fa09ea",
    "software/trajectory/models.py": "f8c70be1cb68fb8f749f11a91ce1a6a6ad33d4cd4a3c9a34271927dfbcde6d3c",
-   "software/trajectory/pipeline/__init__.py": "cf1fb5b47bce158cbb90a1801268d6400ce9c851a4877596673f61a28b962969",
+   "software/trajectory/pipeline/__init__.py": "9347ed5fff6a622d139bdd9ab1fd1faba0875bb5fb22b57ed5ebc055bcce5fac",
    "software/trajectory/pipeline/inputs.py": "71b551bc10a86eb95b2eb3d5d08282bbcfc80dd608e6cbcc8f7d8ab3627e1429",
-   "software/trajectory/pipeline/reconstruction.py": "3ffca9f1c02984780ed0e98ff8e0c66a8759d5115fa4b30f79b47566eee6da6a",
+   "software/trajectory/pipeline/reconstruction.py": "d26a349cb380196e5994bc8fbe96cc4b6cecd9c39b7685506722ea1296f5dae1",
    "software/trajectory/pipeline/reuse.py": "358a618c3e0f7d531ede828d4e86690beb6ea4751c823d4cd933b47054c0d5de",
-   "software/trajectory/pipeline/runtime.py": "dc5cd04c144d0300ffdd124b8c63b139728e15f86e64831662c95ba24dea17a1",
-   "software/trajectory/plots.py": "f1a8e508a5f86c75b9494d52c06d3c95ff93be4ee3699b67c06323be6e72f9cb",
-   "software/trajectory/recording_data.py": "a412723b1b4fb3d9f6022f40863754b11bd673e51824b7a17f986d88815ac674",
-   "software/trajectory/reporting/__init__.py": "2f7d3e4c5401ec072c18381ca08666ec034b971e49ba8c70d8811f7ccc14b992",
+   "software/trajectory/pipeline/runtime.py": "58c431200bc0ed553699f0a536afe3008bae18aaa2c9a6845814e61166a9a82b",
+   "software/trajectory/reporting/__init__.py": "77620377cab4fe52b734d01595761a71dced9f9f2de2f600c3cc584ec9625b22",
    "software/trajectory/reporting/map_data.py": "c00441c75bfb5e6e2716b5cc3cddbe2ca3455d9799be4bdedbec6c5eab3afba1",
-   "software/trajectory/reporting/metadata.py": "844665a7012aae82043bfcebf6d910f18b47caab03b4677455a193147a9143c1",
+   "software/trajectory/reporting/metadata.py": "e1bd223c12bf3b15426426b681d8f3708267d5cad20650a1d4ca3a0e53d929e6",
    "software/trajectory/reporting/plots.py": "0e24c0ef405d9bb535f7e70abfb46f0ada4eab215070101e8169eb9a5c52ad9b",
    "software/trajectory/reporting/quality.py": "11e6526b095c25141c413a4b78175131a16a3b300ad3e376d7341214242d29d4",
-   "software/trajectory/reporting/reports.py": "72b5be21ea1ab28ba15aac5ef9da34263533892d4adaf9ee255126ebd6fcfc82",
+   "software/trajectory/reporting/reports.py": "e2913aec7a110e31d0fdb1ccef60c1bb771fe60b5dca3996ade55417c8b01a9a",
    "software/trajectory/reporting/results.py": "47883a602bc969e39a7d9e4dbe738b87a514108086257a2b84946e549a405431",
-   "software/trajectory/workflow.py": "18e3e46c8c07b456623233707bc89afd9dd91261872769b666cf095054d18b80",
+   "software/trajectory/workflow.py": "33a3f4b6bc9f08bc28d6d8e18a7743b9384ee35e549c57e3793cb8518a1c7143",
    "software/camera/__init__.py": "24685657541bd79982e1a27f2acd018d183bce3196fe65d81d5badd99a3072de",
-   "software/camera/geometry.py": "fbe772276c517ff44db2acf4ecb3d6175916410eb5958b3e4bae73d9e0f870bb",
-   "software/camera/images.py": "aefe4ff3ea559fc20ee8f910f0e1180596f327c3ef7c400eb01dbb951c01f248",
+   "software/camera/geometry.py": "7a607fa08f452f5d8c2ba487b2621c93a5e11a334e1824e8a40a4c556c8191b0",
+   "software/camera/images.py": "975b3572bd268ea7d12ff1916e9cf270b3d68c11ef1dc48ec8f015728766cdd8",
    "software/camera/timing.py": "407dc3d2fa556ade54ed9acab798ec0921ed0262f6bd052b3e32af4c431202b5",
    "software/camera/x3/__init__.py": "3dce41ded244e85f0fd55c9e13cc59212859304d716f354c3d3ea98580b90aaf",
-   "software/camera/x3/extraction.py": "c316e45e2a20201a0f9967e8089f56e52e91f6f4f38cec2a9dc49a778ab46a84",
-   "software/camera/x3/frame.py": "09d84aa7a94d3ce8b894aae6168c262d51ecf40e38603bc42a712ffb837e0e7d",
+   "software/camera/x3/extraction.py": "92d5a8553d285a2d1fec82c835a6b353a0cb3a7eea023e0c486031bff5069788",
+   "software/camera/x3/frame.py": "2cdb6a0d1a4f59b20e15b6e488379afa488720c4e981482b496a075d7bcca472",
    "software/camera/x3/imu_reader.py": "a53930a7913c2ed69d3d59352f1e8264ef87869acbaecc3b7bb331912f60eee0",
    "software/camera/x3/insv_reader.py": "793fc95ca45a0812b2c442c70e5ce1890f5c14d1313f76e34a9a65216a384e90",
    "software/vision/__init__.py": "a801b36a9fb8df0b9c1490eb764dd5cae28e6cbe508e13b6d0e18de19ea915ce",
    "software/vision/models.py": "45502ac26e95b7a6c610454e10ff1ca40582c048a88f97a4ddb89a0016a37668",
    "software/vision/paths.py": "612e208e08ec939fafc0fd592bcd7e2025bc70b4d62a4e91931b80b518fc9a38",
-   "software/vision/recordings.py": "de48613afb4f6a4bf3453745e9ebed29475e0a7a42a04ce4972c76d1f604419b",
-   "software/vision/runtime.py": "d91f91c6c94f6e1533df943b342c6840ff4a09406ce387eb12160b22e5ea1136",
-   "software/vision/slam.py": "1f52515dfd7ca3fe71a0a6ad32c8da72a53be4831e7e60a641129d0d047b2b5a",
+   "software/vision/recordings.py": "34558a2a4326349d01d19962998a8208d2b343d3c282a19b2c263b36dc1218e8",
+   "software/vision/runtime.py": "f9a6b0209cfa41b7825a8e4b135a66cab1b1a923535836f8e6812ba9cd1b7bf4",
+   "software/vision/slam.py": "dddc2aec8ff1e20428ecad5975c39ee84f180a465440f204b45bab359a545917",
    "software/vision/tools/__init__.py": "6ec21129eb0c594ccec2765fb33322b97261d1f1231cd363a741d362c706db88",
-   "software/vision/tools/make_lens_video.py": "5e65ffd225e3112eedd71141bda67c66df54876f7fc4970a49adcdfa809dcb73",
+   "software/vision/tools/make_lens_video.py": "069e3797856f8feb66b376805cc0348bf9236542d971b7b30e5720fea7145c2c",
    "software/vision/tools/merge_frames.py": "5c8c2376c8869e498b5243c0096a239aa9f358014450275bde0284ad3e68ae8d",
    "software/trajectory/assets/config/front_x3_r1440_720.yaml": "37e3275308c089e12d7a636bce8df992d0ac76abe9a4d4ded67c8d6605c08a67",
    "software/trajectory/assets/config/rear_basalt065_720.yaml": "5bb8eeb85ec856a9a2ddda365fb8a6d46310e182844c47837e23eca5bae32fa6"
   },
   "trajectory_engines": {
-   "Thirdparty/DBoW2/lib/libDBoW2.so": "83829f18ac168cc3868dd9d2128a30f8bfb1c78ec58f73ec34baff230e309be7",
-   "Thirdparty/g2o/lib/libg2o.so": "3cecc56597623d061629b027832e4cb9b5e7af67a16d17b66ab4d34118c604a5",
+   "Thirdparty/DBoW2/lib/libDBoW2.so": "3c7068302138ee6669dd17982e9f6ff8262b8320b81f1c7b5cc3d99a9ca9371d",
+   "Thirdparty/g2o/lib/libg2o.so": "7f42e6dac54e29d6e5bedb405b370f89885fae1645306a571ba2b0a25c55a020",
    "calib_env/opencv_contrib_python_headless-4.13.0.92.dist-info": "df5254c1dc2d39dd9390bf1cc039147ad406b418b16e594845dfbb5ed4f072de",
    "env/av-17.0.1.dist-info": "d66c53f7aee5f95eecd5f8b927262b2d60aa3abba7338b95eeea329472a18c06",
    "env/gtsam-4.3.0.dist-info": "935ad6f6b3e641a504d581282279ba7d6f5dd792d0d459b3e1aff74f2b30d6fc",
@@ -320,12 +332,12 @@
    "env/opencv_python-4.12.0.dist-info": "c5f2e23ea894a890f8d6f8e99459c1a8a770f1c2abed17614ac1e6bfb5b964dc",
    "env/opencv_python_headless-4.12.0.dist-info": "508847f6cc5849a3533e5c4107ccf97bda15826568d77f04c3f51458546923f0",
    "env/scipy-1.17.1.dist-info": "1d0a8a19a3144ca6b9a582f0ba5241dbe0f8f5841247bcb6f3241db2ebb86e93",
-   "ffmpeg": "c4385d1433a5a9440c6e6a6129f8784b146347386f1899f05b3dbfae857d216a",
-   "ffprobe": "3b0db28d25eeebe714def62c4772b6decf84b1edd889ae2e7caa8d58288d1e1e",
-   "fusion_python": "56d6a1cc9fb557f649bf42317a33f62b5170b895885cac34f310d2ae5caa2ed0",
-   "orb_library": "fa85193d6a9556d9f4edef5f5768b925bbb89f895f357c781cd32870011d8040",
+   "ffmpeg": "8bf7da63d4d7fd3035ebcbfbed39fbfabd5d3c0083deb7f4c0ba660629c6c0e2",
+   "ffprobe": "a78e8a409c5d5620305460cd101d371886608806ea6e3b9a80ad9547a0a9c7fc",
+   "fusion_python": "9f8bd340adc813b48f2d76f228d939f057fe6611cba7217fdd222ea74f0b3dcd",
+   "orb_library": "df7bc7bf8aeb81abf55feac97d8aa52373949c2ed322115feb81b5de1730fe75",
    "orb_vocabulary": "f8dd027f7a6cb88129821341194d7f2c75b77b3394257ddd0d2229863d1a3570",
-   "orb_wrapper": "e42c3606dba8255a0991c4f39eb80c538dc38aed43441fccf33a509fb1b48596"
+   "orb_wrapper": "14fce7f12cc2f6bae686f8b73b99d163e2bf9323fce6fdac4feeef228093aef2"
   },
   "options": {
    "compare_sample": false
@@ -368,28 +380,28 @@
    },
    "recordings": {
     "A": {
-     "path": "/home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/A/VID_20261102_160711_00_037.insv",
+     "path": "/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/A/VID_20261102_160711_00_037.insv",
      "bytes": 967130941,
-     "mtime_ns": 1793606926010000000
+     "mtime_ns": 1794035531330975545
     },
     "B": {
-     "path": "/home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/B/VID_20261102_160924_00_038.insv",
+     "path": "/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/B/VID_20261102_160924_00_038.insv",
      "bytes": 1240351213,
-     "mtime_ns": 1793607087010000000
+     "mtime_ns": 1794035599932330788
     },
     "C": {
-     "path": "/home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/C/VID_20261102_161145_00_039.insv",
+     "path": "/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/C/VID_20261102_161145_00_039.insv",
      "bytes": 693912606,
-     "mtime_ns": 1793607173010000000
+     "mtime_ns": 1794035622416102708
     },
     "D": {
-     "path": "/home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/D/VID_20261102_161304_00_040.insv",
+     "path": "/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/D/VID_20261102_161304_00_040.insv",
      "bytes": 1954761727,
-     "mtime_ns": 1793607379010000000
+     "mtime_ns": 1794035651857113486
     }
    }
   },
-  "computation_hash": "e0e4dfd4ce1a17e877b8a383c581b12250416e4af2bcf9180bf95c115027d934"
+  "computation_hash": "dfd082f03c332138775c4c330759c7dec24eae7842dbe07dde50cea6f7e0de41"
  },
  "imu": {
   "A": {
@@ -419,18 +431,18 @@
  },
  "intrinsics_stage": {
   "converged": 1,
-  "num_points": 387946,
-  "mean_reprojection_px": 0.849513,
-  "corners_per_frame": 136.8,
+  "num_points": 385850,
+  "mean_reprojection_px": 0.848643,
+  "corners_per_frame": 136.1,
   "kb4": [
-   527.1974700356502,
-   526.1322581007346,
-   718.9236266904722,
-   723.7957223745935,
-   0.09008830145437513,
-   -0.03601685860189556,
-   0.010229713934931389,
-   -0.001603677260961879
+   527.2467694793512,
+   526.1776057834477,
+   718.9610091147616,
+   723.7958798790281,
+   0.0893838417979647,
+   -0.03397338439947112,
+   0.008123402302779647,
+   -0.0008998892346214094
   ]
  },
  "A_board": {
@@ -455,31 +467,31 @@
  "cam_imu_stage": {
   "converged": 2,
   "num_points": 440084,
-  "mean_reprojection_px": 1.04682,
+  "mean_reprojection_px": 1.04697,
   "corners_per_frame": 120.3,
   "parameters": {
    "q_xyzw": [
-    -0.49730937471097286,
-    -0.5048936323045777,
-    -0.5065668785027592,
-    0.4910761687221666
+    -0.4973040150593777,
+    -0.5048849543061006,
+    -0.5065719887013803,
+    0.49108524696255923
    ],
    "p": [
-    0.003317556916275806,
-    0.0049076050616841515,
-    0.014703816100175916
+    0.0033150839603848068,
+    0.004901455672198038,
+    0.014712374270022758
    ],
-   "fx": 527.1974700356502,
-   "fy": 526.1322581007346,
-   "cx": 718.9236266904722,
-   "cy": 723.7957223745935,
+   "fx": 527.2467694793512,
+   "fy": 526.1776057834477,
+   "cx": 718.9610091147616,
+   "cy": 723.7958798790281,
    "k": [
-    0.09008830145437513,
-    -0.03601685860189556,
-    0.010229713934931389,
-    -0.001603677260961879
+    0.0893838417979647,
+    -0.03397338439947112,
+    0.008123402302779647,
+    -0.0008998892346214094
    ],
-   "cam_time_offset_ns": 7329628,
+   "cam_time_offset_ns": 7329672,
    "camera_type": "kb4",
    "resolution": [
     1440,
@@ -510,27 +522,27 @@
   "T_imu_cam": {
    "p_mm": [
     3.32,
-    4.91,
-    14.7
+    4.9,
+    14.71
    ],
    "q_xyzw": [
-    -0.49730937471097286,
-    -0.5048936323045777,
-    -0.5065668785027592,
-    0.4910761687221666
+    -0.4973040150593777,
+    -0.5048849543061006,
+    -0.5065719887013803,
+    0.49108524696255923
    ]
   },
   "cam_time_offset_ms": 7.33,
   "intrinsics_1440": {
-   "fx": 527.1974700356502,
-   "fy": 526.1322581007346,
-   "cx": 718.9236266904722,
-   "cy": 723.7957223745935,
+   "fx": 527.2467694793512,
+   "fy": 526.1776057834477,
+   "cx": 718.9610091147616,
+   "cy": 723.7958798790281,
    "k": [
-    0.09008830145437513,
-    -0.03601685860189556,
-    0.010229713934931389,
-    -0.001603677260961879
+    0.0893838417979647,
+    -0.03397338439947112,
+    0.008123402302779647,
+    -0.0008998892346214094
    ]
   },
   "factory": {
@@ -549,11 +561,11 @@
   "status": "CONSISTENT_ON_OBSERVED_WINDOWS_NOT_VALIDATED",
   "windows": 239,
   "gravity_directions": 6,
-  "residual_abs_max_m_s2": 0.05443997260061906
+  "residual_abs_max_m_s2": 0.05446370788447652
  },
  "bundle": {
-  "dir": "/home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/bundle",
-  "id": "fa0d2d72ef52"
+  "dir": "/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/bundle",
+  "id": "b4ab6b8a4f4b"
  },
  "C_new": {
   "status": "ok",
@@ -562,24 +574,56 @@
   "map_position_fraction": 1.0,
   "calibration_used": {
    "source": "registry",
-   "id": "fa0d2d72ef52",
-   "dir": "/home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/bundle",
+   "id": "b4ab6b8a4f4b",
+   "dir": "/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/bundle",
    "serial": "IAQEB2609JPAR3",
    "gripper": "handheld_v1",
    "status": "override",
    "selection": "UMI_TRAJ_CALIB"
   },
   "n": 1926,
-  "ate_se3_rmse_mm": 3.431317999620834,
-  "ate_se3_p95_mm": 7.163455252470657,
-  "ate_sim3_rmse_mm": 1.58213995312027,
-  "scale_board_over_trajectory": 1.0576001271420736,
-  "board_extent_m": 0.37061432158442376
+  "ate_se3_rmse_mm": 3.437593813049656,
+  "ate_se3_p95_mm": 7.093546966870484,
+  "ate_sim3_rmse_mm": 1.5633827953529387,
+  "scale_board_over_trajectory": 1.05790578979756,
+  "board_extent_m": 0.3716922336810317
+ },
+ "stage_timings": {
+  "读取录像": {
+   "status": "reused",
+   "elapsed_s": 0.0,
+   "original_elapsed_s": 54.407
+  },
+  "A 内参": {
+   "status": "reused",
+   "elapsed_s": 0.0,
+   "original_elapsed_s": 132.834
+  },
+  "B 相机–IMU": {
+   "status": "reused",
+   "elapsed_s": 0.0,
+   "original_elapsed_s": 170.625
+  },
+  "D 重力检查": {
+   "status": "reused",
+   "elapsed_s": 0.0,
+   "original_elapsed_s": 0.282
+  },
+  "生成标定包": {
+   "status": "reused",
+   "elapsed_s": 0.0,
+   "original_elapsed_s": 0.001
+  },
+  "C 轨迹验证": {
+   "status": "reused",
+   "elapsed_s": 0.0,
+   "original_elapsed_s": 246.122
+  }
  },
  "checks": [
   {
    "check": "A 段：平均每帧用上的标定板角点数",
-   "value": 136.8,
+   "value": 136.1,
    "limit": ">= 30（太少说明板太远、画面糊或经常出画面）",
    "result": "OK"
   },
@@ -603,19 +647,19 @@
   },
   {
    "check": "内参：平均重投影误差 (px)",
-   "value": 0.849513,
+   "value": 0.848643,
    "limit": "<= 1",
    "result": "OK"
   },
   {
    "check": "内参：焦距与样例标定相差",
-   "value": 0.0308,
+   "value": 0.0309,
    "limit": "<= 3 %（同型号相机应接近；> 10 % 判失败）",
    "result": "WARN"
   },
   {
    "check": "内参：主点与样例标定相差 (px)",
-   "value": 9.1,
+   "value": 9.0,
    "limit": "<= 40",
    "result": "OK"
   },
@@ -639,7 +683,7 @@
   },
   {
    "check": "相机–IMU：平均重投影误差 (px)",
-   "value": 1.04682,
+   "value": 1.04697,
    "limit": "<= 1.2",
    "result": "OK"
   },
@@ -651,7 +695,7 @@
   },
   {
    "check": "相机–IMU：旋转与样例标定相差 (°)",
-   "value": 1.549,
+   "value": 1.548,
    "limit": "<= 2",
    "result": "OK"
   },
@@ -675,13 +719,13 @@
   },
   {
    "check": "C 段：新标定下的轨迹误差 ATE (mm)",
-   "value": 3.43,
+   "value": 3.44,
    "limit": "<= 30",
    "result": "OK"
   },
   {
    "check": "C 段：新标定下的尺度（板 / 轨迹）",
-   "value": 1.0576,
+   "value": 1.0579,
    "limit": "1 ± 0.03（超出 1 ± 0.1 判失败）",
    "result": "WARN"
   },
@@ -693,18 +737,17 @@
   },
   {
    "check": "C 段：这些帧里相机移动的范围 (m)",
-   "value": 0.371,
+   "value": 0.372,
    "limit": ">= 0.15（太小则量不准尺度）",
    "result": "OK"
   }
  ],
  "verdict": "PASS（有提醒，见报告）",
  "why": "",
- "wall_s": 1367.7,
+ "wall_s": 0.0,
  "activation": {
-  "checked_at": "2026-11-04T16:22:32+08:00",
-  "state": "active",
-  "version": "001",
-  "message": "已设为该设备默认标定（UMI_TRAJ_CALIB 可临时覆盖）"
+  "checked_at": "2026-11-07T15:49:09+08:00",
+  "state": "inactive",
+  "message": "本次结果未启用，设备默认标定仍为 001"
  }
 }

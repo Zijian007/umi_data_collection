@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from software.calibration.inputs import discover_recordings
+from software.calibration.pipeline.inputs import discover_recordings
 
 
 class RecordingInputsTests(unittest.TestCase):

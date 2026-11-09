@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from software import config
 from software.scene import layout, workflow
+from software.scene.result_io import read_arm_summary
 from software.scene.management import episodes, inputs, migration, processing
 from software.storage import publish_link, write_json, write_yaml
 from software.viewer.data import RecordingCatalog
@@ -42,7 +43,7 @@ class InternalLayoutTests(unittest.TestCase):
         self.assertEqual((report.read_bytes(), report.stat().st_mtime_ns), before)
         self.assertEqual({p.name for p in fixture.batch.iterdir()}, {'batch.yaml', 'mapping', 'take_001', '.umi'})
         take = fixture.batch / 'take_001'
-        self.assertEqual({p.name for p in take.iterdir()}, {'videos', '.umi'})
+        self.assertEqual({p.name for p in take.iterdir()}, {'left', 'right', '.umi'})
         self.assertTrue((take / '.umi/episode.yaml').is_file())
         self.assertFalse((take / '.umi/state.json').exists())
         self.assertFalse((fixture.batch / 'imports').exists())
@@ -105,7 +106,7 @@ class InternalLayoutTests(unittest.TestCase):
         self.assertEqual({p: (p.read_bytes(), p.stat().st_ino) for p in fixture.recording_paths.values()}, source)
         data = json.loads((current.output / 'episode.json').read_text())
         inputs.validate_assets(current.output, data['assets'])
-        summary = json.loads((current.output / 'left/details/summary.json').read_text())
+        summary = read_arm_summary(current.output / 'left')
         self.assertEqual(maps.load_shared((current.output / 'left').resolve(), summary)['kind'], 'umi_map_view')
         self.assertEqual(episodes.task_status(current.path)['review'], 'accepted')
         self.assertEqual(len(RecordingCatalog(fixture.scene.root).scan()['recordings']), 1)

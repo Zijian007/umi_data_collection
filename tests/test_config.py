@@ -13,7 +13,9 @@ from unittest.mock import patch
 
 from software.vision import runtime as visual_runtime
 from software import config, registry
-from software.calibration import inputs, reports, workflow as calibration_workflow
+from software.calibration.pipeline import inputs
+from software.calibration import result_io
+from software.calibration import workflow as calibration_workflow
 from software.calibration.models import CalibrationRequest, SegmentPaths
 from software.trajectory.calibration import assets as calibration_assets, selection
 from software.trajectory import cli, workflow
@@ -44,7 +46,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual((p.fusion.group_scale_ratio, p.fusion.split_rotation_deg), (1.25, 15))
         self.assertEqual((p.fusion.acc_noise, p.fusion.gyro_noise, p.fusion.gyro_bias_rw), (.002, .0002, .00002))
         c = config.load('calibration').values
-        self.assertEqual((c.board.intrinsics_step, c.board.camera_imu_step, c.board.validation_step), (5, 15, 1))
+        self.assertEqual((c.board.intrinsics_step, c.board.validation_step), (5, 1))
         self.assertEqual((c.checks.ate_fail_mm, c.checks.scale_warn, c.checks.scale_fail), (30, .03, .1))
         with self.assertRaises(FrozenInstanceError):
             p.fusion.step = 10
@@ -150,9 +152,29 @@ class ConfigTests(unittest.TestCase):
         config.write_yaml(self.root / 'resolved.yaml', c.load_trajectory_validation().values)
         self.assertEqual(config.load('trajectory', self.root / 'resolved.yaml').values, c.load_trajectory_validation().values)
 
+    def test_c_uses_measured_tag_size_and_preserves_other_trajectory_overrides(self):
+        self.overlay('orb:\n  initial_tag_size_m: 0.024\nfusion:\n  node_stride: 3\n', 'trajectory.yaml')
+        c = config.load('calibration', self.overlay('trajectory_validation:\n  config: trajectory.yaml\n'))
+        original = c.load_trajectory_validation()
+        measured = c.load_trajectory_validation(tag_size_m=.0357)
+        self.assertEqual(original.values.orb.initial_tag_size_m, .024)
+        self.assertEqual(measured.values.orb.initial_tag_size_m, .0357)
+        self.assertEqual(measured.values.fusion.node_stride, 3)
+        self.assertNotEqual(original.computation_hash, measured.computation_hash)
+        self.assertEqual(measured.snapshot()['cli_overrides'], {'orb': {'initial_tag_size_m': .0357}})
+        config.write_yaml(self.root / 'child.yaml', measured.values)
+        self.assertEqual(config.load('trajectory', self.root / 'child.yaml').values, measured.values)
+
+    def test_fixed_precision_and_geometry_fields_are_no_longer_tuning_options(self):
+        for field, value in [('time_match_tolerance_ns', 1000), ('minimum_trajectory_spread_m', .000001),
+                             ('coverage_radius_px', 960.)]:
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, '未知配置项'):
+                config.load('calibration', self.overlay(f'board:\n  {field}: {value}\n'))
+
     def test_retry_gate_changes_quality_assessment(self):
         info = self.root / 'fuse_info.json'
-        info.write_text(json.dumps(dict(frames=100, init_lens='front', chains=dict(front=[[[0,89],'full']]))))
+        info.write_text(json.dumps(dict(frames=100, init_lens='front', chains=dict(front=[[[0,89],'full']]),
+            scale_consistency=dict(status='valid', maximum_change_ratio=1.0))))
         result = FusionResult(self.root / 'traj.txt', info)
         p = config.load('trajectory').values.retry
         self.assertTrue(reconstruction.assess_try(result, p)['suspicious'])
@@ -344,7 +366,7 @@ class EvaluationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, helper.simulation(Path(temp)) as (args, commands, install):
             self.assertEqual(calibration_workflow.run(inputs.parse_run_args(args)), 0)
             output = Path(args.out)
-            camera = output / 'bundle/calibration_r1440.json'
+            camera = output / 'calibration.json'
             before = camera.read_bytes()
             cfg = Path(temp) / 'strict.yaml'
             cfg.write_text("checks:\n  ate_fail_mm: 2.0\n  ate_warn_mm: 1.0")
@@ -353,30 +375,31 @@ class EvaluationTests(unittest.TestCase):
             execute.assert_not_called()
             install.assert_not_called()
             self.assertEqual(camera.read_bytes(), before)
-            report = reports.load_report(output)
-            self.assertEqual(report['verdict'], 'FAIL')
-            self.assertEqual(report['evaluation_history'][0]['verdict'], 'PASS')
-            report_before = (output / 'diagnostics/report.json').read_bytes()
+            report = result_io.load_result(output)
+            self.assertEqual(report['evaluation']['decision'], 'rejected')
+            self.assertEqual(report['evaluation_history'][0]['decision'], 'accepted')
+            report_before = (output / 'run/record.json').read_bytes()
             cfg.write_text("board:\n  validation_step: 2")
             self.assertEqual(calibration_workflow.recheck(output, cfg), 2)
-            self.assertEqual(report_before, (output / 'diagnostics/report.json').read_bytes())
+            self.assertEqual(report_before, (output / 'run/record.json').read_bytes())
 
     def test_calibration_overrides_reach_solver_and_physical_check_commands(self):
         helper = calibration_tests.FullWorkflowTests()
         with tempfile.TemporaryDirectory() as temp, helper.simulation(Path(temp)) as (args, commands, install):
             path = Path(temp) / 'custom.yaml'
-            path.write_text("imu:\n  gyro_noise: 0.0004\ngravity:\n  window_s: 0.7\n  minimum_window_span_fraction: 0.9\nboard:\n  intrinsics_step: 7\n  camera_imu_step: 11\n  validation_step: 2\n")
+            path.write_text("imu:\n  gyro_noise: 0.0004\ngravity:\n  window_s: 0.7\n  minimum_window_span_fraction: 0.9\nboard:\n  intrinsics_step: 7\n  validation_step: 2\n")
             args.config = path
             self.assertEqual(calibration_workflow.run(inputs.parse_run_args(args)), 0)
             imu_command = next(command for command in commands if '--gyro-noise-std' in command)
             self.assertEqual(float(imu_command[imu_command.index('--gyro-noise-std')+1]), .0004)
-            gravity_command = next(command for command in commands if '--max-gravity-residual' in command)
+            gravity_command = next(command for command in commands if any('imu_calib_physical_check.py' in part for part in command))
             self.assertEqual(float(gravity_command[gravity_command.index('--window-s')+1]), .7)
             self.assertEqual(float(gravity_command[gravity_command.index('--min-window-span-fraction')+1]), .9)
-            from software.calibration.algorithms import board_pnp
-            self.assertEqual([call.kwargs['step'] for call in board_pnp.detect_all.call_args_list], [7,11,2])
-            report = reports.load_report(Path(args.out))
-            self.assertEqual(report['parameters']['configuration']['values']['imu']['gyro_noise'], .0004)
+            from software.calibration.pipeline import board_detection
+            self.assertEqual({call.args[0].name: call.kwargs['step'] for call in board_detection.detect_all.call_args_list},
+                             {'A': 7, 'C': 2})
+            report = result_io.load_result(Path(args.out))
+            self.assertEqual(report['computation']['configuration']['values']['imu']['gyro_noise'], .0004)
             install.assert_not_called()
 
     def test_trajectory_notes_update_reuses_trajectory_and_updates_parameter_records(self):

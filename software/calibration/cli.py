@@ -1,4 +1,4 @@
-"""umi-calib -- 给一台 X3 做前镜头内参和相机–IMU 标定。每台新相机默认走全套 A/B/C/D。
+"""umi-calib -- X3 前后镜头标定、验收与设备资产管理。run 执行前镜头 A/B/C/D 全流程。
 
     umi-calib run <放着 A B C D 四段录像的文件夹> [--out DIR] [--tag-size-mm 24.0] [--install]
     umi-calib run --a A.insv --b B.insv --c C.insv --d D.insv [...]
@@ -8,10 +8,11 @@
     umi-calib status                      # 同 devices
     umi-calib check                       # 标定组件装好了吗
     umi-calib verify <C 段录像>           # 可选：不标定，只检查现有标定在这台上准不准
+    umi-calib calibrate-rear <录像目录>   # 后镜头 A/B/C/D；需要已登记的前镜头标定
 
 四段录像怎么录见 docs/标定.md。支持 A/B/C/D 子目录各放一段；平铺四段则按文件名排序。
-流程与 2026-09-04 的样例标定相同：A -> 内参（basalt_calibrate kb4）；B -> 相机–IMU（basalt_calibrate_imu，固定 IMU 尺度、
-第二阶段只优化相机时间差）；D -> 六朝向静止的重力一致性检查；C -> 用新标定跑内部轨迹引擎，与标定板 PnP 位姿比较。"""
+求解与验收：A -> 内参（basalt_calibrate kb4）；B -> 相机–IMU（basalt_calibrate_imu，固定 IMU 尺度、
+第二阶段额外开放相机时间差）；D -> 多朝向静止的重力一致性检查；C -> 用新标定跑内部轨迹引擎，与标定板 PnP 位置参考比较。"""
 
 from __future__ import annotations
 
@@ -20,7 +21,10 @@ import json
 from pathlib import Path
 from ruamel.yaml.error import YAMLError
 
-from software.calibration import devices, inputs, migration, runtime, workflow
+from software.calibration import devices
+from software.calibration.pipeline import inputs
+from software.calibration.pipeline import runtime
+from software.calibration import workflow
 
 
 def main(argv=None) -> int:
@@ -48,29 +52,31 @@ def main(argv=None) -> int:
         return devices.list_devices()
     if args.cmd == "retire":
         return devices.retire(args.serial)
-    if args.cmd in ("migrate-legacy", "uninstall"):
-        return devices.migrate_legacy()
     if args.cmd in ('upgrade-device', 'activate-calibration'):
         try:
-            result = (migration.upgrade_device(args.serial, dry_run=args.dry_run) if args.cmd == 'upgrade-device'
-                      else migration.activate_calibration(args.serial, args.version))
+            result = (devices.upgrade_device(args.serial, dry_run=args.dry_run) if args.cmd == 'upgrade-device'
+                      else devices.activate_calibration(args.serial, args.version))
         except (OSError, ValueError, RuntimeError, KeyError) as error:
             runtime.console.write(str(error), state='失败')
             return 2
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "check":
-        return runtime.check()
+        problems = inputs.board_layout_problems()
+        for problem in problems:
+            runtime.console.write(problem, state='失败')
+        return runtime.check() or int(bool(problems))
     if args.cmd == 'calibrate-rear':
         from software.scene.spatial.rear_calibration import run
         try:
             result = run(args.folder, output=args.out, tag_size_mm=args.tag_size_mm, cores=args.cores,
-                keep_work=args.keep_work, config_path=args.config, dry_run=args.dry_run)
+                keep_work=args.keep_work, config_path=args.config, dry_run=args.dry_run,
+                resume=args.resume, force=args.force, workers=args.workers)
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, YAMLError) as error:
             runtime.console.write(str(error), state='失败')
             return 2
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0 if result['status'].startswith('PASS') or result['status'] == 'planned' else 1
+        return result['exit_code']
     parser.print_help()
     return 2
 
@@ -78,22 +84,27 @@ def main(argv=None) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="umi-calib", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="cmd")
-    run_parser = commands.add_parser("run", help="从 A B C D 四段录像算标定并检查")
+    run_parser = commands.add_parser("run", help="从 A/B/C/D 四段录像求解并验收前镜头标定")
     run_parser.add_argument("folder", nargs="?", help="标定目录：A/B/C/D 子目录各 1 个 .insv，或平铺 4 个 .insv（按文件名排序）")
     for segment in "abcd":
         run_parser.add_argument("--" + segment, help=f"{segment.upper()} 段录像")
-    run_parser.add_argument("--out", help="结果目录（默认 <录像文件夹>/umi_calib_out）")
+    run_parser.add_argument("--out", help="结果目录（默认 <folder 或 A 录像所在目录>/calibration_result）")
     run_parser.add_argument("--compare-sample", action="store_true", help="额外用样例标定跑 C 段轨迹，仅作对照，默认不运行")
     run_parser.add_argument("--install", action="store_true", help="检查通过后按序列号写入设备档案")
-    run_parser.add_argument("--gripper", help="夹爪 id（默认 registry 的 default_gripper）")
-    verify_parser = commands.add_parser("verify", help="可选：不标定，只检查现有标定在这段 C 上准不准（不是默认入库）")
-    verify_parser.add_argument("video", help="C 段录像（按 docs/标定.md 第 3 节 C 段的录法）")
-    verify_parser.add_argument("--out", help="结果目录（默认 <录像名>_umi_calib_verify，在录像旁边）")
+    run_parser.add_argument("--gripper", help="--install 登记时绑定的夹爪 id（默认 registry 的 default_gripper）")
+    verify_parser = commands.add_parser("verify", help="用 C 段录像复查已有前镜头标定，不生成或启用新参数")
+    verify_parser.add_argument("video", help="C 段录像（录法见 docs/标定.md 的“录 4 段”）")
+    verify_parser.add_argument("--out", help="结果目录（默认 <录像名>_calibration_verification，在录像旁边）")
     for command_parser in (run_parser, verify_parser):
-        command_parser.add_argument("--tag-size-mm", type=float, default=24.0, help="标定板上一个黑色方块的边长，用尺子量到的值（A4 板 24，A3 板 36）")
+        command_parser.add_argument("--tag-size-mm", type=float, default=24.0, help="单个标签外黑框的实测边长（含黑边、不含白边），单位 mm；A4 约 24，A3 约 36，默认 24")
         command_parser.add_argument("--cores", help="限制使用的 CPU，例如 0-7")
-        command_parser.add_argument("--keep-work", action="store_true", help="保留中间文件（很大）")
-        command_parser.add_argument("--force", action="store_true", help="结果目录已存在时覆盖")
+        workers_help = "图像准备与板检测线程预算（默认最多 24，受 --cores 限制）"
+        if command_parser is run_parser:
+            workers_help += "；转 bag 解码最多 4 线程"
+        command_parser.add_argument("--workers", type=int, help=workers_help)
+        command_parser.add_argument("--resume", action="store_true", help="校验并复用已完成阶段，从失败或中断处继续")
+        command_parser.add_argument("--keep-work", action="store_true", help="成功后也保留中间文件；失败或中断时默认保留以便 --resume")
+        command_parser.add_argument("--force", action="store_true", help="清空指定结果目录后重算，不能与 --resume 同用")
         command_parser.add_argument("--config", type=Path, help="显式 YAML 覆盖配置（默认 config/calibration.yaml）")
         command_parser.add_argument("--dry-run", action="store_true", help="只检查输入与生效参数，不创建输出或运行算法")
     recheck_parser = commands.add_parser("recheck", help="仅按新验收规则重新评估已有完整报告")
@@ -101,19 +112,22 @@ def build_parser() -> argparse.ArgumentParser:
     recheck_parser.add_argument("--config", type=Path)
     install_parser = commands.add_parser("install", help="把一份通过检查的标定按序列号写入设备档案")
     install_parser.add_argument("out")
-    install_parser.add_argument("--serial", help="覆盖报告里的序列号")
+    install_parser.add_argument("--serial", help="核对测量所属序列号（不能改写）")
     install_parser.add_argument("--gripper", help="夹爪 id（默认 registry 的 default_gripper）")
-    install_parser.add_argument("--force", action="store_true")
+    install_parser.add_argument("--force", action="store_true", help="允许完整结果的质量拒绝；仍校验证据和身份，不能安装 INCOMPLETE")
     rear_parser = commands.add_parser("install-rear", help="登记通过验收的后镜头标定版本")
     rear_parser.add_argument("measurement", type=Path)
     rear = commands.add_parser('calibrate-rear', help='从后镜头 A/B/C/D 求解与验收')
-    rear.add_argument('folder', type=Path)
-    rear.add_argument('--out', type=Path)
-    rear.add_argument('--tag-size-mm', type=float, default=24.)
-    rear.add_argument('--cores', default='')
-    rear.add_argument('--keep-work', action='store_true')
-    rear.add_argument('--config', type=Path)
-    rear.add_argument('--dry-run', action='store_true')
+    rear.add_argument('folder', type=Path, help='后镜头 A/B/C/D 录像目录；相机须已有前镜头标定')
+    rear.add_argument('--out', type=Path, help='结果目录（默认 <folder>/umi_calib_rear_out）')
+    rear.add_argument('--tag-size-mm', type=float, default=24., help='实测标签黑色外框边长，单位 mm（默认 24）')
+    rear.add_argument('--cores', default='', help='限制可用 CPU，例如 0-7')
+    rear.add_argument('--keep-work', action='store_true', help='验收可用后仍保留中间文件，供排查或调参复用')
+    rear.add_argument('--config', type=Path, help='标定 YAML 覆盖配置')
+    rear.add_argument('--dry-run', action='store_true', help='只检查输入与生效参数，不运行算法')
+    rear.add_argument('--resume', action='store_true', help='校验并复用已完成步骤')
+    rear.add_argument('--force', action='store_true', help='清空指定结果目录后重算，不能与 --resume 同用')
+    rear.add_argument('--workers', type=int, help='数据处理线程预算：图像准备/板检测默认最多 24，转 bag 解码最多 4，受 --cores 限制')
     gripper_parser = commands.add_parser("install-gripper", help="登记夹爪几何版本，已有版本保留")
     gripper_parser.add_argument("gripper_id")
     gripper_parser.add_argument("directory", type=Path)
@@ -126,7 +140,6 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("devices", help="列出设备档案")
     retire_parser = commands.add_parser("retire", help="停用一台相机")
     retire_parser.add_argument("serial")
-    commands.add_parser("migrate-legacy", aliases=["uninstall"], help="备份迁出旧 calibration_user/ 目录；uninstall 为旧别名")
     commands.add_parser("status", help="列出设备档案")
     commands.add_parser("check", help="检查标定组件是否装好")
     return parser

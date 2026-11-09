@@ -138,6 +138,7 @@ class ArmTrajectory:
     T_scene_tcp: np.ndarray
     frame_id: str
     tcp_frame: dict
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

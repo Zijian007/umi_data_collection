@@ -16,6 +16,7 @@ from software.vision import runtime as visual_runtime, slam
 from software.trajectory.models import AttemptResult, FusionResult, ReconstructionContext
 from software.vision.models import LensLocalization, LensVideo, RecordingData, ProcessingError
 from software.vision.runtime import write_error_log
+from software.trajectory.algorithms.fusion_quality import scale_failure
 
 
 def run_attempts(videos: tuple[LensVideo, ...], data: RecordingData,
@@ -46,18 +47,19 @@ def run_attempts(videos: tuple[LensVideo, ...], data: RecordingData,
         if reason:
             try_entry.update({'failed_stage': last_stage, 'reason': reason})
         tries.append(try_entry)
-        if quality is not None and (best is None or try_key(quality) < try_key(tries[best - 1])):
+        if quality is not None and quality['usable'] and (best is None or try_key(quality) < try_key(tries[best - 1])):
             best = number
         if quality is not None and not quality['suspicious']:
             break
         if number < context.request.max_tries:
-            retry_reason = f'{last_stage}: {reason}' if reason else (
+            retry_reason = f'{last_stage}: {reason}' if reason else quality.get('reason') or (
                 f"{quality['placements']} 个独立地图放置，地图位置约束覆盖 {100 * quality['full_fraction']:.0f}% 的帧"
             )
             runtime.console.write(f'{retry_reason}；重新执行建图、定位与融合', recording=Path(recording_name).stem, attempt=number, state='重试')
     if best is None:
-        reason = f'{len(tries)} 次重建均失败（最后退出码 {tries[-1]["rc"]}）：{tries[-1].get("reason")}'
-        return AttemptResult(tries, None, None, reason, last_stage)
+        last = tries[-1]
+        reason = f'{len(tries)} 次重建均失败（最后退出码 {last["rc"]}）：{last.get("reason")}'
+        return AttemptResult(tries, None, None, reason, last.get('failed_stage', last_stage) or '重建质量检查')
     return AttemptResult(tries, best, context.paths.attempt(best))
 
 
@@ -155,8 +157,14 @@ def assess_try(fusion: FusionResult, parameters=None) -> dict:
         full_fraction = sum(int(c[0][1]) - int(c[0][0]) + 1 for c in full) / n
     except Exception as error:
         raise ProcessingError('重建质量检查', f'无法读取融合质量指标：{error}；指标文件：{fusion.info}') from error
-    return {'placements': placements, 'full_fraction': round(full_fraction, 4),
-            'suspicious': bool(placements > parameters.maximum_placements or full_fraction < parameters.minimum_full_fraction)}
+    scale = info.get('scale_consistency')
+    failure = scale_failure(scale, parameters.maximum_scale_change_ratio)
+    quality = dict(placements=placements, full_fraction=round(full_fraction, 4),
+        scale_consistency=scale, usable=failure is None,
+        suspicious=bool(failure or placements > parameters.maximum_placements or full_fraction < parameters.minimum_full_fraction))
+    if failure:
+        quality.update(reason=failure, failed_stage='重建质量检查')
+    return quality
 
 
 def try_key(q: dict) -> tuple:

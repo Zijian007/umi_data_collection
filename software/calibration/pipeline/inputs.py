@@ -9,7 +9,7 @@ from software import registry
 from software.calibration.models import (
     CalibrationInputs, CalibrationRequest, SegmentPaths, VerificationInputs, VerificationRequest,
 )
-from software.calibration import runtime
+from software.calibration.pipeline import runtime
 
 
 def discover_recordings(folder: Path) -> dict[str, Path]:
@@ -74,6 +74,7 @@ def parse_run_args(args: Namespace) -> CalibrationRequest:
         tag_size_mm=args.tag_size_mm, cores=args.cores, keep_work=args.keep_work,
         force=args.force, install=args.install, gripper=args.gripper, compare_sample=args.compare_sample,
         config=args.config, dry_run=args.dry_run,
+        resume=getattr(args, 'resume', False), workers=getattr(args, 'workers', None),
     )
 
 
@@ -82,15 +83,16 @@ def parse_verify_args(args: Namespace) -> VerificationRequest:
         video=Path(args.video).expanduser(), output=Path(args.out).expanduser() if args.out else None,
         tag_size_mm=args.tag_size_mm, cores=args.cores, keep_work=args.keep_work, force=args.force,
         config=args.config, dry_run=args.dry_run,
+        resume=getattr(args, 'resume', False), workers=getattr(args, 'workers', None),
     )
 
 
 def load_board(tag_size_mm: float) -> dict:
     if not math.isfinite(tag_size_mm) or tag_size_mm <= 0:
         raise ValueError("标定板 tag 边长必须是有限正数（mm）")
-    grid = json.loads(runtime.BOARD_JSON.read_text(encoding='utf-8'))
-    grid['tagSize'] = tag_size_mm / 1000.0
-    return grid
+    layout = _read_board_layout()
+    # Basalt consumes only geometry; physical size belongs to this run, not the print preset.
+    return {key: layout[key] for key in ('tagCols', 'tagRows', 'tagSpacing')} | {'tagSize': tag_size_mm / 1000.0}
 
 
 def prepare_verification(request: VerificationRequest) -> VerificationInputs:
@@ -102,3 +104,50 @@ def prepare_verification(request: VerificationRequest) -> VerificationInputs:
     selected = registry.resolve_insv(video)
     name = f"档案 {selected['serial']} / {selected.get('calibration_version', selected['id'])}"
     return VerificationInputs(video, camera_serial, load_board(request.tag_size_mm), selected, name)
+
+
+BOARD_JSON = runtime.REPO / "hardware/calibration_targets/aprilgrid.json"
+
+
+def _read_board_layout() -> dict:
+    layout = json.loads(BOARD_JSON.read_text(encoding='utf-8'))
+    if not isinstance(layout, dict) or set(layout) != {'family', 'black_border_bits', 'tagCols', 'tagRows', 'tagSpacing'}:
+        raise ValueError('板布局必须包含 family、black_border_bits、tagCols、tagRows、tagSpacing；尺寸由 --tag-size-mm 指定')
+    # These are compatibility constraints of the shipped Basalt and OpenCV detectors.
+    if layout['family'] != 'tag36h11' or layout['black_border_bits'] != 2:
+        raise ValueError('当前检测器仅支持 tag36h11、2 格黑边的 AprilGrid')
+    if any(type(layout[key]) is not int or layout[key] <= 0 for key in ('tagCols', 'tagRows')):
+        raise ValueError('标定板行列数必须是正整数')
+    spacing = layout['tagSpacing']
+    if type(spacing) not in (int, float) or not math.isfinite(spacing) or spacing <= 0:
+        raise ValueError('tagSpacing 必须是有限正数（标签间白色间隔 / 标签外黑框边长）')
+    return layout
+
+
+def board_layout_problems() -> list[str]:
+    """Check the supported layout and the geometry recorded for each print asset."""
+    try:
+        reference = _read_board_layout()
+    except (OSError, ValueError) as error:
+        return [f"无法读取 {BOARD_JSON.name}：{error}"]
+    problems = []
+    presets = sorted((BOARD_JSON.parent / 'prints').glob('*_meta.json'))
+    if not presets:
+        return ['prints/ 中没有标定板打印记录']
+    for path in presets:
+        try:
+            metadata = json.loads(path.read_text(encoding='utf-8'))
+            layout = metadata['layout']
+            if (metadata['family'] != reference['family'] or
+                    metadata['black_border_bits'] != reference['black_border_bits'] or
+                    layout['rows'] != reference['tagRows'] or layout['cols'] != reference['tagCols'] or
+                    layout['spacing'] != reference['tagSpacing']):
+                problems.append(f'{path.name} 与 {BOARD_JSON.name} 的标签编码、黑边、行列或间距不同，--tag-size-mm 无法覆盖')
+            for name in metadata['files']:
+                if Path(name).name != name or not (path.parent / name).is_file():
+                    problems.append(f'{path.name} 引用的打印资产不存在或路径无效：{name}')
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            problems.append(f"无法读取 {path.name}：{error}")
+    return problems
+
+

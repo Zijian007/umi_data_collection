@@ -1,43 +1,43 @@
-$ nice -n 10 /home/zijian/umi_data_collection/.deps/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/lib/ld-linux-x86-64.so.2 --library-path /home/zijian/umi_data_collection/.deps/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/lib /home/zijian/umi_data_collection/.deps/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/bin/basalt_calibrate_imu --dataset-path /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/work/B.bag --dataset-type bag --aprilgrid /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/aprilgrid.json --result-path /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam_imu --cache-name cam-imu-B --gyro-noise-std 0.0002 --accel-noise-std 0.002 --gyro-bias-std 2e-05 --accel-bias-std 0.003 --fixed-scale-opt-offset --no-gui
+$ nice -n 10 /home/zijianwang/umi_data_collection/.deps/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/lib/ld-linux-x86-64.so.2 --library-path /home/zijianwang/umi_data_collection/.deps/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/lib /home/zijianwang/umi_data_collection/.deps/basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64/bin/basalt_calibrate_imu --dataset-path /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/work/B.bag --dataset-type bag --aprilgrid /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/aprilgrid.json --result-path /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam_imu --cache-name cam-imu-B --gyro-noise-std 0.0002 --accel-noise-std 0.002 --gyro-bias-std 2e-05 --accel-bias-std 0.003 --fixed-scale-opt-offset --no-gui
 imu_topic: /imu0
 mocap_topic: 
 cam_topics: /cam0/image_raw 
 Total number of messages: 126718
 Image size: 3657
-Min time: 527000 max time: 123471229000 mocap to imu offset: 93825519778832
+Min time: 527000 max time: 123471229000 mocap to imu offset: 93825883888656
 Number of mocap poses: 0
 No pre-processed detected corners found
 No pre-processed initial poses found
-Loaded calibration from: /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam_imu/calibration.json
+Loaded calibration from: /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam_imu/calibration.json
 Started detecting corners
 Wild Apriltag detected. Hide them!
-Done detecting corners. Saved them here: /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam_imu/cam-imu-B_detected_corners.cereal
+Done detecting corners. Saved them here: /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam_imu/cam-imu-B_detected_corners.cereal
 Started initial camera pose computation 
-Done initial camera pose computation. Saved them here: /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam_imu/cam-imu-B_init_poses.cereal
+Done initial camera pose computation. Saved them here: /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam_imu/cam-imu-B_init_poses.cereal
 T_i_c0
-   0.94744    0.31965  0.0134754          0
- -0.319715   0.944393  0.0768384          0
- 0.0118354 -0.0771081   0.996952          0
+   0.95137   0.307693  0.0148367          0
+ -0.307934   0.948583  0.0732644          0
+0.00846913 -0.0742703   0.997202          0
          0          0          0          1
 Done Camera-IMU extrinsics initialization:
 T_i_c0:
-   0.94744    0.31965  0.0134754          0
- -0.319715   0.944393  0.0768384          0
- 0.0118354 -0.0771081   0.996952          0
+   0.95137   0.307693  0.0148367          0
+ -0.307934   0.948583  0.0732644          0
+0.00846913 -0.0742703   0.997202          0
          0          0          0          1
-g_a initialized with -9.12313  3.34047  1.05659
+g_a initialized with -9.17842  3.18746  1.05045
 IMU dt: 0.00100313 freq: 996.88
 Initialized optimization.
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=66791500.9492 sum_sq=16024649154.8 mean=151.769891542 rms=190.821135238
-[LINEARIZE] Error: 2.28764e+09 num points 440084
-	[ACCEPTED] lambda:1e-12 step_quality: 2.1441 max_inc: 1.35415 Error: 1.75372e+08 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=20302156.9449 sum_sq=2159084768.62 mean=46.1324586782 rms=70.0433738736
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=66811114.8389 sum_sq=16040920528.9 mean=151.814460055 rms=190.917990223
+[LINEARIZE] Error: 2.28783e+09 num points 440084
+	[ACCEPTED] lambda:1e-12 step_quality: 2.14273 max_inc: 1.35799 Error: 1.7689e+08 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=20479979.2747 sum_sq=2181844665.24 mean=46.5365231972 rms=70.4115856098
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
-  0.946384   0.320466   0.040722 -0.0152101
- -0.322737   0.943431  0.0760132 -0.0086188
--0.0140587 -0.0850802   0.996275 -0.0150045
+  0.951393   0.305206  0.0412443 -0.0149746
+ -0.307739   0.947387  0.0880651 -0.0125378
+-0.0121963  -0.096477    0.99526 -0.0152986
          0          0          0          1
 T_w_moc:
 1 0 0 0
@@ -51,35 +51,35 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias:   0.204916   -0.42122 -0.0715811
+accel_bias:  0.197264 -0.419181 -0.070069
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00338637 -0.00121235  0.00134669
+gyro_bias:  0.00337715 -0.00121328  0.00135125
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -8.81314  3.65883  1.18652 norm: 9.61594 g_mocap: -8.81314  3.65883  1.18652
-Current error: 1.75372e+08 num_points 440084 mean_error 398.497 reprojection_error 2.03022e+07 mean reprojection 46.1325 opt_time 979ms.
+ g -8.86607  3.50801  1.18783 norm: 9.60855 g_mocap: -8.86607  3.50801  1.18783
+Current error: 1.7689e+08 num_points 440084 mean_error 401.945 reprojection_error 2.048e+07 mean reprojection 46.5365 opt_time 761ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=20302156.9449 sum_sq=2159084768.62 mean=46.1324586782 rms=70.0433738736
-[LINEARIZE] Error: 1.75372e+08 num points 440084
-	[REJECTED] lambda:3.33333e-13 step_quality: -11.3542 max_inc: 4.86651 Error: 6.18482e+08 num points 440084
-	[REJECTED] lambda:6.66667e-13 step_quality: -11.3538 max_inc: 4.8665 Error: 6.18466e+08 num points 440084
-	[REJECTED] lambda:2.66667e-12 step_quality: -11.3515 max_inc: 4.86643 Error: 6.18374e+08 num points 440084
-	[REJECTED] lambda:2.13333e-11 step_quality: -11.3301 max_inc: 4.86579 Error: 6.17514e+08 num points 440084
-	[REJECTED] lambda:3.41333e-10 step_quality: -10.9832 max_inc: 4.85535 Error: 6.03587e+08 num points 440084
-	[REJECTED] lambda:1.09227e-08 step_quality: -6.91742 max_inc: 4.65815 Error: 4.41486e+08 num points 440084
-	[ACCEPTED] lambda:6.99051e-07 step_quality: 2.3312 max_inc: 1.76281 Error: 9.70376e+07 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=10723744.2459 sum_sq=547144931.504 mean=24.3674940374 rms=35.2600887078
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=20479979.2747 sum_sq=2181844665.24 mean=46.5365231972 rms=70.4115856098
+[LINEARIZE] Error: 1.7689e+08 num points 440084
+	[REJECTED] lambda:3.33333e-13 step_quality: -11.1395 max_inc: 4.90362 Error: 6.16868e+08 num points 440084
+	[REJECTED] lambda:6.66667e-13 step_quality: -11.1391 max_inc: 4.90361 Error: 6.16853e+08 num points 440084
+	[REJECTED] lambda:2.66667e-12 step_quality: -11.1369 max_inc: 4.90355 Error: 6.16761e+08 num points 440084
+	[REJECTED] lambda:2.13333e-11 step_quality: -11.1158 max_inc: 4.903 Error: 6.15903e+08 num points 440084
+	[REJECTED] lambda:3.41333e-10 step_quality: -10.7742 max_inc: 4.89406 Error: 6.02023e+08 num points 440084
+	[REJECTED] lambda:1.09227e-08 step_quality: -6.78826 max_inc: 4.71511 Error: 4.41168e+08 num points 440084
+	[ACCEPTED] lambda:6.99051e-07 step_quality: 2.34204 max_inc: 1.80129 Error: 9.71956e+07 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=10725097.1185 sum_sq=546069051.934 mean=24.3705681607 rms=35.225404775
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
-   0.891828    0.451147   0.0333072  -0.0117107
-  -0.401056    0.754448     0.51958  -0.0340928
-   0.209278   -0.476734    0.853772 -0.00750762
+   0.898001    0.438816   0.0321744  -0.0120435
+  -0.388696    0.756915    0.525353  -0.0384594
+    0.20618   -0.484273    0.850276 -0.00574153
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -93,31 +93,31 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias: -0.0708819 -0.0533232  -0.452773
+accel_bias: -0.0767341  -0.054215  -0.465194
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00346957 2.22112e-05  0.00285167
+gyro_bias:  0.00344138 1.33274e-05  0.00285797
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -8.14573  5.42164  1.18286 norm: 9.85628 g_mocap: -8.14573  5.42164  1.18286
-Current error: 9.70376e+07 num_points 440084 mean_error 220.498 reprojection_error 1.07237e+07 mean reprojection 24.3675 opt_time 3626ms.
+ g -8.22222  5.30931  1.15945 norm: 9.85586 g_mocap: -8.22222  5.30931  1.15945
+Current error: 9.71956e+07 num_points 440084 mean_error 220.857 reprojection_error 1.07251e+07 mean reprojection 24.3706 opt_time 3293ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=10723744.2459 sum_sq=547144931.504 mean=24.3674940374 rms=35.2600887078
-[LINEARIZE] Error: 9.70376e+07 num points 440084
-	[REJECTED] lambda:2.33017e-07 step_quality: -3.62427 max_inc: 3.38669 Error: 1.67871e+08 num points 440084
-	[REJECTED] lambda:4.66034e-07 step_quality: -0.302299 max_inc: 2.41053 Error: 1.02516e+08 num points 440084
-	[ACCEPTED] lambda:1.86414e-06 step_quality: 2.40474 max_inc: 0.88916 Error: 6.04495e+07 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=7279290.05891 sum_sq=261260691.139 mean=16.5406832762 rms=24.3651587881
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=10725097.1185 sum_sq=546069051.934 mean=24.3705681607 rms=35.225404775
+[LINEARIZE] Error: 9.71956e+07 num points 440084
+	[REJECTED] lambda:2.33017e-07 step_quality: -3.84099 max_inc: 3.45836 Error: 1.72489e+08 num points 440084
+	[REJECTED] lambda:4.66034e-07 step_quality: -0.466704 max_inc: 2.4693 Error: 1.05684e+08 num points 440084
+	[ACCEPTED] lambda:1.86414e-06 step_quality: 2.36418 max_inc: 0.919172 Error: 6.10651e+07 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=7349916.45401 sum_sq=261970164.459 mean=16.7011671727 rms=24.3982190817
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
-  0.836362   0.547846 -0.0190721 -0.0117729
- -0.385743   0.612897   0.689609  -0.036995
-  0.389489  -0.569405   0.723931    0.01213
+  0.842765    0.53793 -0.0194468 -0.0126403
+ -0.375875    0.61397   0.694089 -0.0405924
+  0.385311  -0.577644   0.719627  0.0147348
          0          0          0          1
 T_w_moc:
 1 0 0 0
@@ -131,30 +131,30 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias:  -0.072162 0.00512837  -0.394957
+accel_bias: -0.0696521 0.00146907  -0.404289
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00344979 -0.00010208  0.00326796
+gyro_bias:   0.00341917 -0.000104705   0.00327608
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -7.29817   6.3108  1.47298 norm: 9.76008 g_mocap: -7.29817   6.3108  1.47298
-Current error: 6.04495e+07 num_points 440084 mean_error 137.359 reprojection_error 7.27929e+06 mean reprojection 16.5407 opt_time 1847ms.
+ g -7.37704  6.22848  1.46285 norm: 9.76496 g_mocap: -7.37704  6.22848  1.46285
+Current error: 6.10651e+07 num_points 440084 mean_error 138.758 reprojection_error 7.34992e+06 mean reprojection 16.7012 opt_time 1598ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=7279290.05891 sum_sq=261260691.139 mean=16.5406832762 rms=24.3651587881
-[LINEARIZE] Error: 6.04495e+07 num points 440084
-	[REJECTED] lambda:6.21378e-07 step_quality: -0.341442 max_inc: 1.97079 Error: 6.34493e+07 num points 440084
-	[ACCEPTED] lambda:1.24276e-06 step_quality: 1.89888 max_inc: 1.23229 Error: 4.65681e+07 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=5716267.86043 sum_sq=144044897.017 mean=12.9890381391 rms=18.0917737953
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=7349916.45401 sum_sq=261970164.459 mean=16.7011671727 rms=24.3982190817
+[LINEARIZE] Error: 6.10651e+07 num points 440084
+	[REJECTED] lambda:6.21378e-07 step_quality: -0.497029 max_inc: 2.01068 Error: 6.55188e+07 num points 440084
+	[ACCEPTED] lambda:1.24276e-06 step_quality: 1.81665 max_inc: 1.25883 Error: 4.74461e+07 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=5818948.99034 sum_sq=145801631.132 mean=13.2223598003 rms=18.2017607532
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
-  0.712973   0.700474 -0.0316956 -0.0222051
-  -0.34763   0.392366   0.851588 -0.0336082
-  0.608952  -0.596141   0.523253  0.0211549
+  0.720003    0.69324 -0.0318398 -0.0238427
+ -0.340636   0.393014   0.854112 -0.0364243
+  0.604618  -0.604117   0.519114  0.0241958
          0          0          0          1
 T_w_moc:
 1 0 0 0
@@ -168,30 +168,30 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias: 0.0819778  0.106403 -0.217973
+accel_bias: 0.0903403  0.104995 -0.228249
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:   0.00368982 -0.000100999   0.00327965
+gyro_bias:    0.0036655 -0.000100184   0.00327947
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -6.33504  7.54309  1.59264 norm: 9.97834 g_mocap: -6.33504  7.54309  1.59264
-Current error: 4.65681e+07 num_points 440084 mean_error 105.816 reprojection_error 5.71627e+06 mean reprojection 12.989 opt_time 1402ms.
+ g -6.41801  7.48731  1.59051 norm: 9.98901 g_mocap: -6.41801  7.48731  1.59051
+Current error: 4.74461e+07 num_points 440084 mean_error 107.811 reprojection_error 5.81895e+06 mean reprojection 13.2224 opt_time 1174ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=5716267.86043 sum_sq=144044897.017 mean=12.9890381391 rms=18.0917737953
-[LINEARIZE] Error: 4.65681e+07 num points 440084
-	[REJECTED] lambda:4.14252e-07 step_quality: -2.39414 max_inc: 2.49983 Error: 6.93175e+07 num points 440084
-	[ACCEPTED] lambda:8.28504e-07 step_quality: 0.824148 max_inc: 1.77628 Error: 3.97436e+07 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=4743724.47411 sum_sq=84990162.9555 mean=10.7791341519 rms=13.8968554862
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=5818948.99034 sum_sq=145801631.132 mean=13.2223598003 rms=18.2017607532
+[LINEARIZE] Error: 4.74461e+07 num points 440084
+	[REJECTED] lambda:4.14252e-07 step_quality: -2.56188 max_inc: 2.50849 Error: 7.23941e+07 num points 440084
+	[ACCEPTED] lambda:8.28504e-07 step_quality: 0.724287 max_inc: 1.78367 Error: 4.12709e+07 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=4914074.63183 sum_sq=88381584.5222 mean=11.1662197031 rms=14.1714112737
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
-  0.495879    0.86825 -0.0157153 -0.0340096
- -0.246193   0.157915    0.95627  -0.025383
-  0.832763  -0.470325   0.292064  0.0207358
+  0.502655   0.864343 -0.0157513 -0.0367223
+ -0.242625   0.158539   0.957078 -0.0273601
+  0.829741  -0.477259   0.289402  0.0237371
          0          0          0          1
 T_w_moc:
 1 0 0 0
@@ -205,29 +205,29 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias:    0.23431   0.308859 -0.0210709
+accel_bias:   0.247292   0.312432 -0.0318627
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00393766 -4.7771e-05  0.00333678
+gyro_bias:   0.00392158 -4.59355e-05   0.00333406
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -4.55875  9.04659  1.88242 norm: 10.3037 g_mocap: -4.55875  9.04659  1.88242
-Current error: 3.97436e+07 num_points 440084 mean_error 90.3091 reprojection_error 4.74372e+06 mean reprojection 10.7791 opt_time 1397ms.
+ g -4.63435  9.02933  1.88731 norm: 10.3232 g_mocap: -4.63435  9.02933  1.88731
+Current error: 4.12709e+07 num_points 440084 mean_error 93.7795 reprojection_error 4.91407e+06 mean reprojection 11.1662 opt_time 1198ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=4743724.47411 sum_sq=84990162.9555 mean=10.7791341519 rms=13.8968554862
-[LINEARIZE] Error: 3.97436e+07 num points 440084
-	[ACCEPTED] lambda:6.02761e-07 step_quality: 1.31088 max_inc: 2.23257 Error: 2.53955e+07 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=3259173.44745 sum_sq=37354986.8177 mean=7.4057985463 rms=9.21311525296
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=4914074.63183 sum_sq=88381584.5222 mean=11.1662197031 rms=14.1714112737
+[LINEARIZE] Error: 4.12709e+07 num points 440084
+	[ACCEPTED] lambda:7.53723e-07 step_quality: 1.73102 max_inc: 2.0291 Error: 2.19867e+07 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=2992613.7933 sum_sq=31997199.2046 mean=6.80009678447 rms=8.52684155187
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
-  0.242797   0.970049 0.00740043 -0.0386649
-  -0.10981  0.0199035   0.993753 -0.0181543
-  0.963842  -0.242093   0.111354  0.0106723
+   0.27552   0.961293 0.00224623   -0.04161
+ -0.119826  0.0320253   0.992278 -0.0200864
+  0.953798  -0.273661   0.124012  0.0140428
          0          0          0          1
 T_w_moc:
 1 0 0 0
@@ -241,29 +241,65 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias:  0.247426   0.46664 0.0987681
+accel_bias:  0.252965  0.449468 0.0757911
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00408562 8.07369e-05  0.00348548
+gyro_bias:  0.00406411 6.73282e-05   0.0034781
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -2.32618  9.82314  2.30521 norm: 10.3547 g_mocap: -2.32618  9.82314  2.30521
-Current error: 2.53955e+07 num_points 440084 mean_error 57.706 reprojection_error 3.25917e+06 mean reprojection 7.4058 opt_time 889ms.
+ g -2.60525  9.70804  2.27824 norm: 10.3065 g_mocap: -2.60525  9.70804  2.27824
+Current error: 2.19867e+07 num_points 440084 mean_error 49.9602 reprojection_error 2.99261e+06 mean reprojection 6.8001 opt_time 793ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=3259173.44745 sum_sq=37354986.8177 mean=7.4057985463 rms=9.21311525296
-[LINEARIZE] Error: 2.53955e+07 num points 440084
-	[ACCEPTED] lambda:2.0092e-07 step_quality: 1.73484 max_inc: 1.83247 Error: 1.03393e+07 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=1835621.60775 sum_sq=10202612.6997 mean=4.17107099496 rms=4.81490708396
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=2992613.7933 sum_sq=31997199.2046 mean=6.80009678447 rms=8.52684155187
+[LINEARIZE] Error: 2.19867e+07 num points 440084
+	[ACCEPTED] lambda:2.51241e-07 step_quality: 1.30067 max_inc: 1.94276 Error: 1.25006e+07 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=2072314.34329 sum_sq=13173665.4544 mean=4.70890635263 rms=5.47123697207
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
-  0.0266063    0.999538   0.0146933  -0.0346947
- -0.0136815   -0.014333    0.999804    -0.01497
-   0.999552  -0.0268021   0.0132938 0.000604626
+   0.04432   0.998909  0.0147358 -0.0393165
+-0.0188443 -0.0139117   0.999726 -0.0164427
+   0.99884 -0.0445856  0.0182071   0.002602
+         0          0          0          1
+T_w_moc:
+1 0 0 0
+0 1 0 0
+0 0 1 0
+0 0 0 1
+T_mark_i:
+1 0 0 0
+0 1 0 0
+0 0 1 0
+0 0 0 1
+cam_time_offset_ns: 0
+mocap_time_offset_ns: 0
+accel_bias: 0.221926  0.50208 0.141093
+accel_scale:
+1 0 0
+0 1 0
+0 0 1
+gyro_bias:  0.00412621 0.000218444  0.00356832
+gyro_scale:
+1 0 0
+0 1 0
+0 0 1
+ g -0.662484    9.9206   2.50933 norm: 10.2545 g_mocap: -0.662484    9.9206   2.50933
+Current error: 1.25006e+07 num_points 440084 mean_error 28.4051 reprojection_error 2.07231e+06 mean reprojection 4.70891 opt_time 756ms.
+==================================
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=2072314.34329 sum_sq=13173665.4544 mean=4.70890635263 rms=5.47123697207
+[LINEARIZE] Error: 1.25006e+07 num points 440084
+	[ACCEPTED] lambda:8.3747e-08 step_quality: 2.43889 max_inc: 0.506669 Error: 1.57024e+06 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=611235.090325 sum_sq=1137259.75877 mean=1.38890550514 rms=1.60754095592
+==================================
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
+T_i_c0:
+ -0.0187794    0.999786  0.00867148  -0.0324956
+ 0.00248549  -0.0086263     0.99996  -0.0132879
+   0.999821   0.0188002 -0.00232296  0.00231996
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -277,29 +313,29 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias: 0.195047 0.488551 0.148259
+accel_bias: 0.165692 0.432594 0.142791
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00413534 0.000230554  0.00356308
+gyro_bias:  0.00415287 0.000293259  0.00355927
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.493707   9.87614   2.50803 norm: 10.2016 g_mocap: -0.493707   9.87614   2.50803
-Current error: 1.03393e+07 num_points 440084 mean_error 23.494 reprojection_error 1.83562e+06 mean reprojection 4.17107 opt_time 922ms.
+ g -0.155816   9.70472   2.47803 norm: 10.0173 g_mocap: -0.155816   9.70472   2.47803
+Current error: 1.57024e+06 num_points 440084 mean_error 3.56804 reprojection_error 611235 mean reprojection 1.38891 opt_time 743ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=1835621.60775 sum_sq=10202612.6997 mean=4.17107099496 rms=4.81490708396
-[LINEARIZE] Error: 1.03393e+07 num points 440084
-	[ACCEPTED] lambda:6.69735e-08 step_quality: 2.38154 max_inc: 0.347903 Error: 1.4156e+06 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=571089.447491 sum_sq=1002445.10336 mean=1.29768282303 rms=1.50925460531
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=611235.090325 sum_sq=1137259.75877 mean=1.38890550514 rms=1.60754095592
+[LINEARIZE] Error: 1.57024e+06 num points 440084
+	[ACCEPTED] lambda:2.79157e-08 step_quality: 2.13355 max_inc: 0.0929791 Error: 1.18186e+06 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=504983.802896 sum_sq=783794.827185 mean=1.14747139841 rms=1.33454556633
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
- -0.0207787    0.999748  0.00851051  -0.0278504
- 0.00294821 -0.00845104     0.99996  -0.0114568
-    0.99978   0.0208029 -0.00277186  0.00199781
+ -0.0234238    0.999692   0.0082375  -0.0223837
+ 0.00413463 -0.00814282    0.999958 -0.00722947
+   0.999717   0.0234569 -0.00394262  0.00696291
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -313,29 +349,29 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias: 0.142154  0.41961 0.144865
+accel_bias: 0.112951 0.391801 0.122635
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00414998 0.000301512  0.00356209
+gyro_bias:  0.00412856 0.000341016  0.00356292
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.145804   9.67664   2.46302 norm: 9.98624 g_mocap: -0.145804   9.67664   2.46302
-Current error: 1.4156e+06 num_points 440084 mean_error 3.21666 reprojection_error 571089 mean reprojection 1.29768 opt_time 951ms.
+ g -0.113709   9.64491   2.43111 norm: 9.94724 g_mocap: -0.113709   9.64491   2.43111
+Current error: 1.18186e+06 num_points 440084 mean_error 2.68554 reprojection_error 504984 mean reprojection 1.14747 opt_time 751ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=571089.447491 sum_sq=1002445.10336 mean=1.29768282303 rms=1.50925460531
-[LINEARIZE] Error: 1.4156e+06 num points 440084
-	[ACCEPTED] lambda:2.23245e-08 step_quality: 2.18308 max_inc: 0.0896873 Error: 1.16243e+06 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=502792.510949 sum_sq=776023.56054 mean=1.14249214002 rms=1.32791312598
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=504983.802896 sum_sq=783794.827185 mean=1.14747139841 rms=1.33454556633
+[LINEARIZE] Error: 1.18186e+06 num points 440084
+	[ACCEPTED] lambda:9.30522e-09 step_quality: 2.68898 max_inc: 0.0651737 Error: 1.13626e+06 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500632.820933 sum_sq=767289.86393 mean=1.1375846905 rms=1.32041953498
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
- -0.0235344     0.99969   0.0081833  -0.0176836
- 0.00416926 -0.00808736    0.999959 -0.00535172
-   0.999714   0.0235676 -0.00397764  0.00738144
+ -0.0234857    0.999691  0.00811099 -0.00882386
+ 0.00439943  -0.0080098    0.999958 -0.00101891
+   0.999714   0.0235204 -0.00420995   0.0118322
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -349,29 +385,65 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias: 0.0902552  0.380797  0.120805
+accel_bias: 0.0477776  0.355504 0.0997398
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00412288 0.000347132  0.00356264
+gyro_bias:  0.00410924 0.000363767  0.00355759
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.111954   9.62392   2.41722 norm: 9.92347 g_mocap: -0.111954   9.62392   2.41722
-Current error: 1.16243e+06 num_points 440084 mean_error 2.64138 reprojection_error 502793 mean reprojection 1.14249 opt_time 901ms.
+ g -0.0950484    9.58441    2.38649 norm: 9.87751 g_mocap: -0.0950484    9.58441    2.38649
+Current error: 1.13626e+06 num_points 440084 mean_error 2.58191 reprojection_error 500633 mean reprojection 1.13758 opt_time 750ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=502792.510949 sum_sq=776023.56054 mean=1.14249214002 rms=1.32791312598
-[LINEARIZE] Error: 1.16243e+06 num points 440084
-	[ACCEPTED] lambda:7.4415e-09 step_quality: 2.64394 max_inc: 0.0574452 Error: 1.13191e+06 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500308.675547 sum_sq=766050.520837 mean=1.13684813705 rms=1.319352719
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500632.820933 sum_sq=767289.86393 mean=1.1375846905 rms=1.32041953498
+[LINEARIZE] Error: 1.13626e+06 num points 440084
+	[ACCEPTED] lambda:3.10174e-09 step_quality: 2.39125 max_inc: 0.0402124 Error: 1.1281e+06 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500158.287997 sum_sq=765215.458224 mean=1.13650641241 rms=1.31863341753
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
- -0.0234929    0.999691  0.00806311 -0.00570118
- 0.00443379 -0.00796107    0.999958 3.57044e-05
-   0.999714   0.0235277  -0.0042454   0.0123262
+  -0.0234198     0.999694   0.00797974 -0.000400391
+  0.00448672  -0.00787675     0.999959   0.00187226
+    0.999716    0.0234546  -0.00430087     0.014215
+           0            0            0            1
+T_w_moc:
+1 0 0 0
+0 1 0 0
+0 0 1 0
+0 0 0 1
+T_mark_i:
+1 0 0 0
+0 1 0 0
+0 0 1 0
+0 0 0 1
+cam_time_offset_ns: 0
+mocap_time_offset_ns: 0
+accel_bias: 0.00756526   0.338945  0.0886565
+accel_scale:
+1 0 0
+0 1 0
+0 0 1
+gyro_bias:  0.00410449 0.000367025  0.00355811
+gyro_scale:
+1 0 0
+0 1 0
+0 0 1
+ g -0.0867251    9.54699    2.36431 norm: 9.83578 g_mocap: -0.0867251    9.54699    2.36431
+Current error: 1.1281e+06 num_points 440084 mean_error 2.56336 reprojection_error 500158 mean reprojection 1.13651 opt_time 747ms.
+==================================
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500158.287997 sum_sq=765215.458224 mean=1.13650641241 rms=1.31863341753
+[LINEARIZE] Error: 1.1281e+06 num points 440084
+	[ACCEPTED] lambda:1.03391e-09 step_quality: 2.16547 max_inc: 0.00967528 Error: 1.12775e+06 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500167.904667 sum_sq=765104.763089 mean=1.1365282643 rms=1.31853803813
+==================================
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
+T_i_c0:
+ -0.0234031    0.999695  0.00794012  0.00163145
+ 0.00449922  -0.0078369    0.999959   0.0024077
+   0.999716   0.0234378 -0.00431444   0.0146701
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -385,29 +457,29 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias:   0.03281   0.34946 0.0974725
+accel_bias: -0.00211002    0.335918   0.0865673
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00410727 0.000365065  0.00355806
+gyro_bias:  0.00410388 0.000366955   0.0035587
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.0933304    9.57052     2.3784 norm: 9.86206 g_mocap: -0.0933304    9.57052     2.3784
-Current error: 1.13191e+06 num_points 440084 mean_error 2.57203 reprojection_error 500309 mean reprojection 1.13685 opt_time 902ms.
+ g -0.0852165    9.53795    2.35987 norm: 9.82593 g_mocap: -0.0852165    9.53795    2.35987
+Current error: 1.12775e+06 num_points 440084 mean_error 2.56257 reprojection_error 500168 mean reprojection 1.13653 opt_time 745ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500308.675547 sum_sq=766050.520837 mean=1.13684813705 rms=1.319352719
-[LINEARIZE] Error: 1.13191e+06 num points 440084
-	[ACCEPTED] lambda:2.4805e-09 step_quality: 2.32734 max_inc: 0.0295842 Error: 1.12767e+06 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500097.748579 sum_sq=764979.303853 mean=1.13636884908 rms=1.31842992904
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500167.904667 sum_sq=765104.763089 mean=1.1365282643 rms=1.31853803813
+[LINEARIZE] Error: 1.12775e+06 num points 440084
+	[ACCEPTED] lambda:3.44638e-10 step_quality: 2.09206 max_inc: 0.000867734 Error: 1.12774e+06 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500165.592782 sum_sq=765086.725189 mean=1.13652301102 rms=1.31852249529
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
- -0.0234233    0.999694  0.00796333 0.000506899
- 0.00451678 -0.00785961    0.999959  0.00211848
-   0.999715   0.0234583  -0.0043313   0.0143568
+ -0.0234012    0.999695  0.00793642  0.00181343
+ 0.00449969 -0.00783319    0.999959   0.0024472
+   0.999716    0.023436 -0.00431501   0.0147032
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -421,29 +493,29 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias: 0.00322576   0.337569  0.0879803
+accel_bias: -0.00297775    0.335694   0.0864185
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00410419 0.000366976   0.0035584
+gyro_bias:  0.00410383 0.000366925  0.00355877
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.0861458    9.54295    2.36231 norm: 9.83136 g_mocap: -0.0861458    9.54295    2.36231
-Current error: 1.12767e+06 num_points 440084 mean_error 2.5624 reprojection_error 500098 mean reprojection 1.13637 opt_time 886ms.
+ g -0.0851184    9.53714    2.35952 norm: 9.82505 g_mocap: -0.0851184    9.53714    2.35952
+Current error: 1.12774e+06 num_points 440084 mean_error 2.56256 reprojection_error 500166 mean reprojection 1.13652 opt_time 741ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500097.748579 sum_sq=764979.303853 mean=1.13636884908 rms=1.31842992904
-[LINEARIZE] Error: 1.12767e+06 num points 440084
-	[ACCEPTED] lambda:8.26833e-10 step_quality: 2.14025 max_inc: 0.00581668 Error: 1.12754e+06 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500103.990435 sum_sq=764918.132296 mean=1.13638303241 rms=1.31837721387
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500165.592782 sum_sq=765086.725189 mean=1.13652301102 rms=1.31852249529
+[LINEARIZE] Error: 1.12774e+06 num points 440084
+	[ACCEPTED] lambda:1.14879e-10 step_quality: 2.11221 max_inc: 3.54155e-05 Error: 1.12774e+06 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500165.071525 sum_sq=765084.690418 mean=1.13652182657 rms=1.31852074196
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
- -0.0234095    0.999694  0.00793918   0.0017296
- 0.00452737 -0.00783527    0.999959  0.00243462
-   0.999716   0.0234445 -0.00434257   0.0146758
+ -0.0234011    0.999695  0.00793632  0.00182082
+ 0.00449968 -0.00783309    0.999959  0.00244874
+   0.999716   0.0234358   -0.004315   0.0147044
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -457,29 +529,29 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias: -0.00259092    0.335784   0.0865062
+accel_bias: -0.00301317    0.335685   0.0864132
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00410386 0.000366895  0.00355874
+gyro_bias:  0.00410383 0.000366923  0.00355878
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.08507  9.53751  2.35966 norm: 9.82544 g_mocap: -0.08507  9.53751  2.35966
-Current error: 1.12754e+06 num_points 440084 mean_error 2.56211 reprojection_error 500104 mean reprojection 1.13638 opt_time 878ms.
+ g -0.0851156    9.53711     2.3595 norm: 9.82502 g_mocap: -0.0851156    9.53711     2.3595
+Current error: 1.12774e+06 num_points 440084 mean_error 2.56256 reprojection_error 500165 mean reprojection 1.13652 opt_time 751ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500103.990435 sum_sq=764918.132296 mean=1.13638303241 rms=1.31837721387
-[LINEARIZE] Error: 1.12754e+06 num points 440084
-	[ACCEPTED] lambda:2.75611e-10 step_quality: 2.08989 max_inc: 0.000431477 Error: 1.12754e+06 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500101.773178 sum_sq=764906.080304 mean=1.13637799415 rms=1.3183668277
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500165.071525 sum_sq=765084.690418 mean=1.13652182657 rms=1.31852074196
+[LINEARIZE] Error: 1.12774e+06 num points 440084
+	[ACCEPTED] lambda:3.82931e-11 step_quality: 2.18136 max_inc: 1.28076e-06 Error: 1.12774e+06 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500165.041063 sum_sq=765084.588211 mean=1.13652175735 rms=1.31852065389
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
- -0.0234082    0.999694  0.00793739  0.00182011
- 0.00452777 -0.00783347    0.999959  0.00245426
-   0.999716   0.0234432 -0.00434302   0.0146951
+ -0.0234011    0.999695  0.00793632  0.00182108
+ 0.00449968 -0.00783309    0.999959  0.00244879
+   0.999716   0.0234358   -0.004315   0.0147044
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -493,29 +565,29 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias: -0.00302239    0.335672   0.0864181
+accel_bias: -0.00301445    0.335685    0.086413
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00410383 0.000366878  0.00355878
+gyro_bias:  0.00410383 0.000366923  0.00355878
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.0850115     9.5371    2.35948 norm: 9.82501 g_mocap: -0.0850115     9.5371    2.35948
-Current error: 1.12754e+06 num_points 440084 mean_error 2.56211 reprojection_error 500102 mean reprojection 1.13638 opt_time 925ms.
+ g -0.0851154    9.53711     2.3595 norm: 9.82502 g_mocap: -0.0851154    9.53711     2.3595
+Current error: 1.12774e+06 num_points 440084 mean_error 2.56256 reprojection_error 500165 mean reprojection 1.13652 opt_time 758ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500101.773178 sum_sq=764906.080304 mean=1.13637799415 rms=1.3183668277
-[LINEARIZE] Error: 1.12754e+06 num points 440084
-	[ACCEPTED] lambda:9.18704e-11 step_quality: 2.12713 max_inc: 1.60942e-05 Error: 1.12754e+06 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500101.485772 sum_sq=764904.985071 mean=1.13637734108 rms=1.31836588385
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500165.041063 sum_sq=765084.588211 mean=1.13652175735 rms=1.31852065389
+[LINEARIZE] Error: 1.12774e+06 num points 440084
+	[ACCEPTED] lambda:1.27644e-11 step_quality: 2.21531 max_inc: 5.89406e-08 Error: 1.12774e+06 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500165.039367 sum_sq=765084.584284 mean=1.1365217535 rms=1.31852065051
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
- -0.0234082    0.999694  0.00793735  0.00182347
- 0.00452777 -0.00783343    0.999959  0.00245498
-   0.999716   0.0234432 -0.00434302   0.0146958
+ -0.0234011    0.999695  0.00793632  0.00182109
+ 0.00449968 -0.00783309    0.999959  0.00244879
+   0.999716   0.0234358   -0.004315   0.0147044
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -529,101 +601,30 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias: -0.00303849    0.335668   0.0864152
+accel_bias: -0.00301451    0.335685    0.086413
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00410383 0.000366877  0.00355878
+gyro_bias:  0.00410383 0.000366923  0.00355878
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.0850098    9.53709    2.35948 norm: 9.82499 g_mocap: -0.0850098    9.53709    2.35948
-Current error: 1.12754e+06 num_points 440084 mean_error 2.56211 reprojection_error 500101 mean reprojection 1.13638 opt_time 918ms.
+ g -0.0851154    9.53711     2.3595 norm: 9.82502 g_mocap: -0.0851154    9.53711     2.3595
+Current error: 1.12774e+06 num_points 440084 mean_error 2.56256 reprojection_error 500165 mean reprojection 1.13652 opt_time 762ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500101.485772 sum_sq=764904.985071 mean=1.13637734108 rms=1.31836588385
-[LINEARIZE] Error: 1.12754e+06 num points 440084
-	[ACCEPTED] lambda:3.06235e-11 step_quality: 2.19317 max_inc: 6.08129e-07 Error: 1.12754e+06 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500101.469921 sum_sq=764904.933394 mean=1.13637730506 rms=1.31836583932
-==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
-T_i_c0:
- -0.0234082    0.999694  0.00793735  0.00182359
- 0.00452777 -0.00783343    0.999959    0.002455
-   0.999716   0.0234432 -0.00434302   0.0146958
-          0           0           0           1
-T_w_moc:
-1 0 0 0
-0 1 0 0
-0 0 1 0
-0 0 0 1
-T_mark_i:
-1 0 0 0
-0 1 0 0
-0 0 1 0
-0 0 0 1
-cam_time_offset_ns: 0
-mocap_time_offset_ns: 0
-accel_bias: -0.00303909    0.335668    0.086415
-accel_scale:
-1 0 0
-0 1 0
-0 0 1
-gyro_bias:  0.00410383 0.000366877  0.00355878
-gyro_scale:
-1 0 0
-0 1 0
-0 0 1
- g -0.0850097    9.53709    2.35948 norm: 9.82499 g_mocap: -0.0850097    9.53709    2.35948
-Current error: 1.12754e+06 num_points 440084 mean_error 2.56211 reprojection_error 500101 mean reprojection 1.13638 opt_time 894ms.
-==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500101.469921 sum_sq=764904.933394 mean=1.13637730506 rms=1.31836583932
-[LINEARIZE] Error: 1.12754e+06 num points 440084
-	[ACCEPTED] lambda:1.02078e-11 step_quality: 2.35859 max_inc: 2.94415e-08 Error: 1.12754e+06 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500101.468993 sum_sq=764904.931404 mean=1.13637730295 rms=1.3183658376
-==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
-T_i_c0:
- -0.0234082    0.999694  0.00793735   0.0018236
- 0.00452777 -0.00783343    0.999959  0.00245501
-   0.999716   0.0234432 -0.00434302   0.0146959
-          0           0           0           1
-T_w_moc:
-1 0 0 0
-0 1 0 0
-0 0 1 0
-0 0 0 1
-T_mark_i:
-1 0 0 0
-0 1 0 0
-0 0 1 0
-0 0 0 1
-cam_time_offset_ns: 0
-mocap_time_offset_ns: 0
-accel_bias: -0.00303912    0.335668    0.086415
-accel_scale:
-1 0 0
-0 1 0
-0 0 1
-gyro_bias:  0.00410383 0.000366877  0.00355878
-gyro_scale:
-1 0 0
-0 1 0
-0 0 1
- g -0.0850097    9.53709    2.35948 norm: 9.82499 g_mocap: -0.0850097    9.53709    2.35948
-Current error: 1.12754e+06 num_points 440084 mean_error 2.56211 reprojection_error 500101 mean reprojection 1.13638 opt_time 915ms.
-==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500101.468993 sum_sq=764904.931404 mean=1.13637730295 rms=1.3183658376
-[LINEARIZE] Error: 1.12754e+06 num points 440084
-	[REJECTED] lambda:3.40261e-12 step_quality: -9.73519 max_inc: 2.00922e-09 Error: 1.12754e+06 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500165.039367 sum_sq=765084.584284 mean=1.1365217535 rms=1.31852065051
+[LINEARIZE] Error: 1.12774e+06 num points 440084
+	[ACCEPTED] lambda:4.25479e-12 step_quality: 2.59414 max_inc: 3.7673e-09 Error: 1.12774e+06 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=500165.039261 sum_sq=765084.584244 mean=1.13652175326 rms=1.31852065047
 [CONVERGED]
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
- -0.0234082    0.999694  0.00793735   0.0018236
- 0.00452777 -0.00783343    0.999959  0.00245501
-   0.999716   0.0234432 -0.00434302   0.0146959
+ -0.0234011    0.999695  0.00793632  0.00182109
+ 0.00449968 -0.00783309    0.999959  0.00244879
+   0.999716   0.0234358   -0.004315   0.0147044
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -637,30 +638,30 @@ T_mark_i:
 0 0 0 1
 cam_time_offset_ns: 0
 mocap_time_offset_ns: 0
-accel_bias: -0.00303912    0.335668    0.086415
+accel_bias: -0.00301451    0.335685    0.086413
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00410383 0.000366877  0.00355878
+gyro_bias:  0.00410383 0.000366923  0.00355878
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.0850097    9.53709    2.35948 norm: 9.82499 g_mocap: -0.0850097    9.53709    2.35948
-Current error: 1.12754e+06 num_points 440084 mean_error 2.56211 reprojection_error 500101 mean reprojection 1.13638 opt_time 905ms.
+ g -0.0851154    9.53711     2.3595 norm: 9.82502 g_mocap: -0.0851154    9.53711     2.3595
+Current error: 1.12774e+06 num_points 440084 mean_error 2.56256 reprojection_error 500165 mean reprojection 1.13652 opt_time 775ms.
 Optimization Converged !!
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500101.468993 sum_sq=764904.931404 mean=1.13637730295 rms=1.3183658376
-[LINEARIZE] Error: 1.12754e+06 num points 440084
-	[ACCEPTED] lambda:6.80521e-12 step_quality: 2.07029 max_inc: 0.00713655 Error: 935985 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=460824.503535 sum_sq=624997.037676 mean=1.04712851077 rms=1.19171166322
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=500165.039261 sum_sq=765084.584244 mean=1.13652175326 rms=1.31852065047
+[LINEARIZE] Error: 1.12774e+06 num points 440084
+	[ACCEPTED] lambda:1.41826e-12 step_quality: 2.0703 max_inc: 0.00713657 Error: 936183 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=460889.825442 sum_sq=625173.801943 mean=1.04727694132 rms=1.19188017374
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
- -0.0231057    0.999702  0.00793103  0.00285648
- 0.00465882 -0.00782539    0.999959  0.00323925
-   0.999722   0.0231417 -0.00447662   0.0147545
+ -0.0230985    0.999702  0.00793002  0.00285448
+ 0.00463064 -0.00782507    0.999959   0.0032333
+   0.999722   0.0231343 -0.00444851   0.0147631
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -672,31 +673,31 @@ T_mark_i:
 0 1 0 0
 0 0 1 0
 0 0 0 1
-cam_time_offset_ns: 7136553
+cam_time_offset_ns: 7136565
 mocap_time_offset_ns: 0
-accel_bias: -0.00647867    0.332196   0.0867062
+accel_bias: -0.00645661    0.332211   0.0867042
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00410971 0.000360849  0.00349892
+gyro_bias:  0.00410969 0.000360894  0.00349891
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.0881366    9.53392    2.35606 norm: 9.82112 g_mocap: -0.0881366    9.53392    2.35606
-Current error: 935985 num_points 440084 mean_error 2.12683 reprojection_error 460825 mean reprojection 1.04713 opt_time 974ms.
+ g -0.0882425    9.53394    2.35608 norm: 9.82114 g_mocap: -0.0882425    9.53394    2.35608
+Current error: 936183 num_points 440084 mean_error 2.12728 reprojection_error 460890 mean reprojection 1.04728 opt_time 805ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=460824.503535 sum_sq=624997.037676 mean=1.04712851077 rms=1.19171166322
-[LINEARIZE] Error: 935985 num points 440084
-	[ACCEPTED] lambda:2.2684e-12 step_quality: 2.00806 max_inc: 0.0102232 Error: 934931 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=460688.610112 sum_sq=624472.7192 mean=1.04681972104 rms=1.19121168682
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=460889.825442 sum_sq=625173.801943 mean=1.04727694132 rms=1.19188017374
+[LINEARIZE] Error: 936183 num points 440084
+	[ACCEPTED] lambda:4.72754e-13 step_quality: 2.00801 max_inc: 0.0102224 Error: 935129 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=460754.270731 sum_sq=624649.259685 mean=1.04696892123 rms=1.19138005464
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
- -0.0230559    0.999702  0.00795966  0.00331061
- 0.00465092 -0.00785444    0.999958  0.00490569
-   0.999723   0.0230919 -0.00446845   0.0147027
+ -0.0230487    0.999703  0.00795868  0.00330821
+ 0.00462266 -0.00785414    0.999958   0.0048997
+   0.999724   0.0230845 -0.00444026   0.0147112
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -708,31 +709,31 @@ T_mark_i:
 0 1 0 0
 0 0 1 0
 0 0 0 1
-cam_time_offset_ns: 7326575
+cam_time_offset_ns: 7326619
 mocap_time_offset_ns: 0
-accel_bias: -0.00873543    0.322082   0.0870493
+accel_bias: -0.00871154    0.322097   0.0870473
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00410983 0.000360272  0.00349973
+gyro_bias:  0.00410982 0.000360317  0.00349972
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.0892447    9.53247    2.34583 norm: 9.81728 g_mocap: -0.0892447    9.53247    2.34583
-Current error: 934931 num_points 440084 mean_error 2.12444 reprojection_error 460689 mean reprojection 1.04682 opt_time 959ms.
+ g -0.0893506    9.53249    2.34586 norm: 9.8173 g_mocap: -0.0893506    9.53249    2.34586
+Current error: 935129 num_points 440084 mean_error 2.12489 reprojection_error 460754 mean reprojection 1.04697 opt_time 818ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=460688.610112 sum_sq=624472.7192 mean=1.04681972104 rms=1.19121168682
-[LINEARIZE] Error: 934931 num points 440084
-	[ACCEPTED] lambda:7.56135e-13 step_quality: 2.03229 max_inc: 3.41945e-05 Error: 934931 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=460688.999287 sum_sq=624470.774058 mean=1.04682060535 rms=1.19120983159
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=460754.270731 sum_sq=624649.259685 mean=1.04696892123 rms=1.19138005464
+[LINEARIZE] Error: 935129 num points 440084
+	[ACCEPTED] lambda:1.57585e-13 step_quality: 2.03226 max_inc: 3.32802e-05 Error: 935129 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=460754.66173 sum_sq=624647.297855 mean=1.0469698097 rms=1.19137818376
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
- -0.0230552    0.999703  0.00795847  0.00331745
- 0.00465082 -0.00785325    0.999958  0.00490753
-   0.999723   0.0230912 -0.00446838   0.0147038
+  -0.023048    0.999703  0.00795748  0.00331498
+ 0.00462256 -0.00785295    0.999958  0.00490138
+   0.999724   0.0230838 -0.00444019   0.0147124
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -744,31 +745,31 @@ T_mark_i:
 0 1 0 0
 0 0 1 0
 0 0 0 1
-cam_time_offset_ns: 7329532
+cam_time_offset_ns: 7329575
 mocap_time_offset_ns: 0
-accel_bias: -0.00876782    0.322069   0.0870433
+accel_bias: -0.00874357    0.322085   0.0870414
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00410986 0.000360268  0.00349971
+gyro_bias:  0.00410985 0.000360314  0.00349971
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.0892462    9.53244     2.3458 norm: 9.81724 g_mocap: -0.0892462    9.53244     2.3458
-Current error: 934931 num_points 440084 mean_error 2.12444 reprojection_error 460689 mean reprojection 1.04682 opt_time 971ms.
+ g -0.089352   9.53246   2.34582 norm: 9.81727 g_mocap: -0.089352   9.53246   2.34582
+Current error: 935129 num_points 440084 mean_error 2.12489 reprojection_error 460755 mean reprojection 1.04697 opt_time 789ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=460688.999287 sum_sq=624470.774058 mean=1.04682060535 rms=1.19120983159
-[LINEARIZE] Error: 934931 num points 440084
-	[ACCEPTED] lambda:2.52045e-13 step_quality: 2.04507 max_inc: 8.83649e-07 Error: 934931 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=460689.006111 sum_sq=624470.781893 mean=1.04682062086 rms=1.19120983906
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=460754.66173 sum_sq=624647.297855 mean=1.0469698097 rms=1.19137818376
+[LINEARIZE] Error: 935129 num points 440084
+	[ACCEPTED] lambda:5.25282e-14 step_quality: 2.04518 max_inc: 8.8303e-07 Error: 935129 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=460754.667755 sum_sq=624647.305872 mean=1.04696982339 rms=1.19137819141
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
- -0.0230552    0.999703  0.00795845  0.00331755
- 0.00465083 -0.00785323    0.999958  0.00490761
-   0.999723   0.0230912 -0.00446839   0.0147038
+  -0.023048    0.999703  0.00795746  0.00331508
+ 0.00462257 -0.00785293    0.999958  0.00490146
+   0.999724   0.0230838  -0.0044402   0.0147124
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -780,31 +781,31 @@ T_mark_i:
 0 1 0 0
 0 0 1 0
 0 0 0 1
-cam_time_offset_ns: 7329626
+cam_time_offset_ns: 7329670
 mocap_time_offset_ns: 0
-accel_bias: -0.00876828    0.322068   0.0870433
+accel_bias: -0.00874402    0.322084   0.0870413
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00410986 0.000360268  0.00349971
+gyro_bias:  0.00410985 0.000360314  0.00349971
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.0892464    9.53244     2.3458 norm: 9.81724 g_mocap: -0.0892464    9.53244     2.3458
-Current error: 934931 num_points 440084 mean_error 2.12444 reprojection_error 460689 mean reprojection 1.04682 opt_time 957ms.
+ g -0.0893522    9.53246    2.34582 norm: 9.81727 g_mocap: -0.0893522    9.53246    2.34582
+Current error: 935129 num_points 440084 mean_error 2.12489 reprojection_error 460755 mean reprojection 1.04697 opt_time 813ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=460689.006111 sum_sq=624470.781893 mean=1.04682062086 rms=1.19120983906
-[LINEARIZE] Error: 934931 num points 440084
-	[ACCEPTED] lambda:8.4015e-14 step_quality: 1.78237 max_inc: 1.60041e-08 Error: 934931 num points 440084
-RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=460689.006128 sum_sq=624470.781978 mean=1.0468206209 rms=1.19120983914
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=460754.667755 sum_sq=624647.305872 mean=1.04696982339 rms=1.19137819141
+[LINEARIZE] Error: 935129 num points 440084
+	[ACCEPTED] lambda:1.75094e-14 step_quality: 1.72635 max_inc: 1.60356e-08 Error: 935129 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=460754.667792 sum_sq=624647.305954 mean=1.04696982347 rms=1.19137819149
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
- -0.0230552    0.999703  0.00795845  0.00331756
- 0.00465083 -0.00785323    0.999958  0.00490761
-   0.999723   0.0230912 -0.00446839   0.0147038
+  -0.023048    0.999703  0.00795746  0.00331508
+ 0.00462257 -0.00785293    0.999958  0.00490146
+   0.999724   0.0230838  -0.0044402   0.0147124
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -816,31 +817,32 @@ T_mark_i:
 0 1 0 0
 0 0 1 0
 0 0 0 1
-cam_time_offset_ns: 7329628
+cam_time_offset_ns: 7329672
 mocap_time_offset_ns: 0
-accel_bias: -0.0087683   0.322068  0.0870433
+accel_bias: -0.00874404    0.322084   0.0870413
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00410986 0.000360268  0.00349971
+gyro_bias:  0.00410985 0.000360314  0.00349971
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.0892464    9.53244     2.3458 norm: 9.81724 g_mocap: -0.0892464    9.53244     2.3458
-Current error: 934931 num_points 440084 mean_error 2.12444 reprojection_error 460689 mean reprojection 1.04682 opt_time 963ms.
+ g -0.0893522    9.53246    2.34582 norm: 9.81727 g_mocap: -0.0893522    9.53246    2.34582
+Current error: 935129 num_points 440084 mean_error 2.12489 reprojection_error 460755 mean reprojection 1.04697 opt_time 806ms.
 ==================================
-RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=460689.006128 sum_sq=624470.781978 mean=1.0468206209 rms=1.19120983914
-[LINEARIZE] Error: 934931 num points 440084
-	[REJECTED] lambda:2.8005e-14 step_quality: -0.252447 max_inc: 4.33707e-10 Error: 934931 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=linearize n=440084 sum_norm=460754.667792 sum_sq=624647.305954 mean=1.04696982347 rms=1.19137819149
+[LINEARIZE] Error: 935129 num points 440084
+	[ACCEPTED] lambda:5.83647e-15 step_quality: 1.06782 max_inc: 4.0546e-10 Error: 935129 num points 440084
+RMS_REPROJ_EVIDENCE stage=camimu eval=accepted n=440084 sum_norm=460754.667852 sum_sq=624647.305962 mean=1.04696982361 rms=1.1913781915
 [CONVERGED]
 ==================================
-intrinsics 0:     527.197     526.132     718.924     723.796   0.0900883  -0.0360169   0.0102297 -0.00160368
+intrinsics 0:      527.247      526.178      718.961      723.796    0.0893838   -0.0339734    0.0081234 -0.000899889
 T_i_c0:
- -0.0230552    0.999703  0.00795845  0.00331756
- 0.00465083 -0.00785323    0.999958  0.00490761
-   0.999723   0.0230912 -0.00446839   0.0147038
+  -0.023048    0.999703  0.00795746  0.00331508
+ 0.00462257 -0.00785293    0.999958  0.00490146
+   0.999724   0.0230838  -0.0044402   0.0147124
           0           0           0           1
 T_w_moc:
 1 0 0 0
@@ -852,20 +854,20 @@ T_mark_i:
 0 1 0 0
 0 0 1 0
 0 0 0 1
-cam_time_offset_ns: 7329628
+cam_time_offset_ns: 7329672
 mocap_time_offset_ns: 0
-accel_bias: -0.0087683   0.322068  0.0870433
+accel_bias: -0.00874404    0.322084   0.0870413
 accel_scale:
 1 0 0
 0 1 0
 0 0 1
-gyro_bias:  0.00410986 0.000360268  0.00349971
+gyro_bias:  0.00410985 0.000360314  0.00349971
 gyro_scale:
 1 0 0
 0 1 0
 0 0 1
- g -0.0892464    9.53244     2.3458 norm: 9.81724 g_mocap: -0.0892464    9.53244     2.3458
-Current error: 934931 num_points 440084 mean_error 2.12444 reprojection_error 460689 mean reprojection 1.04682 opt_time 958ms.
+ g -0.0893522    9.53246    2.34582 norm: 9.81727 g_mocap: -0.0893522    9.53246    2.34582
+Current error: 935129 num_points 440084 mean_error 2.12489 reprojection_error 460755 mean reprojection 1.04697 opt_time 797ms.
 Optimization Converged !!
 ==================================
-Saved calibration in /home/zijian/umi_data_collection/recordings/calibration/PAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam_imu/calibration.json
+Saved calibration in /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261102/front/umi_calib_out/diagnostics/basalt_cam_imu/calibration.json

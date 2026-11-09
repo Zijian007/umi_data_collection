@@ -84,6 +84,13 @@ class FusionRegressionTests(unittest.TestCase):
         self.assertEqual(info['stage1']['front']['chains'][0]['k'], [0, 240])
         self.assertTrue(info['stage1']['front']['chains'][0]['good'])
         self.assertEqual(info['nodes'], 49)
+        scale = info['scale_consistency']
+        self.assertEqual(scale['status'], 'valid')
+        self.assertGreaterEqual(scale['maximum_change_ratio'], 1.)
+        with (self.root/'out/seg_placement.csv').open() as stream:
+            rows = list(csv.DictReader(stream))
+        ratios = [max(float(r['scale'])/float(r['scale_init']), float(r['scale_init'])/float(r['scale'])) for r in rows]
+        self.assertAlmostEqual(scale['maximum_change_ratio'], max(ratios), places=4)
 
     def test_configured_frame_step_reaches_real_solver_time_grid(self):
         with self.frames.open() as stream:

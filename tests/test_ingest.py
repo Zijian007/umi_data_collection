@@ -53,7 +53,7 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(layout.owner(path).parent, self.f.session_path.parent)
         self.assertFalse((self.f.session_path.parent / 'episodes').exists())
         self.assertEqual(episode.recordings['left'].parent.parent,
-                         self.f.session_path.parent / 'take_001/videos')
+                         self.f.session_path.parent / 'take_001')
         self.assertEqual(episode.offsets(), {'left':0., 'right':0.})
         self.assertEqual(episode.synchronization['method'], 'assumed_simultaneous')
         count = len(list((self.f.session_path.parent).rglob('*.insv')))

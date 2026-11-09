@@ -49,6 +49,15 @@ class DatasetTests(unittest.TestCase):
         episodes.review(self.f.episode_path, accept=True, reviewer='test')
         self.output = self.f.root / 'dataset'
 
+    def test_legacy_scene_settings_still_export_to_training_package(self):
+        self.f.make_legacy_result()
+        episodes.review(self.f.episode_path, accept=True, reviewer='test')
+        build([self.f.episode_path], self.output, fps=20.)
+        entry = json.loads((self.output / 'manifest.json').read_text())['episodes'][0]
+        metadata, arrays = load_episode(self.output, entry['path'])
+        self.assertEqual(set(metadata['tcp_geometry']), {'left', 'right'})
+        self.assertGreater(len(arrays['t_episode_s']), 1)
+
     def test_portable_package_uses_video_indices_and_flags_missing_gripper(self):
         before = self.f.episode_path.read_bytes()
         with redirect_stdout(io.StringIO()) as out:

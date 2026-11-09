@@ -84,7 +84,7 @@
 
 ## 2026-10-22 标定目录自动识别
 
-`umi-calib run <目录>` 支持 A/B/C/D 子文件夹各放一个原始 `.insv`，保留平铺四段按文件名排序的输入方式。布局混用、缺段或同段多个视频时明确报错，输入发现逻辑位于 `software/calibration/inputs.py`，求解与验收流程不变。
+`umi-calib run <目录>` 支持 A/B/C/D 子文件夹各放一个原始 `.insv`，保留平铺四段按文件名排序的输入方式。布局混用、缺段或同段多个视频时明确报错，输入发现逻辑当时位于 `software/calibration/inputs.py`（当前为 `software/calibration/pipeline/inputs.py`），求解与验收流程不变。
 
 ## 2026-10-22 标定产物精简
 
@@ -456,4 +456,28 @@ state.json 只保存 attempt/review，身份、使用手和完整性从清单读
    - 更新操作手册与场景指南，明确标定 `--install`、批次验收与硬链接的最高效用法。
 5. **验证**：主单元测试增加至 296 项全部通过，夹爪历史测试 5 项全部通过，查看器前端 JS 测试 15 项全部通过。
 
+
+## 2026-11-08 标定板资产与布局统一
+
+- `hardware/calibration_targets/aprilgrid.json` 成为唯一布局定义，记录 tag36h11、2 格黑边、6×6 行列和 0.3 间距比例。物理尺寸只由本次 `--tag-size-mm` 输入；生成给 Basalt 的 JSON 仍只包含原有四个几何字段。
+- A4/A3 PDF、PNG 和生成自检记录移到 `prints/`，打印图案内容不变；移除各纸张重复的 JSON/YAML 和无人读取的通用 YAML。
+- `umi-calib check` 改为检查打印记录与统一布局的一致性、打印资产存在性；打印记录不再提示编辑无效的 YAML。标定板目录增加 README，操作说明与 CLI 帮助统一为实测外黑框边长。
+- 验证：标定相关 98 项单元测试与 `./umi-calib check` 通过；A4/A3 PNG 均由实际检测器识别全部 36 个标签，A4/A3/实测尺寸生成的 Basalt 几何字段与原约定一致。未重跑实物录像求解。
+
+## 2026-11-08 配置项收敛与标定板尺寸传递
+
+- 标定 C 的 ORB 初始化尺寸从本次板几何派生，覆盖轨迹预设；前镜头 run、verify、样例比较、后镜头 Scene 和 recheck 共用有效配置，快照、检查点与子进程 YAML 均保存实际尺寸。
+- 从 calibration.yaml 和 BoardParameters 移除 time_match_tolerance_ns、minimum_trajectory_spread_m、coverage_radius_px。前两项保留为原数值的数学保护常量，覆盖半径由原始镜头图像规格推导，实际分母写入覆盖指标。
+- 场景对齐的三项门限覆盖集中为 alignment_parameters()，建图定义复用同一转换；明确共享场景与独立轨迹的参数边界，保留各模型有独立用途的噪声和验收门限。
+- 旧自定义覆盖中若包含移除的三项，需删除；历史结果不自动改写，旧快照与当前配置不同时按已有规则拒绝 recheck，可通过 resume 更新计算。
+- 验证：全部 Python 单元测试 443 项通过（90.756 s），`./umi-calib check` 与 `git diff --check` 通过。新增实测 A3 尺寸的前后镜头传递、候选/样例/verify/recheck、子进程 YAML 以及场景参数覆盖和建图指纹回归；未重跑实物录像求解。
+
+## 2026-11-08 任务原片目录去掉 videos 层
+
+- 新任务原片直接使用 `<任务>/left/`、`right/`，手动登记、自动导入和缺片补齐均采用相同路径；任务分组和设备身份继续分别取自任务目录和 INSV 序列号。
+- `inputs.task_video_sources()` 与 `batch_task_directories()` 统一发现左右手原片目录，默认扫描只包含原片目录及 pending，跳过 results、.umi、建图和其他内部目录。
+- 旧 `<任务>/videos/` 与已有清单继续原地读取，不自动搬动原片或改写路径；旧新布局可共同构成同一任务，多段同侧不同原片仍保留为待确认。
+- 更新日常目录示例、开发说明、批次预检和缺原片提示；训练导出包中的 videos/ 与生成的 lens_videos/ 保持原用途。
+
+- 验证：全量执行 447 项 Python 测试，唯一失败是端到端布局测试仍期望旧 videos 路径；同步该断言后，其所在的 6 项测试定向复跑全部通过。新增/更新覆盖新旧布局、扫描边界、单手、同名原片、补片、幂等、原片 inode 与只读预览；`./umi-scene check` 和 `git diff --check` 通过。
 
