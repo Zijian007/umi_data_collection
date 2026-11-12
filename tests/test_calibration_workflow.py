@@ -32,11 +32,10 @@ from software.storage import locked
 
 
 class DeviceCommandTests(unittest.TestCase):
-    def test_devices_and_status_dispatch_directly_to_listing(self):
-        for command in ('devices', 'status'):
-            with self.subTest(command=command), patch.object(devices, 'list_devices', return_value=0) as listing:
-                self.assertEqual(cli.main([command]), 0)
-                listing.assert_called_once_with()
+    def test_devices_dispatches_directly_to_listing(self):
+        with patch.object(devices, 'list_devices', return_value=0) as listing:
+            self.assertEqual(cli.main(['devices']), 0)
+            listing.assert_called_once_with(kit=None, json_output=False, intrinsics_source=None, require_rear=False)
 
     def test_install_flags_map_to_explicit_device_parameters(self):
         with patch.object(devices, 'install_bundle', return_value=0) as install:

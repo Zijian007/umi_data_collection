@@ -4,10 +4,8 @@ from pathlib import Path
 import json
 import os
 
-from ruamel.yaml import YAML
-
 from software import provenance
-from software.storage import locked as storage_lock
+from software.storage import locked as storage_lock, read_yaml
 
 
 INTERNAL = '.umi'
@@ -62,14 +60,13 @@ def locked(root: Path, *, blocking: bool = False):
 
 def task_configuration(root: Path) -> dict:
     """旧清单中的人工选项只读合并；迁移后仅保存在外层 task.yaml。"""
-    reader = YAML(typ='safe', pure=True)
     capture_path = manifest(root, 'episode.yaml')
-    capture = reader.load(capture_path.read_text()) if capture_path.is_file() else {}
+    capture = read_yaml(capture_path) if capture_path.is_file() else {}
     configuration = {key: value for key, value in capture.items() if key in TASK_FIELDS}
     path = root / 'task.yaml'
     if path.is_file():
-        declaration = reader.load(path.read_text())
-        if not isinstance(declaration, dict) or declaration.keys() - TASK_FIELDS:
+        declaration = read_yaml(path)
+        if declaration.keys() - TASK_FIELDS:
             raise ValueError('task.yaml 只允许 instruction、expected_arms 和 synchronization')
         configuration.update(declaration)
     return configuration

@@ -1,5 +1,4 @@
 .deps/
-calibration_user/
 __pycache__/
 *.pyc
 .DS_Store
@@ -11,9 +10,6 @@ umi_calib_out/
 calibration_result/
 *_calibration_verification/
 umi_calib_rear_out/
-*_umi_calib_verify/
-recordings/**/ab_repeat_*/
-recordings/**/c_repeat_*/
 .*.calibration.lock
 .pytest_cache/
 datasets/*

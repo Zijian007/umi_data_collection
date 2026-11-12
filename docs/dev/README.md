@@ -36,7 +36,7 @@
 
 ```bash
 ./test.sh        # 一键测试：主单元测试 (unittest，含宽度映射) + 前端测试 (node)
-./test.sh --all  # 包含 CLI check 运行时检查
+./test.sh --all  # 包含 CLI check 运行时检查与 KB4 C++ 数值回归
 ./test.sh --unit test_rear_assets test_calibration_inventory  # 日常改动：只跑相关模块
 ./test.sh --unit test_config.ConfigTests.test_c_isolates_task_poster_and_dual_mode_but_keeps_solver_parameters
 ```

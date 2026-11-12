@@ -97,7 +97,6 @@ class EpisodeAnnotationTests(unittest.TestCase):
             workflow.run_episode(self.f.episode_path)
 
     def test_instruction_update_keeps_single_hand_in_a_bimanual_kit(self):
-        session = inputs.read_batch(self.f.session_path)
         data = inputs.read_yaml(self.f.episode_path)
         data['expected_arms'] = ['right']
         data['recordings'].pop('left')

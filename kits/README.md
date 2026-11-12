@@ -89,6 +89,6 @@ arms:
       tcp: tcp_camera.json
 ```
 
-front/rear 版本属于同一序列号，内参来源需匹配；多来源使用上面的 `calibrations` 格式。海报布局放在 `scene.yaml` 的 `tags.layout`，不写入 kit 或 registry。新安装 rear 不会自动修改此配置。用 `./umi-calib devices` 查看所有镜头版本，再用 `./umi-calib status --kit kit_002 --require-rear` 检查所选套件的固定绑定；多来源可加 `--intrinsics-source measured|factory`，机器可读输出加 `--json`。检查只覆盖相机标定资产与绑定，不代表夹爪安装资产或双镜头组合实测已验收。
+front/rear 版本属于同一序列号，内参来源需匹配；多来源使用上面的 `calibrations` 格式。海报布局放在 `scene.yaml` 的 `tags.layout`，不写入 kit 或 registry。新安装 rear 不会自动修改此配置。用 `./umi-calib devices` 查看所有镜头版本，再用 `./umi-calib devices --kit kit_002 --require-rear` 检查所选套件的固定绑定；多来源可加 `--intrinsics-source measured|factory`，机器可读输出加 `--json`。检查只覆盖相机标定资产与绑定，不代表夹爪安装资产或双镜头组合实测已验收。
 
 共享单手回退继承同一套冻结配置；直接运行独立轨迹时则显式传入 `--rear-calibration` 和 `--tag-layout`。更换版本对新运行生效，历史结果仍保留旧资产副本。

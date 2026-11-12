@@ -82,11 +82,9 @@ def main(argv: list[str] | None = None, *, prepare_environment: bool = False) ->
         return devices.install_bundle(Path(args.out), args.force, camera_serial=args.serial)
     if args.cmd == "install-rear":
         return devices.install_rear(args.measurement)
-    if args.cmd in ("devices", "status"):
-        if args.kit or args.json_output or args.intrinsics_source or args.require_rear:
-            return devices.list_devices(kit=args.kit, json_output=args.json_output,
-                                        intrinsics_source=args.intrinsics_source, require_rear=args.require_rear)
-        return devices.list_devices()
+    if args.cmd == "devices":
+        return devices.list_devices(kit=args.kit, json_output=args.json_output,
+                                    intrinsics_source=args.intrinsics_source, require_rear=args.require_rear)
     if args.cmd == "retire":
         return devices.retire(args.serial)
     if args.cmd in ('upgrade-device', 'activate-calibration'):
@@ -179,12 +177,11 @@ def build_parser() -> argparse.ArgumentParser:
     activate = commands.add_parser('activate-calibration', help='显式启用设备标定版本；历史批次不改变')
     activate.add_argument('serial', help='设备完整序列号，可用 devices 查询')
     activate.add_argument('version', help='该设备已登记的标定版本号，例如 002')
-    for command in ('devices', 'status'):
-        inventory = commands.add_parser(command, help='只读检查双镜头版本与套件标定绑定')
-        inventory.add_argument('--kit', help='检查指定套件的实际镜头版本绑定，例如 kit_002')
-        inventory.add_argument('--json', dest='json_output', action='store_true', help='输出机器可读的检查报告')
-        inventory.add_argument('--intrinsics-source', choices=('measured', 'factory'), help='选择套件标定来源，需 --kit')
-        inventory.add_argument('--require-rear', action='store_true', help='套件缺少 rear 时检查失败，需 --kit')
+    inventory = commands.add_parser('devices', help='只读检查双镜头版本与套件标定绑定')
+    inventory.add_argument('--kit', help='检查指定套件的实际镜头版本绑定，例如 kit_002')
+    inventory.add_argument('--json', dest='json_output', action='store_true', help='输出机器可读的检查报告')
+    inventory.add_argument('--intrinsics-source', choices=('measured', 'factory'), help='选择套件标定来源，需 --kit')
+    inventory.add_argument('--require-rear', action='store_true', help='套件缺少 rear 时检查失败，需 --kit')
     retire_parser = commands.add_parser("retire", help="停用一台相机")
     retire_parser.add_argument("serial", help="待停用设备的完整序列号")
     commands.add_parser("check", help="检查标定组件是否装好")

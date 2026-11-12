@@ -7,7 +7,6 @@ from pathlib import Path
 import math
 import re
 
-from ruamel.yaml import YAML
 
 from software import config, registry
 from software import provenance as artifact_identity
@@ -17,22 +16,12 @@ from software.scene.configuration import SceneOverrides, apply_overrides
 from software.scene.management import camera_assets
 from software.scene.models import ARMS, Episode, Scene, SceneParameters, Session
 from software.scene.result_io import scene_map_identity
+from software.storage import read_yaml  # noqa: F401  其他模块经 inputs.read_yaml 使用
 
 
 ROOT = Path(__file__).resolve().parents[3]
 KITS = ROOT / 'kits'
 INTERNAL_DIRECTORIES = frozenset({'archive', 'cache', 'runs', 'versions', 'maps', 'mapping', 'videos', 'pending', 'imports', 'results', 'local_results'})
-
-
-def read_yaml(path: Path) -> dict:
-    parser = YAML(typ='safe', pure=True)
-    parser.version = (1, 2)
-    parser.allow_duplicate_keys = False
-    with path.open(encoding='utf-8') as stream:
-        yaml_document = parser.load(stream)
-    if parser.version != (1, 2) or not isinstance(yaml_document, dict):
-        raise ValueError(f'{path} 需要 YAML 1.2 映射')
-    return yaml_document
 
 
 def require_keys(document: dict, allowed: set, required: set, label: str) -> None:

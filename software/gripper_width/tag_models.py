@@ -66,21 +66,6 @@ class TagDistanceSeries:
     def valid(self) -> NDArray[np.bool_]:
         return (self.source == 'two_tags') & np.isfinite(self.distance_mm)
 
-    def aligned_to(self, query_times_s: NDArray[np.float64], offset_s: float) -> TagDistanceSeries:
-        """最近实际帧对齐；不插值、不外推或沿用缺失观测。"""
-        right_indices = np.clip(np.searchsorted(self.times_s, query_times_s), 1, len(self.times_s) - 1)
-        nearest_indices = right_indices - (
-            (query_times_s - self.times_s[right_indices - 1]) <= (self.times_s[right_indices] - query_times_s))
-        tolerance_s = .5 * float(np.median(np.diff(self.times_s))) + 1e-6
-        has_time_match = ((query_times_s >= self.times_s[0] - 1e-8)
-                          & (query_times_s <= self.times_s[-1] + 1e-8)
-                          & (np.abs(self.times_s[nearest_indices] - query_times_s) <= tolerance_s))
-        aligned_distances = np.full(len(query_times_s), np.nan)
-        aligned_sources = np.full(len(query_times_s), 'unmatched_time', dtype='<U32')
-        aligned_distances[has_time_match] = self.distance_mm[nearest_indices[has_time_match]]
-        aligned_sources[has_time_match] = self.source[nearest_indices[has_time_match]]
-        return TagDistanceSeries(query_times_s + offset_s, aligned_distances, aligned_sources)
-
 
 @dataclass(frozen=True)
 class TagDistanceResult:

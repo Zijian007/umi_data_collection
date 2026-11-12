@@ -5,5 +5,4 @@ arms:
     calibration: '002'
     gripper:
       tcp: tcp_camera.json
-      width: left_width.json
       tag_distance: tag_distance.json

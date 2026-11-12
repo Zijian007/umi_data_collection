@@ -19,6 +19,7 @@ from ruamel.yaml.error import YAMLError
 from software import provenance as artifact_identity
 from software.camera.x3.frame import validate_video_parameters
 from software.parameters import TrajectoryParameters, CalibrationParameters
+from software.storage import read_yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -185,29 +186,15 @@ class Configuration:
         return load('trajectory', target, overrides)
 
 
-def _read_yaml(path: Path) -> dict:
-    """Read one YAML 1.2 mapping; reject duplicate keys and executable tags."""
-    parser = YAML(typ='safe', pure=True)
-    parser.version = (1, 2)
-    parser.allow_duplicate_keys = False
-    with path.open(encoding='utf-8') as source:
-        configuration_values = parser.load(source)
-    if parser.version != (1, 2):
-        raise ValueError(f'{path} 仅支持 YAML 1.2；请移除其他版本的 YAML 指令')
-    if not isinstance(configuration_values, dict):
-        raise ValueError(f'{path} 的配置顶层必须是映射（键: 值）；空覆盖请写 {{}}')
-    return configuration_values
-
-
 def load(kind: str, path: Path | None = None, overrides: dict | None = None, *, inline: dict | None = None) -> Configuration:
     default_path = ROOT / 'config' / f'{kind}.yaml'
     try:
-        defaults = _read_yaml(default_path)
+        defaults = read_yaml(default_path)
         sources = [str(default_path)]
         overlay = {}
         if path is not None:
             path = Path(path).expanduser().resolve()
-            overlay = _read_yaml(path)
+            overlay = read_yaml(path)
             sources.append(str(path))
         configuration_values = merge_overrides(defaults, overlay)
         configuration_values = merge_overrides(configuration_values, inline or {})

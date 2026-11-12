@@ -43,7 +43,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
         data=inputs.read_yaml(self.f.episode_path)
         data['expected_arms']=['right'];data['recordings'].pop('left')
         write_yaml(self.f.episode_path,data)
-        result=workflow.run_episode(self.f.episode_path)
+        workflow.run_episode(self.f.episode_path)
         output=self.f.episode_path.parent/'results'
         self.assertTrue((output/'right/trajectory.csv').is_file())
         self.assertFalse((output/'left').exists())

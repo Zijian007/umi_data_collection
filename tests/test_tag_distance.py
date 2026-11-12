@@ -197,14 +197,6 @@ class DistancePipelineTests(unittest.TestCase):
             for file in (root/'tag_distance').glob('*/distances.npz'): file.write_bytes(b'tampered')
             with self.assertRaisesRegex(ValueError,'哈希'): process()
 
-    def test_alignment_keeps_missing_and_never_extrapolates(self):
-        raw=TagDistanceSeries(np.array([0.,.02,.04,.06]),np.array([40.,np.nan,42.,43.]),
-                                       np.array(['two_tags','missing','two_tags','two_tags']))
-        result=raw.aligned_to(np.array([-.001,.02,.04,.061]),.1)
-        np.testing.assert_array_equal(result.valid,[False,False,True,False])
-        np.testing.assert_allclose(result.times_s,[.099,.12,.14,.161])
-        self.assertEqual(result.source.tolist(),['unmatched_time','missing','two_tags','unmatched_time'])
-
     def test_viewer_uses_separate_distance_field_and_null_for_missing(self):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/'trajectory.csv'

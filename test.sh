@@ -25,8 +25,8 @@ usage() {
     echo "选项:"
     echo "  --unit       运行 Python 测试；可指定 test_rear_assets 或 模块.类.方法"
     echo "  --js         仅运行查看器前端测试 (node --test)"
-    echo "  --checks     仅运行 CLI 运行时健康检查 (umi-calib check, umi-scene check)"
-    echo "  --all        运行全部（单元测试 + 前端测试 + CLI 检查）"
+    echo "  --checks     仅运行 CLI 运行时健康检查 (umi-calib check, umi-scene check, KB4 C++ 回归)"
+    echo "  --all        运行全部（单元测试 + 前端测试 + CLI 检查 + KB4 C++ 回归）"
     echo "  -h, --help   显示帮助信息"
     echo ""
     echo "示例: $0 --unit test_rear_assets test_calibration_inventory"
@@ -90,6 +90,14 @@ if [ "$RUN_CHECKS" -eq 1 ]; then
     echo "[自检] 运行 CLI 运行时自检..."
     ./umi-calib check
     ./umi-scene check
+    if command -v c++ >/dev/null 2>&1; then
+        KB4_TEST=$(mktemp)
+        c++ -std=c++14 -DNDEBUG -I software/trajectory/setup/orbslam3 tests/cpp/test_kb4_bearing.cpp -o "$KB4_TEST"
+        "$KB4_TEST"
+        rm -f "$KB4_TEST"
+    else
+        echo "[-] 未安装 c++，跳过 KB4 射线几何测试"
+    fi
     echo "✓ CLI 自检通过"
 fi
 

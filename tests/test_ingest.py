@@ -164,7 +164,6 @@ class IngestTests(unittest.TestCase):
             inputs.read_arms(['left'], session.expected_arms)
 
     def test_manual_task_names_cannot_shadow_internal_directories(self):
-        session = inputs.read_batch(self.f.session_path)
         for name in inputs.INTERNAL_DIRECTORIES:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, '内部目录'):
                 inputs.validate_episode_name(name)

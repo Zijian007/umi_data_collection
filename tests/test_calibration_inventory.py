@@ -54,7 +54,7 @@ class InventoryTests(unittest.TestCase):
     def command(self, *args):
         stream = io.StringIO()
         with contextlib.redirect_stdout(stream):
-            code = cli.main(['status', '--json', *args])
+            code = cli.main(['devices', '--json', *args])
         return code, json.loads(stream.getvalue())
 
     def alter_rear(self, change):

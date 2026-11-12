@@ -12,6 +12,18 @@ import tempfile
 from ruamel.yaml import YAML
 
 
+def read_yaml(path: Path) -> dict:
+    """读取一个 YAML 1.2 映射；拒绝重复键、可执行标签和其他版本指令。"""
+    parser = YAML(typ='safe', pure=True)
+    parser.version = (1, 2)
+    parser.allow_duplicate_keys = False
+    with path.open(encoding='utf-8') as stream:
+        document = parser.load(stream)
+    if parser.version != (1, 2) or not isinstance(document, dict):
+        raise ValueError(f'{path} 需要 YAML 1.2 映射（键: 值）；空内容请写 {{}}')
+    return document
+
+
 def write_json(path: Path, document: dict) -> None:
     with atomic_file(path) as temporary:
         temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False)+'\n', encoding='utf-8')
