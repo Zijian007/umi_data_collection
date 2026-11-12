@@ -81,7 +81,7 @@ def read_frames(path: Path, times: list[float]) -> tuple[list[dict], list[str]]:
                 index = int(row['row'])
                 if index < 0 or index >= len(times) or index in seen:
                     raise ValueError('row')
-                time = float(row.get('t_scene_s') or row['t_video_s'])
+                time = float(row.get('t_episode_s') or row.get('t_scene_s') or row['t_video_s'])
                 if not math.isfinite(time) or abs(time - times[index]) > 1e-4:
                     raise ValueError('time')
                 constraint = row['constraint']

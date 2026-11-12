@@ -33,7 +33,9 @@ def merge(sources, output):
                 w.writerow([k, r["t"], 2, 1] + [r[c] for c in ("tx", "ty", "tz", "qx", "qy", "qz", "qw")] + [cur])
             else:
                 anyr = next((d[k] for _, _, d in frame_table if k in d), None)
-                w.writerow([k, anyr["t"] if anyr else "%.9f" % (k / 29.97), 1, 0, 0, 0, 0, 0, 0, 0, 1, ""])
+                if anyr is None:
+                    raise ValueError(f"frame {k} is missing from every localization source; refusing to invent its timestamp")
+                w.writerow([k, anyr["t"], 1, 0, 0, 0, 0, 0, 0, 0, 1, ""])
     return dict(frames=nfr, counts=counts, switches=switches)
 
 

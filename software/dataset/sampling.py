@@ -68,7 +68,9 @@ def read_arm(directory: Path, offset_s: float) -> ArmSamples:
         rows = list(csv.DictReader(stream))
     if len(rows) != len(times):
         raise ValueError('frames.csv 与 TCP 行数不一致')
-    frame_times = np.array([float(row['t_scene_s']) for row in rows])
+    # 历史结果的同一任务时钟列名为 t_scene_s。
+    time_column = 't_episode_s' if rows and 't_episode_s' in rows[0] else 't_scene_s'
+    frame_times = np.array([float(row[time_column]) for row in rows])
     capture_times = np.array([float(row['t_video_s']) for row in rows])
     validate_times(frame_times, '帧映射时间')
     time_tolerance = 1e-8 if path.suffix == '.csv' else 1e-6  # 历史 TUM 时间只保存六位小数。

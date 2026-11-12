@@ -8,7 +8,7 @@
 # 不需要 sudo，不改系统：conda 包管理器（micromamba）、Python 3.11 + numpy/scipy/gtsam、FFmpeg、OpenCV、编译器，
 # 以及从源码编译的 Pangolin + ORB-SLAM3，全部放在 <deps> 一个目录里。删掉这个目录就是卸载。
 # 需要：Linux x86_64（aarch64 能装但未实测）、bash、curl、tar、能访问 github.com / conda.anaconda.org / pypi.org。
-# 中途失败可以直接重跑，已完成的步骤会跳过。每一步的完整日志在 <deps>/logs/。
+# 中途失败可以直接重跑，已完成的步骤会跳过；ORB-SLAM3 每次都会增量构建，以应用仓库更新的补丁。每一步的完整日志在 <deps>/logs/。
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 T=$ROOT/software/trajectory
@@ -80,12 +80,11 @@ elif ! "$ENV/bin/python" -c "import ruamel.yaml" 2>/dev/null; then
 fi
 "$ENV/bin/python" -c "import gtsam, numpy, scipy, av, matplotlib, ruamel.yaml; print('gtsam ok, numpy', numpy.__version__, 'yaml', ruamel.yaml.__version__)"
 
-step "4/5 编译 Pangolin + ORB-SLAM3（10-30 分钟）"
+step "4/5 编译 Pangolin + ORB-SLAM3（首次 10-30 分钟；已装好时只做增量构建和自检）"
 O=$DEPS/src/ORB_SLAM3
-if [ ! -x "$O/Examples/Monocular-Inertial/x3_mono_slam" ] || [ ! -f "$O/Vocabulary/ORBvoc.txt" ] || [ ! -x "$O/Examples/Monocular-Inertial/umi_export_atlas" ]; then
-  echo "日志：$DEPS/logs/4_build.log"
-  JOBS=$JOBS run_logged "$DEPS/logs/4_build.log" "$MM" run -p "$ENV" bash "$T/setup/orbslam3/build_orbslam3.sh" "$DEPS"
-fi
+# 构建脚本自身可重入：已打的补丁和已编译的目标会跳过。每次都调用，
+# 仓库更新的补丁和驱动才能进入已有安装。
+JOBS=$JOBS run_logged "$DEPS/logs/4_build.log" "$MM" run -p "$ENV" bash "$T/setup/orbslam3/build_orbslam3.sh" "$DEPS"
 tail -4 "$DEPS/logs/4_build.log" 2>/dev/null || true
 
 step "5/5 写环境文件并自检"

@@ -79,7 +79,7 @@ def write_arm(arm: str, recording: PreparedRecording, result: FusedTrajectory,
                 *[f'{value:.6f}' for value in poses['tcp'][index, :3, 3]],
                 *[f'{value:.9f}' for value in quaternions[index]], *opening, *distance_columns])
     with (details / 'frames.csv').open('w') as stream:
-        stream.write('row,video_frame,source_video_frame,t_video_s,t_scene_s,constraint,front_lens_tracked\n')
+        stream.write('row,video_frame,source_video_frame,t_video_s,t_episode_s,constraint,front_lens_tracked\n')
         for k, time in enumerate(times):
             source_frame = video_parameters.frame_step * k
             stream.write(f'{k},{k},{source_frame},{recording.video_times_s[k]:.9f},{time:.9f},{"full" if result.tracked[k] else "imu"},{int(result.front_tracked[k])}\n')
@@ -131,7 +131,7 @@ def write_bimanual(tracks: dict[str, ArmTrajectory], directory: Path) -> list[fl
                    for arm, track in tracks.items()}
         with (directory / 'bimanual.csv').open('w') as stream:
             writer = csv.writer(stream)
-            writer.writerow(['t_scene_s'] + [f'{arm}_{axis}' for arm in ('left', 'right') for axis in ('x', 'y', 'z', 'qx', 'qy', 'qz', 'qw')])
+            writer.writerow(['t_episode_s'] + [f'{arm}_{axis}' for arm in ('left', 'right') for axis in ('x', 'y', 'z', 'qx', 'qy', 'qz', 'qw')])
             quaternions = {arm: Rotation.from_matrix(poses[:, :3, :3]).as_quat() for arm, poses in sampled.items()}
             for k, time in enumerate(query):
                 writer.writerow([f'{time:.9f}'] + [f'{v:.9f}' for arm in ('left', 'right')
