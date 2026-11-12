@@ -1,11 +1,13 @@
 """宽度序列读写与时间插值；无检测不代表闭合，缺失值保持 NaN。"""
+
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 from pathlib import Path
+import csv
 
 import numpy as np
+
 
 MISSING, TWO_TAGS, INTERPOLATED, OUT_OF_RANGE = 0, 1, 2, 3
 SOURCE_NAMES = {MISSING: 'missing', TWO_TAGS: 'two_tags', INTERPOLATED: 'interpolated', OUT_OF_RANGE: 'out_of_range'}

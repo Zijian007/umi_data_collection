@@ -1,28 +1,29 @@
 """场景和设备档案共用的原子文件、写入锁与结果版本指针。"""
+
 from __future__ import annotations
 
+from contextlib import contextmanager
+from pathlib import Path
 import fcntl
 import json
 import os
 import tempfile
-from contextlib import contextmanager
-from pathlib import Path
 
 from ruamel.yaml import YAML
 
 
-def write_json(path: Path, data: dict) -> None:
+def write_json(path: Path, document: dict) -> None:
     with atomic_file(path) as temporary:
-        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False)+'\n', encoding='utf-8')
+        temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False)+'\n', encoding='utf-8')
 
 
-def write_yaml(path: Path, data: dict) -> None:
+def write_yaml(path: Path, document: dict) -> None:
     writer = YAML()
     writer.default_flow_style = False
     writer.allow_unicode = True
     writer.width = 4096
     with atomic_file(path) as temporary, temporary.open('w', encoding='utf-8') as stream:
-        writer.dump(data, stream)
+        writer.dump(document, stream)
 
 
 @contextmanager

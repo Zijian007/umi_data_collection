@@ -1,4 +1,5 @@
 """全局套件复用、扁平场景批次以及原片到训练包的业务回归。"""
+from software import provenance as artifact_identity
 import json
 from pathlib import Path
 import unittest
@@ -10,7 +11,6 @@ from software.scene import layout
 from software.dataset.export import build, load_episode
 from software.scene.management import episodes, ingest, inputs
 from software.scene import workflow
-from software.scene.pipeline import recordings
 from software.storage import write_yaml
 from software.viewer.data import RecordingCatalog
 from software.viewer.episodes import capture_status
@@ -55,7 +55,7 @@ class NewLayoutTests(unittest.TestCase):
 
     def session(self, name='20261104_001', *, scene=None, kit='rig'):
         selected = inputs.read_scene(scene or self.f.scene.root)
-        pointer = layout.maps(selected.root) / 'current.json'
+        pointer = (self.f.scene.map_root if selected.root == self.f.scene.root else selected.map_root) / 'current.json'
         version = json.loads(pointer.read_text())['version'] if pointer.is_file() else None
         return write_batch(scene or self.f.scene.root, name, kit=kit, map_version=version)
 
@@ -108,12 +108,12 @@ class NewLayoutTests(unittest.TestCase):
         video.write_text('right_task')
         before = {p: (p.read_bytes(), p.stat().st_ino) for p in (declaration, mapping, video)}
         self.assertFalse((batch / '.umi').exists())
-        info = ingest.RecordingMetadata(video, 'SERIAL_right', registry.sha256_file(video), None, 8.)
+        info = ingest.RecordingMetadata(video, 'SERIAL_right', artifact_identity.file_hash(video), None, 8.)
         with patch.object(registry, 'read_insv_serial', return_value='SERIAL_right'), \
                 patch.object(ingest, 'scan_raw_videos', return_value=([info], [])):
             result = processing.prepare_batch(batch)
         task = Path(result['episodes'][0]['path'])
-        manifest = batch / '.umi/manifest.yaml'
+        manifest = layout.metadata(batch, 'manifest.yaml')
         self.assertEqual(inputs.read_batch(manifest).expected_arms, ('right',))
         self.assertEqual(episodes.episode_paths([manifest]), [task])
         self.assertEqual({p: (p.read_bytes(), p.stat().st_ino) for p in before}, before)
@@ -124,12 +124,12 @@ class NewLayoutTests(unittest.TestCase):
             encode_video(recording.lens_video('front').path, len(recording.video_times_s))
         self.f.build_scene()
         manifest = self.session()
-        infos = [ingest.RecordingMetadata(video, 'SERIAL_'+arm, registry.sha256_file(video), 1000., 8.)
+        infos = [ingest.RecordingMetadata(video, 'SERIAL_'+arm, artifact_identity.file_hash(video), 1000., 8.)
                  for arm, video in self.f.recording_paths.items()]
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
             imported = ingest.register_recordings(inputs.read_batch(layout.owner(manifest)))
             path = Path(imported['episodes'][0]['path'])
-            self.assertEqual(path, layout.owner(manifest) / 'take_001/.umi/episode.yaml')
+            self.assertEqual(path, layout.metadata(layout.owner(manifest) / 'take_001', 'episode.yaml'))
             repeated = ingest.register_recordings(inputs.read_batch(manifest))
         self.assertEqual(repeated['skipped'], ['take_001'])
         self.assertEqual(capture_status(layout.owner(path))['status'], 'pending')
@@ -169,7 +169,7 @@ class NewLayoutTests(unittest.TestCase):
         self.assertEqual(capture_status(layout.owner(path))['status'], 'incomplete')
         current = inputs.read_episode(path)
         clips = dict(current.recordings, right=self.f.recording_paths['right'])
-        metadata = [ingest.RecordingMetadata(clip, 'SERIAL_' + arm, registry.sha256_file(clip), 1000., 8.)
+        metadata = [ingest.RecordingMetadata(clip, 'SERIAL_' + arm, artifact_identity.file_hash(clip), 1000., 8.)
                     for arm, clip in clips.items()]
         with patch.object(ingest, 'scan_raw_videos', return_value=(metadata, [])):
             ingest.register_recordings(session)

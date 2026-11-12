@@ -1,15 +1,11 @@
 """精简清单仍保留快照、缺片语义、同步和内容校验。"""
-from contextlib import redirect_stdout
-import io
 import unittest
 from registry_fakes import write_kit, write_batch, write_task
 from unittest.mock import patch
 
 from software import registry
 from software.scene import layout
-from software.scene.management import episodes, ingest, inputs
-from software.scene import cli
-from software.scene.pipeline import recordings
+from software.scene.management import episodes, inputs
 from software.storage import write_yaml
 from software.viewer.episodes import capture_status
 import test_scene as fixtures

@@ -15,7 +15,7 @@ exports/shelf_20261104_001/
     ├── report.txt
     ├── episode.json
     └── left/
-        ├── traj_tcp.txt
+        ├── trajectory.csv
         └── front.mp4
 ```
 

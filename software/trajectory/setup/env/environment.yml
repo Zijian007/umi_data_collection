@@ -10,7 +10,7 @@ dependencies:
   - scipy=1.17.1
   - matplotlib-base
   - av                       # 只用来读 INSV 的帧时间戳（demux，不解码）
-  - ffmpeg=8.0.1=gpl*        # 裁前镜头视频（libx264）
+  - ffmpeg=8.0.1=gpl*        # 裁工作镜头视频（libx264）
   - libopencv=4.12.0=headless*
   - eigen=3.4.0
   - libboost-devel=1.85.0

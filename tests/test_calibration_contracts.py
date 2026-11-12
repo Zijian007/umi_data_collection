@@ -1,3 +1,4 @@
+from software import provenance as artifact_identity
 """Boundary tests for evidence freshness, installed identity and checkpoint dependencies."""
 import json
 import os
@@ -69,7 +70,7 @@ class CheckpointContractTests(unittest.TestCase):
             (raw.get('value0') or raw)['intrinsics'][0]['intrinsics']['fx']+=1
             (out/'calibration.json').write_text(json.dumps(raw))
             manifest=json.loads((out/'manifest.json').read_text())
-            manifest['files']['calibration.json']=config.file_hash(out/'calibration.json')
+            manifest['files']['calibration.json']=artifact_identity.file_hash(out/'calibration.json')
             (out/'manifest.json').write_text(json.dumps(manifest))
             assets.describe(out,'registry') # standalone asset pair is consistent
             with patch.object(registry,'register') as register:
@@ -145,7 +146,7 @@ class SolverAdapterTests(unittest.TestCase):
 
     def test_rear_cli_uses_explicit_exit_code_and_preserves_options(self):
         from software.calibration import cli
-        with patch('software.scene.spatial.rear_calibration.run',return_value=dict(status='display only',exit_code=1)) as run:
-            self.assertEqual(cli.main(['calibrate-rear','/data','--resume','--workers','2']),1)
-            self.assertTrue(run.call_args.kwargs['resume'])
-            self.assertEqual(run.call_args.kwargs['workers'],2)
+        with patch('software.scene.spatial.rear_calibration.run',return_value=1) as run:
+            self.assertEqual(cli.main(['run','/data/rear','--resume','--workers','2']),1)
+            self.assertTrue(run.call_args.args[0].resume)
+            self.assertEqual(run.call_args.args[0].workers,2)

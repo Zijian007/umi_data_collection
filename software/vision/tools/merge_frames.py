@@ -2,6 +2,7 @@
 Per frame, keep using the current source while it has a valid pose (ok=1, state=2); otherwise switch to the valid source with the
 highest priority (e.g. keyframe count of its map). Writes frames.csv columns + 'map' (= source label); invalid frames ok=0.
 Chains must be split wherever 'map' changes (different coordinate frames). The fusion does that."""
+
 import argparse
 import csv
 
@@ -9,22 +10,21 @@ import csv
 def merge(sources, output):
     """合并已排序优先级的定位观测；同来源有效时保持来源。"""
     srcs, out = sources, output
-    data = []
+    frame_table = []
     for lab, pri, path in srcs:
-        d = {}
-        for r in csv.DictReader(open(path)):
-            d[int(r["frame_idx"])] = r
-        data.append((lab, float(pri), d))
-    data.sort(key=lambda x: -x[1])
-    nfr = max(max(d) for _, _, d in data) + 1
+        with open(path, newline="") as source:
+            d = {int(r["frame_idx"]): r for r in csv.DictReader(source)}
+        frame_table.append((lab, float(pri), d))
+    frame_table.sort(key=lambda x: -x[1])
+    nfr = max(max(d) for _, _, d in frame_table) + 1
     cols = ["frame_idx", "t", "state", "ok", "tx", "ty", "tz", "qx", "qy", "qz", "qw", "map"]
-    cur = None; counts = {lab: 0 for lab, _, _ in data}; switches = 0
+    cur = None; counts = {lab: 0 for lab, _, _ in frame_table}; switches = 0
     with open(out, "w", newline="") as fo:
         w = csv.writer(fo); w.writerow(cols)
         for k in range(nfr):
-            valid = {lab: d[k] for lab, _, d in data if k in d and d[k]["ok"] == "1" and d[k]["state"] == "2"}
+            valid = {lab: d[k] for lab, _, d in frame_table if k in d and d[k]["ok"] == "1" and d[k]["state"] == "2"}
             if cur not in valid:
-                nxt = next((lab for lab, _, _ in data if lab in valid), None)
+                nxt = next((lab for lab, _, _ in frame_table if lab in valid), None)
                 if nxt is not None and cur is not None and nxt != cur:
                     switches += 1
                 cur = nxt if nxt is not None else cur
@@ -32,7 +32,7 @@ def merge(sources, output):
                 r = valid[cur]; counts[cur] += 1
                 w.writerow([k, r["t"], 2, 1] + [r[c] for c in ("tx", "ty", "tz", "qx", "qy", "qz", "qw")] + [cur])
             else:
-                anyr = next((d[k] for _, _, d in data if k in d), None)
+                anyr = next((d[k] for _, _, d in frame_table if k in d), None)
                 w.writerow([k, anyr["t"] if anyr else "%.9f" % (k / 29.97), 1, 0, 0, 0, 0, 0, 0, 0, 1, ""])
     return dict(frames=nfr, counts=counts, switches=switches)
 

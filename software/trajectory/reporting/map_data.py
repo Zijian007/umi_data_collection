@@ -1,15 +1,17 @@
 """ORB 图集 → 轻量地图展示数据；相似变换仅供展示，不改写轨迹或原始地图。"""
+
 from __future__ import annotations
 
+from pathlib import Path
 import argparse
 import csv
 import json
 import subprocess
 import tempfile
-from pathlib import Path
 
-from software.vision.paths import exporter_paths
 from .results import attempt_paths, load_summary, result_path
+from software.vision.paths import exporter_paths
+
 
 ROOT = Path(__file__).resolve().parents[3]
 MAX_POINTS = 50000  # 每张子地图的浏览器绘制预算；完整点云仍在 .osa 中。
@@ -124,15 +126,15 @@ def prepare_display_map(raw: dict, alignment: dict) -> dict:
 
 
 def export_attempt(attempt: Path, output: Path) -> dict:
-    """仅导出前镜头图集；原片、地图、相机轨迹和设备档案均只读。"""
+    """仅导出工作镜头图集；原片、地图、相机轨迹和设备档案均只读。"""
     archive = attempt / 'front/map/map.osa'
     require_local(archive, output)
     executable, vocabulary = exporter_paths()
     for path in (archive, executable, vocabulary):
         if not path.is_file():
             raise MapDataError(f'地图读取缺少 {path.name}；导出器可通过 install.sh 安装')
-    with tempfile.TemporaryDirectory(prefix='umi-map-export-') as temp:
-        raw_path = Path(temp) / 'atlas.json'
+    with tempfile.TemporaryDirectory(prefix='umi-map-export-') as temporary_atlas:
+        raw_path = Path(temporary_atlas) / 'atlas.json'
         try:
             result = subprocess.run([str(executable), str(archive), str(vocabulary), str(raw_path)],
                                     capture_output=True, text=True, timeout=180)
@@ -159,7 +161,7 @@ def export_attempt(attempt: Path, output: Path) -> dict:
         maps.append(prepare_display_map(item, alignment))
     return dict(kind='umi_map_view', schema_version=1, maps=maps,
                 source=dict(archive=str(archive.relative_to(output)), bytes=archive.stat().st_size),
-                note='前镜头稀疏地图；相似变换拟合仅供展示，拟合残差不代表真实轨迹精度。')
+                note='工作镜头稀疏地图；相似变换拟合仅供展示，拟合残差不代表真实轨迹精度。')
 
 
 def main(argv=None) -> int:
@@ -172,8 +174,8 @@ def main(argv=None) -> int:
         attempt = attempt_directory(output, load_summary(output))
         if attempt is None:
             raise MapDataError('未保留原始地图；新的轨迹抽取会自动保留轻量地图展示数据')
-        data = export_attempt(attempt, output)
-        args.output.write_text(json.dumps(data, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+        display_map = export_attempt(attempt, output)
+        args.output.write_text(json.dumps(display_map, ensure_ascii=False, allow_nan=False), encoding='utf-8')
     except (OSError, ValueError) as error:
         parser.exit(1, f'{error}\n')
     return 0

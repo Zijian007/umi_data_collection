@@ -1,18 +1,22 @@
 """纯视觉建图、固定地图定位与逐图合并；不融合 IMU。"""
+
 from __future__ import annotations
-import re
+
+from dataclasses import replace
+from pathlib import Path
 import csv
 import json
 import math
-from dataclasses import replace
-from pathlib import Path
+import re
+
 from software.storage import write_json
 from software.vision import runtime
 from software.vision.models import AtlasMap, LensLocalization, LensVideo, MapAtlas, VisualContext, ProcessingError
 
+
 def build_maps(videos: tuple[LensVideo, ...], context: VisualContext,
                directory: Path) -> tuple[MapAtlas, ...]:
-    """第一轮视觉计算：每个镜头独立建图，仅建图时对前镜头遮手。"""
+    """第一轮视觉计算：每个镜头独立建图，仅建图时对工作镜头遮手。"""
     atlases = []
     for video in videos:
         lens_dir = directory / video.lens
@@ -67,19 +71,28 @@ def read_atlas_maps(log: Path, *, lens: str) -> tuple[AtlasMap, ...]:
 
 
 def localize_map(atlas: MapAtlas, index: int, output: Path,
-                  context: VisualContext, directory: Path) -> None:
+                  context: VisualContext, directory: Path, *, reverse: bool = False,
+                  frame_range: tuple[int, int] | None = None) -> None:
     run_orb(atlas.video, output, context, directory, stage=f'定位（{atlas.video.lens}，地图 {index}）',
-             extra=['--load_map', str(atlas.archive), '--localization_only'], map_index=index)
+             extra=['--load_map', str(atlas.archive), '--localization_only'], map_index=index,
+             reverse=reverse, frame_range=frame_range)
     if not (output / 'frames.csv').is_file():
         raise ProcessingError(f'定位（{atlas.video.lens}，地图 {index}）',
                                   f'未生成逐帧定位结果；日志：{output / "log.txt"}')
 
 
 def run_orb(video: LensVideo, output: Path, context: VisualContext, directory: Path, *,
-             stage: str, extra: list[str], mask: Path | None = None, map_index: int = 0) -> None:
+             stage: str, extra: list[str], mask: Path | None = None, map_index: int = 0,
+             reverse: bool = False, frame_range: tuple[int, int] | None = None) -> None:
+    start, end = frame_range if frame_range is not None else (0, context.frame_count)
+    if not (type(start) is int and type(end) is int and 0 <= start < end <= context.frame_count):
+        raise ValueError('ORB 处理范围必须是视频内非空的 [start, end) 帧区间')
+    expected_frames = end - start
     output.mkdir(parents=True)
     settings = context.settings
     environment = dict(settings.environment, ORB_MAP_INDEX=str(map_index))
+    # ORB pyramid workers should sleep while the serial mapper runs local BA.
+    environment.setdefault('OMP_WAIT_POLICY', 'PASSIVE')
     orb = settings.orb_directory
     environment['LD_LIBRARY_PATH'] = ':'.join([
         str(orb / 'lib'), str(orb / 'Thirdparty/DBoW2/lib'), str(orb / 'Thirdparty/g2o/lib'),
@@ -92,8 +105,12 @@ def run_orb(video: LensVideo, output: Path, context: VisualContext, directory: P
                '--init_tag_size', str(context.parameters.orb.initial_tag_size_m)]
     if mask is not None:
         command += ['--mask_img', str(mask)]
+    if reverse:
+        command += ['--reverse']
+    if frame_range is not None:
+        command += ['--frame_start', str(start), '--frame_end', str(end)]
     command += extra
-    timeout_s = context.frame_count // 30 * 16 + 300
+    timeout_s = expected_frames // 30 * 16 + 300
     # 已有引擎曾在 Shutdown/析构阶段以 SIGSEGV 退出；只有完成全部帧且
     # 写出终结统计的 139/-11 可进入兼容验收。超时和其他错误一律失败。
     return_code = runtime.run_logged(runtime.engine_command(context, command, timeout_s=timeout_s), output / 'log.txt',
@@ -102,9 +119,19 @@ def run_orb(video: LensVideo, output: Path, context: VisualContext, directory: P
     text = (output / 'log.txt').read_text(encoding='utf-8', errors='replace')
     tracked = re.findall(r'TRACKED.*', text)
     append_run(directory, f'{output.name}: rc={return_code} ' + ' '.join(tracked))
-    record = dict(stage=stage, lens=video.lens, return_code=return_code, expected_frames=context.frame_count,
-                  compatibility_exit=return_code in (139, -11), accepted=False)
+    record = dict(stage=stage, lens=video.lens, return_code=return_code, expected_frames=expected_frames,
+                  video_frames=context.frame_count, frame_range=[start, end],
+                  compatibility_exit=return_code in (139, -11), accepted=False, reverse=reverse)
+    scheduling = re.findall(r'^offline_sync=([01])$', text, re.MULTILINE)
+    record['offline_sync'] = bool(int(scheduling[-1])) if scheduling else None
+    cadence = re.findall(r'^offline_keyframe_interval_s=(\S+) minimum_frames=(\d+)$', text, re.MULTILINE)
+    record.update(offline_keyframe_interval_s=None, offline_minimum_keyframe_frames=None)
     try:
+        if cadence:
+            interval = float(cadence[-1][0])
+            if not math.isfinite(interval) or not 0 <= interval <= 1:
+                raise ValueError('ORB 离线选帧间隔无效')
+            record.update(offline_keyframe_interval_s=interval, offline_minimum_keyframe_frames=int(cadence[-1][1]))
         if return_code not in (0, 139, -11):
             stderr_path = output / 'stderr.txt'
             lines = [line.strip() for line in stderr_path.read_text(encoding='utf-8', errors='replace').splitlines()
@@ -113,20 +140,21 @@ def run_orb(video: LensVideo, output: Path, context: VisualContext, directory: P
             raise ProcessingError(stage, f'ORB 退出码 {return_code}{cause}；日志：{output / "log.txt"}；错误日志：{stderr_path}',
                                   return_code=return_code)
         stats = re.findall(r'TRACKED (\d+) / (\d+)', text)
-        if not stats or int(stats[-1][1]) != context.frame_count:
+        if not stats or int(stats[-1][1]) != expected_frames:
             raise ValueError('ORB 未写出完整帧数的结束统计')
         seen = 0
         with (output / 'frames.csv').open() as stream:
             for row in csv.DictReader(stream):
-                if int(row['frame_idx']) != seen or not math.isfinite(float(row['t'])):
+                expected_index = end - 1 - seen if reverse else start + seen
+                if int(row['frame_idx']) != expected_index or not math.isfinite(float(row['t'])):
                     raise ValueError('ORB 帧索引或时间戳无效')
                 if row['ok'] == '1':
                     values = [float(row[k]) for k in ('tx','ty','tz','qx','qy','qz','qw')]
                     if not all(math.isfinite(v) for v in values) or not .81 < sum(v*v for v in values[3:]) < 1.21:
                         raise ValueError('ORB 定位位姿无效')
                 seen += 1
-        if seen != context.frame_count:
-            raise ValueError(f'ORB 帧表不完整：{seen}/{context.frame_count}')
+        if seen != expected_frames:
+            raise ValueError(f'ORB 帧表不完整：{seen}/{expected_frames}')
         record.update(accepted=True, rows=seen, tracked=int(stats[-1][0]))
         path = directory / 'logs/tracking.json'
         summary = json.loads(path.read_text()) if path.is_file() else {}
@@ -141,5 +169,3 @@ def run_orb(video: LensVideo, output: Path, context: VisualContext, directory: P
 def append_run(directory: Path, line: str) -> None:
     with (directory / 'logs/run.txt').open('a', encoding='utf-8') as output:
         output.write(line + '\n')
-
-

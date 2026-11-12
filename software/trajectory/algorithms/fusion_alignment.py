@@ -1,16 +1,20 @@
 """惯性尺度/重力对齐与坏跟踪段细分；输出进入地图放置阶段的显式数据。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import numpy as np
-from scipy.spatial.transform import Rotation as Rot
 
-from software import config
+from scipy.spatial.transform import Rotation as Rot
+import numpy as np
+
+from software import parameters as parameter_models
 from software.camera.x3.frame import output_frame_rate
-import scipy.sparse as sp
-import scipy.sparse.linalg as spla
 from software.trajectory.algorithms.fusion_data import FusionInputs
+from software.trajectory.algorithms.inertial import estimate_gyro_bias, integrate_gyro_rotation
+from software.trajectory.algorithms.fusion_alignment_solver import estimate_lens_alignment, summarize_alignment
+from software.trajectory.algorithms.fusion_diagnostics import sampling_stability
+from software.trajectory.algorithms.fusion_refinement import refine_initialization as refine
 
 
 @dataclass(frozen=True)
@@ -26,213 +30,26 @@ class AlignmentResult:
     diagnostics: dict
 
 
-def summarize_alignment(s, chains):
-    if s is None:
-        return None
-    return {"ba": np.round(s["ba"], 4).tolist(), "pos_rms_mm": round(1e3 * s["pos_rms"], 3), "pairs": s["pairs"],
-            "chains": [{"k": list(chains[i]), "scale": round(c["scale"], 5), "rel_std": None if c["rel_std"] is None or not np.isfinite(c["rel_std"]) else round(c["rel_std"], 4),
-                        "g_free": None if c["g_free"] is None else round(c["g_free"], 3), "pairs": c["pairs"], "good": c["good"]}
-                       for i, c in enumerate(s["chains"])]}
+class AlignmentError(ValueError):
+    """保留初始化失败证据，供 CLI 和批处理判断是否值得重试。"""
+
+    def __init__(self, diagnostics: dict):
+        super().__init__('NO_USABLE_LENS：没有通过尺度、重力与采样稳定性检查的运动段')
+        self.diagnostics = diagnostics
 
 
-def chains_of(obs):
-    ch = []
-    for k in sorted(obs):
-        if ch and k == ch[-1][1] + 1:
-            ch[-1][1] = k
+def chains_of(observations: dict[int, tuple[np.ndarray, np.ndarray]]) -> list[tuple[int, int]]:
+    intervals = []
+    for frame_index in sorted(observations):
+        if intervals and frame_index == intervals[-1][1] + 1:
+            intervals[-1][1] = frame_index
         else:
-            ch.append([k, k])
-    return [tuple(c) for c in ch]
+            intervals.append([frame_index, frame_index])
+    return [tuple(interval) for interval in intervals]
 
 
-def integrate_gyro_rotation(imu_video_times_s, gyro, initial_gyro_bias, t0, t1):
-    i0, i1 = np.searchsorted(imu_video_times_s, t0), np.searchsorted(imu_video_times_s, t1)
-    gyro_rotation = np.eye(3)
-    tprev = t0
-    for i in range(max(i0 - 1, 0), min(i1 + 1, len(imu_video_times_s))):
-        tn = min(imu_video_times_s[i + 1], t1) if i + 1 < len(imu_video_times_s) else t1
-        dt = tn - max(tprev, imu_video_times_s[i])
-        if dt > 0:
-            gyro_rotation = gyro_rotation @ Rot.from_rotvec((gyro[i] - initial_gyro_bias) * dt).as_matrix()
-        tprev = tn
-        if tn >= t1:
-            break
-    return gyro_rotation
-
-
-def preintegrate_samples(imu_video_times_s, gyro, acc, t0, t1, gyro_bias, acc_bias):
-    i0, i1 = np.searchsorted(imu_video_times_s, t0), np.searchsorted(imu_video_times_s, t1)
-    dR = np.eye(3)
-    dv = np.zeros(3)
-    dp = np.zeros(3)
-    Jv = np.zeros((3, 3))
-    Jp = np.zeros((3, 3))
-    tprev = t0
-    for i in range(max(i0 - 1, 0), min(i1 + 1, len(imu_video_times_s))):
-        tn = min(imu_video_times_s[i + 1], t1) if i + 1 < len(imu_video_times_s) else t1
-        dt = tn - max(tprev, imu_video_times_s[i])
-        if dt <= 0:
-            continue
-        aa = acc[i] - acc_bias
-        dp = dp + dv * dt + 0.5 * dR @ aa * dt * dt
-        Jp = Jp + Jv * dt - 0.5 * dR * dt * dt
-        dv = dv + dR @ aa * dt
-        Jv = Jv - dR * dt
-        dR = dR @ Rot.from_rotvec((gyro[i] - gyro_bias) * dt).as_matrix()
-        tprev = tn
-        if tn >= t1:
-            break
-    return dR, dv, dp, Jv, Jp, t1 - t0
-
-
-def estimate_lens_alignment(lens, video_times_s, imu_video_clock, initial_gyro_bias, fusion_parameters,
-                            use_chains=None, *, shared_map=False):
-    """逐段估计，或为同一固定地图共用尺度/重力；速度始终按连续段隔离。"""
-    gravity_m_s2 = fusion_parameters.gravity_m_s2
-    alignment_step = fusion_parameters.step
-    maximum_scale_relative_std = fusion_parameters.maximum_relative_scale_std
-    imu_video_times_s, gyro, acc = imu_video_clock[:, 0], imu_video_clock[:, 1:4], imu_video_clock[:, 4:7]
-    obs, R_CI, lever, chains = lens["obs"], lens["R_CI"], lens["lever"], lens["chains"]
-    pairs = []
-    for c, (k0, k1) in enumerate(chains):
-        if use_chains is not None and c not in use_chains:
-            continue
-        k = k0
-        while k + alignment_step <= k1:
-            pairs.append((k, c))
-            k += alignment_step
-    if len(pairs) < fusion_parameters.minimum_alignment_pairs:
-        return None
-    nc = len(chains)
-    # 未知量依次为：每段尺度、每段重力、共享加速度计零偏、各节点速度。
-    groups = 1 if shared_map else nc
-    scale_offset, gravity_offset, bias_offset, velocity_offset = 0, groups, 4 * groups, 4 * groups + 3
-    velocity_indices = {}
-    for k, c in pairs:
-        for kk in (k, k + alignment_step):
-            velocity_indices.setdefault(kk, len(velocity_indices))
-    unknown_count = velocity_offset + 3 * len(velocity_indices)
-    pre = {k: preintegrate_samples(imu_video_times_s, gyro, acc, video_times_s[k], video_times_s[k + alignment_step], initial_gyro_bias, np.zeros(3)) for k, c in pairs}
-    pairs_per_chain = np.bincount([c for k, c in pairs], minlength=nc)
-
-    def build(fixed_gravity):
-        rows, cols, vals, rhs = [], [], [], []
-
-        def put(r0, c0, Mx):
-            Mx = np.atleast_2d(Mx)
-            for i in range(Mx.shape[0]):
-                for j in range(Mx.shape[1]):
-                    if Mx[i, j] != 0:
-                        rows.append(r0 + i)
-                        cols.append(c0 + j)
-                        vals.append(Mx[i, j])
-        r = 0
-        prow = []
-        for k, c in pairs:
-            group = 0 if shared_map else c
-            (pk, Rk), (pk1, Rk1) = obs[k], obs[k + alignment_step]
-            RMI = Rk @ R_CI
-            dR, dv, dp, Jv, Jp, dt = pre[k]
-            put(r, scale_offset + group, (pk1 - pk).reshape(3, 1))
-            put(r, velocity_offset + 3 * velocity_indices[k], -np.eye(3) * dt)
-            b = RMI @ dp - (Rk1 - Rk) @ lever
-            if fixed_gravity is None:
-                put(r, gravity_offset + 3 * group, -0.5 * np.eye(3) * dt * dt)
-            else:
-                b = b + 0.5 * fixed_gravity[group] * dt * dt
-            put(r, bias_offset, -RMI @ Jp)
-            rhs.extend(b)
-            prow.extend([r, r + 1, r + 2])
-            r += 3
-            put(r, velocity_offset + 3 * velocity_indices[k + alignment_step], np.eye(3))
-            put(r, velocity_offset + 3 * velocity_indices[k], -np.eye(3))
-            b = RMI @ dv
-            if fixed_gravity is None:
-                put(r, gravity_offset + 3 * group, -np.eye(3) * dt)
-            else:
-                b = b + fixed_gravity[group] * dt
-            put(r, bias_offset, -RMI @ Jv)
-            rhs.extend(b)
-            r += 3
-        # tiny ridge rows keep columns of chains without pairs (and g of fixed solves) determined
-        for j in range(unknown_count):
-            rows.append(r)
-            cols.append(j)
-            vals.append(1e-6)
-            rhs.append(0.0)
-            r += 1
-        return sp.csr_matrix((vals, (rows, cols)), shape=(r, unknown_count)), np.array(rhs), np.array(prow)
-    A, bb, _ = build(None)
-    x = spla.lsqr(A, bb, atol=fusion_parameters.linear_tolerance, btol=fusion_parameters.linear_tolerance, iter_lim=fusion_parameters.linear_iterations)[0]
-    free_gravity = x[gravity_offset:bias_offset].reshape(groups, 3)
-    fixed_gravity = np.array([g / max(np.linalg.norm(g), 1e-9) * gravity_m_s2 for g in free_gravity])
-    A, bb, prow = build(fixed_gravity)
-    x2 = spla.lsqr(A, bb, atol=fusion_parameters.linear_tolerance, btol=fusion_parameters.linear_tolerance, iter_lim=fusion_parameters.linear_iterations)[0]
-    res = A @ x2 - bb
-    dof = max(len(pairs) * 6 - (unknown_count - 3 * groups), 1)
-    sig2 = float((res[:len(pairs) * 6] ** 2).sum() / dof)
-    AtA = (A.T @ A).tocsc()
-    lu = spla.splu(AtA + sp.identity(unknown_count, format="csc") * 1e-12)
-    out_ch = []
-    for c in range(nc):
-        group = 0 if shared_map else c
-        s = float(x2[scale_offset + group])
-        if pairs_per_chain[c] == 0:
-            out_ch.append({"scale": s, "rel_std": None, "g_free": None, "pairs": 0, "good": False})
-            continue
-        e = np.zeros(unknown_count)
-        e[scale_offset + group] = 1.0
-        var = float(lu.solve(e)[scale_offset + group]) * sig2
-        rel = float(np.sqrt(max(var, 0)) / abs(s)) if s != 0 else np.inf
-        gn = float(np.linalg.norm(free_gravity[group]))
-        good = bool(s > 0 and pairs_per_chain[c] >= fusion_parameters.minimum_chain_pairs
-                    and rel <= maximum_scale_relative_std
-                    and abs(gn - gravity_m_s2) <= fusion_parameters.gravity_tolerance_m_s2)
-        out_ch.append({"scale": s, "rel_std": rel, "g_free": gn, "g_map": fixed_gravity[group], "pairs": int(pairs_per_chain[c]), "good": good})
-    acc_bias = x2[bias_offset:bias_offset + 3]
-    pos_rms = float(np.sqrt((res[prow] ** 2).mean()))
-    return {"chains": out_ch, "ba": acc_bias, "pos_rms": pos_rms, "pairs": len(pairs)}
-
-
-def fixed_map_residuals(lens, times, imu, gyro_bias, scale, gravity, acc_bias, step,
-                        *, maximum_rms_m=None):
-    """用固定地图检验全部可检查段；消去各段速度，不重新拟合尺度或零偏。
-
-    相邻区间分别由位置方程推算起点速度，再与前一区间 IMU 预测的终点
-    速度比较。乘后一区间时长后为米制位置方程残差，不是轨迹真值误差。
-    """
-    segments = []
-    for index, (start, end) in enumerate(lens['chains']):
-        previous = None
-        residuals = []
-        for k in range(start, end-step+1, step):
-            p0, R0 = lens['obs'][k]
-            p1, R1 = lens['obs'][k+step]
-            _, dv, dp, Jv, Jp, dt = preintegrate_samples(
-                imu[:, 0], imu[:, 1:4], imu[:, 4:7], times[k], times[k+step], gyro_bias, np.zeros(3))
-            rotation = R0 @ lens['R_CI']
-            displacement = scale*(p1-p0)+(R1-R0) @ lens['lever']
-            start_velocity = (displacement-.5*gravity*dt*dt-rotation @ (dp+Jp @ acc_bias))/dt
-            if previous is not None:
-                residuals.append((start_velocity-previous)*dt)
-            previous = start_velocity+gravity*dt+rotation @ (dv+Jv @ acc_bias)
-        if not residuals:
-            segments.append(dict(index=index, k=[start, end], pairs=0, rms_m=None,
-                status='insufficient_evidence'))
-            continue
-        rms_m = float(np.sqrt(np.mean(np.square(residuals))))
-        if maximum_rms_m is None:
-            status = 'measured'
-        elif not np.isfinite(rms_m) or rms_m > maximum_rms_m:
-            status = 'inconsistent'
-        else:
-            status = 'verified'
-        segments.append(dict(index=index, k=[start, end], pairs=len(residuals),
-            rms_m=rms_m, status=status))
-    return segments
-
-
-def align_recording(inputs: FusionInputs, parameters: config.TrajectoryParameters, *, log=print) -> AlignmentResult:
+def align_recording(inputs: FusionInputs, parameters: parameter_models.TrajectoryParameters, *, log=print,
+                    refine_initialization: bool = False) -> AlignmentResult:
     """细分不一致观测，估计各连续跟踪段的尺度与重力，选择初始化镜头。"""
     fusion_parameters = parameters.fusion
     frame_rate_hz = float(output_frame_rate(parameters.video.frame_step))
@@ -246,143 +63,200 @@ def align_recording(inputs: FusionInputs, parameters: config.TrajectoryParameter
     lenses = {"rear": {"R_CI": R_imu_rear_camera.T, "lever": rear_lever_m}, "front": {"R_CI": R_imu_front_camera.T, "lever": front_lever_m}}
 
 
-    for m in ("rear", "front"):
-        lenses[m]["obs"] = inputs.observations[m] if enabled_lenses[m] else {}
-        lenses[m]["mapid"] = inputs.map_ids[m] if enabled_lenses[m] else {}
-        lenses[m]["chains"] = chains_of(lenses[m]["obs"])
-    input_video_times_s = inputs.video_times_s
-    if input_video_times_s is not None:
-        input_times_s = input_video_times_s
-        frame_count = len(input_times_s)
+    for lens_name in ("rear", "front"):
+        lenses[lens_name]["obs"] = inputs.observations[lens_name] if enabled_lenses[lens_name] else {}
+        lenses[lens_name]["mapid"] = inputs.map_ids[lens_name] if enabled_lenses[lens_name] else {}
+        lenses[lens_name]["chains"] = chains_of(lenses[lens_name]["obs"])
+    if inputs.video_times_s is not None:
+        video_times_s = inputs.video_times_s
     else:
         frame_count = max(max(lenses["rear"]["obs"], default=0), max(lenses["front"]["obs"], default=0)) + 1
+        video_times_s = np.arange(frame_count) / frame_rate_hz
     imu = inputs.imu_video_clock
     imu_video_times_s = imu[:, 0]
     gyro, acc = imu[:, 1:4], imu[:, 4:7]
-    video_times_s = input_times_s if input_video_times_s is not None else np.arange(frame_count) / frame_rate_hz
-    static = np.linalg.norm(gyro, axis=1) < fusion_parameters.initial_static_gyro_rad_s
-    initial_gyro_bias = gyro[static][:fusion_parameters.initial_bias_max_samples].mean(0) if static.sum() > fusion_parameters.initial_bias_min_samples else np.zeros(3)
+    initial_gyro_bias = estimate_gyro_bias(gyro, fusion_parameters)
     estimates, initial_lens, diagnostics = align_lenses(
-        lenses, video_times_s, imu, initial_gyro_bias, fusion_parameters, log=log)
+        lenses, video_times_s, imu, initial_gyro_bias, fusion_parameters, log=log, check_stability=True,
+        refine_initialization=refine_initialization)
     return AlignmentResult(lenses, video_times_s, imu_video_times_s, gyro, acc, initial_gyro_bias,
                            estimates, initial_lens, diagnostics)
 
 
-def align_lenses(lenses, video_times_s, imu, initial_gyro_bias, fusion_parameters, *, log=print):
-    """共用运动段筛选；显式接收同一时钟上的观测和 IMU，不读取文件或设备注册表。
+@dataclass(frozen=True)
+class RefinedChains:
+    good_intervals: dict[str, set[tuple[int, int]]]
+    estimates: dict[str, dict[tuple[int, int], dict]]
+    diagnostics: dict[str, dict]
 
-    lenses 的 obs/mapid/chains 会更新为细分后的运动段；不执行地图放置。
-    """
+
+def _split_tracking_chains(lenses: dict, video_times_s: np.ndarray, imu: np.ndarray,
+                           initial_gyro_bias: np.ndarray, fusion_parameters: parameter_models.FusionParameters) -> dict:
+    """在地图切换或视觉/陀螺仪旋转不一致处切断连续跟踪段。"""
     imu_video_times_s, gyro = imu[:, 0], imu[:, 1:4]
-    alignment_step = fusion_parameters.step
     split_rotation_deg = fusion_parameters.split_rotation_deg
-
-
     split_counts = {}
-    for m in lenses:
-        obs, mp, R_CI = lenses[m]["obs"], lenses[m]["mapid"], lenses[m]["R_CI"]
-        new = []
-        ns = {"map": 0, "rot": 0}
-        for (k0, k1) in lenses[m]["chains"]:
-            start = k0
-            for k in range(k0 + 1, k1 + 1):
+    for lens_name in lenses:
+        observations, map_ids, camera_from_imu_rotation = lenses[lens_name]["obs"], lenses[lens_name]["mapid"], lenses[lens_name]["R_CI"]
+        refined_intervals = []
+        split_reasons = {"map": 0, "rot": 0}
+        for (first_frame, last_frame) in lenses[lens_name]["chains"]:
+            start = first_frame
+            for frame_index in range(first_frame + 1, last_frame + 1):
                 cut = None
-                if mp and mp.get(k) != mp.get(k - 1):
+                if map_ids and map_ids.get(frame_index) != map_ids.get(frame_index - 1):
                     cut = "map"
                 elif split_rotation_deg > 0:
-                    dRp = (obs[k - 1][1] @ R_CI).T @ (obs[k][1] @ R_CI)
+                    visual_rotation = (observations[frame_index - 1][1] @ camera_from_imu_rotation).T @ (observations[frame_index][1] @ camera_from_imu_rotation)
                     gyro_rotation = integrate_gyro_rotation(
-                        imu_video_times_s, gyro, initial_gyro_bias, video_times_s[k - 1], video_times_s[k])
+                        imu_video_times_s, gyro, initial_gyro_bias, video_times_s[frame_index - 1], video_times_s[frame_index])
                     rotation_error_deg = np.degrees(np.linalg.norm(
-                        Rot.from_matrix(dRp.T @ gyro_rotation).as_rotvec()))
+                        Rot.from_matrix(visual_rotation.T @ gyro_rotation).as_rotvec()))
                     if rotation_error_deg > split_rotation_deg:
                         cut = "rot"
                 if cut:
-                    new.append((start, k - 1))
-                    start = k
-                    ns[cut] += 1
-            new.append((start, k1))
-        lenses[m]["chains"] = new
-        split_counts[m] = ns
-    log("chain_splits", split_counts, flush=True)
+                    refined_intervals.append((start, frame_index - 1))
+                    start = frame_index
+                    split_reasons[cut] += 1
+            refined_intervals.append((start, last_frame))
+        lenses[lens_name]["chains"] = refined_intervals
+        split_counts[lens_name] = split_reasons
 
 
+    return split_counts
+
+
+def _refine_tracking_chains(lenses: dict, video_times_s: np.ndarray, imu: np.ndarray,
+                            initial_gyro_bias: np.ndarray, fusion_parameters: parameter_models.FusionParameters,
+                            *, log) -> RefinedChains:
+    """独立复核联合求解失败的长段，保留单段通过的估计和细分证据。"""
+    alignment_step = fusion_parameters.step
     refinement_pairs = fusion_parameters.refine_chain_pairs
     refinements = {}
-    individually_good_chains = {m: set() for m in lenses}
-    individual_estimates = {m: {} for m in lenses}
+    individually_good_chains = {lens_name: set() for lens_name in lenses}
+    individual_estimates = {lens_name: {} for lens_name in lenses}
     if refinement_pairs > 0:
-        # Stage 1 is one joint solve per lens with a SHARED accelerometer bias, so one bad chain can drag every other chain of the
-        # lens over the gate. A long chain (>= 2W pairs) that fails jointly is therefore judged ALONE (its own b_a); if it also fails
-        # alone it is cut in two at its middle pair and the pieces are judged the same way (pieces down to 3 pairs), recursively.
-        for m in lenses:
-            if not lenses[m]["obs"]:
+        # 联合求解共用加速度计零偏；先独立复核失败长段，避免坏段拖累其他段。
+        # 独立复核仍失败的长段按中间采样对递归细分，最短段继续使用配置门限。
+        for lens_name in lenses:
+            if not lenses[lens_name]["obs"]:
                 continue
-            pieces, nsplit = set(), 0
+            pieces, split_count = set(), 0
             while True:
-                r = estimate_lens_alignment(lenses[m], video_times_s, imu, initial_gyro_bias, fusion_parameters)
-                if r is None:
+                joint_estimate = estimate_lens_alignment(lenses[lens_name], video_times_s, imu, initial_gyro_bias, fusion_parameters)
+                if joint_estimate is None:
                     break
-                new, changed, alone = [], False, set()
-                for c, (k0, k1) in enumerate(lenses[m]["chains"]):
-                    ch = r["chains"][c]
-                    eligible = ch["pairs"] >= 2 * refinement_pairs or ((k0, k1) in pieces and ch["pairs"] >= fusion_parameters.minimum_chain_pairs)
-                    if ch["good"] or not eligible:
-                        new.append((k0, k1))
+                refined_intervals, changed, accepted_intervals = [], False, set()
+                for chain_index, (first_frame, last_frame) in enumerate(lenses[lens_name]["chains"]):
+                    chain_estimate = joint_estimate["chains"][chain_index]
+                    eligible = chain_estimate["pairs"] >= 2 * refinement_pairs or ((first_frame, last_frame) in pieces and chain_estimate["pairs"] >= fusion_parameters.minimum_chain_pairs)
+                    if chain_estimate["good"] or not eligible:
+                        refined_intervals.append((first_frame, last_frame))
                         continue
-                    ra = estimate_lens_alignment(lenses[m], video_times_s, imu, initial_gyro_bias, fusion_parameters, {c})
-                    if ra is not None and ra["chains"][c]["good"]:
-                        new.append((k0, k1))
-                        alone.add((k0, k1))
-                        individual_estimates[m][(k0, k1)] = ra["chains"][c]
+                    isolated_estimate = estimate_lens_alignment(lenses[lens_name], video_times_s, imu, initial_gyro_bias, fusion_parameters, {chain_index})
+                    if isolated_estimate is not None and isolated_estimate["chains"][chain_index]["good"]:
+                        refined_intervals.append((first_frame, last_frame))
+                        accepted_intervals.add((first_frame, last_frame))
+                        individual_estimates[lens_name][(first_frame, last_frame)] = isolated_estimate["chains"][chain_index]
                         continue
-                    if ch["pairs"] >= 2 * refinement_pairs:
-                        mid = k0 + (ch["pairs"] // 2) * alignment_step
-                        new += [(k0, mid - 1), (mid, k1)]
-                        pieces |= {(k0, mid - 1), (mid, k1)}
+                    if chain_estimate["pairs"] >= 2 * refinement_pairs:
+                        split_frame = first_frame + (chain_estimate["pairs"] // 2) * alignment_step
+                        refined_intervals += [(first_frame, split_frame - 1), (split_frame, last_frame)]
+                        pieces |= {(first_frame, split_frame - 1), (split_frame, last_frame)}
                         changed = True
-                        nsplit += 1
+                        split_count += 1
                     else:
-                        new.append((k0, k1))
-                lenses[m]["chains"] = new
+                        refined_intervals.append((first_frame, last_frame))
+                lenses[lens_name]["chains"] = refined_intervals
                 if not changed:
-                    individually_good_chains[m] = alone
+                    individually_good_chains[lens_name] = accepted_intervals
                     break
-            refinements[m] = {"splits": nsplit, "good_alone": sorted([list(x) for x in individually_good_chains[m]])}
+            refinements[lens_name] = {"splits": split_count, "good_alone": sorted([list(interval) for interval in individually_good_chains[lens_name]])}
         log("refined_chains", refinements, flush=True)
 
 
+    return RefinedChains(individually_good_chains, individual_estimates, refinements)
+
+
+def _estimate_supported_chains(lenses: dict, video_times_s: np.ndarray, imu: np.ndarray,
+                               initial_gyro_bias: np.ndarray, fusion_parameters: parameter_models.FusionParameters,
+                               refinement: RefinedChains) -> dict:
+    """只让可靠段共同估计加速度计零偏，并恢复通过单段复核的结果。"""
+    individually_good_chains = refinement.good_intervals
+    individual_estimates = refinement.estimates
     alignment_estimates = {}
-    for m in lenses:
-        if not lenses[m]["obs"]:
-            alignment_estimates[m] = None
+    for lens_name in lenses:
+        if not lenses[lens_name]["obs"]:
+            alignment_estimates[lens_name] = None
             continue
-        r0 = estimate_lens_alignment(lenses[m], video_times_s, imu, initial_gyro_bias, fusion_parameters)
-        if r0 is not None:  # re-solve on the good chains only so bad chains do not corrupt b_a / scales
-            goodc = {i for i, c in enumerate(r0["chains"]) if c["good"]}
-            goodc |= {i for i, ch in enumerate(lenses[m]["chains"]) if tuple(ch) in individually_good_chains.get(m, ())}   # 3s: passed alone
-            if goodc and len(goodc) < len(r0["chains"]):
-                r1 = estimate_lens_alignment(lenses[m], video_times_s, imu, initial_gyro_bias, fusion_parameters, goodc)
-                if r1 is not None:
-                    for i in range(len(r1["chains"])):
-                        if i not in goodc:
-                            r1["chains"][i] = dict(r0["chains"][i], good=False)
-                    r0 = r1
-        if r0 is not None:
-            for i, ch in enumerate(lenses[m]["chains"]):   # 3s: a chain that is IMU-consistent on its OWN keeps its own stage 1
-                if tuple(ch) in individually_good_chains.get(m, ()) and not r0["chains"][i]["good"]:
-                    r0["chains"][i] = dict(individual_estimates[m][tuple(ch)], good=True)
-            r0["sane"] = bool(any(c["good"] for c in r0["chains"]) and np.max(np.abs(r0["ba"])) <= fusion_parameters.maximum_acc_bias_m_s2)
-        alignment_estimates[m] = r0
-    cand = [m for m in lenses if alignment_estimates[m] is not None and alignment_estimates[m]["sane"]]
-    if not cand:
-        cand = [m for m in lenses if alignment_estimates[m] is not None and any(c["good"] for c in alignment_estimates[m]["chains"])]
-    if not cand:
-        raise ValueError("NO_USABLE_LENS")
-    initial_lens = min(cand, key=lambda m: alignment_estimates[m]["pos_rms"])
-    for m in lenses:
-        log("stage1", m, json.dumps(summarize_alignment(alignment_estimates[m], lenses[m]["chains"])), flush=True)
+        joint_estimate = estimate_lens_alignment(lenses[lens_name], video_times_s, imu, initial_gyro_bias, fusion_parameters)
+        if joint_estimate is not None:  # re-solve on the good chains only so bad chains do not corrupt b_a / scales
+            supported_chains = {chain_index for chain_index, chain_estimate in enumerate(joint_estimate["chains"]) if chain_estimate["good"]}
+            supported_chains |= {chain_index for chain_index, frame_interval in enumerate(lenses[lens_name]["chains"]) if tuple(frame_interval) in individually_good_chains.get(lens_name, ())}
+            if supported_chains and len(supported_chains) < len(joint_estimate["chains"]):
+                supported_estimate = estimate_lens_alignment(lenses[lens_name], video_times_s, imu, initial_gyro_bias, fusion_parameters, supported_chains)
+                if supported_estimate is not None:
+                    for chain_index in range(len(supported_estimate["chains"])):
+                        if chain_index not in supported_chains:
+                            supported_estimate["chains"][chain_index] = dict(joint_estimate["chains"][chain_index], good=False)
+                    joint_estimate = supported_estimate
+        if joint_estimate is not None:
+            for chain_index, frame_interval in enumerate(lenses[lens_name]["chains"]):
+                if tuple(frame_interval) in individually_good_chains.get(lens_name, ()) and not joint_estimate["chains"][chain_index]["good"]:
+                    joint_estimate["chains"][chain_index] = dict(individual_estimates[lens_name][tuple(frame_interval)], good=True)
+            joint_estimate["sane"] = bool(any(chain_estimate["good"] for chain_estimate in joint_estimate["chains"]) and np.max(np.abs(joint_estimate["ba"])) <= fusion_parameters.maximum_acc_bias_m_s2)
+        alignment_estimates[lens_name] = joint_estimate
+    return alignment_estimates
+
+
+def align_lenses(lenses: dict, video_times_s: np.ndarray, imu: np.ndarray,
+                 initial_gyro_bias: np.ndarray, fusion_parameters: parameter_models.FusionParameters,
+                 *, log=print, check_stability: bool = False,
+                 refine_initialization: bool = False) -> tuple[dict, str, dict]:
+    """筛选运动段、复核初始化并选择镜头；原位更新 lenses 的连续段。"""
+    split_counts = _split_tracking_chains(lenses, video_times_s, imu, initial_gyro_bias, fusion_parameters)
+    log('chain_splits', split_counts, flush=True)
+    refinement = _refine_tracking_chains(lenses, video_times_s, imu, initial_gyro_bias, fusion_parameters, log=log)
+    alignment_estimates = _estimate_supported_chains(lenses, video_times_s, imu, initial_gyro_bias, fusion_parameters, refinement)
+    diagnostics = dict(chain_splits=split_counts, refined=refinement.diagnostics)
+    if check_stability:
+        diagnostics['sampling_stability'] = {}
+        for lens_name, estimate in alignment_estimates.items():
+            if estimate is None:
+                continue
+            evidence = sampling_stability(lenses[lens_name], video_times_s, imu, initial_gyro_bias,
+                                          fusion_parameters, estimate)
+            diagnostics['sampling_stability'][lens_name] = evidence
+            for chain, item in zip(estimate['chains'], evidence):
+                if item['status'] == 'unstable':
+                    chain['good'] = False
+                    chain.setdefault('rejection_reasons', []).append('sampling_instability')
+            estimate['sane'] = bool(any(chain['good'] for chain in estimate['chains']) and
+                                   np.max(np.abs(estimate['ba'])) <= fusion_parameters.maximum_acc_bias_m_s2)
+    if refine_initialization:
+        if not check_stability:
+            raise ValueError('实验初始化细化需要开启采样稳定性检查')
+        diagnostics['linear_stage1'] = {lens_name: summarize_alignment(alignment_estimates[lens_name], lenses[lens_name]['chains']) for lens_name in lenses}
+        diagnostics['initialization_refinement'] = refine(lenses, video_times_s, imu, initial_gyro_bias,
+            fusion_parameters, alignment_estimates, diagnostics['sampling_stability'])
+        log('initialization_refinement', json.dumps(diagnostics['initialization_refinement']), flush=True)
+    diagnostics['stage1'] = {lens_name: summarize_alignment(alignment_estimates[lens_name], lenses[lens_name]['chains']) for lens_name in lenses}
+    diagnostics['thresholds'] = dict(gravity_m_s2=fusion_parameters.gravity_m_s2,
+        gravity_tolerance_m_s2=fusion_parameters.gravity_tolerance_m_s2,
+        maximum_relative_scale_std=fusion_parameters.maximum_relative_scale_std,
+        minimum_alignment_pairs=fusion_parameters.minimum_alignment_pairs,
+        minimum_chain_pairs=fusion_parameters.minimum_chain_pairs)
+    for lens_name in lenses:
+        log('stage1', lens_name, json.dumps(diagnostics['stage1'][lens_name]), flush=True)
+    if check_stability:
+        log('sampling_stability', json.dumps(diagnostics['sampling_stability']), flush=True)
+    candidate_lenses = [lens_name for lens_name in lenses if alignment_estimates[lens_name] is not None and alignment_estimates[lens_name]["sane"]]
+    if not candidate_lenses:
+        candidate_lenses = [lens_name for lens_name in lenses if alignment_estimates[lens_name] is not None and any(chain["good"] for chain in alignment_estimates[lens_name]["chains"])]
+    if not candidate_lenses:
+        raise AlignmentError(diagnostics)
+    initial_lens = min(candidate_lenses, key=lambda lens_name: alignment_estimates[lens_name]["pos_rms"])
     log("init_lens", initial_lens, flush=True)
 
 
-    return alignment_estimates, initial_lens, dict(chain_splits=split_counts, refined=refinements)
+    return alignment_estimates, initial_lens, diagnostics

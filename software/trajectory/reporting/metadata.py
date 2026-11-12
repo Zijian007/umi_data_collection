@@ -1,15 +1,17 @@
 """独立运行的测量资产、外参和配置来源记录；不计算轨迹或绘图。"""
+
 from __future__ import annotations
 
+from pathlib import Path
 import hashlib
 import json
 import os
-from pathlib import Path
 
+from software import config
 from software.camera.geometry import imu_from_camera, camera_from_tcp, tcp_frame_definition
 from software.camera.x3.frame import geometry_record
-from software import config
 from software.trajectory.calibration.assets import FUSION_SCRIPT, read_basalt
+
 
 HERE = Path(__file__).resolve().parents[1]
 CALIB_IMU_CAM = HERE / 'assets/calib/calibration_r1440.json'
@@ -83,11 +85,11 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
     if int(slam_scalars['Camera.height']) != size_px:
         raise ValueError('本次 SLAM 图像必须为正方形')
     run_txt = reconstruction_dir / "logs" / "run.txt"
-    info = fuse_info if fuse_info is not None else {}
-    if not info:
+    imu_diagnostics = fuse_info if fuse_info is not None else {}
+    if not imu_diagnostics:
         for candidate_path in (reconstruction_dir / "fuse" / "fuse_info.json", reconstruction_dir / "logs" / "fuse_info.json"):
             if candidate_path.is_file():
-                info = json.loads(candidate_path.read_text(encoding="utf-8"))
+                imu_diagnostics = json.loads(candidate_path.read_text(encoding="utf-8"))
                 break
     video_src = dict(extract_manifest.get("source") or {})
     video_src.setdefault("name", name)
@@ -141,12 +143,13 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
     if mode == "dual":
         assets["orbslam3_rear_settings"] = _file_asset(
             Path(calib_info.get("rear_yaml") or REAR_YAML),
-            note="sample rear geometry, not calibrated for this device; used only in dual mode",
+            note=("selected rear geometry frozen with run assets" if calib_info.get('rear_calibration_manifest') or calib_info.get('environment_poster_manifest')
+                  else "sample rear geometry, not calibrated for this device; used only in dual mode"),
         )
 
     snapshot = (command or {}).get('parameters', {}).get('configuration')
-    parameters = config.from_dict('trajectory', snapshot['values']) if snapshot else config.load('trajectory').values
-    return {
+    parameters = config.decode_parameters('trajectory', snapshot['values']) if snapshot else config.load('trajectory').values
+    result = {
         "kind": "umi_traj_run_settings",
         "parameters": (command or {}).get("parameters"),
         "video": {
@@ -178,10 +181,34 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
             "world": "metric, z up (gravity -z); origin and heading arbitrary per recording",
             "clock": "video presentation time, first frame = 0; fusion canonical time = t + 1 s",
         },
-        "fusion_params": info.get("params") or {},
+        "fusion_params": imu_diagnostics.get("params") or {},
         "binaries_from_run_log": _binaries_from_run(run_txt),
         "not_in_this_repository": ["gripper opening width", "LeRobot dataset", "training / robot deployment"],
     }
+    rear_manifest = calib_info.get('rear_calibration_manifest')
+    if rear_manifest:
+        path = Path(rear_manifest)
+        rear_document = json.loads((path.parent/'calibration.json').read_text())
+        from software.camera.rear_fallback import KIND as FACTORY_FALLBACK
+        is_factory_fallback = rear_document.get('kind') == FACTORY_FALLBACK
+        result['assets']['rear_calibration_manifest'] = _file_asset(path)
+        result['assets']['rear_camera_imu_calibration'] = _file_asset(path.parent/'calibration.json',
+            kind=rear_document.get('kind'), validation=rear_document.get('validation'),
+            provenance=rear_document.get('provenance'))
+        rear_geometry = result['frame_geometry']['rear_lens']
+        rear_geometry.update(calibration_source='insv_factory_fallback' if is_factory_fallback else 'registered',
+                             used_for_localization=mode == 'dual',
+                             used_for_poster_fusion=False)
+    poster = imu_diagnostics.get('environment_poster')
+    if poster is not None:
+        result['environment_poster'] = poster
+        rear = result['frame_geometry']['rear_lens']
+        rear.update(used_for_localization=mode == 'dual',used_for_poster_fusion=poster['status'] == 'fused')
+        rear['used'] = rear['used_for_localization'] or rear['used_for_poster_fusion']
+        manifest = calib_info.get('environment_poster_manifest')
+        if manifest:
+            result['assets']['environment_poster_manifest'] = _file_asset(Path(manifest))
+    return result
 
 
 def load_extrinsics(calib_json: Path | None = None, tcp_json: Path | None = None,

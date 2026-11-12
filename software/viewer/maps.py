@@ -1,6 +1,9 @@
 """地图按需读取；优先使用轻量产物，旧 .osa 在独立进程中转换并缓存。"""
+
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
 import hashlib
 import json
 import math
@@ -10,26 +13,25 @@ import subprocess
 import sys
 import tempfile
 import threading
-from functools import lru_cache
-from pathlib import Path
 
 from software.environment import python_executable
-
+from software.scene import layout
 from software.trajectory.reporting import map_data
 from software.trajectory.reporting.results import result_path
 from software.viewer import cache
 
+
 _export_lock = threading.Lock()
 
 
-def validate(data: dict) -> dict:
-    if not isinstance(data, dict) or data.get('kind') != 'umi_map_view' or data.get('schema_version') != 1 or not isinstance(data.get('maps'), list):
+def validate(atlas_record: dict) -> dict:
+    if not isinstance(atlas_record, dict) or atlas_record.get('kind') != 'umi_map_view' or atlas_record.get('schema_version') != 1 or not isinstance(atlas_record.get('maps'), list):
         raise ValueError('地图展示数据格式无效')
 
     def vector(value, length):
         return isinstance(value, list) and len(value) == length and all(type(v) in (int, float) and math.isfinite(v) for v in value)
 
-    for item in data['maps']:
+    for item in atlas_record['maps']:
         if (not isinstance(item, dict) or type(item.get('index')) is not int
                 or item.get('coordinates') not in ('map', 'trajectory')
                 or not isinstance(item.get('alignment'), dict)
@@ -55,8 +57,8 @@ def validate(data: dict) -> dict:
                     or len(rotation) != 3 or not all(vector(row, 3) for row in rotation)):
                 raise ValueError('地图坐标变换无效')
     # 校验元数据中也没有 NaN/Inf；浏览器 JSON.parse 不接受这些值。
-    json.dumps(data, allow_nan=False)
-    return data
+    json.dumps(atlas_record, allow_nan=False)
+    return atlas_record
 
 
 @lru_cache(maxsize=4)
@@ -70,20 +72,20 @@ def _convert(directory: Path, identity: tuple) -> dict:
                 pass  # 损坏缓存重新生成，不影响原地图。
         # 只有真正转换时串行加载词典；其他录像的磁盘缓存不必排队。
         with _export_lock:
-            data = _export(directory)
+            atlas_record = _export(directory)
         if identity != tuple(cache.file_identity(Path(item[0])) for item in identity):
             raise ValueError('地图输入已变化，请重新选择录像。')
         with cache.atomic_output(target) as temporary:
-            temporary.write_text(json.dumps(data, ensure_ascii=False, allow_nan=False), encoding='utf-8')
-        return data
+            temporary.write_text(json.dumps(atlas_record, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+        return atlas_record
 
 
 def _export(directory: Path) -> dict:
     deps = Path(os.environ.get('UMI_DEPS') or map_data.ROOT / '.deps')
     project_python = deps / 'env/bin/python'
     python = python_executable(os.environ, default=str(project_python) if project_python.is_file() else sys.executable)
-    with tempfile.TemporaryDirectory(prefix='umi-view-map-') as temp:
-        target = Path(temp) / 'map.json'
+    with tempfile.TemporaryDirectory(prefix='umi-view-map-') as temporary_atlas:
+        target = Path(temporary_atlas) / 'map.json'
         try:
             process = subprocess.run([python, '-m', 'software.trajectory.reporting.map_data', str(directory), '--output', str(target)],
                 cwd=map_data.ROOT, capture_output=True, text=True, timeout=240)
@@ -95,6 +97,9 @@ def _export(directory: Path) -> dict:
 
 
 def load(directory: Path, summary: dict) -> dict:
+    if summary.get('mode') == 'local':
+        return dict(kind='umi_map_view', schema_version=1, maps=[],
+                    note='独立回退轨迹使用局部坐标，不叠加共享场景地图。')
     if summary.get('mode') == 'scene':
         return load_shared(directory, summary)
     prepared = result_path(directory, 'map.json')
@@ -130,10 +135,11 @@ def load_shared(directory: Path, summary: dict) -> dict:
     path = Path(os.path.abspath(directory / reference['path']))
     if len(path.parents) < 5:
         raise ValueError('场景地图引用路径无效')
-    scene_root = path.parents[4]
-    expected = scene_root / '.umi/maps/versions' / scene['version'] / 'map.json'
-    if (path != expected or not directory.resolve().is_relative_to(scene_root.resolve())
-            or not path.resolve().is_relative_to(scene_root.resolve())
+    map_owner = path.parents[4]
+    scene_root = map_owner.parent if layout.is_batch(map_owner) else map_owner
+    expected = map_owner / '.umi/maps/versions' / scene['version'] / 'map.json'
+    if (path != expected or not directory.resolve().is_relative_to(map_owner.resolve())
+            or not path.resolve().is_relative_to(map_owner.resolve())
             or scene_root.name != scene.get('name')):
         raise ValueError('场景地图引用越界或不属于当前场景')
     manifest_path = path.parent / 'manifest.json'
@@ -144,7 +150,7 @@ def load_shared(directory: Path, summary: dict) -> dict:
             or manifest.get('frame_id') != scene.get('frame_id')
             or manifest.get('assets', {}).get('map.json') != reference['sha256']):
         raise ValueError('场景地图版本、坐标系或内容身份不一致')
-    data = path.read_bytes()
-    if hashlib.sha256(data).hexdigest() != reference['sha256']:
+    display_map = path.read_bytes()
+    if hashlib.sha256(display_map).hexdigest() != reference['sha256']:
         raise ValueError('场景地图内容已变化')
-    return validate(json.loads(data))
+    return validate(json.loads(display_map))

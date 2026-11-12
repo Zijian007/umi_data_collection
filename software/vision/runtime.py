@@ -1,13 +1,17 @@
 """视觉运行环境、第三方进程与日志边界。"""
+
 from __future__ import annotations
+
+from pathlib import Path
 import subprocess
 import traceback
-from pathlib import Path
-from software import config
-from software.environment import python_executable
+
+from software import parameters as parameter_models
 from software.camera.images import prepare_mask
-from software.vision.paths import orb_executable
+from software.environment import python_executable
 from software.vision.models import VisualContext, VisualSettings, ProcessingError
+from software.vision.paths import orb_executable
+
 
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE / 'tools'
@@ -17,7 +21,7 @@ def write_error_log(path: Path, error: BaseException) -> None:
     path.write_text(''.join(traceback.format_exception(error)), encoding='utf-8')
 
 def visual_settings(environment: dict[str, str], *, lens_settings: dict[str, str], front_mask: Path,
-                    output: Path, parameters: config.TrajectoryParameters) -> VisualSettings:
+                    output: Path, parameters: parameter_models.TrajectoryParameters) -> VisualSettings:
     """写显式指定的镜头设置与遮手图；不选择或回退任何镜头标定。"""
     if 'front' not in lens_settings or set(lens_settings)-{'front', 'rear'}:
         raise ValueError('视觉设置需要 front，且只允许 front/rear 镜头')
@@ -80,4 +84,3 @@ def validate_engines(environment: dict[str, str]) -> tuple[Path, Path]:
         if not path.is_file():
             raise ProcessingError('准备运行环境', f'ORB-SLAM3 文件不存在：{path}')
     return orb, vocabulary
-

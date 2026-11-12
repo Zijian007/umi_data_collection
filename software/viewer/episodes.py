@@ -1,18 +1,20 @@
 """共享场景任务的只读浏览器适配；不拟合坐标，只按已同步时间插值另一只手。"""
+
 from __future__ import annotations
 
+from pathlib import Path
 import bisect
 import hashlib
 import json
 import math
-from pathlib import Path
 
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
-from software.scene import layout
-from software.scene.result_io import trajectory_path
 
-from software.viewer.data import ViewerDataError
+from software.scene import layout
+from software.scene.result_io import scene_reference, trajectory_path
+from software.viewer.errors import ViewerDataError
+from software.viewer.readers import trajectory_from_poses
 
 
 def recording_key(path: Path) -> str:
@@ -24,17 +26,18 @@ def capture_status(directory: Path) -> dict:
     def read_yaml(path):
         try:
             with path.open() as stream:
-                data = YAML(typ='safe', pure=True).load(stream)
+                yaml_document = YAML(typ='safe', pure=True).load(stream)
         except YAMLError as error:
             raise ViewerDataError(f'采集清单格式无效：{path}') from error
-        if not isinstance(data, dict):
+        if not isinstance(yaml_document, dict):
             raise ViewerDataError('采集清单需要映射')
-        return data
+        return yaml_document
 
     session_dir = directory.parent
     episode_path = layout.manifest(directory, 'episode.yaml')
     session_path = layout.manifest(session_dir, 'manifest.yaml')
     episode = read_yaml(episode_path)
+    episode.update(layout.task_configuration(directory))
     session = read_yaml(session_path)
     scene_path = session_dir.parent / 'scene.yaml'
     scene = read_yaml(scene_path) if scene_path.is_file() else {}
@@ -53,7 +56,7 @@ def capture_status(directory: Path) -> dict:
     status = 'pending'
     if missing:
         status = 'incomplete'
-    elif fresh:
+    elif fresh and attempt.get('task_configuration_sha256', hashlib.sha256(b'{}').hexdigest()) == layout.task_configuration_hash(directory):
         status = attempt.get('status', 'pending')
     return dict(scene=scene_path.parent.name, kit=session['kit']['id'], session=session_dir.name, name=directory.name,
         expected_arms=expected_arms, status=status, attempt=attempt,
@@ -64,13 +67,17 @@ def read_episode(directory: Path, contains) -> tuple[dict, dict[str, Path]]:
     path = directory / 'episode.json'
     if not contains(path):
         raise ViewerDataError('任务清单超出查看目录')
-    data = json.loads(path.read_text())
-    if (data.get('kind') != 'umi_scene_episode' or data.get('status') != 'ok'
-            or not isinstance(data.get('arms'), dict) or not data['arms']
-            or data['arms'].keys() - {'left', 'right'}):
+    episode_manifest = json.loads(path.read_text())
+    local = episode_manifest.get('kind') == 'umi_local_episode'
+    if (episode_manifest.get('kind') not in ('umi_scene_episode', 'umi_local_episode')
+            or episode_manifest.get('status') != ('local_ok' if local else 'ok')
+            or not isinstance(episode_manifest.get('arms'), dict) or not episode_manifest['arms']
+            or episode_manifest['arms'].keys() - {'left', 'right'}):
         raise ViewerDataError('共享场景任务清单无效')
+    if local:
+        scene_reference(episode_manifest)
     arms = {}
-    for arm, relative in data['arms'].items():
+    for arm, relative in episode_manifest['arms'].items():
         if not isinstance(relative, str):
             raise ViewerDataError('共享场景手路径无效')
         path = (directory / relative).resolve()
@@ -78,14 +85,7 @@ def read_episode(directory: Path, contains) -> tuple[dict, dict[str, Path]]:
         if not path.is_relative_to(directory.resolve()) or not contains(tcp_path) or not tcp_path.is_file():
             raise ViewerDataError('共享场景手路径缺失或越界')
         arms[arm] = path
-    return data, arms
-
-
-def trajectory(times, positions, quaternions):
-    distance = [math.dist(a, b) for a, b in zip(positions, positions[1:])]
-    return dict(position=positions, quaternion=quaternions,
-        speed=[0.]+[d/(b-a) for d, a, b in zip(distance, times, times[1:])], path_length=sum(distance),
-        extent=[max(p[k] for p in positions)-min(p[k] for p in positions) for k in range(3)])
+    return episode_manifest, arms
 
 
 def sample_track(times, track, query):
@@ -98,36 +98,40 @@ def sample_track(times, track, query):
         fraction = max(0., min(1., (time-times[left])/(times[right]-times[left])))
         positions.append([(1-fraction)*a+fraction*b for a, b in zip(track['position'][left], track['position'][right])])
         a, b = track['quaternion'][left], track['quaternion'][right]
-        dot = sum(x*y for x, y in zip(a, b))
+        dot = sum(first_coordinate*second_coordinate for first_coordinate, second_coordinate in zip(a, b))
         if dot < 0:
-            b = [-v for v in b]; dot = -dot
+            b = [-coordinate for coordinate in b]; dot = -dot
         if dot > .9995:
-            q = [(1-fraction)*x+fraction*y for x, y in zip(a, b)]
+            quaternion = [(1-fraction)*first_coordinate+fraction*second_coordinate for first_coordinate, second_coordinate in zip(a, b)]
         else:
             angle = math.acos(max(-1., min(1., dot)))
-            q = [(math.sin((1-fraction)*angle)*x+math.sin(fraction*angle)*y)/math.sin(angle) for x, y in zip(a, b)]
-        norm = math.sqrt(sum(v*v for v in q))
-        quaternions.append([v/norm for v in q])
-    return trajectory(query, positions, quaternions)
+            quaternion = [(math.sin((1-fraction)*angle)*first_coordinate+math.sin(fraction*angle)*second_coordinate)/math.sin(angle) for first_coordinate, second_coordinate in zip(a, b)]
+        norm = math.sqrt(sum(coordinate*coordinate for coordinate in quaternion))
+        quaternions.append([coordinate/norm for coordinate in quaternion])
+    return trajectory_from_poses(query, positions, quaternions)
 
 
 def load_episode(catalog, key: str, directory: Path) -> dict:
     metadata, paths = read_episode(directory, catalog.contains)
     loaded = {arm: catalog.load(recording_key(path)) for arm, path in paths.items()}
-    for arm, data in loaded.items():
-        scene = data['summary'].get('scene', {})
-        if scene.get('frame_id') != metadata.get('frame_id') or scene.get('version') != metadata.get('scene', {}).get('version'):
+    scene_record = scene_reference(metadata)
+    for arm, recording in loaded.items():
+        scene = recording['summary'].get('scene', {})
+        if scene.get('frame_id') != scene_record['frame_id'] or scene.get('version') != scene_record['version']:
             raise ViewerDataError(f'{arm} 轨迹不属于本任务声明的场景坐标/地图版本')
     primary_arm = 'left' if 'left' in loaded else 'right'
     primary = loaded[primary_arm]
-    start = max(data['times'][0] for data in loaded.values())
-    end = min(data['times'][-1] for data in loaded.values())
-    selected = [i for i, time in enumerate(primary['times']) if start <= time <= end]
+    start = max(recording['times'][0] for recording in loaded.values())
+    end = min(recording['times'][-1] for recording in loaded.values())
+    selected = [frame_index for frame_index, time in enumerate(primary['times']) if start <= time <= end]
     if len(selected) < 2:
         raise ViewerDataError('左右手没有共同有效时间')
-    query = [primary['times'][i] for i in selected]
+    query = [primary['times'][frame_index] for frame_index in selected]
     primary['tracks'] = {name: sample_track(primary['times'], track, query) for name, track in primary['tracks'].items()}
-    primary['frames'] = [primary['frames'][i] for i in selected]
+    primary['frames'] = [primary['frames'][frame_index] for frame_index in selected]
+    if primary.get('tag_distance') is not None:
+        primary['tag_distance'] = {name: [values[frame_index] for frame_index in selected]
+                                   for name, values in primary['tag_distance'].items()}
     primary['times'] = query
     primary.update(id=key, name=metadata.get('name', directory.parent.parent.name), path=str(directory),
         primary_arm=primary_arm, episode=metadata, companion=None, companion_tracks={})

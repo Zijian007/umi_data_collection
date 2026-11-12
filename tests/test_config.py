@@ -3,7 +3,6 @@ import contextlib
 import io
 import json
 import os
-import shutil
 import tempfile
 import unittest
 from dataclasses import FrozenInstanceError, replace
@@ -21,7 +20,7 @@ from software.trajectory.calibration import assets as calibration_assets, select
 from software.trajectory import cli, workflow
 from software.trajectory.pipeline import reconstruction, reuse, runtime
 from software.trajectory.reporting import results
-from software.trajectory.models import FusionResult, TrajectoryRequest
+from software.trajectory.models import FusionArtifacts, TrajectoryRequest
 import test_calibration_workflow as calibration_tests
 import test_trajectory_workflow as trajectory_tests
 from registry_fakes import legacy_bundle
@@ -87,7 +86,7 @@ class ConfigTests(unittest.TestCase):
                 config.load('trajectory', path)
         for data in ([], {}, {'schema_version': 1}):
             with self.assertRaises(ValueError):
-                config.from_dict('trajectory', data)
+                config.decode_parameters('trajectory', data)
 
     def test_yaml_rejects_duplicate_keys_at_any_level(self):
         for text in ('schema_version: 1\nschema_version: 1\n',
@@ -161,9 +160,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(measured.values.orb.initial_tag_size_m, .0357)
         self.assertEqual(measured.values.fusion.node_stride, 3)
         self.assertNotEqual(original.computation_hash, measured.computation_hash)
-        self.assertEqual(measured.snapshot()['cli_overrides'], {'orb': {'initial_tag_size_m': .0357}})
+        self.assertEqual(measured.snapshot()['cli_overrides'], {'orb': {'initial_tag_size_m': .0357},
+            'environment_tags': {'tag_fusion_enabled': False}, 'input': {'mode': 'handheld'}})
         config.write_yaml(self.root / 'child.yaml', measured.values)
         self.assertEqual(config.load('trajectory', self.root / 'child.yaml').values, measured.values)
+
+    def test_c_isolates_task_poster_and_dual_mode_but_keeps_solver_parameters(self):
+        self.overlay('environment_tags:\n  tag_fusion_enabled: true\ninput:\n  mode: dual\nfusion:\n  node_stride: 3\n', 'task.yaml')
+        c = config.load('calibration', self.overlay('trajectory_validation:\n  config: task.yaml\n'))
+        resolved = c.load_trajectory_validation(tag_size_m=.0357)
+        self.assertFalse(resolved.values.environment_tags.tag_fusion_enabled)
+        self.assertEqual(resolved.values.input.mode, 'handheld')
+        self.assertEqual(resolved.values.fusion.node_stride, 3)
+        config.write_yaml(self.root/'child.yaml', resolved.values)
+        child = config.load('trajectory', self.root/'child.yaml')
+        from software.trajectory.pipeline.calibration_assets import select_environment_assets
+        request = config.resolve_trajectory_request(TrajectoryRequest(configuration=child))
+        selected_assets = select_environment_assets(None, None, request)
+        self.assertIsNone(selected_assets.rear)
+        self.assertIsNone(selected_assets.poster)
 
     def test_fixed_precision_and_geometry_fields_are_no_longer_tuning_options(self):
         for field, value in [('time_match_tolerance_ns', 1000), ('minimum_trajectory_spread_m', .000001),
@@ -175,7 +190,7 @@ class ConfigTests(unittest.TestCase):
         info = self.root / 'fuse_info.json'
         info.write_text(json.dumps(dict(frames=100, init_lens='front', chains=dict(front=[[[0,89],'full']]),
             scale_consistency=dict(status='valid', maximum_change_ratio=1.0))))
-        result = FusionResult(self.root / 'traj.txt', info)
+        result = FusionArtifacts(self.root / 'traj.txt', info)
         p = config.load('trajectory').values.retry
         self.assertTrue(reconstruction.assess_try(result, p)['suspicious'])
         self.assertFalse(reconstruction.assess_try(result, replace(p, minimum_full_fraction=.8))['suspicious'])

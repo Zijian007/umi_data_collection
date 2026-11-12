@@ -16,8 +16,7 @@ fail() { echo "ERROR: $*" >&2; exit 1; }
 [ -f "$DEPS/env.sh" ] || fail "还没装 场景轨迹环境：先运行  bash $ROOT/install.sh"
 # shellcheck disable=SC1091
 source "$DEPS/env.sh"
-# 新变量优先；现有安装生成的旧环境文件无需重装。
-export UMI_PY="${UMI_PY:-${KIWI_PY:-}}"
+export UMI_PY="${UMI_PY:-$DEPS/env/bin/python}"
 [ "$(uname -m)" = x86_64 ] || fail "自带的 Basalt 是 x86_64 Linux 版，当前机器是 $(uname -m)"
 mkdir -p "$DEPS/logs"
 

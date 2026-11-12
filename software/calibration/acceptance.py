@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 
+from software import parameters as parameter_models
 from software.calibration.models import IntrinsicsResult, CameraImuResult, GravityResult, TrajectoryValidation, Decision, Step, Kb4
-import json
-from software import config
 
 
 def item(checks: list, name: str, value, ok: bool | None, limit: str, *, failure: str = "WARN", code: str, required: bool = False) -> None:
@@ -32,7 +33,7 @@ def decision(checks: list, *, execution_ok=True) -> Decision:
     return Decision.ACCEPTED
 
 
-def c_items(checks: list, c: dict, which: str, parameters: config.CheckParameters) -> None:
+def c_items(checks: list, c: dict, which: str, parameters: parameter_models.CheckParameters) -> None:
     """The C-recording checks for one trajectory_check result (which = short label of the calibration used)."""
     p = parameters
     if (c.get("status") != "ok" or any(c.get(k) is None or not np.isfinite(c[k]) for k in
@@ -74,7 +75,7 @@ def coverage_items(checks: list, metrics: dict, minimum_reach: float) -> None:
          " / ".join(str(by_direction[key]) for key in ("right", "left", "down", "up")), None, "仅供参考（四个方向都有、越均匀越好）", code='intrinsics.coverage_directions')
 
 
-def assess_intrinsics(result: IntrinsicsResult, reference: dict | None, parameters: config.CheckParameters) -> list[dict]:
+def assess_intrinsics(result: IntrinsicsResult, reference: dict | None, parameters: parameter_models.CheckParameters) -> list[dict]:
     p = parameters
     checks = []
     kb4, sample = result.kb4, reference
@@ -91,7 +92,7 @@ def assess_intrinsics(result: IntrinsicsResult, reference: dict | None, paramete
 
     return checks
 
-def assess_camera_imu(result: CameraImuResult, imu_metrics: dict, reference: dict | None, parameters: config.CheckParameters) -> list[dict]:
+def assess_camera_imu(result: CameraImuResult, imu_metrics: dict, reference: dict | None, parameters: parameter_models.CheckParameters) -> list[dict]:
     p = parameters
     checks = []
     new, sample = result.parameters, reference
@@ -109,7 +110,7 @@ def assess_camera_imu(result: CameraImuResult, imu_metrics: dict, reference: dic
 
     return checks
 
-def assess_gravity(result: GravityResult, parameters: config.CheckParameters) -> list[dict]:
+def assess_gravity(result: GravityResult, parameters: parameter_models.CheckParameters) -> list[dict]:
     p = parameters
     checks = []
     st = str(result.status or "")
@@ -125,7 +126,7 @@ def assess_gravity(result: GravityResult, parameters: config.CheckParameters) ->
 
     return checks
 
-def assess_trajectory(result: TrajectoryValidation, parameters: config.CheckParameters) -> list[dict]:
+def assess_trajectory(result: TrajectoryValidation, parameters: parameter_models.CheckParameters) -> list[dict]:
     p = parameters
     checks = []
     c_items(checks, result.candidate, "新标定下的", p)
@@ -136,7 +137,7 @@ def assess_trajectory(result: TrajectoryValidation, parameters: config.CheckPara
     return checks
 
 
-def assess_verification(result: dict, name: str, parameters: config.CheckParameters) -> list[dict]:
+def assess_verification(result: dict, name: str, parameters: parameter_models.CheckParameters) -> list[dict]:
     p = parameters
     checks = []
     c_items(checks, result, f"{name}下的", p)
@@ -147,10 +148,39 @@ def assess_verification(result: dict, name: str, parameters: config.CheckParamet
     return checks
 
 
-POLICY_VERSION = 1
+POLICY_VERSION = 2
 
 
-def evaluate(doc, parameters, calibration_parameters=None):
+def assess_factory_intrinsics(a, parameters, factory_parameters):
+    if factory_parameters is None:
+        raise ValueError('工厂来源验收需要明确的 factory 配置')
+    rows = []
+    origin, validation = a['factory'], a['image_validation']
+    fit = origin['conversion_forward_pixels']
+    p = factory_parameters
+    for field, limit, code in (('rms', p.maximum_fit_rms_px, 'conversion_rms'),
+                                ('p99', p.maximum_fit_p99_px, 'conversion_p99')):
+        item(rows, f'工厂 MEI → KB4 前向转换 {field.upper()} (px)', fit[field], fit[field] <= limit,
+             f'<= {limit:g}', failure='FAIL', code='factory.'+code)
+    differences = max(x['maximum'] for x in origin['recording_ray_difference_degrees'].values())
+    item(rows, 'A/B/C/D 工厂射线最大差异 (°)', differences,
+         differences <= p.maximum_recording_ray_difference_deg,
+         f'<= {p.maximum_recording_ray_difference_deg:g}', failure='FAIL', code='factory.recording_consistency')
+    enough = validation['common_frames'] >= p.minimum_holdout_frames
+    item(rows, 'A 固定工厂内参留出验证帧数', validation['common_frames'], enough,
+         f'>= {p.minimum_holdout_frames}', failure='UNAVAILABLE', code='factory.a_available', required=True)
+    rms = validation['heldout_pixels']['rms']
+    available = (enough and rms is not None and np.isfinite(rms) and rms >= 0
+                 and validation['heldout_pixels'].get('count', 0) > 0)
+    item(rows, 'A 固定工厂内参留出角点 RMS (px)', rms,
+         available and rms <= p.holdout_warn_rms_px,
+         f'<= {p.holdout_warn_rms_px:g}', failure='WARN' if available else 'UNAVAILABLE',
+         code='factory.a_reprojection', required=True)
+    coverage_items(rows, a['coverage'], parameters.intrinsics_minimum_reach)
+    return rows
+
+
+def evaluate(doc, parameters, calibration_parameters=None, *, factory_parameters=None):
     """Pure policy over explicit measurements; never reads files or executes a stage."""
     m = {key: value['data'] for key, value in doc['measurements'].items()}
     rows = []
@@ -160,7 +190,10 @@ def evaluate(doc, parameters, calibration_parameters=None):
             a = m[Step.INTRINSICS]
             raw = json.loads(a['calibration_snapshot'])
             k = (raw.get('value0') or raw)['intrinsics'][0]['intrinsics']
-            rows.extend(assess_intrinsics(IntrinsicsResult(None, Kb4(*(k[n] for n in Kb4._fields)), a['solver'], a['coverage']), sample, parameters))
+            if doc['subject'].get('intrinsics_source', 'measured') == 'factory':
+                rows.extend(assess_factory_intrinsics(a, parameters, factory_parameters))
+            else:
+                rows.extend(assess_intrinsics(IntrinsicsResult(None, Kb4(*(k[n] for n in Kb4._fields)), a['solver'], a['coverage']), sample, parameters))
         if Step.CAMERA_IMU in m and calibration_parameters is not None:
             b = m[Step.CAMERA_IMU]
             rows.extend(assess_camera_imu(CameraImuResult(None, calibration_parameters, b['solver']),

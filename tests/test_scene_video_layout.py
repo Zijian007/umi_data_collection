@@ -1,3 +1,4 @@
+from software import provenance as artifact_identity
 """场景内原片：先放视频、后登记，保留原片身份并避免重复复制。"""
 from pathlib import Path
 import tempfile
@@ -39,7 +40,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
             path = batch / 'take_001' / arm / 'VID_20261104_100000_00_001.insv'
             path.parent.mkdir(parents=True)
             path.write_text(arm)
-            infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, registry.sha256_file(path), 1000., 8.))
+            infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, artifact_identity.file_hash(path), 1000., 8.))
         before = {path: (path.read_bytes(), path.stat().st_ino) for path in scene.rglob('*.insv')}
         write_yaml(batch / 'batch.yaml', dict(kit='rig'))
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
@@ -90,7 +91,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
 
     def test_pending_pair_is_relocated_after_success_and_dry_run_keeps_sources(self):
         manifest = write_batch(self.f.scene.root, 'pair_later', kit='rig')
-        infos = [ingest.RecordingMetadata(path, 'SERIAL_' + arm, registry.sha256_file(path), 1000., 8.)
+        infos = [ingest.RecordingMetadata(path, 'SERIAL_' + arm, artifact_identity.file_hash(path), 1000., 8.)
                  for arm, path in self.f.recording_paths.items()]
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos[:1], [])):
             first = ingest.register_recordings(inputs.read_batch(manifest))
@@ -117,7 +118,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
                 path = batch / name / arm / 'VID.insv'
                 path.parent.mkdir(parents=True)
                 path.write_text(arm + '_' + name)
-                infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, registry.sha256_file(path), None, 8.))
+                infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, artifact_identity.file_hash(path), None, 8.))
         manifest = write_batch(self.f.scene.root, batch.name, kit='rig')
         before = {info.path: info.path.stat().st_ino for info in infos}
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
@@ -142,7 +143,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
                     path = root / arm / (name + '.insv')
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(arm + '_' + name)
-                    infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, registry.sha256_file(path), None, 8.))
+                    infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, artifact_identity.file_hash(path), None, 8.))
                 manifest = write_batch(self.f.scene.root, batch.name, kit='rig')
                 with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
                     result = ingest.register_recordings(inputs.read_batch(manifest))
@@ -176,7 +177,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(name)
         def inspect(path):
-            return ingest.RecordingMetadata(path, 'SERIAL_left', registry.sha256_file(path), None, 8.)
+            return ingest.RecordingMetadata(path, 'SERIAL_left', artifact_identity.file_hash(path), None, 8.)
         with patch.object(ingest, 'inspect_recording', side_effect=inspect):
             found, errors = ingest.scan_raw_videos(inputs.batch_video_sources(batch))
         self.assertEqual(errors, [])
@@ -194,7 +195,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
                     path = root / arm / 'VID.insv'
                     path.parent.mkdir(parents=True)
                     path.write_text(arm)
-                    infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, registry.sha256_file(path), None, 8.))
+                    infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, artifact_identity.file_hash(path), None, 8.))
                 manifest = write_batch(self.f.scene.root, batch.name, kit='rig')
                 before = {item.path: (item.path.read_bytes(), item.path.stat().st_ino) for item in infos}
                 with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
@@ -222,7 +223,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
         task = write_task(session, 'take_001', dict(left=left))
         current = inputs.read_episode(task)
         clips = dict(current.recordings, right=self.f.recording_paths['right'])
-        metadata = [ingest.RecordingMetadata(clip, 'SERIAL_' + arm, registry.sha256_file(clip), 1000., 8.)
+        metadata = [ingest.RecordingMetadata(clip, 'SERIAL_' + arm, artifact_identity.file_hash(clip), 1000., 8.)
                     for arm, clip in clips.items()]
         with patch.object(ingest, 'scan_raw_videos', return_value=(metadata, [])):
             ingest.register_recordings(session)
@@ -238,7 +239,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
         path.parent.mkdir(parents=True)
         path.write_text('right')
         manifest = write_batch(self.f.scene.root, batch.name, kit='rig', arms=('right',))
-        info = ingest.RecordingMetadata(path, 'SERIAL_right', registry.sha256_file(path), None, 8.)
+        info = ingest.RecordingMetadata(path, 'SERIAL_right', artifact_identity.file_hash(path), None, 8.)
         with patch.object(ingest, 'scan_raw_videos', return_value=([info], [])):
             result = ingest.register_recordings(inputs.read_batch(manifest))
         self.assertEqual(result['status'], 'ok')

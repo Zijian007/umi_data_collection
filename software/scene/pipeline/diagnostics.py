@@ -1,9 +1,10 @@
 """保留场景任务失败时的可视化诊断片段。"""
+
 from __future__ import annotations
 
+from pathlib import Path
 import json
 import subprocess
-from pathlib import Path
 
 import numpy as np
 

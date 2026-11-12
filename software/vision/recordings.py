@@ -1,11 +1,15 @@
 """原片 → 时间戳、IMU 和显式选择的镜头视频。"""
+
 from __future__ import annotations
+
 from pathlib import Path
+
 from software import config
 from software.camera.x3 import extraction
 from software.camera.x3.frame import LENS_HALF, STEP
 from software.vision import runtime
 from software.vision.models import RecordingData, RecordingPaths, LensVideo, VisualContext, ProcessingError
+
 
 def prepare(video: Path, paths: RecordingPaths, *, allow_irregular: bool = False, frame_step: int = STEP) -> RecordingData:
     manifest = extraction.extract(video, paths.dataset, frame_step=frame_step)
@@ -54,4 +58,3 @@ def write_times_csv(mav0: Path, path: Path) -> None:
     rows = [line.split(",")[0] for line in (mav0 / "cam0" / "data.csv").read_text(encoding="utf-8").splitlines()
             if line.strip() and not line.startswith("#")]
     path.write_text("t_canonical_s\n" + "".join("%.9f\n" % (int(row) / 1e9) for row in rows), encoding="utf-8")
-

@@ -21,17 +21,18 @@ Basalt calibration.hpp 约定），IMU 不变——因为 basalt_vio 不应用 c
 
 from __future__ import annotations
 
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
+from pathlib import Path
 import argparse
 import hashlib
 import json
 import sys
-from pathlib import Path
-from collections import deque
-from concurrent.futures import ThreadPoolExecutor
-from itertools import islice
 
 import cv2
 import numpy as np
+
 
 BLOCKED = "BLOCKED_FOR_MONO_BAG_CONVERSION"
 
@@ -151,13 +152,13 @@ def write_mono_bag(euroc: Path, out_bag: Path, cam_time_offset_ns: int = 0, cam_
                     if g.ndim == 3:
                         g = cv2.cvtColor(g, cv2.COLOR_BGR2GRAY)
                     if g.dtype == np.uint16:
-                        enc, step, data = "mono16", g.shape[1] * 2, np.ascontiguousarray(g).view(np.uint8).reshape(-1)
+                        enc, step, image_bytes = "mono16", g.shape[1] * 2, np.ascontiguousarray(g).view(np.uint8).reshape(-1)
                     else:
                         g = g.astype(np.uint8, copy=False)
-                        enc, step, data = "mono8", g.shape[1], np.ascontiguousarray(g).reshape(-1)
+                        enc, step, image_bytes = "mono8", g.shape[1], np.ascontiguousarray(g).reshape(-1)
                     shape = [int(g.shape[1]), int(g.shape[0]), enc]
                     msg = Image(header=Header(seq=seq_img, stamp=stamp(t_ns), frame_id=frame_id_cam), height=int(g.shape[0]), width=int(g.shape[1]),
-                                encoding=enc, is_bigendian=0, step=int(step), data=data)
+                                encoding=enc, is_bigendian=0, step=int(step), data=image_bytes)
                     w.write(c_img, int(t_ns), ts.serialize_ros1(msg, Image.__msgtype__))
                     seq_img += 1
                     n_img += 1

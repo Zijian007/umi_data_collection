@@ -1,8 +1,12 @@
 """视觉阶段的路径、设置与数据，不读取清单、不依赖业务请求。"""
+
 from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
-from software import config
+
+from software import parameters as parameter_models
+
 
 @dataclass(frozen=True)
 class RecordingPaths:
@@ -23,7 +27,6 @@ class RecordingPaths:
     @property
     def lens_videos(self) -> Path:
         return self.debug / "lens_videos"
-
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,6 @@ class ProcessingError(RuntimeError):
 class VisualContext:
     paths: RecordingPaths
     settings: VisualSettings
-    parameters: config.TrajectoryParameters
+    parameters: parameter_models.TrajectoryParameters
     frame_count: int
     cores: str = ''

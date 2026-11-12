@@ -1,15 +1,16 @@
 """Versioned measurement records. Reads never execute stages, materialize work or query the registry."""
+
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 
-from software import config
+from software import provenance as artifact_identity
+from software.calibration.models import RunPaths, Step, IntrinsicsResult, CameraImuResult, Kb4
 from software.storage import atomic_file
-from software.calibration.models import (RunPaths, Step, IntrinsicsResult, CameraImuResult,
-    Kb4)
 from software.trajectory.calibration import assets
+
 
 SCHEMA_VERSION = 3
 MEASUREMENT_VERSION = 1
@@ -40,7 +41,7 @@ def read(output: Path) -> dict:
             raise ValueError('执行状态无效')
         for name, entry in doc['measurements'].items():
             Step(name)
-            if not isinstance(entry['data'], dict) or config.canonical_hash(entry['data']) != entry['sha256']:
+            if not isinstance(entry['data'], dict) or artifact_identity.canonical_hash(entry['data']) != entry['sha256']:
                 raise ValueError(f'测量记录校验失败：{name}')
         if not isinstance(doc['execution']['steps'], dict):
             raise ValueError('检查点分区无效')
@@ -76,20 +77,20 @@ def intrinsics_measurement(result):
                 solver=result.solver_metrics, coverage=result.board_metrics)
 
 
-def intrinsics_result(output, data):
-    raw = json.loads(data['calibration_snapshot'])
+def intrinsics_result(output, measurement_record):
+    raw = json.loads(measurement_record['calibration_snapshot'])
     params = (raw.get('value0') or raw)['intrinsics'][0]['intrinsics']
     return IntrinsicsResult(RunPaths(Path(output)).work/'camera_intrinsics/calibration.json',
-        Kb4(*(params[key] for key in Kb4._fields)), data['solver'], data['coverage'])
+        Kb4(*(params[key] for key in Kb4._fields)), measurement_record['solver'], measurement_record['coverage'])
 
 
-def camera_imu_result(output, data):
+def camera_imu_result(output, measurement_record):
     path = RunPaths(Path(output)).calibration
-    return CameraImuResult(path, assets.read_basalt(path), data['solver'])
+    return CameraImuResult(path, assets.read_basalt(path), measurement_record['solver'])
 
 
 def fingerprint(doc):
-    return config.canonical_hash(dict(subject=doc['subject'], inputs=doc['inputs'],
+    return artifact_identity.canonical_hash(dict(subject=doc['subject'], inputs=doc['inputs'],
         computation=doc['computation'], measurements=doc['measurements']))
 
 
@@ -97,7 +98,7 @@ def validate_subject(output, doc):
     subject = doc['subject']
     path = (local_path(output, subject['parameter_file']) if doc['operation'] == 'calibrate'
             else Path(subject['parameter_file']))
-    if config.file_hash(path) != subject['parameter_sha256']:
+    if artifact_identity.file_hash(path) != subject['parameter_sha256']:
         raise ValueError('参数内容已变化，与本次证据不一致')
     assets.read_basalt(path)
     if doc['operation'] == 'calibrate':
@@ -134,9 +135,14 @@ def commit_evaluation(output, doc, evaluation):
     write(output, doc)
 
 
-def publish_candidate(output, calibration, serial, lens, grid, sources):
-    return assets.make_result(calibration.calibration_json, Path(output), provenance=dict(
-        created_by='umi-calib', camera_serial=serial, lens=lens, board=grid, recordings=sources))
+def publish_candidate(output, calibration, serial, lens, grid, sources, *, intrinsics_source='measured', factory=None):
+    from software.camera.calibration_source import optical_hash
+    provenance = dict(created_by='umi-calib', camera_serial=serial, lens=lens, board=grid,
+        recordings=sources, intrinsics_source=intrinsics_source,
+        b_intrinsics_sha256=optical_hash(calibration.parameters), extrinsics_source='measured_with_selected_intrinsics')
+    if factory is not None:
+        provenance['factory_intrinsics'] = factory
+    return assets.make_result(calibration.calibration_json, Path(output), provenance=provenance)
 
 
 def publish_rear(output, doc):
@@ -150,7 +156,8 @@ def publish_rear(output, doc):
                         C=measurement(doc, Step.TRAJECTORY), D=evidence,
                         evidence_fingerprint=doc['evaluation']['evidence_fingerprint']),
         parameters=doc['computation']['configuration'])
+    raw['provenance'] = json.loads(RunPaths(Path(output)).manifest.read_text()).get('provenance', {})
     path = Path(output)/'rear_calibration.json'
-    with atomic_file(path) as temp:
-        temp.write_text(json.dumps(raw, indent=2, ensure_ascii=False, allow_nan=False)+'\n')
+    with atomic_file(path) as temporary_manifest:
+        temporary_manifest.write_text(json.dumps(raw, indent=2, ensure_ascii=False, allow_nan=False)+'\n')
     return path

@@ -1,11 +1,16 @@
 """独立融合的显式观测、求解结果与文件边界。"""
+
 from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from pathlib import Path
 import csv
 import json
-from dataclasses import dataclass
-from pathlib import Path
+
+from scipy.spatial.transform import Rotation as Rot, Slerp
+from software.camera.geometry import imu_from_camera
 import numpy as np
-from scipy.spatial.transform import Rotation as Rot
+
 from software.camera.timing import canonical_to_video_seconds, euroc_ns_to_seconds, video_to_canonical_seconds
 from software.trajectory.calibration.assets import read_basalt
 
@@ -19,6 +24,8 @@ class FusionInputs:
     camera: dict
     rear_rotation: np.ndarray
     rear_lever: np.ndarray
+    poster: object | None = None
+    rear_camera: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -89,3 +96,32 @@ def write_solution(solution: FusionSolution, output: Path) -> None:
         for row in solution.segments:
             fo.write('%s,%d,%d,%d,%d,%.3f,%.3f,%.6g,%.6g,%.3f,%.5f,%.5f,%.5f\n' % row)
     (output/'fuse_info.json').write_text(json.dumps(solution.evidence, indent=1))
+
+
+def retime_rear(inputs, measured):
+    """dual 地图定位也换到工作镜头视频时钟，不跨丢帧或地图切换插值。"""
+    transform = imu_from_camera(measured)
+    observations, maps = inputs.observations['rear'], inputs.map_ids['rear']
+    offset = (measured['cam_time_offset_ns']-inputs.camera['cam_time_offset_ns'])/1e9
+    if inputs.video_times_s is None:
+        raise ValueError('正式 rear 时差修正必须提供真实视频时间轴')
+    indices = sorted(observations)
+    times = inputs.video_times_s[indices]+offset
+    result, result_maps = {}, {}
+    for k, query in enumerate(inputs.video_times_s):
+        right = int(np.searchsorted(times,query))
+        exact = next((i for i in (right,right-1) if 0 <= i < len(times) and abs(times[i]-query) <= 1e-9), None)
+        if exact is not None:
+            source = indices[exact]
+            result[k] = observations[source]
+            if source in maps: result_maps[k] = maps[source]
+        elif 0 < right < len(times):
+            a,b = indices[right-1:right+1]
+            if b != a+1 or maps.get(a) != maps.get(b): continue
+            fraction = (query-times[right-1])/(times[right]-times[right-1])
+            pa,ra = observations[a]; pb,rb = observations[b]
+            rotation = Slerp(times[right-1:right+1],Rot.from_matrix([ra,rb]))([query]).as_matrix()[0]
+            result[k] = ((1-fraction)*pa+fraction*pb, rotation)
+            if a in maps: result_maps[k] = maps[a]
+    return replace(inputs, observations=dict(inputs.observations,rear=result), map_ids=dict(inputs.map_ids,rear=result_maps),
+                   rear_rotation=transform[:3,:3], rear_lever=np.linalg.inv(transform)[:3,3])

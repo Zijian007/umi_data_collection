@@ -14,12 +14,13 @@ import numpy as np
 
 from software.calibration.pipeline import board_detection
 from software.calibration.pipeline import recordings
-from software.calibration import workflow, result_io
+from software.calibration import cli, workflow, result_io
 from software.calibration.solve import basalt
 from software.calibration.validation import gravity
 from software.calibration.algorithms import board_pnp
-from software.calibration.models import CalibrationInputs, CameraImuResult, GravityResult, IntrinsicsResult, SegmentPaths
+from software.calibration.models import CalibrationInputs, Decision, CameraImuResult, GravityResult, IntrinsicsResult, SegmentPaths
 from software.scene.spatial import rear_calibration
+from software.scene.management import inputs as scene_inputs
 from software.storage import write_json
 from software.vision.models import LensVideo
 import test_scene as scene_fixtures
@@ -51,10 +52,13 @@ class RearCalibrationTests(unittest.TestCase):
 
     def prepare(self, video, camera, *args, **kwargs):
         self.assertAlmostEqual(args[0].trajectory.values.orb.initial_tag_size_m, self.inputs.grid['tagSize'])
+        self.assertFalse(args[0].parameters.tag_fusion_enabled)
+        self.assertFalse(args[0].parameters.tag_mapping_enabled)
+        self.assertFalse(args[0].parameters.tag_mapping_scale_enabled)
         rec = self.fixture.prepared_recordings[video]
         return replace(rec, camera=camera, lens_videos=(LensVideo('rear', rec.lens_videos[0].path, rec.lens_videos[0].settings, None),))
 
-    def run_rear(self, scale, *, tag_size_mm=24.):
+    def run_rear(self, scale, *, tag_size_mm=24., install=False):
         self.inputs = replace(self.inputs, grid=dict(self.inputs.grid, tagSize=tag_size_mm/1000.))
         output = self.fixture.root / 'rear_output'
         def dataset(video, target, **kwargs):
@@ -63,7 +67,7 @@ class RearCalibrationTests(unittest.TestCase):
         reference = dict(video_time_s=self.fixture.prepared_recordings[self.video].video_times_s, idx=np.arange(len(self.poses)), p=scale*self.poses[:, :3, 3], n_frames=len(self.poses), reproj_deg_med=[])
         with patch.object(rear_calibration.registry, 'pin', return_value=self.fixture.device_pins[self.front.serial]), \
              patch.object(rear_calibration.calibration_inputs, 'prepare_inputs', return_value=self.inputs), \
-             patch.object(rear_calibration.inputs, 'select_camera', return_value=self.front), \
+             patch.object(rear_calibration.camera_assets, 'select_camera', return_value=self.front), \
              patch.object(workflow.runtime, 'prepare', return_value=True), \
              patch.object(recordings, 'build', side_effect=dataset) as build, \
              patch.object(recordings, 'imu_stats', return_value=dict(gyro_norm_p95_rad_s=1.)), \
@@ -75,7 +79,10 @@ class RearCalibrationTests(unittest.TestCase):
              patch.object(board_detection, 'detect_cached', return_value={}), \
              patch.object(workflow, '_coverage', return_value=self.coverage()), \
              patch.object(board_pnp, 'board_reference', return_value=reference):
-            result = rear_calibration.run(self.fixture.source, output=output, tag_size_mm=tag_size_mm)
+            arguments = ['run', str(self.fixture.source/'rear'), '--out', str(output), '--tag-size-mm', str(tag_size_mm)]
+            code = cli.main(arguments + (['--install'] if install else []))
+            doc = result_io.load_result(output)
+            result = dict(status=Decision(doc['evaluation']['decision']).label, exit_code=code)
         self.assertEqual(build.call_count, 4)
         self.assertTrue(all(call.kwargs['lens'] == 'rear' for call in build.call_args_list))
         self.assertEqual([call.kwargs['with_images'] for call in build.call_args_list], [True, True, True, False])
@@ -91,6 +98,13 @@ class RearCalibrationTests(unittest.TestCase):
         self.assertTrue((output / 'report.txt').is_file())
         self.assertNotIn('样例标定', (output / 'report.txt').read_text())
 
+    def test_rear_C_isolates_global_scene_poster_switches(self):
+        enabled = replace(scene_inputs.load_scene_parameters(),
+            tag_fusion_enabled=True, tag_mapping_enabled=True, tag_mapping_scale_enabled=True)
+        with patch.object(scene_inputs, 'load_scene_parameters', return_value=enabled):
+            result, _ = self.run_rear(1.)
+        self.assertTrue(result['status'].startswith('PASS'))
+
     def test_C_scale_error_prevents_rear_measurement_publication(self):
         result, output = self.run_rear(1.5)
         self.assertEqual(result['status'], 'FAIL')
@@ -103,6 +117,20 @@ class RearCalibrationTests(unittest.TestCase):
         self.assertTrue(result['status'].startswith('PASS'))
         snapshot = result_io.load_result(output)['computation']['trajectory_validation']
         self.assertAlmostEqual(snapshot['values']['orb']['initial_tag_size_m'], .0357)
+
+    def test_rear_auto_install_uses_rear_measurement_after_acceptance(self):
+        with patch.object(workflow.devices, 'install_rear', return_value=0) as install_rear, \
+             patch.object(workflow.devices, 'install_bundle') as install_front:
+            result, output = self.run_rear(1., install=True)
+        self.assertEqual(result['exit_code'], 0)
+        install_rear.assert_called_once_with(output/'rear_calibration.json')
+        install_front.assert_not_called()
+
+    def test_failed_rear_validation_does_not_install(self):
+        with patch.object(workflow.devices, 'install_rear') as install:
+            result, _ = self.run_rear(1.5, install=True)
+        self.assertEqual(result['exit_code'], 1)
+        install.assert_not_called()
 
 
 class RearPixelsTests(unittest.TestCase):

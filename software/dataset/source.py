@@ -1,10 +1,11 @@
 """训练导出与场景管理的只读边界。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 
-from software import config
+from software import provenance as artifact_identity
 from software.scene.management import episodes, inputs
 
 
@@ -35,7 +36,7 @@ def read_accepted(path: Path) -> AcceptedEpisode:
             raise ValueError('训练导出需要可识别的 TCP 定义')
     name = episode.session.relative_path / episode.root.name
     return AcceptedEpisode(episode.path, name, episode.scene.root, run, manifest, review,
-                           config.file_hash(run / 'episode.json'))
+                           artifact_identity.file_hash(run / 'episode.json'))
 
 
 def select(paths: list[Path]) -> list[AcceptedEpisode]:

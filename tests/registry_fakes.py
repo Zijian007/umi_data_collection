@@ -4,7 +4,6 @@ import shutil
 from copy import deepcopy
 from pathlib import Path
 
-from software import registry
 from software.storage import write_json
 from software.trajectory.calibration import assets as calibration_assets
 

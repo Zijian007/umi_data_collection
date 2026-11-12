@@ -1,17 +1,19 @@
 """Read prepared images, schedule board detection and cache raw pixel corners."""
+
 from __future__ import annotations
 
-import inspect
-import threading
-import zipfile
 from collections.abc import Callable
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 from pathlib import Path
+import inspect
+import threading
+import zipfile
 
 import cv2
 import numpy as np
 
 from software import config
+from software import provenance as artifact_identity
 from software.calibration.algorithms import aprilgrid_detect
 from software.storage import atomic_file
 
@@ -34,18 +36,18 @@ def detect_all(euroc: Path, make_detector, step: int = 1, workers: int = 4, up: 
         return (k, None, None) if g is None else (k, aprilgrid_detect.detect_up(g, loc.det, up), g.shape)
 
     with ThreadPoolExecutor(max(1, workers)) as ex:
-        res = list(ex.map(one, range(0, len(rows), step)))
-    return {"n_frames": len(rows), "shape": next((sh for _, _, sh in res if sh is not None), None),
-            "dets": {k: d for k, d, _ in res if d is not None},
+        frame_detections = list(ex.map(one, range(0, len(rows), step)))
+    return {"n_frames": len(rows), "shape": next((sh for _, _, sh in frame_detections if sh is not None), None),
+            "dets": {k: d for k, d, _ in frame_detections if d is not None},
             "video_time_s": np.array([int(row[0]) / 1e9 - 1.0 for row in rows])}
 
 
 def detect_cached(euroc: Path | Callable[[], Path], make_detector, *, cache: Path, source_identity: str,
                   step: int, workers: int, up: float, cancelled=None) -> dict:
     """Reuse raw corners independently of calibration; a dataset callable runs only on a cache miss."""
-    key = config.canonical_hash(dict(source=source_identity, step=step, upscale=up, opencv=cv2.__version__,
-        code=config.file_hash(Path(__file__)), preprocessing=config.file_hash(Path(aprilgrid_detect.__file__)),
-        detector=config.file_hash(Path(inspect.getfile(make_detector)))))
+    key = artifact_identity.canonical_hash(dict(source=source_identity, step=step, upscale=up, opencv=cv2.__version__,
+        code=artifact_identity.file_hash(Path(__file__)), preprocessing=artifact_identity.file_hash(Path(aprilgrid_detect.__file__)),
+        detector=artifact_identity.file_hash(Path(inspect.getfile(make_detector)))))
     try:
         with np.load(cache, allow_pickle=False) as saved:
             if str(saved['identity'].item()) == key:

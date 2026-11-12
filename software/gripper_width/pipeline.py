@@ -1,15 +1,16 @@
-"""场景任务的双标记宽度提取与缓存；复用 main 的检测器和毫米映射。"""
+"""双标签像素距离的毫米映射、时间对齐与场景宽度报告。"""
+
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 from pathlib import Path
+import csv
 
 import numpy as np
 
-from software import config
+from software import provenance as artifact_identity
 from software.gripper_width import detection, series
-from software.gripper_width.width_4k60 import width_mm
+from software.gripper_width.calibration import pixel_distances_to_widths
 
 
 @dataclass(frozen=True)
@@ -23,8 +24,8 @@ def identity() -> dict:
     import cv2
 
     directory = Path(__file__).parent
-    return dict(opencv=cv2.__version__, files={name: config.file_hash(directory/name)
-        for name in ('calibration.py', 'detection.py', 'series.py', 'pipeline.py', 'width_4k60.py')})
+    return dict(opencv=cv2.__version__, files={name: artifact_identity.file_hash(directory/name)
+        for name in ('__init__.py', 'calibration.py', 'detection.py', 'frame_processing.py', 'series.py', 'pipeline.py')})
 
 
 def align(times: np.ndarray, widths: np.ndarray, above: np.ndarray,
@@ -65,7 +66,7 @@ def process(video: Path, measurement: dict, video_times_s: np.ndarray, offset_s:
     found = np.isfinite(raw.distance_px)
     widths = np.full(len(raw.times_s), np.nan)
     above = np.zeros(len(raw.times_s), dtype=bool)
-    widths[found], above[found] = width_mm(raw.distance_px[found], measurement['anchors'])
+    widths[found], above[found] = pixel_distances_to_widths(raw.distance_px[found], measurement['anchors'])
     aligned = align(raw.times_s, widths, above, video_times_s, max_gap_s)
     if diagnostics:
         details = output / 'details'

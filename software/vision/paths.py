@@ -1,6 +1,8 @@
 """第三方 ORB 安装布局，供执行、查看与依赖指纹共同使用。"""
-import os
+
 from pathlib import Path
+import os
+
 
 ROOT = Path(__file__).resolve().parents[2]
 

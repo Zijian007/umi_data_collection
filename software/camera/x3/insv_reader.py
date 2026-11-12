@@ -18,8 +18,9 @@ to several GB, so no function in this module reads a whole media file into memor
 
 from __future__ import annotations
 
-import struct
 from pathlib import Path
+import struct
+
 
 MAGIC = b"8db42d694ccc418790edff439fe026bf"
 
@@ -137,24 +138,24 @@ def parse_nested_varints(sub: bytes) -> dict:
     return out
 
 
-def parse_metadata_record(data: bytes) -> dict:
+def parse_metadata_record(metadata_record_bytes: bytes) -> dict:
     """Generic top-level protobuf decode (no .proto): ``{field_number: [values]}``.
 
     Length-delimited fields are decoded as UTF-8 when printable, otherwise kept as hex.
     """
     out: dict[int, list] = {}
     i = 0
-    while i < len(data):
-        key, i = read_varint(data, i)
+    while i < len(metadata_record_bytes):
+        key, i = read_varint(metadata_record_bytes, i)
         fn, wt = key >> 3, key & 7
         if wt == 0:
-            v, i = read_varint(data, i)
+            v, i = read_varint(metadata_record_bytes, i)
         elif wt == 1:
-            v = struct.unpack("<d", data[i:i + 8])[0]
+            v = struct.unpack("<d", metadata_record_bytes[i:i + 8])[0]
             i += 8
         elif wt == 2:
-            ln, i = read_varint(data, i)
-            sub = data[i:i + ln]
+            ln, i = read_varint(metadata_record_bytes, i)
+            sub = metadata_record_bytes[i:i + ln]
             i += ln
             try:
                 s = sub.decode("utf-8")
@@ -164,7 +165,7 @@ def parse_metadata_record(data: bytes) -> dict:
             if fn == FIELD_GYRO_CFG_INFO:
                 v = {"raw_hex": sub.hex(), "nested": parse_nested_varints(sub)}
         elif wt == 5:
-            v = struct.unpack("<f", data[i:i + 4])[0]
+            v = struct.unpack("<f", metadata_record_bytes[i:i + 4])[0]
             i += 4
         else:
             break

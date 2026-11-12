@@ -90,7 +90,7 @@ class SharedAlignmentTests(unittest.TestCase):
                     chains=[(0, 1)], R_CI=np.eye(3), lever=np.zeros(3))
         imu = np.array([[0., 0., 0., 0., 0., 0., 9.81],
                         [1., 0., 0., 0., 0., 0., 9.81]])
-        result = geometry.fusion_alignment.fixed_map_residuals(
+        result = geometry.fusion_alignment_solver.fixed_map_residuals(
             lens, np.array([0., 1.]), imu, np.zeros(3), 1., np.array([0., 0., -9.81]),
             np.zeros(3), 1, maximum_rms_m=.05)
         self.assertEqual(result, [dict(index=0, k=[0, 1], pairs=0, rms_m=None,
@@ -116,11 +116,11 @@ class SharedAlignmentTests(unittest.TestCase):
             archive = root / 'map.osa'
             archive.write_bytes(b'unchanged visual atlas')
             diagnostics = dict(segments=dict(chains=[dict(scale=-2., good=False)]))
-            camera = SimpleNamespace(measurements={'front': dict(q_xyzw=[0, 0, 0, 1], p=[0, 0, 0])})
-            prepared = SimpleNamespace(camera=camera, imu=self.imu)
+            camera = SimpleNamespace(serial='CAMERA_TEST', measurements={'front': dict(q_xyzw=[0, 0, 0, 1], p=[0, 0, 0])})
+            prepared = SimpleNamespace(camera=camera, imu=self.imu, context=SimpleNamespace(parameters=self.trajectory))
             scene = SimpleNamespace(trajectory=SimpleNamespace(values=self.trajectory), parameters=self.parameters)
             with patch.object(mapping.slam, 'atlas_candidates', return_value=iter([(0, self.obs)])), \
-                    patch.object(mapping.fusion, 'initial_gyro_bias', return_value=np.zeros(3)), \
+                    patch.object(mapping, 'estimate_gyro_bias', return_value=np.zeros(3)), \
                     patch.object(mapping, 'metric_alignment', side_effect=geometry.MapAlignmentError('尺度冲突', diagnostics)), \
                     self.assertRaisesRegex(ValueError, '尺度冲突'):
                 mapping.choose_map(prepared, 'front', archive, root / 'localize', scene)
@@ -134,8 +134,8 @@ class SharedAlignmentTests(unittest.TestCase):
             root = Path(temporary)
             archive = root / 'map.osa'
             archive.write_bytes(b'unchanged visual atlas')
-            camera = SimpleNamespace(measurements={'front': dict(q_xyzw=[0, 0, 0, 1], p=[0, 0, 0])})
-            prepared = SimpleNamespace(camera=camera, imu=self.imu,
+            camera = SimpleNamespace(serial='CAMERA_TEST', measurements={'front': dict(q_xyzw=[0, 0, 0, 1], p=[0, 0, 0])})
+            prepared = SimpleNamespace(camera=camera, imu=self.imu, context=SimpleNamespace(parameters=self.trajectory),
                                        video_times_s=np.arange(100, dtype=float))
             scene = SimpleNamespace(trajectory=SimpleNamespace(values=self.trajectory), parameters=self.parameters)
             placement_good = dict(scale=2., evidence=dict(rms_m=.01, relative_scale_std=.05, condition=10.,
@@ -144,7 +144,7 @@ class SharedAlignmentTests(unittest.TestCase):
                 alignment=dict(fixed_map_validation=[dict(status='verified', rms_m=.04)])))
             observations = [self.obs, self.obs]
             with patch.object(mapping.slam, 'atlas_candidates', return_value=iter([(0, observations[0]), (1, observations[1])])), \
-                    patch.object(mapping.fusion, 'initial_gyro_bias', return_value=np.zeros(3)), \
+                    patch.object(mapping, 'estimate_gyro_bias', return_value=np.zeros(3)), \
                     patch.object(mapping, 'metric_alignment', side_effect=[placement_weak, placement_good]):
                 selected, _ = mapping.choose_map(prepared, 'front', archive, root / 'localize', scene)
             self.assertEqual(selected['index'], 1)

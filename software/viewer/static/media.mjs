@@ -14,12 +14,12 @@ export class VideoPreview {
     this.controller = new AbortController();
     try {
       const response = await this.fetcher(url, {signal: this.controller.signal, cache: 'no-store'});
-      const data = await response.json();
+      const recording = await response.json();
       if (generation !== this.generation) return;
-      if (!response.ok || data.status === 'failed') throw new Error(data.note || data.error || '预览暂不可用');
-      if (data.status === 'ready' && data.url) {
-        this.url = null; this.onReady(data.url);
-      } else if (data.status === 'preparing') {
+      if (!response.ok || recording.status === 'failed') throw new Error(recording.note || recording.error || '预览暂不可用');
+      if (recording.status === 'ready' && recording.url) {
+        this.url = null; this.onReady(recording.url);
+      } else if (recording.status === 'preparing') {
         this.timer = setTimeout(() => this.poll(), 750);
       } else {
         throw new Error('预览状态无效');

@@ -1,11 +1,14 @@
 """独立轨迹的逐帧约束、跟踪统计与可重新评估的质量提醒。"""
+
 from __future__ import annotations
 
+from pathlib import Path
 import csv
 import json
-from pathlib import Path
+
 import numpy as np
-from software import config
+
+from software import parameters as parameter_models
 
 
 def frame_constraints(fuse_info: dict, n: int) -> np.ndarray:
@@ -39,21 +42,21 @@ def tracked_counts(run_txt: Path) -> dict:
     """'map: rc=0 TRACKED a / b' lines recorded by reconstruction.py."""
     structured = run_txt.parent / 'tracking.json'
     if structured.is_file():
-        data = json.loads(structured.read_text())
+        tracking_report = json.loads(structured.read_text())
         return {('map' if key == 'front/map' else key): [record['tracked'], record['rows']]
-                for key, record in data.items() if record.get('accepted')}
-    res = {}
+                for key, record in tracking_report.items() if record.get('accepted')}
+    tracking_counts = {}
     if not run_txt.is_file():
-        return res
+        return tracking_counts
     for line in run_txt.read_text(encoding="utf-8", errors="replace").splitlines():
         parts = line.split()
         if len(parts) >= 6 and parts[0].endswith(":") and "TRACKED" in parts:
             i = parts.index("TRACKED")
             try:
-                res[parts[0][:-1]] = [int(parts[i + 1]), int(parts[i + 3])]
+                tracking_counts[parts[0][:-1]] = [int(parts[i + 1]), int(parts[i + 3])]
             except (IndexError, ValueError):
                 pass
-    return res
+    return tracking_counts
 
 
 def front_tracked(frames_csv: Path, n: int) -> np.ndarray:
@@ -67,7 +70,7 @@ def front_tracked(frames_csv: Path, n: int) -> np.ndarray:
     return ok
 
 
-def evaluate_notes(summary: dict, parameters: config.NoteParameters) -> list[str]:
+def evaluate_notes(summary: dict, parameters: parameter_models.NoteParameters) -> list[str]:
     """Re-evaluable explanation rules; all required measurements are in summary."""
     notes = []
     evidence = summary['quality_evidence']

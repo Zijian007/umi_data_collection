@@ -1,24 +1,22 @@
 #!/usr/bin/env bash
-# umi-scene：从批次配置和原片自动登记、建图、抽取轨迹；负责验收与导出。
-#   ./umi-scene run scenes/shelf/20261104_001
-#   ./umi-scene run scenes/shelf/20261104_001 --dry-run
-#   ./umi-scene export scenes/shelf/20261104_001 --format training --out datasets/shelf
-#   ./umi-scene check
-# 准备方式见 docs/日常使用.md；标定使用 umi-calib，查看使用 umi-view。
-set -e
+# umi-scene：从 batch.yaml 和原片建图、抽取轨迹、验收与导出。
+#   ./umi-scene run scenes/test_shelf/20261109_002
+#   ./umi-scene run scenes/test_shelf/20261109_002 --dry-run
+#   ./umi-scene run scenes/test_shelf/20261109_002 --show-config
+#   ./umi-scene run --help
+# 套件和标定来源写法见 kits/README.md；操作说明见 docs/场景处理.md。
+# 命令行 / YAML / 资产分工及 --config 覆盖规则见 config/README.md。
+# 参数由 software/scene/cli.py 解析；UMI_DEPS 覆盖依赖目录。
+set -euo pipefail
 
-# 以脚本真实位置确定项目根目录，允许从其他工作目录启动。
-# UMI_DEPS 可覆盖默认依赖目录；env.sh 由根目录 install.sh 生成。
-ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
-DEPS=${UMI_DEPS:-$ROOT/.deps}
-if [ ! -f "$DEPS/env.sh" ]; then
-  echo "还没安装：先运行 bash $ROOT/install.sh" >&2
+PROJECT_ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+DEPENDENCY_ROOT=${UMI_DEPS:-$PROJECT_ROOT/.deps}
+if [ ! -f "$DEPENDENCY_ROOT/env.sh" ]; then
+  echo "还没安装：先运行 bash $PROJECT_ROOT/install.sh" >&2
   exit 2
 fi
-# env.sh 提供 UMI_PY 及算法依赖路径；PYTHONPATH 使 Python 能导入本项目。
-source "$DEPS/env.sh"
-# 新变量优先；现有安装生成的旧环境文件无需重装。
-export UMI_PY="${UMI_PY:-${KIWI_PY:-}}"
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-# 原样转交所有参数；exec 让 Python 接收中断信号，并将退出码返回终端。
+
+source "$DEPENDENCY_ROOT/env.sh"
+export UMI_PY=${UMI_PY:-$DEPENDENCY_ROOT/env/bin/python}
+export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 exec "$UMI_PY" -m software.scene "$@"

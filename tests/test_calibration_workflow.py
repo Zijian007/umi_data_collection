@@ -1,3 +1,4 @@
+from software import provenance as artifact_identity
 """Peripheral workflow regressions; no camera recordings or solver execution required."""
 import json
 import copy
@@ -152,12 +153,14 @@ class FullWorkflowTests(unittest.TestCase):
     @contextmanager
     def simulation(self, root, *, fail_command=None, fail_recording=None, trajectory=None, mock_install=True):
         """Keep real orchestration, gates, bundle creation and reporting; fake expensive I/O."""
-        args = Namespace(config=None, dry_run=False, folder=None, a=root / "A.insv", b=root / "B.insv",
-                         c=root / "C.insv", d=root / "D.insv", out=str(root / "out"),
+        folder = root / "front"
+        folder.mkdir()
+        args = Namespace(config=None, dry_run=False, folder=folder, a=folder / "A.insv", b=folder / "B.insv",
+                         c=folder / "C.insv", d=folder / "D.insv", out=str(root / "out"),
                          force=False, cores=None, tag_size_mm=24.0,
                          keep_work=False, install=False, compare_sample=False, workers=1)
         for stage in "ABCD":
-            (root / f"{stage}.insv").write_bytes(b"recording")
+            (folder / f"{stage}.insv").write_bytes(b"recording")
         commands = []
 
         def build(video, destination, **kwargs):
@@ -184,7 +187,7 @@ class FullWorkflowTests(unittest.TestCase):
                 destination.mkdir(exist_ok=True)
                 (destination / "imu_calib_physical_check.json").write_text(json.dumps({
                     "status": "REPORT_ONLY",
-                    "provenance": {"calibration_sha256": config.file_hash(Path(command[command.index("--calib")+1])), "euroc_roots": [command[command.index('--euroc')+1]],
+                    "provenance": {"calibration_sha256": artifact_identity.file_hash(Path(command[command.index("--calib")+1])), "euroc_roots": [command[command.index('--euroc')+1]],
                         "params": {key: (None if flag is None else cast(command[command.index(flag)+1])) for key, flag, cast in (
                             ('window_s','--window-s',float), ('gyro_max_dps','--gyro-max-dps',float),
                             ('acc_std_max','--acc-std-max',float), ('min_window_samples','--min-window-samples',int),
@@ -252,7 +255,10 @@ class FullWorkflowTests(unittest.TestCase):
             self.assertEqual(commands, [])
             self.assertEqual(current['evaluation']['checks'], original['evaluation']['checks'])
             self.assertEqual((Path(args.out) / 'calibration.json').read_bytes(), original_camera)
-            self.assertTrue(all(item['status'] == 'reused' for item in current['execution']['timings'].values()))
+            # Fake INSV files contain no offset: the optional failed comparison is retried.
+            self.assertTrue(all(item['status'] == 'reused' for key, item in current['execution']['timings'].items()
+                                if key != Step.FACTORY))
+            self.assertEqual(result_io.measurement(current, Step.FACTORY)['status'], 'comparison_failed')
             self.assertIn('reused', (Path(args.out) / 'report.txt').read_text())
 
     def test_resume_c_failure_reuses_ab_and_board_detections(self):
@@ -505,7 +511,7 @@ class FullWorkflowTests(unittest.TestCase):
             self.assertEqual({str(path.relative_to(out)) for path in out.rglob('*') if path.is_file()}, {
                 'report.txt', 'calibration.json', 'manifest.json', 'run/record.json',
                 'run/logs/camera_intrinsics.log', 'run/logs/camera_imu.log',
-                'run/logs/gravity_check.log'})  # C 子进程在本测试中替代，真实运行另有 trajectory_trajectory_validation.log。
+                'run/logs/gravity_check.log', 'run/logs/factory_error.log'})  # Fake INSV has no factory metadata.
             document = json.loads((out / 'run/record.json').read_text())
             self.assertEqual(document['execution']['status'], 'complete')
             self.assertEqual(document['schema_version'], 3)
@@ -516,7 +522,7 @@ class FullWorkflowTests(unittest.TestCase):
             self.assertEqual(manifest['lens'], 'front')
             self.assertNotIn('T_imu_cam', manifest)
             self.assertNotIn('cam_time_offset_ns', manifest)
-            self.assertEqual(manifest['files']['calibration.json'], config.file_hash(out / 'calibration.json'))
+            self.assertEqual(manifest['files']['calibration.json'], artifact_identity.file_hash(out / 'calibration.json'))
             before = {str(path.relative_to(out)): path.read_bytes() for path in out.rglob('*') if path.is_file()}
             self.assertEqual(result_io.measurement(result_io.load_result(out), Step.TRAJECTORY), result_io.measurement(report, Step.TRAJECTORY))
             self.assertEqual({str(path.relative_to(out)): path.read_bytes() for path in out.rglob('*') if path.is_file()}, before)
@@ -763,12 +769,12 @@ class FullWorkflowTests(unittest.TestCase):
 class ReportAndCliTests(unittest.TestCase):
     def test_run_arguments_still_dispatch(self):
         with patch.object(workflow, "run", return_value=0) as run:
-            rc = cli.main(["run", "--a", "a.insv", "--b", "b.insv", "--c", "c.insv",
-                           "--d", "d.insv", "--tag-size-mm", "36", "--install", "--compare-sample", '--workers', '3', '--resume'])
+            rc = cli.main(["run", "front", "--tag-size-mm", "36", "--install", "--compare-sample", '--workers', '3', '--resume'])
             self.assertEqual(rc, 0)
             request = run.call_args.args[0]
-            self.assertEqual(tuple(request.recordings.items()),
-                             tuple(zip("ABCD", map(Path, ("a.insv", "b.insv", "c.insv", "d.insv")))))
+            self.assertEqual(request.folder, Path('front'))
+            self.assertEqual(request.lens, 'front')
+            self.assertIsNone(request.recordings)
             self.assertEqual(request.tag_size_mm, 36)
             self.assertTrue(request.install)
             self.assertTrue(request.compare_sample)
@@ -793,10 +799,11 @@ class ReportAndCliTests(unittest.TestCase):
         self.assertTrue(request.keep_work)
 
     def test_invalid_recording_arguments_never_start_workflow(self):
-        for arguments in (['run', '--a', 'A.insv'], ['run', 'folder', '--a', 'A.insv']):
-            with self.subTest(arguments=arguments), patch.object(workflow, 'run') as run:
-                self.assertEqual(cli.main(arguments), 2)
+        for folder in ('folder', 'Front', 'rear_ABCD', 'front/A', 'front/rear/A'):
+            with self.subTest(folder=folder), patch.object(workflow, 'run') as run:
+                self.assertEqual(cli.main(['run', folder]), 2)
                 run.assert_not_called()
+
 
 
 if __name__ == "__main__":

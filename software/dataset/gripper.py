@@ -1,8 +1,8 @@
 """把场景结果中的宽度序列映射到训练时间轴，保留缺失值和来源。"""
+
 from __future__ import annotations
 
 from pathlib import Path
-
 from typing import TypedDict
 
 import numpy as np

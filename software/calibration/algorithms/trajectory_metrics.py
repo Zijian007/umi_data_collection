@@ -1,9 +1,11 @@
 """Compare camera positions at common video times; never interpolate or infer a frame rate."""
+
 from __future__ import annotations
 
 import numpy as np
 
 from software import config
+
 
 # Text timestamp precision and a numerical degeneracy guard, not accuracy thresholds.
 TIME_MATCH_TOLERANCE_NS = 1000

@@ -1,0 +1,79 @@
+"""源代码、引擎与资产内容身份；供缓存、设备档案和结果追溯共用。"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+import hashlib
+import json
+
+from software.environment import python_executable
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def canonical_hash(value: dict) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def code_identity(domain: str) -> dict:
+    """Content hashes cover uncommitted source too; never rely on Git HEAD alone."""
+    shared_sources = [ROOT / 'software' / filename for filename in (
+        'pose_io.py', 'config.py', 'parameters.py', 'provenance.py',
+        'registry.py', 'storage.py', 'environment.py')]
+    source_paths = [*shared_sources, *sorted((ROOT / 'software' / domain).rglob('*.py')),
+                    *sorted((ROOT / 'software/camera').rglob('*.py')),
+                    *sorted((ROOT / 'software/vision').rglob('*.py'))]
+    if domain == 'trajectory':
+        source_paths += sorted((ROOT / 'software/trajectory/assets/config').glob('*.yaml'))
+    return {str(source_path.relative_to(ROOT)): hashlib.sha256(source_path.read_bytes()).hexdigest()
+            for source_path in source_paths}
+
+
+def file_hash(path: Path) -> str:
+    with path.open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
+def engine_identity(domain: str) -> dict:
+    """Hash installed engines and numerical package metadata without running them."""
+    import os
+    import shutil
+    import sys
+    from software.vision.paths import orb_directory, orb_executable
+    paths = {}
+    if domain == 'trajectory':
+        orb = orb_directory(os.environ)
+        paths.update(orb_wrapper=orb_executable(orb),
+                     orb_library=orb / 'lib/libORB_SLAM3.so',
+                     orb_vocabulary=Path(os.environ.get('ORB3_VOCAB') or orb / 'Vocabulary/ORBvoc.txt'))
+    else:
+        basalt = Path(os.environ.get('UMI_BASALT_DIR') or
+                      Path(os.environ.get('UMI_DEPS', ROOT / '.deps')) / 'basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64') / 'bin'
+        paths.update({name: basalt / name for name in ('basalt_calibrate', 'basalt_calibrate_imu')})
+    if domain == 'trajectory':
+        for path in sorted(orb.glob('Thirdparty/*/lib/*.so*')):
+            paths[str(path.relative_to(orb))] = path
+    for name in ('ffmpeg', 'ffprobe'):
+        executable = shutil.which(name)
+        if executable:
+            paths[name] = Path(executable)
+    python = Path(python_executable(os.environ, default=sys.executable))
+    paths['fusion_python'] = python
+    # Package metadata identifies dependency versions without importing heavy modules.
+    prefixes = {python.parent.parent, Path(sys.prefix)}
+    for prefix in prefixes:
+        for path in prefix.glob('lib/python*/site-packages/gtsam/*.so'):
+            paths[f'{prefix.name}/gtsam/{path.name}'] = path
+        for package in ('numpy', 'scipy', 'gtsam', 'opencv*', 'av'):
+            for path in prefix.glob(f'lib/python*/site-packages/{package}-*.dist-info/METADATA'):
+                paths[f'{prefix.name}/{path.parent.name}'] = path
+    return {name: _engine_hash(path, path.stat().st_mtime_ns, path.stat().st_size) if path.is_file() else 'unavailable'
+            for name, path in sorted(paths.items())}
+
+
+@lru_cache(maxsize=128)
+def _engine_hash(path: Path, mtime_ns: int, size: int) -> str:
+    return file_hash(path)

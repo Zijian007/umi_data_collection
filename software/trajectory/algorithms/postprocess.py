@@ -3,20 +3,22 @@
 位姿几何与 TUM 读写来自公共模块；资产记录、质量规则和绘图分别维护。
 这里按所选外参转换结果，不选择或重新定义场景坐标系。
 """
+
 from __future__ import annotations
 
-import json
 from pathlib import Path
+import json
+
 import numpy as np
 
 from software import config
-from software.pose_io import read_tum, write_tum
 from software.camera.geometry import compose_pose_series
 from software.camera.timing import canonical_to_video_seconds
 from software.camera.x3.frame import output_frame_rate
+from software.pose_io import read_tum, write_tum
 from software.trajectory.reporting.metadata import CALIB_IMU_CAM, collect_run_settings, load_extrinsics
-from software.trajectory.reporting.quality import frame_constraints, front_tracked, tracked_counts, runs, evaluate_notes
 from software.trajectory.reporting.plots import plot
+from software.trajectory.reporting.quality import frame_constraints, front_tracked, tracked_counts, runs, evaluate_notes
 
 
 def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_dir: Path, mode: str, name: str,
@@ -24,10 +26,10 @@ def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_di
     """calib = software.registry.resolve_insv(...). command = extra trajectory flags recorded in run_settings.json."""
     reconstruction_dir, out_dir = Path(reconstruction_dir), Path(out_dir)
     fuse = reconstruction_dir / "fuse"
-    info = json.loads((fuse / "fuse_info.json").read_text(encoding="utf-8"))
+    segment_diagnostics = json.loads((fuse / "fuse_info.json").read_text(encoding="utf-8"))
     tc, p_imu, q_imu = read_tum(fuse / "traj_tum.txt")
     snapshot = (command or {}).get('parameters', {}).get('configuration')
-    parameters = config.from_dict('trajectory', snapshot['values']) if snapshot else config.load('trajectory').values
+    parameters = config.decode_parameters('trajectory', snapshot['values']) if snapshot else config.load('trajectory').values
     frame_rate = float(output_frame_rate(parameters.video.frame_step))
     n = len(tc)
     t = canonical_to_video_seconds(tc)
@@ -56,7 +58,7 @@ def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_di
               % ("user calibration %s" % calib["id"] if user_cal else "sample calibration calibration_r1440.json"))
     write_tum(out_dir / "traj_imu.txt", t, p_imu, q_imu, "IMU body pose (fusion output)  t x y z qx qy qz qw\n" + common)
 
-    kind = frame_constraints(info, n)
+    kind = frame_constraints(segment_diagnostics, n)
     tracked = front_tracked(reconstruction_dir / "front" / "loc" / "frames.csv", n)
     with open(out_dir / "frames.csv", "w", encoding="utf-8", newline="\n") as f:
         f.write("row,video_frame,source_video_frame,t_video_s,constraint,front_lens_tracked\n")
@@ -96,7 +98,7 @@ def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_di
                              "map_position_starts_at_s": lead},
         "notes": [],
         "notes_basis": "rules of thumb, not a validated accuracy test; the accuracy evidence is in docs (README)",
-        "fusion": {k: info.get(k) for k in ("init_lens", "segments", "zupt_frames", "nodes", "timing_s", "seg_scale_range", "scale_consistency")},
+        "fusion": {k: segment_diagnostics.get(k) for k in ("init_lens", "segments", "zupt_frames", "nodes", "timing_s", "seg_scale_range", "scale_consistency")},
         "calibration": {"imu_cam": ("registry %s serial %s (%s)" % (calib["id"], calib.get("serial"), calib["dir"]) if user_cal
                                     else CALIB_IMU_CAM.name + " (sample calibration, one X3, 2026-09-04)"),
                         "cam_tcp": (Path(ex["tcp_json"]).name + " (" + str(ex["cad_status"]) + ")") if pose_frame == "tcp" else None,
@@ -107,9 +109,11 @@ def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_di
     }
     if pose_frame == 'tcp':
         summary['tcp_frame'] = ex['tcp_frame']
+    if 'environment_poster' in segment_diagnostics:
+        summary['fusion']['environment_poster'] = segment_diagnostics['environment_poster']
     summary['quality_notes'] = evaluate_notes(summary, parameters.notes)
     summary['notes'] = list(summary['quality_notes'])
-    settings = collect_run_settings(reconstruction_dir, extract_manifest, mode, name, calib, command, info)
+    settings = collect_run_settings(reconstruction_dir, extract_manifest, mode, name, calib, command, segment_diagnostics)
     (out_dir / "run_settings.json").write_text(json.dumps(settings, indent=1, ensure_ascii=False), encoding="utf-8")
     title = ("%s  |  %.1f s  |  " + pose_frame + " path %.2f m  |  map position on %.0f%% of frames") % (
         summary["video"], summary["duration_s"], summary[pose_frame + "_path_length_m"], 100 * frac["full"])

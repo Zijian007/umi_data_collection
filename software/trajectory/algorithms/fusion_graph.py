@@ -1,19 +1,22 @@
 """构建并优化独立录像的 GTSAM 图；全帧恢复由 fusion_recovery 完成。"""
+
 from __future__ import annotations
 
+from dataclasses import asdict
 from dataclasses import dataclass
+from typing import Callable
+import time
+
+from gtsam.symbol_shorthand import X, V, B
+import gtsam
 import numpy as np
 
-from software import config
+from software import parameters as parameter_models
 from software.camera.x3.frame import output_frame_rate
-import time
-from typing import Callable
-from dataclasses import asdict
-import gtsam
-from gtsam.symbol_shorthand import X, V, B
 from software.trajectory.algorithms.fusion_alignment import AlignmentResult
-from software.trajectory.algorithms.fusion_placement import MapPlacements
 from software.trajectory.algorithms.fusion_factors import make_lens_factor, make_lens_factor_map, make_rot_factor, make_cont_factor
+from software.trajectory.algorithms.fusion_placement import MapPlacements
+
 
 SEGMENT_SYMBOLS = {"rear": ("m", "n", "o", "u"), "front": ("p", "q", "r", "w")}
 REAR_LEVER_KEY = gtsam.symbol("l", 0)
@@ -33,10 +36,11 @@ class OptimizedGraph:
     evidence: dict
     timing_s: dict
     optimization_finished_s: float
+    node_times: dict | None = None
 
 
 def optimize_trajectory(aligned: AlignmentResult, placements: MapPlacements,
-                        parameters: config.TrajectoryParameters, *, log=print) -> OptimizedGraph:
+                        parameters: parameter_models.TrajectoryParameters, *, log=print, poster=None) -> OptimizedGraph:
     """按照固定插入顺序构图和优化，保留原求解器的数值行为。"""
     fusion_parameters, zupt_parameters = parameters.fusion, parameters.zupt
     gravity_m_s2, frame_rate_hz = fusion_parameters.gravity_m_s2, float(output_frame_rate(parameters.video.frame_step))
@@ -179,6 +183,14 @@ def optimize_trajectory(aligned: AlignmentResult, placements: MapPlacements,
         return pim
 
 
+    node_times = None
+    if poster is not None:
+        from software.camera.geometry import resample_pose_series
+        nodes, node_times = poster.augment_nodes(nodes, video_times_s)
+        query = np.array([node_times[k] for k in nodes])
+        poses = resample_pose_series(poster.baseline.video_times_s, poster.baseline.T_world_imu, query)
+        velocities = np.column_stack([np.interp(query,poster.baseline.video_times_s,poster.baseline.velocities[:,i]) for i in range(3)])
+        seeds = {k:(gtsam.Pose3(pose),velocity) for k,pose,velocity in zip(nodes,poses,velocities)}
     for ni, k in enumerate(nodes):
         for m in lenses:
             if k not in lenses[m]["obs"]:
@@ -201,26 +213,29 @@ def optimize_trajectory(aligned: AlignmentResult, placements: MapPlacements,
             elif chain_idx[m].get(k) in chain_placements[m] and chain_placements[m][chain_idx[m][k]]["kind"] == "rot":
                 graph.add(make_rot_factor(noise3, X(k), gtsam.symbol(SEGMENT_SYMBOLS[m][3], chain_idx[m][k]), M))
                 n_rot[m] += 1
-        init.insert(X(k), gtsam.Pose3(gtsam.Rot3(init_pose[k][0]), gtsam.Point3(*init_pose[k][1])))
-        init.insert(V(k), initial_velocities[k])
+        init.insert(X(k), seeds[k][0] if poster is not None else gtsam.Pose3(gtsam.Rot3(init_pose[k][0]), gtsam.Point3(*init_pose[k][1])))
+        init.insert(V(k), seeds[k][1] if poster is not None else initial_velocities[k])
         init.insert(B(k), bias0)
         if ni + 1 < len(nodes):
             k2 = nodes[ni + 1]
-            graph.add(gtsam.CombinedImuFactor(X(k), V(k), X(k2), V(k2), B(k), B(k2), preint_between(video_times_s[k], video_times_s[k2], bias0)))
+            ta, tb = (node_times[k],node_times[k2]) if node_times is not None else (video_times_s[k],video_times_s[k2])
+            graph.add(gtsam.CombinedImuFactor(X(k), V(k), X(k2), V(k2), B(k), B(k2), preint_between(ta, tb, bias0)))
+    if poster is not None:
+        poster.add_factors(graph, init)
     log("graph", {"factors": graph.size(), "lens": n_obs, "rot_only": n_rot, "cont": n_cont, "zupt_frames": int(zupt.sum())}, flush=True)
     optimization_started_s = time.time()
     params = gtsam.LevenbergMarquardtParams()
     params.setMaxIterations(fusion_parameters.lm_iterations)
     opt_ = gtsam.LevenbergMarquardtOptimizer(graph, init, params)
-    res = opt_.optimize()
+    optimized_values = opt_.optimize()
     optimization_finished_s = time.time()
-    err0, err1 = graph.error(init), graph.error(res)
+    err0, err1 = graph.error(init), graph.error(optimized_values)
     evidence = dict(obs=n_obs, rot_only_obs=n_rot, cont_factors=n_cont,
         zupt_frames=int(zupt.sum()), nodes=len(nodes),
-        rear_lever_final=res.atVector(REAR_LEVER_KEY).round(4).tolist() if use_lever else None,
+        rear_lever_final=optimized_values.atVector(REAR_LEVER_KEY).round(4).tolist() if use_lever else None,
         front_lever_prior=lenses["front"]["lever"].round(4).tolist(),
-        front_lever_final=res.atVector(FRONT_LEVER_KEY).round(4).tolist() if use_flever else None,
-        ba_final=res.atConstantBias(B(nodes[-1])).accelerometer().round(4).tolist(),
+        front_lever_final=optimized_values.atVector(FRONT_LEVER_KEY).round(4).tolist() if use_flever else None,
+        ba_final=optimized_values.atConstantBias(B(nodes[-1])).accelerometer().round(4).tolist(),
         graph_error_init=float(err0), graph_error_final=float(err1),
         effective_parameters={"video": {"frame_step": parameters.video.frame_step},
                               "fusion": asdict(fusion_parameters), "zupt": asdict(zupt_parameters)},
@@ -229,6 +244,8 @@ def optimize_trajectory(aligned: AlignmentResult, placements: MapPlacements,
                 "pos_sigma": position_sigma_m, "adaptive_sigma": adaptive_sigma, "lens_pos_sigma": lens_position_sigmas,
                 "sig_ls": continuity_scale_sigma, "sig_rw_deg": float(np.degrees(continuity_rotation_sigma_rad)), "sig_c": continuity_position_sigma_m,
                 "zupt": use_zero_velocity, "lever_sigma": lever_sigma_m})
-    return OptimizedGraph(res, nodes, preint_between, evidence,
+    if poster is not None:
+        evidence['environment_poster'] = poster.measure(optimized_values,float(err0),float(err1))
+    return OptimizedGraph(optimized_values, nodes, preint_between, evidence,
         {"build": round(optimization_started_s-build_started_s, 1), "optimise": round(optimization_finished_s-optimization_started_s, 1),
-         "lm_iterations": getattr(opt_, "iterations", lambda: -1)()}, optimization_finished_s)
+         "lm_iterations": getattr(opt_, "iterations", lambda: -1)()}, optimization_finished_s, node_times)

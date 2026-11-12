@@ -1,3 +1,4 @@
+from software import provenance as artifact_identity
 """公共视觉边界与融合模块导入不依赖独立工作流或触发执行。"""
 import ast
 import subprocess
@@ -15,7 +16,7 @@ class SharedBoundaryTests(unittest.TestCase):
                 if isinstance(node, ast.ImportFrom) and node.module:
                     self.assertFalse(node.module.startswith(('software.scene', 'software.trajectory')), str(path))
         for domain in ('scene', 'trajectory'):
-            self.assertIn('software/vision/slam.py', config.code_identity(domain))
+            self.assertIn('software/vision/slam.py', artifact_identity.code_identity(domain))
 
     def test_importing_fusion_and_merge_tools_does_not_execute_or_create_outputs(self):
         with tempfile.TemporaryDirectory() as temp:

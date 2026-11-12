@@ -1,4 +1,5 @@
 """Scale consistency within a reconstruction, independent of monocular map units."""
+
 from __future__ import annotations
 
 import math

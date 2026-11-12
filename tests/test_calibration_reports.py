@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from software import registry
+from software import provenance as artifact_identity
 from software.calibration import devices
 from software.calibration import reports
 from software.trajectory.calibration import assets as calibration
@@ -37,8 +38,8 @@ class ResultReportTests(unittest.TestCase):
         self.addCleanup(fixture.doCleanups)
         sample = registry.get('CAMERA_A')
         for path in (Path(sample['json']),):
-            original = registry.sha256_file
-            with self.subTest(path=path), patch.object(registry, 'sha256_file', side_effect=lambda value: '0'*64 if Path(value) == path else original(value)):
+            original = artifact_identity.file_hash
+            with self.subTest(path=path), patch.object(artifact_identity, 'file_hash', side_effect=lambda value: '0'*64 if Path(value) == path else original(value)):
                 with self.assertRaisesRegex(registry.RegistryError, '哈希'):
                     registry.get('CAMERA_A')
 
@@ -87,7 +88,7 @@ class ResultReportTests(unittest.TestCase):
                 self.assertEqual((out/'report.txt').read_bytes(), (installed.parent/'report.txt').read_bytes())
 
     def test_force_cannot_bypass_incomplete_or_wrong_identity_and_no_registry_write(self):
-        from test_calibration_workflow import FullWorkflowTests, AcceptanceTests
+        from test_calibration_workflow import FullWorkflowTests
         from software.calibration import workflow, result_io
         from software.calibration.pipeline import inputs
         for case in ('serial', 'incomplete', 'parameters', 'manifest', 'fingerprint', 'locked', 'verify'):

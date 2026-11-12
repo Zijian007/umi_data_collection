@@ -5,25 +5,27 @@ is dataset frame k, so the two lenses pair by index.
 
 usage: make_lens_video.py <insv> <euroc_mav0_dir> <out_mp4> <left|right> --config trajectory.yaml
 """
+
+from dataclasses import asdict
+from pathlib import Path
 import argparse
 import csv
-from dataclasses import asdict
 import hashlib
 import json
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[3]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from software import config
+from software import config  # noqa: E402
+from software import parameters as parameter_models  # noqa: E402
 from software.camera.x3.frame import crop_xywh, output_frame_rate, validate_video_parameters  # noqa: E402
 
 
-def render(insv: str, mav0: str, out: str, half: str, *, video: config.VideoParameters) -> None:
+def render(insv: str, mav0: str, out: str, half: str, *, video: parameter_models.VideoParameters) -> None:
     """使用父流程解析的全部视频参数；不再隐式读取默认值。"""
     validate_video_parameters(video)
     x, y, w, h = crop_xywh(half, video.crop)

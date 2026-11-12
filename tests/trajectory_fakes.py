@@ -23,7 +23,7 @@ class FakeEngines:
             path = self.orb / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('fake engine')
-        self.environment = dict(KIWI_PY=sys.executable, KIWI_PY_TOOLS=sys.executable,
+        self.environment = dict(UMI_PY=sys.executable, UMI_PY_TOOLS=sys.executable,
                                 ORB3_DIR=str(self.orb), ORB3_VOCAB=str(self.orb / 'Vocabulary/ORBvoc.txt'))
 
     def write_dataset(self, output: Path) -> None:

@@ -18,6 +18,7 @@ from software.camera.x3 import extraction
 from software.trajectory.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
 from software.vision.models import RecordingData
 from software.trajectory.pipeline.reuse import REQUIRED_OUTPUTS, reuse_decision, run_fingerprint
+from software.trajectory.pipeline.calibration_assets import select_environment_assets
 from software.trajectory.calibration.selection import CalibrationAssets, SelectedCalibration
 from trajectory_fakes import FakeEngines
 from registry_fakes import device_record
@@ -46,7 +47,9 @@ class RecordingFixture(unittest.TestCase):
         self.output = self.root / 'results' / self.video.stem
 
     def fingerprint(self, request=TrajectoryRequest()):
-        return run_fingerprint(self.video, self.selected, request)
+        request = config.resolve_trajectory_request(request)
+        selected_assets = select_environment_assets(self.video, self.selected, request)
+        return run_fingerprint(self.video, self.selected, request, environment_assets=selected_assets)
 
     def successful_result(self):
         self.output.mkdir(parents=True, exist_ok=True)
@@ -77,7 +80,7 @@ class ReuseTests(RecordingFixture):
 
     def test_processing_options_invalidate_result(self):
         self.successful_result()
-        for request in (TrajectoryRequest(mode='dual'), TrajectoryRequest(max_tries=1), TrajectoryRequest(allow_irregular=True)):
+        for request in (TrajectoryRequest(max_tries=1), TrajectoryRequest(allow_irregular=True)):
             with self.subTest(request=request):
                 result = reuse_decision(self.output, self.fingerprint(request), notes=config.load('trajectory').values.notes)
                 self.assertIsNone(result.summary)
@@ -111,7 +114,8 @@ class ReuseTests(RecordingFixture):
             paths.append(destination)
         moved = replace(self.selected, assets=CalibrationAssets(*paths), directory=relocated,
                         selection='UMI_TRAJ_CALIB')
-        self.assertIsNotNone(reuse_decision(self.output, run_fingerprint(self.video, moved, TrajectoryRequest()), notes=config.load('trajectory').values.notes).summary)
+        self.assertIsNotNone(reuse_decision(self.output, run_fingerprint(self.video, moved, TrajectoryRequest(), environment_assets=select_environment_assets(
+            self.video, moved, config.resolve_trajectory_request(TrajectoryRequest()))), notes=config.load('trajectory').values.notes).summary)
 
 
 class SelectionTests(unittest.TestCase):

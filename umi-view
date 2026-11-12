@@ -1,27 +1,20 @@
 #!/usr/bin/env bash
-# umi-view：启动本地网页查看器，联动查看视频、TCP 轨迹、环境地图与坐标轴。
-#
-# 常用命令：
-#   ./umi-view                              # 扫描项目的 scenes/ 目录
-#   ./umi-view scenes/shelf       # 查看某个场景的任务结果
-#   ./umi-view /path/to/trajectory/result    # 查看一个轨迹结果目录
-#   ./umi-view --host 0.0.0.0 --port 9091   # 指定监听地址和端口
+# umi-view：视频、轨迹和标签间距的同步查看器。
+#   ./umi-view                         # 默认扫描项目 scenes/
+#   ./umi-view scenes/test_shelf --port 9092
 #   ./umi-view --help
-# 启动后按终端提示访问网页，默认 http://127.0.0.1:9091；Ctrl+C 停止服务。
-# 先用 umi-scene run 生成结果，再用此入口查看。
-# 查看器按需加载结果与视频；视频播放所需的缓存由服务端管理。
-#
-# 代码阅读：本脚本 → software/viewer/__main__.py → server.py。
-# 数据查找与读取在 software/viewer/data.py，网页交互在 static/。
-# UMI_VIEW_PYTHON 可指定解释器；默认使用已安装的项目 Python，无需载入 SLAM 环境变量。
+#   ./umi-view --show-config
+# 启动选项只在命令行设置，不读取算法 YAML；统一说明见 config/README.md。
+# 详细操作见 docs/结果查看与验收.md；参数由 software/viewer/server.py 解析。
+# UMI_VIEW_PYTHON 覆盖解释器；UMI_DEPS 覆盖依赖目录。
 set -euo pipefail
 
-# 以脚本所在目录定位项目，使 Python 能从其他工作目录导入 software。
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-# 原样转交参数；用服务进程替换 shell，保留退出码和中断信号。
-VIEW_PYTHON="${UMI_VIEW_PYTHON:-${UMI_DEPS:-$ROOT/.deps}/env/bin/python}"
-if [ -z "${UMI_VIEW_PYTHON:-}" ] && [ ! -x "$VIEW_PYTHON" ]; then
-  VIEW_PYTHON=python3
+PROJECT_ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+DEPENDENCY_ROOT=${UMI_DEPS:-$PROJECT_ROOT/.deps}
+export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
+PYTHON_EXECUTABLE=${UMI_VIEW_PYTHON:-$DEPENDENCY_ROOT/env/bin/python}
+if [ -z "${UMI_VIEW_PYTHON:-}" ] && [ ! -x "$PYTHON_EXECUTABLE" ]; then
+  PYTHON_EXECUTABLE=python3
 fi
-exec "$VIEW_PYTHON" -m software.viewer "$@"
+exec "$PYTHON_EXECUTABLE" -m software.viewer "$@"

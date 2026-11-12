@@ -1,11 +1,15 @@
 """Fresh REPORT_ONLY gravity diagnostics, bound to the exact inputs."""
+
 from __future__ import annotations
+
+from pathlib import Path
 import json
 import sys
 import tempfile
-from pathlib import Path
+
 import numpy as np
-from software import config
+
+from software import provenance as artifact_identity
 from software.calibration.models import GravityResult
 from software.calibration.pipeline import runtime
 
@@ -16,9 +20,9 @@ def validate_gravity(dataset: Path, calibration_json: Path, parameters, executio
     execution.paths.work.mkdir(parents=True, exist_ok=True)
     destination = Path(tempfile.mkdtemp(prefix='gravity_check_', dir=execution.paths.work))
     p = parameters
-    calibration_hash = config.file_hash(calibration_json)
+    calibration_hash = artifact_identity.file_hash(calibration_json)
     imu_csv = dataset / 'mav0/imu0/data.csv'
-    input_hash = config.file_hash(imu_csv)
+    input_hash = artifact_identity.file_hash(imu_csv)
     return_code = runtime.run_logged([sys.executable, runtime.TOOLS / 'imu_calib_physical_check.py', '--calib', calibration_json,
                 '--euroc', dataset,
                 '--window-s', str(p.window_s), '--gyro-max-dps', str(p.maximum_gyro_deg_s),
@@ -38,8 +42,8 @@ def validate_gravity(dataset: Path, calibration_json: Path, parameters, executio
         gravity=p.gravity_m_s2, max_gravity_residual=None, distinct_dir_cos=p.distinct_direction_cosine,
         minimum_span_fraction=p.minimum_window_span_fraction)
     if (provenance.get('calibration_sha256') != calibration_hash
-            or config.file_hash(calibration_json) != calibration_hash
-            or config.file_hash(imu_csv) != input_hash
+            or artifact_identity.file_hash(calibration_json) != calibration_hash
+            or artifact_identity.file_hash(imu_csv) != input_hash
             or provenance.get('params') != expected_parameters
             or provenance.get('euroc_roots') != [str(dataset)]):
         raise RuntimeError('D 诊断来源与当前输入不一致')
@@ -54,5 +58,3 @@ def validate_gravity(dataset: Path, calibration_json: Path, parameters, executio
     return GravityResult(status=evidence.get('status'), windows=pooled.get('n_windows_qualifying_total'),
                          directions=(pooled.get('direction_coverage') or {}).get('n_distinct_gravity_directions'),
                          max_residual=residual, evidence=evidence)
-
-

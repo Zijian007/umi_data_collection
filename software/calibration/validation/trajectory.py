@@ -1,21 +1,25 @@
 """Trajectory generation and common video-time board comparison."""
+
 from __future__ import annotations
+
+from pathlib import Path
 import os
 import sys
-from pathlib import Path
+
 import numpy as np
-from software import config
-from software.trajectory.calibration.selection import DEFAULT_FRONT_MASK
-from software.environment import python_executable
+
+from software import provenance as artifact_identity
 from software.calibration.algorithms import board_pnp, trajectory_metrics
 from software.calibration.pipeline import runtime
-from software.trajectory.reporting import results as trajectory_results
 from software.calibration.validation import trajectory_diagnostics
+from software.environment import python_executable
+from software.trajectory.calibration.selection import DEFAULT_FRONT_MASK
+from software.trajectory.reporting import results as trajectory_results
 
 
 def trajectory_assets() -> dict:
     """相机验收只依赖相机测量和通用遮罩，无夹爪安装依赖。"""
-    return dict(front_mask_sha256=config.file_hash(DEFAULT_FRONT_MASK))
+    return dict(front_mask_sha256=artifact_identity.file_hash(DEFAULT_FRONT_MASK))
 
 def read_camera_positions(traj_camera: Path) -> tuple[np.ndarray, np.ndarray]:
     rows = [l.split() for l in traj_camera.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]

@@ -8,7 +8,7 @@ from software.scene.result_io import pose_rows
 
 from software.scene.management import episodes, inputs
 from software.scene import workflow
-from software.storage import write_json, write_yaml
+from software.storage import write_yaml
 import test_scene as fixtures
 
 

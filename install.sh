@@ -57,8 +57,8 @@ fi
 "$MM" --version
 
 step "2/5 conda 环境（Python、FFmpeg、OpenCV、编译器等）"
-# Skip only when Python is actually there. micromamba can exit 0 after Ctrl+C, which used to
-# leave .umi_env_ok and make the next run skip this step (python missing).
+# Skip only when Python is actually there: micromamba can exit 0 after Ctrl+C, so a marker
+# file alone would make the next run skip this step with python missing.
 if [ ! -x "$ENV/bin/python" ]; then
   rm -rf "$ENV"
   if [ "$PLAT" = linux-64 ]; then
@@ -67,7 +67,6 @@ if [ ! -x "$ENV/bin/python" ]; then
     run_logged "$DEPS/logs/2_conda.log" "$MM" create -y -p "$ENV" -f "$T/setup/env/environment.yml"
   fi
   [ -x "$ENV/bin/python" ] || fail "conda 环境没装完（多半是安装被 Ctrl+C 中断了）。直接再跑一次 bash install.sh" "$DEPS/logs/2_conda.log"
-  touch "$ENV/.umi_env_ok"
 fi
 "$ENV/bin/python" --version
 

@@ -1,4 +1,5 @@
 """套件限定、单手身份、缺一路、重复入库和只读预览的回归。"""
+from software import provenance as artifact_identity
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -8,8 +9,7 @@ from unittest.mock import patch
 
 from software import registry
 from software.scene import layout
-from software.scene.management import episodes, inputs, ingest
-from software.scene.pipeline import recordings
+from software.scene.management import inputs, ingest
 from software.storage import write_json, write_yaml
 import test_scene as fixtures
 
@@ -18,7 +18,7 @@ class IngestTests(unittest.TestCase):
     def setUp(self):
         self.f = fixtures.SceneWorkflowTests(); self.f.setUp(); self.addCleanup(self.f.doCleanups)
         self.source = self.f.source
-        self.infos = [ingest.RecordingMetadata(path, 'SERIAL_'+arm, registry.sha256_file(path), 1000., 8.) for arm, path in self.f.recording_paths.items()]
+        self.infos = [ingest.RecordingMetadata(path, 'SERIAL_'+arm, artifact_identity.file_hash(path), 1000., 8.) for arm, path in self.f.recording_paths.items()]
         self.items = list(self.infos)
         for item in (
             patch.object(ingest, 'scan_raw_videos', side_effect=lambda paths: (list(self.items), [])),
@@ -147,7 +147,9 @@ class IngestTests(unittest.TestCase):
         path = write_task(session, 'take_001', {'left': self.f.recording_paths['left']}, instruction='货架取放')
         result = self.run_ingest()
         self.assertEqual(len(result['episodes']), 1)
-        self.assertEqual(inputs.read_yaml(path)['instruction'], '货架取放')
+        self.assertEqual(inputs.read_episode(path).instruction, '货架取放')
+        self.assertEqual(inputs.read_yaml(layout.owner(path) / 'task.yaml')['instruction'], '货架取放')
+        self.assertNotIn('instruction', inputs.read_yaml(path))
         self.assertEqual(set(inputs.read_episode(path).recordings), {'left', 'right'})
 
     def test_task_cannot_expand_the_hands_declared_by_its_session(self):

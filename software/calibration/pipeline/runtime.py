@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-import os
-import time
-from contextlib import contextmanager
 from concurrent.futures import CancelledError
-import subprocess
+from contextlib import contextmanager
 from pathlib import Path
+import os
+import subprocess
+import sys
+import time
 
-from software.console import Console
 from software.calibration.models import RunPaths
+from software.console import Console
 from software.storage import locked
+
 
 HERE = Path(__file__).resolve().parents[1]
 TOOLS = HERE / "tools"
@@ -19,6 +21,31 @@ REPO = HERE.parents[1]
 DEPS = Path(os.environ.get("UMI_DEPS", REPO / ".deps"))
 BASALT = Path(os.environ.get("UMI_BASALT_DIR", DEPS / "basalt" / "umi-basalt-0.1.7-fsoffset-linux-x86_64"))
 console = Console("标定")
+
+
+def basalt_command(tool: str) -> list[str]:
+    """The shipped Basalt build runs through its own dynamic loader + libraries, so it does not depend on the system glibc."""
+    return [str(BASALT / "lib" / "ld-linux-x86-64.so.2"), "--library-path", str(BASALT / "lib"), str(BASALT / "bin" / tool)]
+
+
+def use_calibration_environment(arguments: list[str], *, install_missing: bool) -> None:
+    """为已解析的命令选择标定解释器；只读检查只使用现有环境。"""
+    calibration_python = DEPS / 'calib_env/bin/python'
+    required_files = (calibration_python, BASALT / 'bin/basalt_calibrate', BASALT / 'bin/basalt_calibrate_imu')
+    has_solver_environment = all(os.access(path, os.X_OK) for path in required_files)
+    if install_missing and not has_solver_environment:
+        console.write('标定组件不完整，开始安装；耗时取决于网络和机器性能')
+        try:
+            subprocess.run(['bash', str(HERE / 'setup/install.sh')], stdout=sys.stderr, check=True)
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError(f'标定组件安装失败，退出码 {error.returncode}') from error
+        if not all(os.access(path, os.X_OK) for path in required_files):
+            raise RuntimeError('安装后标定组件仍不完整，请检查依赖目录和安装日志')
+    if not os.access(calibration_python, os.X_OK):
+        return
+    # 两个 venv 的 python 可能指向同一二进制；用 sys.prefix 区分运行环境。
+    if Path(sys.prefix).resolve() != calibration_python.parent.parent.resolve():
+        os.execv(str(calibration_python), [str(calibration_python), '-m', 'software.calibration', *arguments])
 
 
 @contextmanager
@@ -77,8 +104,6 @@ def pin_cores(cores: str | None) -> bool:
     return True
 
 
-
-
 def check_environment(quiet: bool = False, *, solve: bool = True) -> bool:
     ok = True
 
@@ -99,8 +124,6 @@ def check_environment(quiet: bool = False, *, solve: bool = True) -> bool:
         line(hasattr(cv2, "aruco") and hasattr(cv2.aruco, "ArucoDetector"), "OpenCV ArUco（contrib）")
     except Exception as error:
         line(False, "OpenCV ArUco（contrib）", repr(error))
-    if solve:
-        from software.calibration.solve.basalt import basalt_command
     for tool in (("basalt_calibrate", "basalt_calibrate_imu") if solve else ()):
         try:
             result = subprocess.run(basalt_command(tool) + ["--help"], capture_output=True, text=True, timeout=10)

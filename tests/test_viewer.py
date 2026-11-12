@@ -7,7 +7,9 @@ from unittest.mock import patch
 from types import SimpleNamespace
 from pathlib import Path
 
-from software.viewer.data import RecordingCatalog, ViewerDataError, read_trajectory
+from software.viewer.data import RecordingCatalog
+from software.viewer.errors import ViewerDataError
+from software.viewer.readers import read_trajectory
 from software.viewer.server import byte_range, make_handler
 from software.viewer.media import decode_frame
 

@@ -1,24 +1,26 @@
 """视觉地图的米制化与固定场景放置；所有变换都显式说明方向。
 
-惯性三节点对齐与前后地图放置参考 KIWI 0.1.0，Apache-2.0；来源与修改见 NOTICE.md。
+惯性三节点对齐及工作镜头、环境镜头地图放置参考 KIWI 0.1.0，Apache-2.0；来源与修改见 NOTICE.md。
 这里额外检查可观测性、时间覆盖、尺度不确定度和放置残差，拒绝退化结果。
 """
+
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
+import csv
 
-import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation, Slerp
+import numpy as np
 
+from software import config
+from software import parameters as parameter_models
+from software.camera.geometry import transform, validate_transform
 from software.camera.timing import video_to_imu_seconds
 from software.scene.models import SceneParameters
-from software.camera.geometry import transform, validate_transform
-from software import config
-from software.trajectory.algorithms import fusion_alignment
+from software.trajectory.algorithms import fusion_alignment, fusion_alignment_solver, inertial
 
 
 @dataclass(frozen=True)
@@ -102,7 +104,7 @@ def _observability_matrix(obs, T_cam_imu, imu, gyro_bias, scene_parameters):
     R = T[:, :3, :3] @ T_cam_imu[:3, :3]
     position = T[:, :3, 3]
     matrices = []
-    pre = [fusion_alignment.preintegrate_samples(imu[:, 0], imu[:, 1:4], imu[:, 4:7],
+    pre = [inertial.preintegrate_samples(imu[:, 0], imu[:, 1:4], imu[:, 4:7],
                a, b, gyro_bias, np.zeros(3)) if run[i] == run[i+1] else None
            for i, (a, b) in enumerate(zip(t[:-1], t[1:]))]
     for i in range(len(t)-2):
@@ -124,8 +126,8 @@ class MapAlignmentError(ValueError):
         self.diagnostics = diagnostics
 
 
-def alignment_parameters(trajectory_parameters: config.TrajectoryParameters,
-                         scene_parameters: SceneParameters, *, gravity: float | None = None) -> config.FusionParameters:
+def alignment_parameters(trajectory_parameters: parameter_models.TrajectoryParameters,
+                         scene_parameters: SceneParameters, *, gravity: float | None = None) -> parameter_models.FusionParameters:
     """Share the alignment algorithm; the scene owns its map acceptance thresholds."""
     parameters = trajectory_parameters.fusion
     return replace(parameters,
@@ -137,7 +139,8 @@ def alignment_parameters(trajectory_parameters: config.TrajectoryParameters,
 
 def metric_alignment(obs: VisualObservations, T_cam_imu: np.ndarray, imu: np.ndarray,
                      gyro_bias: np.ndarray, gravity: float, scene_parameters: SceneParameters,
-                     *, trajectory_parameters: config.TrajectoryParameters | None = None) -> dict:
+                     *, trajectory_parameters: parameter_models.TrajectoryParameters | None = None,
+                     fixed_scale: float | None = None) -> dict:
     """复用轨迹后端的坏段筛选，再为可靠段共同求一个地图尺度和重力。
 
     obs 和 imu 已处于同一本机 IMU 时钟；这里不再施加相机时间偏移。
@@ -172,15 +175,15 @@ def metric_alignment(obs: VisualObservations, T_cam_imu: np.ndarray, imu: np.nda
         estimates, _, details = fusion_alignment.align_lenses(
             {'front': lens}, times, imu, gyro_bias, parameters, log=lambda *args, **kwargs: None)
     except ValueError as error:
-        estimate = fusion_alignment.estimate_lens_alignment(lens, times, imu, gyro_bias, parameters)
-        diagnostics['segments'] = fusion_alignment.summarize_alignment(estimate, lens['chains'])
+        estimate = fusion_alignment_solver.estimate_lens_alignment(lens, times, imu, gyro_bias, parameters)
+        diagnostics['segments'] = fusion_alignment_solver.summarize_alignment(estimate, lens['chains'])
         reject(f'建图没有通过尺度/重力验收的可靠运动段：{error}')
     estimate = estimates['front']
-    diagnostics.update(details, segments=fusion_alignment.summarize_alignment(estimate, lens['chains']))
+    diagnostics.update(details, segments=fusion_alignment_solver.summarize_alignment(estimate, lens['chains']))
     good = {i for i, item in enumerate(estimate['chains']) if item['good']}
-    shared = fusion_alignment.estimate_lens_alignment(
-        lens, times, imu, gyro_bias, parameters, good, shared_map=True)
-    diagnostics['shared'] = fusion_alignment.summarize_alignment(shared, lens['chains'])
+    shared = fusion_alignment_solver.estimate_lens_alignment(
+        lens, times, imu, gyro_bias, parameters, good, shared_map=True, fixed_scale=fixed_scale)
+    diagnostics['shared'] = fusion_alignment_solver.summarize_alignment(shared, lens['chains'])
     if shared is None or not all(shared['chains'][i]['good'] for i in good):
         reject('可靠运动段无法共同确定一个通过尺度/重力验收的共享地图')
     reference = shared['chains'][min(good)]
@@ -214,7 +217,7 @@ def metric_alignment(obs: VisualObservations, T_cam_imu: np.ndarray, imu: np.nda
         reject(f'建图惯性对齐未通过验收：位置方程 RMS {rms:.4f} m')
     # 可靠片段能定标，不意味着同一子地图的其余部分也能使用该尺度。
     # 被筛掉的长段仍须与固定变换一致，不能把局部通过扩展为整图通过。
-    validation = fusion_alignment.fixed_map_residuals(
+    validation = fusion_alignment_solver.fixed_map_residuals(
         lens, times, imu, gyro_bias, scale, g, shared['ba'], parameters.step,
         maximum_rms_m=scene_parameters.maximum_alignment_rms_m)
     diagnostics['fixed_map_validation'] = validation
@@ -231,14 +234,14 @@ def metric_alignment(obs: VisualObservations, T_cam_imu: np.ndarray, imu: np.nda
 def place_front(front: VisualObservations, rear: VisualObservations, T_rear_front: np.ndarray, scene_parameters: SceneParameters) -> tuple[np.ndarray, dict]:
     """求固定 G：G T_front(t) = T_scene_rear(t) T_rear_front。"""
     if front.reference_frame != 'metric_map' or rear.reference_frame != 'scene':
-        raise ValueError('前地图放置需要米制前地图和固定场景中的后镜头观测')
+        raise ValueError('工作镜头地图放置需要米制工作镜头地图和固定场景中的环境镜头观测')
     if len(front.imu_times_s) < scene_parameters.minimum_pose_pairs or len(rear.imu_times_s) < scene_parameters.minimum_pose_pairs:
-        raise ValueError('前后镜头共同定位不足，无法统一场景坐标')
+        raise ValueError('工作镜头与环境镜头共同定位不足，无法统一场景坐标')
     j = np.clip(np.searchsorted(rear.imu_times_s, front.imu_times_s), 1, len(rear.imu_times_s)-1)
     keep = ((front.imu_times_s >= rear.imu_times_s[0]) & (front.imu_times_s <= rear.imu_times_s[-1])
             & (rear.imu_times_s[j]-rear.imu_times_s[j-1] <= scene_parameters.alignment_max_gap_s))
     if keep.sum() < scene_parameters.minimum_pose_pairs:
-        raise ValueError('前后镜头没有足够的同时有效定位')
+        raise ValueError('工作镜头与环境镜头没有足够的同时有效定位')
     t = front.imu_times_s[keep]
     reference = np.tile(np.eye(4), (len(t), 1, 1))
     reference[:, :3, :3] = Slerp(rear.imu_times_s, Rotation.from_matrix(rear.T_reference_camera[:, :3, :3]))(t).as_matrix()
@@ -259,5 +262,5 @@ def place_front(front: VisualObservations, rear: VisualObservations, T_rear_fron
     position_rms = float(np.sqrt(np.mean(np.sum(error[:, :3, 3]**2, axis=1))))
     rotation_rms = float(np.degrees(np.sqrt(np.mean(np.sum(Rotation.from_matrix(error[:, :3, :3]).as_rotvec()**2, axis=1)))))
     if not result.success or position_rms > scene_parameters.maximum_placement_rms_m or rotation_rms > scene_parameters.maximum_placement_rotation_deg:
-        raise ValueError(f'前后地图场景放置不一致：{position_rms:.4f} m，{rotation_rms:.2f}°')
+        raise ValueError(f'工作镜头与环境镜头地图场景放置不一致：{position_rms:.4f} m，{rotation_rms:.2f}°')
     return T_scene_front_map, dict(pairs=int(keep.sum()), position_rms_m=position_rms, rotation_rms_deg=rotation_rms)

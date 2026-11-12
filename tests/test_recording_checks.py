@@ -1,3 +1,4 @@
+from software.scene import layout
 """原片检查、静止任务、曝光未知与成功发布保护。"""
 import json
 from pathlib import Path
@@ -60,7 +61,7 @@ class RecordingCheckTests(unittest.TestCase):
                 self.assertEqual(before,after)
                 with self.assertRaises(recording_checks.RecordingCheckError):workflow.run_episode(f.episode_path)
             self.assertEqual(output.resolve(),previous)
-            state=json.loads((f.episode_path.parent/'.umi/state.json').read_text())
+            state=json.loads((layout.metadata(f.episode_path.parent, 'state.json')).read_text())
             self.assertEqual(state['attempt']['status'],'rejected_preflight')
             self.assertEqual(json.loads((output/'episode.json').read_text())['status'],'ok')
         finally:f.doCleanups()

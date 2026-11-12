@@ -1,9 +1,10 @@
 """Data passed between calibration stages; no solvers or filesystem mutations."""
+
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
-from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
 
@@ -35,6 +36,15 @@ class CalibrationRequest:
     resume: bool = False
     workers: int | None = None
     lens: str = 'front'
+    intrinsics_source: str = 'measured'
+
+    @property
+    def output_directory(self) -> Path:
+        default_name = 'calibration_result' + ('_factory' if self.intrinsics_source == 'factory' else '')
+        source_directory = self.folder or (self.recordings.a.parent if self.recordings else None)
+        if self.output is None and source_directory is None:
+            raise ValueError('需要标定输入目录或录像才能确定结果目录')
+        return (self.output or source_directory/default_name).expanduser().resolve()
 
 
 @dataclass(frozen=True)
@@ -101,7 +111,7 @@ class CalibrationInputs:
 
 
 class Kb4(NamedTuple):
-    """Basalt KB4 fish-eye intrinsics, in pixels of the 1440×1440 crop."""
+    """KB4 intrinsics (measured or factory-fitted), in 1440×1440 crop pixels."""
     fx: float
     fy: float
     cx: float
@@ -173,6 +183,7 @@ class Step(StrEnum):
     PREPARE_GRAVITY = 'prepare_gravity'
     INTRINSICS = 'estimate_intrinsics'
     CAMERA_IMU = 'estimate_camera_imu'
+    FACTORY = 'compare_insv_factory'
     GRAVITY = 'measure_gravity'
     TRAJECTORY = 'validate_trajectory'
     SAMPLE = 'sample_trajectory'
@@ -181,9 +192,9 @@ class Step(StrEnum):
     def label(self):
         return {self.PREPARE_INTRINSICS: '准备 A 段图像与 IMU', self.PREPARE_CAMERA_IMU: '准备 B 段图像与 IMU',
                 self.PREPARE_VALIDATION: '准备 C 段图像与 IMU', self.PREPARE_GRAVITY: '准备 D 段 IMU',
-                self.INTRINSICS: 'A 内参标定', self.CAMERA_IMU: 'B 相机–IMU 标定',
+                self.INTRINSICS: '内参生成与 A 图像验证', self.CAMERA_IMU: 'B 相机–IMU 标定',
                 self.GRAVITY: 'D 重力诊断', self.TRAJECTORY: 'C 轨迹验证',
-                self.SAMPLE: '样例轨迹对照'}[self]
+                self.SAMPLE: '样例轨迹对照', self.FACTORY: 'INSV 工厂镜头参数对照'}[self]
 
 
 ROLE_STEPS = dict(A=Step.PREPARE_INTRINSICS, B=Step.PREPARE_CAMERA_IMU,

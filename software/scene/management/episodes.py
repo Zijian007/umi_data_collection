@@ -1,21 +1,23 @@
 """任务状态、人工验收与合格数据导出；state.json 持久保存处理状态和人工验收记录。"""
+
 from __future__ import annotations
 
-from software.scene import layout
-from software.scene.result_io import trajectory_path
-
-from dataclasses import replace
 from collections.abc import Iterable
+from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
 import json
 import os
-from pathlib import Path
 import shutil
 import tempfile
-from datetime import datetime, timezone
 
-from software import config
 from . import inputs
+from software import provenance as artifact_identity
+from software.scene import layout
+from software.scene.configuration import SceneOverrides, apply_overrides
 from software.scene.layout import locked
+from software.scene.management import camera_assets
+from software.scene.result_io import scene_reference, trajectory_path
 from software.storage import write_json
 
 
@@ -28,7 +30,7 @@ def episode_paths(paths: list[Path], *, exclude: Iterable[Path] = ()) -> list[Pa
         if any(path.is_relative_to(root) for root in excluded):
             continue
         if path.is_file():
-            if path.name not in ('scene.yaml', 'batch.yaml', 'manifest.yaml', 'episode.yaml'):
+            if path.name not in ('scene.yaml', 'batch.yaml', 'manifest.yaml', 'episode.yaml', 'task.yaml'):
                 raise ValueError(f'请指定场景、套件、批次、任务目录或对应清单：{path}')
             if path.name == 'episode.yaml':
                 found.append(path)
@@ -40,6 +42,10 @@ def episode_paths(paths: list[Path], *, exclude: Iterable[Path] = ()) -> list[Pa
             children[:] = sorted(name for name in children if not name.startswith('.')
                                  and name not in inputs.INTERNAL_DIRECTORIES
                                  and Path(current) / name not in excluded)
+            if layout.is_batch(Path(current)):
+                found.extend(layout.manifest(task, 'episode.yaml')
+                             for task in inputs.batch_task_directories(Path(current))
+                             if task not in excluded and layout.manifest(task, 'episode.yaml').is_file())
             manifest = layout.manifest(Path(current), 'episode.yaml')
             if manifest.is_file():
                 found.append(manifest)
@@ -59,12 +65,13 @@ def record_attempt(episode, status: str, target: Path | None, *, reason='') -> N
     state_path = layout.metadata(episode.root, 'state.json')
     state = json.loads(state_path.read_text()) if state_path.is_file() else {}
     previous = state.get('attempt', {})
-    manifest_sha256 = config.file_hash(episode.path)
-    session_sha256 = config.file_hash(episode.session.path)
+    manifest_sha256 = artifact_identity.file_hash(episode.path)
+    session_sha256 = artifact_identity.file_hash(episode.session.path)
     if previous.get('manifest_sha256') != manifest_sha256 or previous.get('session_sha256') != session_sha256:
         state = {}
-    state['attempt'] = dict(status=status, run=str(target.relative_to(episode.root)) if target else None,
-        manifest_sha256=manifest_sha256, session_sha256=session_sha256)
+    state['attempt'] = dict(status=status, run=layout.run_reference(episode.root, target) if target else None,
+        manifest_sha256=manifest_sha256, session_sha256=session_sha256,
+        task_configuration_sha256=layout.task_configuration_hash(episode.root))
     if reason and target is None:
         state['attempt']['reason'] = reason
     if status not in ('ok', 'skipped') or state.get('review', {}).get('run') != state['attempt']['run']:
@@ -79,14 +86,17 @@ def task_status(path: Path) -> dict:
     status = 'pending'
     if set(episode.expected_arms) - set(episode.recordings.keys()):
         status = 'incomplete'
-    elif (attempt.get('manifest_sha256') == config.file_hash(episode.path)
-          and attempt.get('session_sha256') == config.file_hash(episode.session.path)):
+    elif (attempt.get('manifest_sha256') == artifact_identity.file_hash(episode.path)
+          and attempt.get('session_sha256') == artifact_identity.file_hash(episode.session.path)
+          and attempt.get('task_configuration_sha256', artifact_identity.canonical_hash({}))
+          == layout.task_configuration_hash(episode.root)):
         status = attempt.get('status', 'pending')
     review = state.get('review', {}) if status in ('ok', 'skipped') else {}
     return dict(scene=episode.scene.name, session=episode.session.name, name=episode.root.name,
         path=str(episode.path), kit=episode.session.kit['id'],
         arms=list(episode.expected_arms), status=status, review=review.get('decision', 'unreviewed'),
-        reason=attempt.get('reason', ''), output=str(episode.output) if episode.output.exists() else None)
+        reason=attempt.get('reason', ''), output=(str(episode.root/'local_results') if status in ('local_ok', 'local_skipped')
+                                                else str(episode.output) if episode.output.exists() else None))
 
 
 def successful_run(episode) -> tuple[Path, dict]:
@@ -102,9 +112,16 @@ def successful_run(episode) -> tuple[Path, dict]:
     if run_manifest['status'] != 'ok':
         raise ValueError('任务结果未完成')
     inputs.validate_assets(run_dir, run_manifest['assets'])
-    cameras = inputs.select_cameras(episode.recordings, replace(episode.scene, mode=run_manifest['inputs']['map_mode'],
-        devices=episode.session.devices, rear_calibrations=inputs.rear_files(episode.session.devices)), episode.serials)
-    map_manifest = dict(version=run_manifest['scene']['version'], frame_id=run_manifest['frame_id'], assets=run_manifest['inputs']['scene_assets'], mode=run_manifest['inputs']['map_mode'])
+    if 'runtime_overrides' in run_manifest:
+        overrides = SceneOverrides.from_snapshot(run_manifest['runtime_overrides'])
+        trajectory, parameters = apply_overrides(episode.scene.trajectory, episode.scene.parameters, overrides)
+        scene = replace(episode.scene, trajectory=trajectory, parameters=parameters, overrides=overrides)
+        episode = replace(episode, session=replace(episode.session, scene=scene))
+    cameras = camera_assets.select_cameras(episode.recordings, replace(episode.scene, mode=run_manifest['inputs']['map_mode'],
+        devices=episode.session.devices, rear_calibrations=camera_assets.rear_files(episode.session.devices)), episode.serials)
+    scene_record = scene_reference(run_manifest)
+    map_manifest = dict(version=scene_record['version'], frame_id=scene_record['frame_id'],
+                        assets=run_manifest['inputs']['scene_assets'], mode=run_manifest['inputs']['map_mode'])
     if inputs.episode_inputs(episode, cameras, map_manifest) != run_manifest['inputs']:
         raise ValueError('输入或算法配置已变化，请重新处理后验收')
     return run_dir, run_manifest
@@ -116,7 +133,7 @@ def review(path: Path, *, accept: bool, reviewer: str, reason='') -> dict:
         run_dir, _ = successful_run(episode)
         state = layout.read_state(episode.root)
         decision = dict(decision='accepted' if accept else 'rejected', reviewer=inputs.validate_name(reviewer), reason=reason,
-            run=str(run_dir.relative_to(episode.root)), result_sha256=config.file_hash(run_dir / 'episode.json'),
+            run=layout.run_reference(episode.root, run_dir), result_sha256=artifact_identity.file_hash(run_dir / 'episode.json'),
             checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
         state['review'] = decision
         # reason/preflight_report are derived from the run, never stored twice.
@@ -130,7 +147,7 @@ def accepted_run(episode) -> tuple[Path, dict, dict]:
     """成果打包和训练导出共用的只读入口，验证当前结果及其人工验收。"""
     run_dir, manifest = successful_run(episode)
     record = layout.read_state(episode.root).get('review', {})
-    if record.get('decision') != 'accepted' or record.get('result_sha256') != config.file_hash(run_dir / 'episode.json'):
+    if record.get('decision') != 'accepted' or record.get('result_sha256') != artifact_identity.file_hash(run_dir / 'episode.json'):
         raise ValueError(f'任务尚未人工接收或验收对应的结果已变化：{episode.path}')
     return run_dir, manifest, record
 
@@ -169,10 +186,10 @@ def export(paths: list[Path], export_dir: Path, *, with_video=False) -> dict:
                 export_path = episode_dir / name
                 export_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(run_dir / name, export_path)
-                exported_file_hashes[name] = config.file_hash(export_path)
-                if exported_file_hashes[name] != config.file_hash(run_dir / name):
+                exported_file_hashes[name] = artifact_identity.file_hash(export_path)
+                if exported_file_hashes[name] != artifact_identity.file_hash(run_dir / name):
                     raise ValueError('导出期间源结果发生变化')
-            exported_episodes.append(dict(path=str(episode_relative_path), scene=run_manifest['scene'], frame_id=run_manifest['frame_id'],
+            exported_episodes.append(dict(path=str(episode_relative_path), scene=run_manifest['scene'], frame_id=scene_reference(run_manifest)['frame_id'],
                 kit=episode.session.kit, arms=run_manifest['arms'], instruction=episode.instruction,
                 synchronization=episode.synchronization, review=review_record, files=exported_file_hashes))
         manifest = dict(kind='umi_dataset', schema_version=1, episodes=exported_episodes,

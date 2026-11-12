@@ -8,10 +8,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from software.vision import recordings as visual_recordings, runtime as visual_runtime, slam as visual_slam
-from software import config, registry
+from software import config
 from software.trajectory.calibration import assets as calibration_assets
 from software.trajectory.pipeline import reconstruction, runtime
-from software.trajectory.models import FusionResult, RecordingPaths, ReconstructionContext, TrajectoryRequest
+from software.trajectory.models import FusionArtifacts, RecordingPaths, ReconstructionContext, TrajectoryRequest
 from software.vision.models import RecordingData, ProcessingError
 from trajectory_fakes import FakeEngines
 
@@ -67,7 +67,7 @@ class ReconstructionTests(unittest.TestCase):
         texts = {lens: calibration_assets.slam_settings_text(camera, self.context.parameters)
                  for lens, camera in dict(front=front, rear=rear).items()}
         output = self.root/'measured-settings'
-        settings = visual_runtime.visual_settings({**os.environ, **self.engines.environment, 'KIWI_PY_TOOLS': '/tools/python'},
+        settings = visual_runtime.visual_settings({**os.environ, **self.engines.environment, 'UMI_PY_TOOLS': '/tools/python'},
             lens_settings=texts, front_mask=runtime.HERE/'assets/config/front_hand_mask.png',
             output=output, parameters=self.context.parameters)
         self.assertEqual(settings.front_settings.read_text(), texts['front'])
@@ -75,7 +75,7 @@ class ReconstructionTests(unittest.TestCase):
         self.assertNotEqual(settings.front_settings.read_text(), settings.rear_settings.read_text())
         self.assertEqual(settings.tools_python, '/tools/python')
         self.assertFalse((output/'parameters.json').exists())
-        self.assertEqual(settings.environment['KIWI_PY_TOOLS'], '/tools/python')
+        self.assertEqual(settings.environment['UMI_PY_TOOLS'], '/tools/python')
 
     def test_output_size_reaches_video_slam_mask_and_run_record(self):
         import cv2
@@ -141,6 +141,47 @@ class ReconstructionTests(unittest.TestCase):
         for number in (1, 2):
             self.assertEqual((self.paths.attempt(number) / 'front/front.mp4').resolve(), self.paths.lens_videos / 'front.mp4')
 
+    def test_identical_alignment_failure_stops_before_repeating_fusion(self):
+        self.engines.failures['fuse'] = 2
+
+        def execute(command, **options):
+            result = self.engines(command, **options)
+            if any(Path(arg).name == 'fusion_cli.py' for arg in command):
+                pos = next(i for i, arg in enumerate(command) if Path(arg).name == 'fusion_cli.py')
+                directory = Path(command[pos+6])
+                directory.mkdir()
+                (directory/'alignment_failure.json').write_text(json.dumps(dict(code='NO_USABLE_LENS')))
+            return result
+
+        with patch.object(runtime.subprocess, 'run', side_effect=execute):
+            result = self.run_stages()
+        self.assertIsNone(result.chosen)
+        self.assertEqual(len(result.attempts), 2)
+        self.assertEqual(result.attempts[-1]['stop_reason'], 'identical_alignment_inputs')
+        self.assertEqual([kind for kind, *_ in self.engines.calls].count('fuse'), 1)
+
+    def test_changed_visual_input_is_not_treated_as_identical_failure(self):
+        self.engines.failures['fuse'] = 2
+
+        def execute(command, **options):
+            result = self.engines(command, **options)
+            if any(Path(arg).name == 'fusion_cli.py' for arg in command):
+                pos = next(i for i, arg in enumerate(command) if Path(arg).name == 'fusion_cli.py')
+                directory = Path(command[pos+6])
+                directory.mkdir()
+                (directory/'alignment_failure.json').write_text(json.dumps(dict(code='NO_USABLE_LENS')))
+            if './x3_mono_slam' in command and '--localization_only' in command:
+                path = Path(command[command.index('--output_frames_csv')+1])
+                number = next(p.removeprefix('try_') for p in path.parts if p.startswith('try_'))
+                path.write_text(path.read_text().replace('0.000000', f'{number}.000000'))
+            return result
+
+        with patch.object(runtime.subprocess, 'run', side_effect=execute):
+            result = self.run_stages()
+        self.assertEqual(len(result.attempts), 3)
+        self.assertEqual([kind for kind, *_ in self.engines.calls].count('fuse'), 3)
+        self.assertTrue(all('stop_reason' not in a for a in result.attempts))
+
     def test_scale_divergence_retries_despite_full_tracking_and_retains_rejection(self):
         self.engines.scale_changes = {1: 3.27}
         result = self.run_stages()
@@ -174,7 +215,24 @@ class ReconstructionTests(unittest.TestCase):
         execution = json.loads((result.directory/'front/map/execution.json').read_text())
         self.assertTrue(execution['compatibility_exit'])
         self.assertTrue(execution['accepted'])
+        self.assertIsNone(execution['offline_sync'])  # Older engines have no scheduling marker.
+        self.assertIsNone(execution['offline_keyframe_interval_s'])
         self.assertEqual(json.loads((result.directory/'logs/run.json').read_text())['status'], 'ok')
+
+    def test_engine_scheduling_mode_is_recorded_for_reproducibility(self):
+        def execute(command, **options):
+            if './x3_mono_slam' in command:
+                options['stdout'].write('offline_sync=1\noffline_keyframe_interval_s=0.2 minimum_frames=6\n')
+            return self.engines(command, **options)
+
+        with patch.object(runtime.subprocess, 'run', side_effect=execute):
+            result = self.run_stages()
+        for stage in ('map', 'loc_m0'):
+            record = json.loads((result.directory / 'front' / stage / 'execution.json').read_text())
+            self.assertTrue(record['offline_sync'])
+            self.assertEqual(record['offline_keyframe_interval_s'], .2)
+            self.assertEqual(record['offline_minimum_keyframe_frames'], 6)
+            self.assertTrue(record['accepted'])
 
     def test_timeout_with_written_artifacts_is_rejected(self):
         self.engines.map_returncode = 124
@@ -253,7 +311,7 @@ class ReconstructionTests(unittest.TestCase):
                 if content is not None:
                     info.write_text(content)
                 with self.assertRaises(ProcessingError) as caught:
-                    reconstruction.assess_try(FusionResult(self.root / 'traj_tum.txt', info))
+                    reconstruction.assess_try(FusionArtifacts(self.root / 'traj_tum.txt', info))
                 self.assertEqual(caught.exception.stage, '重建质量检查')
                 self.assertEqual(caught.exception.return_code, 1)
                 self.assertIn(str(info), str(caught.exception))

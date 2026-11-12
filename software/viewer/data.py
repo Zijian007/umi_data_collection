@@ -1,81 +1,17 @@
 """Read UMI output layouts into a small, explicit browser data contract."""
+
 from __future__ import annotations
 
-import csv
+from pathlib import Path
 import hashlib
 import json
-import math
 import os
-from pathlib import Path
 
-from software.trajectory.reporting.results import front_video_path, load_summary, result_path
 from software.scene import layout
-from software.scene.result_io import read_arm_summary, trajectory_path, pose_rows
-
-
-class ViewerDataError(ValueError):
-    pass
-
-
-def read_trajectory(path: Path) -> dict:
-    times, positions, quaternions = [], [], []
-    for line_number, row in enumerate(pose_rows(path), 1):
-        try:
-            values = list(map(float, row))
-            if len(values) != 8 or not all(math.isfinite(v) for v in values):
-                raise ValueError('需要 8 个有限数值')
-            if times and values[0] <= times[-1]:
-                raise ValueError('时间戳必须严格递增')
-            q = values[4:]
-            norm = math.sqrt(sum(v * v for v in q))
-            if not 0.9 < norm < 1.1:
-                raise ValueError('姿态四元数不是单位四元数')
-        except ValueError as error:
-            raise ViewerDataError(f'{path.name} 第 {line_number} 行：{error}') from error
-        times.append(values[0])
-        positions.append(values[1:4])
-        quaternions.append([v / norm for v in q])
-    if len(times) < 2:
-        raise ViewerDataError(f'{path.name} 至少需要两个轨迹点')
-    distances = [math.dist(a, b) for a, b in zip(positions, positions[1:])]
-    speed = [0.0] + [d / (b - a) for d, a, b in zip(distances, times, times[1:])]
-    return dict(times=times, position=positions, quaternion=quaternions, speed=speed,
-                path_length=sum(distances),
-                extent=[max(p[k] for p in positions) - min(p[k] for p in positions) for k in range(3)])
-
-
-def read_frames(path: Path, times: list[float]) -> tuple[list[dict], list[str]]:
-    frames = [dict(constraint='unknown', tracked=None, video_frame=i * 2) for i in range(len(times))]
-    if not path.is_file():
-        return frames, ['缺少逐帧信息，约束类型显示为未知。']
-    invalid = 0
-    seen = set()
-    with path.open(encoding='utf-8', newline='') as source:
-        for row in csv.DictReader(source):
-            try:
-                index = int(row['row'])
-                if index < 0 or index >= len(times) or index in seen:
-                    raise ValueError('row')
-                time = float(row.get('t_scene_s') or row['t_video_s'])
-                if not math.isfinite(time) or abs(time - times[index]) > 1e-4:
-                    raise ValueError('time')
-                constraint = row['constraint']
-                if constraint not in ('full', 'rot', 'imu'):
-                    raise ValueError('constraint')
-                video_frame = int(row['video_frame'])
-                if video_frame < 0:
-                    raise ValueError('video_frame')
-                tracked = int(row['front_lens_tracked'])
-                if tracked not in (0, 1):
-                    raise ValueError('tracked')
-                frames[index] = dict(constraint=constraint, tracked=bool(tracked), video_frame=video_frame)
-                seen.add(index)
-            except (ValueError, KeyError, TypeError):
-                invalid += 1
-    notes = []
-    if invalid or len(seen) != len(times):
-        notes.append(f'逐帧信息有 {invalid} 行无效，{len(times) - len(seen)} 帧缺失；缺失帧约束显示为未知。')
-    return frames, notes
+from software.scene.result_io import read_arm_settings, read_arm_summary, trajectory_path
+from software.trajectory.reporting.results import front_video_path, load_summary, result_path
+from software.viewer.errors import ViewerDataError
+from software.viewer.readers import read_tag_distance, read_trajectory, read_frames
 
 
 class RecordingCatalog:
@@ -88,7 +24,15 @@ class RecordingCatalog:
         self.directories: dict[str, Path] = {}
 
     def contains(self, path: Path) -> bool:
-        return path.resolve().is_relative_to(self.root)
+        resolved = path.resolve()
+        if resolved.is_relative_to(self.root):
+            return True
+        # 单独打开任务时，允许读取该任务在批次内的集中产物。
+        if layout.is_batch(self.root.parent):
+            internal = self.root.parent / '.umi/tasks' / self.root.name
+            if internal.resolve().is_relative_to(self.root.parent):
+                return resolved.is_relative_to(internal.resolve())
+        return False
 
     def summary(self, directory: Path) -> dict:
         manifest = directory.parent / 'episode.json'
@@ -129,7 +73,8 @@ class RecordingCatalog:
                     capture = capture_status(directory)
                 except (OSError, ValueError, TypeError, KeyError, IndexError):
                     capture = dict(status='pending')
-                if 'scene' in capture and not (directory / 'results/episode.json').is_file():
+                result_name = 'local_results' if capture.get('status') in ('local_ok', 'local_skipped') else 'results'
+                if 'scene' in capture and not (directory / result_name / 'episode.json').is_file():
                     key = hashlib.sha256(str(directory.resolve()).encode()).hexdigest()[:20]
                     label = '/'.join(str(capture.get(name, directory.name)) for name in ('scene', 'kit', 'session', 'name'))
                     entries.append(dict(id=key, name=label, path=str(directory.relative_to(self.root)),
@@ -139,7 +84,7 @@ class RecordingCatalog:
                     children[:] = []
                     continue
             # 任务的 results 是原子发布的版本指针；只展示当前版本，不遍历历史 runs。
-            episode = directory / 'results' if has_capture else directory
+            episode = directory / result_name if has_capture else directory
             if (episode / 'episode.json').is_file():
                 from software.viewer.episodes import read_episode, recording_key
                 children[:] = []
@@ -154,7 +99,8 @@ class RecordingCatalog:
                     kit = capture.get('kit') or metadata.get('kit', {}).get('id')
                     label = '/'.join(filter(None, (metadata.get('scene', {}).get('name'), kit, session, metadata.get('name', directory.name))))
                     entries.append(dict(id=key, name=label, path=str(episode.relative_to(self.root)),
-                        serial='双手场景' if len(arms) == 2 else '场景任务', status=capture.get('status', 'ok'),
+                        serial=('独立局部轨迹' if metadata.get('kind') == 'umi_local_episode' else
+                                '双手场景' if len(arms) == 2 else '场景任务'), status=capture.get('status', metadata['status']),
                         review=capture.get('review', {}).get('decision', 'unreviewed'), available=True, duration=interval[1]-interval[0],
                         rows=metadata.get('rows'), calibration=metadata['scene']['version']))
                 except (ViewerDataError, OSError, ValueError, KeyError):
@@ -219,6 +165,7 @@ class RecordingCatalog:
             raise ViewerDataError('轨迹文件超出当前数据目录。')
         tcp = read_trajectory(tcp_path)
         times = tcp.pop('times')
+        tag_distance = read_tag_distance(tcp_path, times)
         tracks = dict(tcp=tcp)
         frames_path = result_path(directory, 'frames.csv')
         if not self.contains(frames_path):
@@ -238,11 +185,20 @@ class RecordingCatalog:
                 tracks[name] = track
             except (OSError, ViewerDataError) as error:
                 notes.append(f'{name} 轨迹未加载：{error}')
+        if summary.get('mode') in ('scene', 'local') and {'camera', 'imu'} - tracks.keys():
+            try:
+                from software.viewer.poses import derive_body_tracks
+                derived = derive_body_tracks(times, tcp, read_arm_settings(directory))
+                for name in ('camera', 'imu'):
+                    tracks.setdefault(name, derived[name])
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                notes.append(f'相机/IMU 显示轨迹未重建：{error}')
         video = self.video_path(key)
         from software.viewer.media import cached_preview, video_version
         version = video_version(video) if video else None
         preview = cached_preview(video) if video else None
         return dict(id=key, name=directory.name, path=str(directory), summary=summary, times=times,
+                    tag_distance=tag_distance,
                     tracks=tracks, frames=frames, notes=notes + list(summary.get('notes') or []),
                     video_url=f'/api/recordings/{key}/video?v={version}' if video else None,
                     poster_url=f'/api/recordings/{key}/frame?t=0&v={version}' if video else None,
@@ -250,4 +206,4 @@ class RecordingCatalog:
                     preview_video_url=f'/api/recordings/{key}/preview/video?v={preview.stem}' if preview else None,
                     frame_url=f'/api/recordings/{key}/frame' if video else None,
                     video_time_offset_s=summary.get('video_time_offset_s', times[0]),
-                    video_note='前镜头裁切视频 · 与轨迹使用同一视频时钟' if video else '未保留前镜头视频，仍可独立回放三维轨迹。')
+                    video_note='工作镜头裁切视频 · 与轨迹使用同一视频时钟' if video else '未保留工作镜头视频，仍可独立回放三维轨迹。')

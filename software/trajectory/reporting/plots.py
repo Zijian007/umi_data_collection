@@ -1,5 +1,7 @@
 """轨迹预览图；绘图依赖在调用时加载，失败不改变轨迹求解结果。"""
+
 from pathlib import Path
+
 from .quality import runs
 
 

@@ -1,4 +1,5 @@
 """原片检查只拒绝明确缺陷；静止质量给出提醒，未知曝光不冒充已通过。"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -95,10 +96,10 @@ def check_exposure(path: Path, parameters: SceneParameters) -> CheckResult:
         records = insv_reader.records_by_id(insv_reader.parse_trailer(path, gyro_parser=False))
         if 4 not in records:
             return CheckResult('exposure', 'UNKNOWN', '缺少曝光记录')
-        data = insv_reader.read_record_bytes(path, records[4])
-        if not data or len(data) % 16:
+        exposure_records = insv_reader.read_record_bytes(path, records[4])
+        if not exposure_records or len(exposure_records) % 16:
             return CheckResult('exposure', 'UNKNOWN', '曝光记录格式无法识别')
-        shutters = np.array([item[1] for item in struct.iter_unpack('<Qd', data)])
+        shutters = np.array([item[1] for item in struct.iter_unpack('<Qd', exposure_records)])
         if not np.isfinite(shutters).all() or np.any(shutters <= 0):
             return CheckResult('exposure', 'UNKNOWN', '曝光记录含无效数值')
         median, cv = float(np.median(shutters)), float(shutters.std() / shutters.mean())

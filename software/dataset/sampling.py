@@ -1,17 +1,18 @@
 """以真实捕获时间对齐 TCP 与视频帧；保留视频 PTS 供独立读取。"""
+
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 from pathlib import Path
+import csv
 
-import numpy as np
 from scipy.spatial.transform import Rotation
+import numpy as np
 
 from software.camera.geometry import resample_pose_series
+from software.gripper_width import series
 from software.pose_io import read_tum
 from software.scene.result_io import TCP_COLUMNS, trajectory_path
-from software.gripper_width import series
 
 
 @dataclass(frozen=True)
@@ -50,9 +51,12 @@ def read_arm(directory: Path, offset_s: float) -> ArmSamples:
     if path.suffix == '.csv':
         with path.open(encoding='utf-8', newline='') as stream:
             trajectory_rows = list(csv.DictReader(stream))
-        width_samples = series.from_rows(trajectory_rows)
+        if trajectory_rows and 'width_mm' in trajectory_rows[0]:
+            width_samples = series.from_rows(trajectory_rows)
         values = np.array([[float(row[column]) for column in TCP_COLUMNS[1:]] for row in trajectory_rows])
-        times, positions, quaternions = width_samples.times_s, values[:, :3], values[:, 3:]
+        times = np.array([float(row['t_episode_s']) for row in trajectory_rows])
+        validate_times(times, 'TCP 时间')
+        positions, quaternions = values[:, :3], values[:, 3:]
     else:
         times, positions, quaternions = read_tum(path)
         validate_times(times, 'TCP 时间')
@@ -67,7 +71,7 @@ def read_arm(directory: Path, offset_s: float) -> ArmSamples:
     frame_times = np.array([float(row['t_scene_s']) for row in rows])
     capture_times = np.array([float(row['t_video_s']) for row in rows])
     validate_times(frame_times, '帧映射时间')
-    time_tolerance = 1e-8 if width_samples is not None else 1e-6  # 历史 TUM 时间只保存六位小数。
+    time_tolerance = 1e-8 if path.suffix == '.csv' else 1e-6  # 历史 TUM 时间只保存六位小数。
     if not np.allclose(frame_times, times, atol=time_tolerance, rtol=0):
         raise ValueError('帧映射与 TCP 时间不一致')
     if not np.allclose(capture_times + offset_s, frame_times, atol=1e-8, rtol=0):

@@ -27,13 +27,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import argparse
 import datetime as _dt
 import hashlib
 import json
 import math
-from pathlib import Path
 import sys
+
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from software import config
 

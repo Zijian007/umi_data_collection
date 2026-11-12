@@ -1,18 +1,20 @@
 """写出可独立读取的训练中间包；失败不发布部分数据集。"""
+
 from __future__ import annotations
 
+from pathlib import Path
 import json
 import math
-from pathlib import Path
 import shutil
 import tempfile
 
 import numpy as np
 
-from software import config
-from software.scene.result_io import read_arm_settings
-from software.storage import locked, write_json
+from software import provenance as artifact_identity
 from software.dataset import gripper, sampling, source
+from software.scene.result_io import read_arm_settings, scene_reference
+from software.storage import locked, write_json
+
 
 FORMAT = 'umi_training_dataset'
 SCHEMA_VERSION = 2
@@ -50,11 +52,11 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
                     video = target / 'videos' / f'{arm}.mp4'
                     video.parent.mkdir(exist_ok=True)
                     shutil.copy2(item.run / arm / 'front.mp4', video)
-                    if config.file_hash(video) != item.manifest['assets'][f'{arm}/front.mp4']:
+                    if artifact_identity.file_hash(video) != item.manifest['assets'][f'{arm}/front.mp4']:
                         raise ValueError('导出期间源视频发生变化')
                 metadata = dict(kind='umi_training_episode', schema_version=SCHEMA_VERSION,
                     instruction=item.manifest['instruction'], synchronization=item.manifest['synchronization'],
-                    frame_id=item.manifest['frame_id'], scene=item.manifest['scene'], kit=item.manifest['kit'],
+                    frame_id=scene_reference(item.manifest)['frame_id'], scene=item.manifest['scene'], kit=item.manifest['kit'],
                     arms=list(arms), tcp_frames=item.manifest['tcp_frames'],
                     tcp_geometry=tcp_geometry, actual_error=item.manifest['actual_error'],
                     pose_representation='T_scene_tcp', position_unit='m', fps=fps,
@@ -66,7 +68,7 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
                     arrays={name: dict(shape=list(value.shape), dtype=str(value.dtype)) for name, value in arrays.items()},
                     videos={arm: f'videos/{arm}.mp4' for arm in arms})
                 write_json(target / 'episode.json', metadata)
-                hashes = {str(file_path.relative_to(target)): config.file_hash(file_path) for file_path in sorted(target.rglob('*')) if file_path.is_file()}
+                hashes = {str(file_path.relative_to(target)): artifact_identity.file_hash(file_path) for file_path in sorted(target.rglob('*')) if file_path.is_file()}
                 entries.append(dict(path=str(target.relative_to(staging)), rows=metadata['rows'], files=hashes,
                                     training_ready=metadata['training_ready'], missing_channels=metadata['missing_channels'],
                                     not_ready_reasons=metadata['not_ready_reasons']))
@@ -106,7 +108,7 @@ def load_episode(dataset: Path, episode_path: str, *, require_training_ready=Fal
         raise ValueError('数据集任务路径越界')
     for name, digest in entry['files'].items():
         file = (directory / name).resolve()
-        if not file.is_relative_to(directory) or not file.is_file() or config.file_hash(file) != digest:
+        if not file.is_relative_to(directory) or not file.is_file() or artifact_identity.file_hash(file) != digest:
             raise ValueError(f'数据集文件缺失、越界或哈希变化：{name}')
     metadata = json.loads((directory / 'episode.json').read_text())
     if require_training_ready and not metadata['training_ready']:

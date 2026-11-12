@@ -10,20 +10,20 @@
 
 from __future__ import annotations
 
-import os
-import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-from software import config
-from software.storage import write_json
-from software.calibration.pipeline import runtime
+import json
+import os
 
 import cv2
 import numpy as np
 
-from software.camera.x3.frame import SRC_H, SRC_W, STEP, T0_S, crop_xywh
+from software import provenance as artifact_identity
+from software.calibration.pipeline import runtime
 from software.camera.x3 import extraction
+from software.camera.x3.frame import SRC_H, SRC_W, STEP, T0_S, crop_xywh
+from software.storage import write_json
+
 
 LUMA_FORMATS = ("yuvj420p", "yuv420p")       # 8-bit planar, plane 0 = luma
 
@@ -44,8 +44,8 @@ def n_workers(requested: int | None = None) -> int:
 
 
 def preparation_identity(insv: Path, with_images: bool, lens: str) -> str:
-    return config.canonical_hash(dict(path=str(insv.resolve()), sha256=config.file_hash(insv),
-        images=with_images, lens=lens, code={str(path): config.file_hash(path) for path in (
+    return artifact_identity.canonical_hash(dict(path=str(insv.resolve()), sha256=artifact_identity.file_hash(insv),
+        images=with_images, lens=lens, code={str(path): artifact_identity.file_hash(path) for path in (
             Path(__file__), *sorted(Path(extraction.__file__).parent.glob('*.py')))}))
 
 

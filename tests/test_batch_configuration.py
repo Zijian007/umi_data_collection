@@ -1,4 +1,5 @@
 """套件单/双手、批次配置、离线处理、验收和导出的完整业务回归。"""
+from software.scene.management import camera_assets
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -128,7 +129,7 @@ class KitTests(unittest.TestCase):
         from dataclasses import replace
         scene = replace(session.scene, devices=session.devices)
         with patch.object(registry, 'read_insv_serial', return_value='CAMERA_A'), self.assertRaises(OSError):
-            inputs.select_camera(Path('video.insv'), scene)
+            camera_assets.select_camera(Path('video.insv'), scene)
 
     def test_current_kit_identity_matches_its_directory(self):
         write_kit('rig', {arm: dict(serial=serial, calibration='001', gripper=dict(tcp='tcp_camera.json')) for arm, serial in ({'left': 'CAMERA_A'}).items()})

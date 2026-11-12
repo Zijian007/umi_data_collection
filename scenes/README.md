@@ -4,20 +4,23 @@
 
 ```text
 scenes/shelf/
-├── scene.yaml                     # 可选；默认不生成空配置
-├── .umi/maps/                     # 自动保存的共享地图
-└── 20261105_001/
+├── scene.yaml                     # 可选：同类环境的处理参数
+└── 20261105_001/                   # 每个批次独立持有地图
     ├── batch.yaml                 # 用户填写：kit: kit_001
     ├── mapping/原始建图文件名.insv
-    ├── .umi/                      # 自动保存的批次快照和导入报告
+    ├── .umi/                      # 本批次唯一的内部存储
+    │   ├── manifest.yaml          # 设备、原片和地图快照
+    │   ├── import.json            # 最近一次有变化的导入报告
+    │   ├── maps/                  # 本批次的版本、当前指针与建图缓存
+    │   └── tasks/take_001/        # 任务原片清单、状态、缓存和运行历史
     └── take_001/
+        ├── task.yaml              # 可选：指令、使用手和同步
         ├── left/                  # 左手操作原片
-        ├── right/                 # 右手操作原片；单手任务只放对应一侧
-        ├── results/               # 成功后生成
-        └── .umi/                  # 任务清单、缓存、状态和运行记录
+        ├── right/                 # 右手操作原片；单手只放对应一侧
+        └── results                # 指向本批次 .umi/tasks/take_001/runs/ 的成功结果
 ```
 
-每轮“建图＋几次操作”一个批次。换标定或替换建图原片可直接重跑当前批次，新采集轮次也可以建立下一批次。历史结果保留当时的设备和地图。单手套件只放对应侧；双手套件本批次只用一手时在 `batch.yaml` 明确写 `arms: [left]` 或 `[right]`。
+每轮“建图＋几次操作”一个批次；各批次有自己的地图版本、当前指针和缓存，不自动引用其他批次的最新地图。明确配置 `map_version` 时，将指定版本冻结到本批次。换标定或替换建图原片可直接重跑当前批次，新采集轮次也可以建立下一批次。历史结果保留当时的设备和地图。单手套件只放对应侧；双手套件本批次只用一手时在 `batch.yaml` 明确写 `arms: [left]` 或 `[right]`。
 
 预先分好的 take 保留名称与分组，本地原片直接引用。未分组原片可放批次 `pending/`，只有唯一配对后才归入 take；缺片或歧义会报告并保留。标定原片仍放 `recordings/calibration/`，套件放全局 `kits/`。
 
@@ -38,7 +41,9 @@ parameters:
   minimum_localization_fraction: 0.5
 ```
 
-`shared_front` 支持左手、右手和双手采集；`dual` 表示前后镜头双路处理，需要套件登记实测后镜头标定及双路建图原片。场景名称由目录名确定；版本字段可省略。
+`shared_front` 支持左手、右手和双手采集；`dual` 表示工作/环境镜头双路处理，需要双路建图原片，优先使用套件绑定的正式环境镜头标定；未绑定时尝试 X3 INSV 工厂参数 + 本设备 front B 兜底，标记未经 rear 独立验收（见[标定指南](../docs/标定.md#双镜头标定与海报接入)）。场景名称由目录名确定；版本字段可省略。
+
+标定来源由 `batch.yaml` 的 `intrinsics_source: measured|factory` 或 `build/run --intrinsics-source ...` 选择；套件须先绑定对应的完整版本，详见[双来源套件配置](../kits/README.md#同时保存实测与工厂来源)。这不属于 `scene.yaml` 的算法参数。
 
 `trajectory` 对应 `config/trajectory.yaml`，`parameters` 对应 `config/scene_parameters.yaml`。两者直接填写映射，不用再创建或引用覆盖文件。新场景配置只管理选项；建图原片归批次 `mapping/`，设备版本归套件。
 
@@ -46,10 +51,10 @@ parameters:
 
 完整操作见[日常使用](../docs/安装与日常使用.md)。
 
-日常只需关注配置、原片和 `results/`。无变化的导入不写新报告，相同输入和原因的失败记录去重；旧批次首次实际运行时自动迁移内部文件，`--dry-run` 保持只读。指令与同步可通过任务 `.umi/episode.yaml` 补充。
+日常只需关注配置、原片和 `results/`。无变化的导入不写新报告，相同输入和原因的失败记录去重；旧批次首次实际运行时自动迁移内部文件，`--dry-run` 保持只读。指令与同步可通过任务目录中的 `task.yaml` 补充。
 
 ## 配置与命令迁移
 
-kit.yaml、batch.yaml 手动填写；任务按 take 放好视频，由 `run <批次>` 自动登记和处理。补片后重跑；任务指令和同步填写在生成的 `.umi/episode.yaml` 中。`build <批次>` 仅单独建图，和 run 读取同一份 batch.yaml。
+kit.yaml、batch.yaml 手动填写；任务按 take 放好视频，由 `run <批次>` 自动登记和处理。补片后重跑；任务指令和同步填写在任务目录的 `task.yaml` 中。`build <批次>` 仅单独建图，和 run 读取同一份 batch.yaml。
 
 历史 schema 2 的 scene.yaml 和原有结果仍可读取。新配置使用默认 schema 3，不再保存 mapping/devices，也不再引用参数文件；将旧参数文件中的改动项分别移入 trajectory、parameters 即可，不要将旧的场景建图元数据复制到新配置。

@@ -1,9 +1,11 @@
 """Read each trajectory attempt without running engines or changing its evidence."""
+
 from __future__ import annotations
 
+from pathlib import Path
 import csv
 import json
-from pathlib import Path
+
 import numpy as np
 
 from software.calibration.algorithms.trajectory_metrics import compare_visual
@@ -40,10 +42,10 @@ def read_attempts(output, summary, reference, parameters):
                 visual_path = output / 'debug/logs/front_loc_frames.csv'
         evidence = dict(attempt=number, selected=selected, quality=record)
         try:
-            info = json.loads(info_path.read_text())
-            evidence['alignment'] = info.get('stage1', {})
-            evidence['scale_consistency'] = info.get('scale_consistency')
-            evidence['final_scale_range'] = info.get('seg_scale_range', {})
+            attempt_diagnostics = json.loads(info_path.read_text())
+            evidence['alignment'] = attempt_diagnostics.get('stage1', {})
+            evidence['scale_consistency'] = attempt_diagnostics.get('scale_consistency')
+            evidence['final_scale_range'] = attempt_diagnostics.get('seg_scale_range', {})
         except (OSError, ValueError, TypeError, AttributeError) as error:
             evidence['fusion_unavailable'] = str(error)
         try:

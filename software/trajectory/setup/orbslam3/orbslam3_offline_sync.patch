@@ -1,0 +1,500 @@
+diff --git a/include/LocalMapping.h b/include/LocalMapping.h
+--- a/include/LocalMapping.h
++++ b/include/LocalMapping.h
+@@ -50,6 +50,10 @@
+ 
+     // Main function
+     void Run();
++
++    // Offline mono: caller owns all map mutations; no worker threads.
++    void SetOffline(bool enabled) { mbOffline = enabled; mbFinished = false; }
++    bool ProcessOneKeyFrame();
+ 
+     void InsertKeyFrame(KeyFrame* pKF);
+     void EmptyQueue();
+@@ -106,6 +110,7 @@
+     bool mbFarPoints;
+     float mThFarPoints;
+ protected:
++    bool mbOffline = false;
+ 
+     bool CheckNewKeyFrames();
+     void ProcessNewKeyFrame();
+diff --git a/include/LoopClosing.h b/include/LoopClosing.h
+--- a/include/LoopClosing.h
++++ b/include/LoopClosing.h
+@@ -60,6 +60,10 @@
+ 
+     // Main function
+     void Run();
++
++    // Offline mono: caller owns all map mutations; no worker threads.
++    void SetOffline(bool enabled) { mbOffline = enabled; mbFinished = false; }
++    bool ProcessOneKeyFrame();
+ 
+     void InsertKeyFrame(KeyFrame *pKF);
+ 
+@@ -81,12 +85,14 @@
+     void RequestFinish();
+ 
+     bool isFinished();
++    void WaitForGlobalBA();
+ 
+     Viewer* mpViewer;
+ 
+     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+ 
+ protected:
++    bool mbOffline = false;
+ 
+     bool CheckNewKeyFrames();
+ 
+diff --git a/include/System.h b/include/System.h
+--- a/include/System.h
++++ b/include/System.h
+@@ -108,7 +108,9 @@
+         const string &save_atlas_path = std::string(),
+         const cv::Ptr<cv::aruco::Dictionary> aruco_dict=cv::makePtr<cv::aruco::Dictionary>(cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50)),
+         const int init_tag_id=13,
+-        const float init_tag_size=0.16
++        const float init_tag_size=0.16,
++        const bool offline_sync=false,
++        const double offline_keyframe_interval_s=0.2
+     );
+ 
+     // Proccess the given stereo frame. Images must be synchronized and rectified.
+@@ -240,8 +242,10 @@
+ 
+     // System threads: Local Mapping, Loop Closing, Viewer.
+     // The Tracking thread "lives" in the main execution thread that creates the System object.
+-    std::thread* mptLocalMapping;
+-    std::thread* mptLoopClosing;
++    bool mbOfflineSync = false;
++    void ProcessOfflineMapping();
++    std::thread* mptLocalMapping = nullptr;
++    std::thread* mptLoopClosing = nullptr;
+     std::thread* mptViewer;
+ 
+     // Reset flag
+diff --git a/include/Tracking.h b/include/Tracking.h
+--- a/include/Tracking.h
++++ b/include/Tracking.h
+@@ -79,6 +79,9 @@
+     void GrabImuData(const IMU::Point &imuMeasurement);
+ 
+     void SetLocalMapper(LocalMapping* pLocalMapper);
++
++    // Offline processing uses a video-frame interval, independent of worker speed.
++    void SetMinimumKeyFrameFrames(int frames) { mMinFrames = frames; }
+     void SetLoopClosing(LoopClosing* pLoopClosing);
+     void SetViewer(Viewer* pViewer);
+     void SetStepByStep(bool bSet);
+diff --git a/src/LocalMapping.cc b/src/LocalMapping.cc
+--- a/src/LocalMapping.cc
++++ b/src/LocalMapping.cc
+@@ -69,6 +69,44 @@
+         // Check if there are keyframes in the queue
+         if(CheckNewKeyFrames() && !mbBadImu)
+         {
++            ProcessOneKeyFrame();
++        }
++        else if(Stop() && !mbBadImu)
++        {
++            // Safe area to stop
++            while(isStopped() && !CheckFinish())
++            {
++                usleep(3000);
++            }
++            if(CheckFinish())
++                break;
++        }
++
++        ResetIfRequested();
++
++        // Tracking will see that Local Mapping is busy
++        SetAcceptKeyFrames(true);
++
++        if(CheckFinish())
++            break;
++
++        usleep(3000);
++    }
++
++    SetFinish();
++// } catch (const std::exception& ex) {
++//     cerr << "Exception in LocalMapping::Run!" << endl;
++//     cerr << ex.what() << endl;
++//     std::terminate();
++// }
++
++}
++
++bool LocalMapping::ProcessOneKeyFrame()
++{
++    if(!CheckNewKeyFrames() || mbBadImu || isStopped()) return false;
++    SetAcceptKeyFrames(false);
++
+             // BoW conversion and insertion in Map
+             ProcessNewKeyFrame();
+ 
+@@ -192,36 +230,9 @@
+             }
+ 
+             mpLoopCloser->InsertKeyFrame(mpCurrentKeyFrame);
+-        }
+-        else if(Stop() && !mbBadImu)
+-        {
+-            // Safe area to stop
+-            while(isStopped() && !CheckFinish())
+-            {
+-                usleep(3000);
+-            }
+-            if(CheckFinish())
+-                break;
+-        }
+-
+-        ResetIfRequested();
+-
+-        // Tracking will see that Local Mapping is busy
+-        SetAcceptKeyFrames(true);
+-
+-        if(CheckFinish())
+-            break;
+-
+-        usleep(3000);
+-    }
+-
+-    SetFinish();
+-// } catch (const std::exception& ex) {
+-//     cerr << "Exception in LocalMapping::Run!" << endl;
+-//     cerr << ex.what() << endl;
+-//     std::terminate();
+-// }
+-
++
++    SetAcceptKeyFrames(true);
++    return true;
+ }
+ 
+ void LocalMapping::InsertKeyFrame(KeyFrame *pKF)
+@@ -769,6 +780,7 @@
+ {
+     unique_lock<mutex> lock(mMutexStop);
+     mbStopRequested = true;
++    if(mbOffline) mbStopped = true;
+     unique_lock<mutex> lock2(mMutexNewKFs);
+     mbAbortBA = true;
+ }
+@@ -1005,6 +1017,8 @@
+     }
+     cout << "LM: Map reset, waiting..." << endl;
+ 
++    if(mbOffline) ResetIfRequested();
++
+     while(1)
+     {
+         {
+@@ -1026,6 +1040,8 @@
+         mpMapToReset = pMap;
+     }
+     cout << "LM: Active map reset, waiting..." << endl;
++
++    if(mbOffline) ResetIfRequested();
+ 
+     while(1)
+     {
+@@ -1091,6 +1107,7 @@
+ {
+     unique_lock<mutex> lock(mMutexFinish);
+     mbFinishRequested = true;
++    if(mbOffline) { mbFinished = true; mbStopped = true; }
+ }
+ 
+ bool LocalMapping::CheckFinish()
+diff --git a/src/LoopClosing.cc b/src/LoopClosing.cc
+--- a/src/LoopClosing.cc
++++ b/src/LoopClosing.cc
+@@ -69,6 +69,33 @@
+ 
+         if(CheckNewKeyFrames())
+         {
++            ProcessOneKeyFrame();
++        }
++
++        ResetIfRequested();
++
++        if(CheckFinish()){
++            break;
++        }
++
++        usleep(5000);
++    }
++
++    SetFinish();
++}
++
++bool LoopClosing::ProcessOneKeyFrame()
++{
++    if(!CheckNewKeyFrames()) return false;
++    // With place recognition disabled, still consume the queue and index KFs.
++    if(!mbActiveLC) {
++        KeyFrame* keyframe;
++        { unique_lock<mutex> lock(mMutexLoopQueue);
++          keyframe = mlpLoopKeyFrameQueue.front(); mlpLoopKeyFrameQueue.pop_front(); }
++        if(!keyframe->isBad()) mpKeyFrameDB->add(keyframe);
++        return true;
++    }
++
+             if(mpLastCurrentKF)
+             {
+                 mpLastCurrentKF->mvpLoopCandKFs.clear();
+@@ -109,7 +136,7 @@
+                                 mnMergeNumNotFound = 0;
+                                 mbMergeDetected = false;
+                                 Verbose::PrintMess("scale bad estimated. Abort merging", Verbose::VERBOSITY_NORMAL);
+-                                continue;
++                                return true;
+                             }
+                             // If inertial, force only yaw
+                             if ((mpTracker->mSensor==System::IMU_MONOCULAR || mpTracker->mSensor==System::IMU_STEREO || mpTracker->mSensor==System::IMU_RGBD) &&
+@@ -229,18 +256,8 @@
+ 
+             }
+             mpLastCurrentKF = mpCurrentKF;
+-        }
+-
+-        ResetIfRequested();
+-
+-        if(CheckFinish()){
+-            break;
+-        }
+-
+-        usleep(5000);
+-    }
+-
+-    SetFinish();
++
++    return true;
+ }
+ 
+ void LoopClosing::InsertKeyFrame(KeyFrame *pKF)
+@@ -1082,7 +1099,8 @@
+         mbStopGBA = false;
+         mnCorrectionGBA = mnNumCorrection;
+ 
+-        mpThreadGBA = new thread(&LoopClosing::RunGlobalBundleAdjustment, this, pLoopMap, mpCurrentKF->mnId);
++        if(mbOffline) RunGlobalBundleAdjustment(pLoopMap, mpCurrentKF->mnId);
++        else mpThreadGBA = new thread(&LoopClosing::RunGlobalBundleAdjustment, this, pLoopMap, mpCurrentKF->mnId);
+     }
+ 
+     // Loop closed. Release Local Mapping.
+@@ -1615,7 +1633,8 @@
+         mbRunningGBA = true;
+         mbFinishedGBA = false;
+         mbStopGBA = false;
+-        mpThreadGBA = new thread(&LoopClosing::RunGlobalBundleAdjustment,this, pMergeMap, mpCurrentKF->mnId);
++        if(mbOffline) RunGlobalBundleAdjustment(pMergeMap, mpCurrentKF->mnId);
++        else mpThreadGBA = new thread(&LoopClosing::RunGlobalBundleAdjustment,this, pMergeMap, mpCurrentKF->mnId);
+     }
+ 
+     mpMergeMatchedKF->AddMergeEdge(mpCurrentKF);
+@@ -2053,6 +2072,8 @@
+         mbResetRequested = true;
+     }
+ 
++    if(mbOffline) ResetIfRequested();
++
+     while(1)
+     {
+         {
+@@ -2071,6 +2092,8 @@
+         mbResetActiveMapRequested = true;
+         mpMapToReset = pMap;
+     }
++
++    if(mbOffline) ResetIfRequested();
+ 
+     while(1)
+     {
+@@ -2328,11 +2351,25 @@
+     }
+ }
+ 
++void LoopClosing::WaitForGlobalBA()
++{
++    // The loop worker has already exited; it can no longer replace this thread.
++    if(mpThreadGBA) {
++        if(mpThreadGBA->joinable()) mpThreadGBA->join();
++        delete mpThreadGBA;
++        mpThreadGBA = nullptr;
++    }
++    unique_lock<mutex> lock(mMutexGBA);
++    mbRunningGBA = false;
++    mbFinishedGBA = true;
++}
++
+ void LoopClosing::RequestFinish()
+ {
+     unique_lock<mutex> lock(mMutexFinish);
+     // cout << "LC: Finish requested" << endl;
+     mbFinishRequested = true;
++    if(mbOffline) mbFinished = true;
+ }
+ 
+ bool LoopClosing::CheckFinish()
+diff --git a/src/System.cc b/src/System.cc
+--- a/src/System.cc
++++ b/src/System.cc
+@@ -27,6 +27,9 @@
+ #include <openssl/md5.h>
+ #include <boost/serialization/base_object.hpp>
+ #include <boost/serialization/string.hpp>
++#include <stdexcept>
++#include <cmath>
++#include "Thirdparty/DBoW2/DUtils/Random.h"
+ #include <boost/archive/text_iarchive.hpp>
+ #include <boost/archive/text_oarchive.hpp>
+ #include <boost/archive/binary_iarchive.hpp>
+@@ -45,10 +48,17 @@
+                const string &save_atlas_path,
+                const cv::Ptr<cv::aruco::Dictionary> aruco_dict,
+                const int init_tag_id,
+-               const float init_tag_size):
++               const float init_tag_size, const bool offline_sync, const double offline_keyframe_interval_s):
+     mSensor(sensor), mpViewer(static_cast<Viewer*>(NULL)), mbReset(false), mbResetActiveMap(false),
+     mbActivateLocalizationMode(false), mbDeactivateLocalizationMode(false), mbShutDown(false)
+ {
++    if(offline_sync && (sensor != MONOCULAR || bUseViewer))
++        throw std::invalid_argument("offline_sync requires MONOCULAR and no viewer");
++    if(!std::isfinite(offline_keyframe_interval_s) || offline_keyframe_interval_s < 0. || offline_keyframe_interval_s > 1.)
++        throw std::invalid_argument("offline_keyframe_interval_s must be within [0, 1]");
++    mbOfflineSync = offline_sync;
++    if(mbOfflineSync) DUtils::Random::SeedRandOnce(0);
++    cout << "offline_sync=" << mbOfflineSync << endl;
+     // Output welcome message
+     cout << endl <<
+     "ORB-SLAM3 Copyright (C) 2017-2020 Carlos Campos, Richard Elvira, Juan J. Gómez, José M.M. Montiel and Juan D. Tardós, University of Zaragoza." << endl <<
+@@ -165,10 +175,18 @@
+                              mpAtlas, mpKeyFrameDatabase, strSettingsFile, mSensor, settings_, 
+                              aruco_dict, init_tag_id, init_tag_size);
+ 
++    if(mbOfflineSync) {
++        const double fps = static_cast<double>(fsSettings["Camera.fps"]);
++        const int interval_frames = std::max(0, static_cast<int>(std::ceil(offline_keyframe_interval_s * fps)));
++        mpTracker->SetMinimumKeyFrameFrames(interval_frames);
++        cout << "offline_keyframe_interval_s=" << offline_keyframe_interval_s
++             << " minimum_frames=" << interval_frames << endl;
++    }
++
+     //Initialize the Local Mapping thread and launch
+     mpLocalMapper = new LocalMapping(this, mpAtlas, mSensor==MONOCULAR || mSensor==IMU_MONOCULAR,
+                                      mSensor==IMU_MONOCULAR || mSensor==IMU_STEREO || mSensor==IMU_RGBD);
+-    mptLocalMapping = new thread(&ORB_SLAM3::LocalMapping::Run,mpLocalMapper);
++    mpLocalMapper->SetOffline(mbOfflineSync);
+     if(settings_)
+         mpLocalMapper->mThFarPoints = settings_->thFarPoints();
+     else
+@@ -184,7 +202,7 @@
+     //Initialize the Loop Closing thread and launch
+     // mSensor!=MONOCULAR && mSensor!=IMU_MONOCULAR
+     mpLoopCloser = new LoopClosing(mpAtlas, mpKeyFrameDatabase, mpVocabulary, mSensor!=MONOCULAR, activeLC); // mSensor!=MONOCULAR);
+-    mptLoopClosing = new thread(&ORB_SLAM3::LoopClosing::Run, mpLoopCloser);
++    mpLoopCloser->SetOffline(mbOfflineSync);
+ 
+     //Set pointers between threads
+     mpTracker->SetLocalMapper(mpLocalMapper);
+@@ -196,7 +214,11 @@
+     mpLoopCloser->SetTracker(mpTracker);
+     mpLoopCloser->SetLocalMapper(mpLocalMapper);
+ 
+-    //usleep(10*1000*1000);
++    // Start only after settings and cross-pointers are fully initialized.
++    if(!mbOfflineSync) {
++        mptLocalMapping = new thread(&ORB_SLAM3::LocalMapping::Run,mpLocalMapper);
++        mptLoopClosing = new thread(&ORB_SLAM3::LoopClosing::Run,mpLoopCloser);
++    }
+ 
+     //Initialize the Viewer thread and launch
+     if(bUseViewer)
+@@ -437,6 +459,7 @@
+             mpTracker->GrabImuData(vImuMeas[i_imu]);
+ 
+     Sophus::SE3f Tcw = mpTracker->GrabImageMonocular(imToFeed,timestamp,filename);
++    if(mbOfflineSync) ProcessOfflineMapping();
+     unique_lock<mutex> lock2(mMutexState);
+     mTrackingState = mpTracker->mState;
+     mTrackedMapPoints = mpTracker->mCurrentFrame.mvpMapPoints;
+@@ -513,6 +536,7 @@
+             mpTracker->GrabImuData(vImuMeas[i_imu]);
+ 
+     Sophus::SE3f Tcw = mpTracker->GrabImageMonocular(imToFeed,timestamp,filename);
++    if(mbOfflineSync) ProcessOfflineMapping();
+     int trackingState = mpTracker->mState;
+     // has tracking for OK and RECENTLY_LOST state.
+     bool has_tracking = (trackingState == 2) || (trackingState == 3);
+@@ -564,15 +588,28 @@
+     mbResetActiveMap = true;
+ }
+ 
++void System::ProcessOfflineMapping()
++{
++    int local = 0, loop = 0;
++    while(mpLocalMapper->ProcessOneKeyFrame()) ++local;
++    while(mpLoopCloser->ProcessOneKeyFrame()) ++loop;
++    if(local || loop)
++        cout << "offline_drain frame=" << mpTracker->mCurrentFrame.mnId
++             << " local=" << local << " loop=" << loop
++             << " keyframes=" << mpAtlas->KeyFramesInMap() << endl;
++}
++
+ void System::Shutdown()
+ {
+     {
+         unique_lock<mutex> lock(mMutexReset);
++        if(mbShutDown) return;
+         mbShutDown = true;
+     }
+ 
+     cout << "Shutdown" << endl;
+ 
++    if(mbOfflineSync) ProcessOfflineMapping();
+     mpLocalMapper->RequestFinish();
+     mpLoopCloser->RequestFinish();
+     /*if(mpViewer)
+@@ -582,20 +619,10 @@
+             usleep(5000);
+     }*/
+ 
+-    // Wait until all thread have effectively stopped
+-    while(!mpLocalMapper->isFinished() || !mpLoopCloser->isFinished() || mpLoopCloser->isRunningGBA())
+-    {
+-        if(!mpLocalMapper->isFinished())
+-            cout << "mpLocalMapper is not finished" << endl;
+-        if(!mpLoopCloser->isFinished())
+-            cout << "mpLoopCloser is not finished" << endl;
+-        if(mpLoopCloser->isRunningGBA()){
+-            cout << "mpLoopCloser is running GBA" << endl;
+-            cout << "break anyway..." << endl;
+-            break;
+-        }
+-        usleep(5000);
+-    }
++    // Do not serialize while any worker or global BA can still modify the map.
++    if(mptLocalMapping && mptLocalMapping->joinable()) mptLocalMapping->join();
++    if(mptLoopClosing && mptLoopClosing->joinable()) mptLoopClosing->join();
++    mpLoopCloser->WaitForGlobalBA();
+ 
+     if(!mStrSaveAtlasToFile.empty())
+     {
+diff --git a/src/Tracking.cc b/src/Tracking.cc
+--- a/src/Tracking.cc
++++ b/src/Tracking.cc
+@@ -1547,7 +1547,7 @@
+     else
+     {
+         // System is initialized. Track Frame.
+-        bool bOK;
++        bool bOK = false; // Unknown/recovery states must never read an uninitialized success flag.
+ 
+         // Initial camera pose estimation using motion model or relocalization (if tracking is lost)
+         if(!mbOnlyTracking)

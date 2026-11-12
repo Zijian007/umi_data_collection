@@ -1,17 +1,19 @@
 """只读原视频：后台生成浏览器预览，缓存首帧和最近的兼容画面。"""
+
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+from pathlib import Path
 import math
 import os
 import shutil
 import subprocess
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
-from pathlib import Path
 
-from software.viewer.data import ViewerDataError
 from software.viewer import cache
+from software.viewer.errors import ViewerDataError
+
 
 _DECODERS = threading.BoundedSemaphore(2)
 REPO = Path(__file__).resolve().parents[2]

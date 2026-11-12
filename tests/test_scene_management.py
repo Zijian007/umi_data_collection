@@ -1,8 +1,9 @@
 """跨场景交错采集、固定版本、原片导入与设备资产回归。"""
 from __future__ import annotations
+from software import provenance as artifact_identity
+from software.scene.pipeline import map_lifecycle
 
 import json
-import shutil
 import tempfile
 import unittest
 from registry_fakes import write_batch, write_task
@@ -10,8 +11,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from software import registry
+from software.calibration import inventory
 from software.scene import layout
-from software.scene.management import inputs, ingest
+from software.scene.management import inputs
 from software.scene import cli, models, workflow
 from software.scene.pipeline import recordings
 from software.storage import write_json, write_yaml
@@ -57,7 +59,7 @@ class RegistryVersionTests(unittest.TestCase):
         self.assertEqual(registry.get('CAMERA_A')['bundle_sha256'], original['bundle_sha256'])
         self.assertEqual(registry.get('CAMERA_A', calibration='002')['calibration_version'], '002')
         self.assertEqual(len(list((registry.CAMERAS / 'CAMERA_A/calibrations').iterdir())), 2)
-        self.assertEqual({row['calib_id'] for row in registry.list_devices()}, {'001'})
+        self.assertEqual({device['front_default'] for device in inventory.device_inventory()}, {'001'})
 
     def test_index_contains_only_camera_identity_and_calibration(self):
         registry.register('CAMERA_B', self.bundle, note='source measurement')
@@ -132,7 +134,7 @@ class RegistryVersionTests(unittest.TestCase):
         with self.assertRaisesRegex(registry.RegistryError, '哈希'):
             registry.get('CAMERA_A', **pinned)
         registry.retire('CAMERA_A')
-        self.assertFalse(registry.list_devices()[0]['ok'])
+        self.assertFalse(inventory.device_inventory()[0]['ok'])
         with self.assertRaisesRegex(registry.RegistryError, '停用'):
             registry.get('CAMERA_A', **pinned)
 
@@ -192,7 +194,7 @@ class SessionManagementTests(unittest.TestCase):
     def session(self, scene_path, name):
         self.f.write_kit('fixture', {arm:dict(serial='SERIAL_'+arm,**self.f.device_pins['SERIAL_'+arm]) for arm in models.ARMS})
         scene = inputs.read_scene(scene_path)
-        pointer = layout.maps(scene.root) / 'current.json'
+        pointer = (self.f.scene.map_root if scene.root == self.f.scene.root else scene.map_root) / 'current.json'
         version = json.loads(pointer.read_text())['version'] if pointer.is_file() else None
         return write_batch(scene_path, name, kit='fixture', map_version=version)
 
@@ -210,7 +212,7 @@ class SessionManagementTests(unittest.TestCase):
         other_path = self.f.root / 'other_market/scene.yaml'
         data = inputs.read_yaml(self.f.scene_path); data['name'] = 'other_market'
         write_yaml(other_path, data)
-        workflow.build_scene(other_path)
+        map_lifecycle.build_scene(other_path)
         other = self.session(other_path, 'afternoon')
         first_task, other_task = self.episode(first, 'take_001'), self.episode(other, 'take_001')
         a, b = workflow.run_episode(first_task), workflow.run_episode(other_task)
@@ -226,7 +228,7 @@ class SessionManagementTests(unittest.TestCase):
         session = self.session(self.f.scene_path, 'fixed')
         task = self.episode(session, 'take_001')
         original = workflow.run_episode(task)['frame_id']
-        new = workflow.build_scene(self.f.scene_path, force=True)
+        new = map_lifecycle.build_scene(self.f.scene_path, force=True)
         self.assertNotEqual(original, new['frame_id'])
         self.assertEqual(workflow.run_episode(task, force=True)['frame_id'], original)
         manifest = inputs.read_yaml(session)
@@ -279,7 +281,7 @@ class SessionManagementTests(unittest.TestCase):
         import os
         src = self.f.root / 'video_to_link.insv'
         src.write_bytes(b'test_link_content')
-        meta = dict(serial='CAM_LINK', sha256=registry.sha256_file(src))
+        meta = dict(serial='CAM_LINK', sha256=artifact_identity.file_hash(src))
         dest = self.f.root / 'test_scene/take_001/left'
         imported = recordings.import_video(src, dest, metadata=meta, link=True)
         self.assertEqual(os.stat(src).st_ino, os.stat(imported).st_ino)

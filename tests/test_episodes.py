@@ -1,4 +1,5 @@
 """套件单/双手、批次配置、离线处理、验收和导出的完整业务回归。"""
+from software.scene.pipeline import reconstruction
 import io
 import json
 import unittest
@@ -84,14 +85,14 @@ class EpisodeLifecycleTests(unittest.TestCase):
     def test_second_arm_failure_keeps_previous_bimanual_result(self):
         workflow.run_episode(self.f.episode_path)
         output = (self.f.episode_path.parent/'results').resolve()
-        reconstruct = workflow.reconstruct_arm_in_scene
+        reconstruct = reconstruction.reconstruct_arm_in_scene
 
         def solve(episode, arm, *args, **kwargs):
             if arm == 'right':
                 raise ValueError('right arm failed')
             return reconstruct(episode, arm, *args, **kwargs)
 
-        with patch.object(workflow, 'reconstruct_arm_in_scene', side_effect=solve):
+        with patch.object(reconstruction, 'reconstruct_arm_in_scene', side_effect=solve):
             with self.assertRaisesRegex(ValueError, 'right arm failed'):
                 workflow.run_episode(self.f.episode_path, force=True)
         self.assertEqual((self.f.episode_path.parent/'results').resolve(), output)
@@ -155,7 +156,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
         state = layout.read_state(self.f.episode_path.parent)
         self.assertEqual(set(state), {'attempt', 'review'})
         self.assertNotIn('recording_checks', state['attempt'])
-        self.assertEqual(set(state['attempt']), {'status', 'run', 'reason', 'manifest_sha256', 'session_sha256'})
+        self.assertEqual(set(state['attempt']), {'status', 'run', 'reason', 'manifest_sha256', 'session_sha256', 'task_configuration_sha256'})
         run = self.f.episode_path.parent / state['attempt']['run']
         self.assertTrue(json.loads((run / 'episode.json').read_text())['preflight']['passed'])
         self.assertFalse((run / 'preflight_report.json').exists())

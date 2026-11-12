@@ -17,6 +17,7 @@ import numpy as np
 
 from software import config
 
+
 BLACK_BORDER_BITS = 2  # Kalibr / Basalt blackTagBorder
 # OpenCV ArUco 检测角序 → Kalibr (BL,BR,TR,TL)
 _OPENCV_TO_KALIBR = [1, 0, 3, 2]

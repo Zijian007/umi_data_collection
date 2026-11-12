@@ -1,17 +1,16 @@
 """Basalt adapter: solver input, initialization, execution, caches and log interpretation."""
+
 from __future__ import annotations
+
+from pathlib import Path
 import re
 import shutil
 import sys
-from pathlib import Path
-from software.calibration.pipeline import runtime
-from software.calibration.models import IntrinsicsResult, CameraImuResult
-from software.calibration.algorithms import board_pnp
-from software.trajectory.calibration import assets
 
-def basalt_command(tool: str) -> list[str]:
-    """The shipped Basalt build runs through its own dynamic loader + libraries, so it does not depend on the system glibc."""
-    return [str(runtime.BASALT / "lib" / "ld-linux-x86-64.so.2"), "--library-path", str(runtime.BASALT / "lib"), str(runtime.BASALT / "bin" / tool)]
+from software.calibration.algorithms import board_pnp
+from software.calibration.models import IntrinsicsResult, CameraImuResult
+from software.calibration.pipeline import runtime
+from software.trajectory.calibration import assets
 
 
 def write_board(path: Path, grid: dict) -> Path:
@@ -76,7 +75,7 @@ def _run_solver(tool, dataset, grid, execution, *, name, cache_name, log_name,
     else:
         bag, timing = prepared_bag
     execution.timings[name + '.bag'] = timing
-    command = ['nice', '-n', '10', *execution.cpu_prefix, *basalt_command(tool),
+    command = ['nice', '-n', '10', *execution.cpu_prefix, *runtime.basalt_command(tool),
                '--dataset-path', bag, '--dataset-type', 'bag', '--aprilgrid', board,
                '--result-path', output, '--cache-name', cache_name, *extra_args, '--no-gui']
     with runtime.timed(execution.timings, name + '.solve', label=f'{role} 参数求解'):
@@ -97,6 +96,8 @@ def estimate_intrinsics(dataset, grid, execution):
 
 
 def estimate_camera_imu(dataset, grid, intrinsics, parameters, execution, *, prepared_bag=None):
+    from software.camera.calibration_source import optical_hash
+    selected_intrinsics = optical_hash(assets.read_basalt(intrinsics.calibration_json))
     path, metrics = _run_solver('basalt_calibrate_imu', dataset, grid, execution,
         name='camera_imu', cache_name='cam-imu-B', log_name='camera_imu.log',
         initial_calibration=intrinsics.calibration_json, prepared_bag=prepared_bag,
@@ -104,6 +105,8 @@ def estimate_camera_imu(dataset, grid, intrinsics, parameters, execution, *, pre
                     '--gyro-bias-std', parameters.gyro_bias_rw, '--accel-bias-std', parameters.acc_bias_rw,
                     '--fixed-scale-opt-offset'])
     values = assets.read_basalt(path)
+    if optical_hash(values) != selected_intrinsics:
+        raise ValueError('B 求解改动了所选内参，不能发布为配套的固定内参标定')
     if values['cam_time_offset_ns'] == 0:
         raise ValueError('相机–IMU 时间差未求出，请检查 B 的运动和日志')
     destination = execution.paths.calibration

@@ -1,4 +1,5 @@
-"""把原片的前镜头与双标记检测叠加为 MP4；显示原始像素距离，不需要毫米测量。"""
+"""把原片的工作镜头与双标记检测叠加为 MP4；显示原始像素距离，不需要毫米测量。"""
+
 from __future__ import annotations
 
 from fractions import Fraction
@@ -7,10 +8,12 @@ import time
 
 import numpy as np
 
+from . import detection
+from .frame_processing import detect_frame
 from software.camera.x3.frame import SRC_H, SRC_W, FPS_SRC_RATE
 from software.console import Console
 from software.storage import atomic_file
-from . import detection
+
 
 PREVIEW_SIZE = 960
 console = Console('宽度预览')
@@ -61,7 +64,7 @@ def annotate(front: np.ndarray, detected: detection.FrameDetection, *, timestamp
 
 
 class PreviewWriter:
-    """保存采样帧；显示前镜头半幅，检测和叠加使用原始像素坐标。"""
+    """保存采样帧；显示工作镜头半幅，检测和叠加使用原始像素坐标。"""
 
     def __init__(self, target, source_stream, *, rate: Fraction | None = None, preset: str = 'fast',
                  contrast: float = 1.) -> None:
@@ -101,7 +104,8 @@ class PreviewWriter:
             self._target.mux(packet)
 
 
-def render(video: Path, output: Path | None = None, *, roi: tuple[int, int, int, int] | None = None,
+def render(video: Path, output: Path | None = None, *,
+           roi: tuple[int, int, int, int] | None = detection.DEFAULT_TAG_ROI,
            contrast: float = 1.) -> dict:
     import av
 
@@ -115,7 +119,10 @@ def render(video: Path, output: Path | None = None, *, roi: tuple[int, int, int,
         raise FileExistsError(f'预览文件已存在，请使用 --out 选择新文件：{output}')
     if roi is not None:
         roi = detection.validate_roi(roi)
-    detector = detection.MarkerDetector(roi, contrast=contrast)
+    detection_roi = roi if roi is not None else (0, 0, SRC_H, SRC_H)
+    left, top, right, bottom = detection_roi
+    detector = detection.MarkerDetector((0, 0, right - left, bottom - top), contrast=contrast)
+    converter = av.video.reformatter.VideoReformatter()
     frames = paired_frames = 0
     previous_time = None
     last_progress = time.monotonic()
@@ -136,8 +143,7 @@ def render(video: Path, output: Path | None = None, *, roi: tuple[int, int, int,
                 if previous_time is not None and timestamp_s <= previous_time:
                     raise ValueError('预览原片时间必须严格递增')
                 previous_time = timestamp_s
-                gray = frame.to_ndarray(format='gray')[:, SRC_W // 2:]
-                detected = detector.detect(gray)
+                detected = detect_frame(frame, detector, detection_roi, converter)
                 writer.write(frame, detected, roi=roi)
                 frames += 1
                 paired_frames += int(np.isfinite(detected.distance_px))

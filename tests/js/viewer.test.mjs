@@ -3,6 +3,17 @@ import assert from 'node:assert/strict';
 import {nearestIndex, rotateQuaternion, formatTime, niceStep} from '../../software/viewer/static/math.mjs';
 import {TrajectoryScene} from '../../software/viewer/static/scene.mjs';
 import {CompanionVideo} from '../../software/viewer/static/paired.mjs';
+import {tagDistanceReadout} from '../../software/viewer/static/measurements.mjs';
+
+test('tag distances retain missing values and follow each arm clock', () => {
+  assert.deepEqual(tagDistanceReadout({times: [0]}, 0), {isVisible: false, text: '—'});
+  const recording = {times: [.1, .2], primary_arm: 'left',
+    tag_distance: {distance_mm: [0, null], valid: [true, false]},
+    companion: {arm: 'right', times: [0, .1, .2],
+      tag_distance: {distance_mm: [10, 11, 12], valid: [true, true, true]}}};
+  assert.deepEqual(tagDistanceReadout(recording, 0), {isVisible: true, text: '左 0.00 / 右 11.00'});
+  assert.deepEqual(tagDistanceReadout(recording, 1), {isVisible: true, text: '左 — / 右 12.00'});
+});
 
 test('video time maps to nearest trajectory frame including boundaries', () => {
   assert.equal(nearestIndex([0, .1, .2, .3], .18), 2);
@@ -23,7 +34,7 @@ test('time labels and grid spacing are stable', () => {
 
 test('raw maps keep their own bounds and never mix in the metric trajectory', () => {
   const scene = Object.create(TrajectoryScene.prototype);
-  scene.data = {times: [0, .5, 1], tracks: {tcp: {position: [[1000, 1000, 1000], [1001, 1001, 1001]]}}};
+  scene.recording = {times: [0, .5, 1], tracks: {tcp: {position: [[1000, 1000, 1000], [1001, 1001, 1001]]}}};
   scene.track = 'tcp'; scene.showMap = true;
   scene.map = {coordinates: 'map', bounds: [[0, 0, 0], [2, 2, 2]], keyframes: []};
   scene.fit();
@@ -38,7 +49,7 @@ test('clicking a keyframe in an unaligned map seeks its corresponding video time
   const scene = Object.create(TrajectoryScene.prototype);
   scene.canvas = {getBoundingClientRect: () => ({left: 0, top: 0})};
   scene.project = point => point;
-  scene.data = {times: [0, .5, 1]}; scene.showMap = true;
+  scene.recording = {times: [0, .5, 1]}; scene.showMap = true;
   scene.map = {coordinates: 'map', keyframes: [{position: [20, 30, 0], time: .52}]};
   let picked = -1; scene.onPick = index => { picked = index; };
   scene.pick({clientX: 20, clientY: 30});
@@ -64,7 +75,7 @@ test('map axes use the same similarity transform as aligned points', () => {
 
 test('map origin stays in view when axes are enabled', () => {
   const scene = Object.create(TrajectoryScene.prototype);
-  scene.data = {tracks: {tcp: {position: [[100, 100, 100], [102, 102, 102]]}}};
+  scene.recording = {tracks: {tcp: {position: [[100, 100, 100], [102, 102, 102]]}}};
   scene.track = 'tcp'; scene.showMap = true; scene.showMapAxes = true; scene.span = 1;
   scene.map = {coordinates: 'map', bounds: [[100, 100, 100], [102, 102, 102]], keyframes: []};
   scene.fit();
@@ -75,7 +86,7 @@ test('map origin stays in view when axes are enabled', () => {
 
 test('world axes stay at the metric origin while map axes follow the alignment', () => {
   const scene = Object.create(TrajectoryScene.prototype);
-  scene.data = {}; scene.span = 10; scene.showMap = true;
+  scene.recording = {}; scene.span = 10; scene.showMap = true;
   scene.map = {index: 2, coordinates: 'trajectory', alignment: {scale: 2,
     rotation: [[0, -1, 0], [1, 0, 0], [0, 0, 1]], translation: [3, 4, 5]}};
   const world = scene.worldAxes(), map = scene.mapAxes();
@@ -93,7 +104,7 @@ test('world axes stay at the metric origin while map axes follow the alignment',
 
 test('fitting both frames includes both origins without mixing their coordinates', () => {
   const scene = Object.create(TrajectoryScene.prototype);
-  scene.data = {tracks: {tcp: {position: [[100, 100, 100], [102, 102, 102]]}}};
+  scene.recording = {tracks: {tcp: {position: [[100, 100, 100], [102, 102, 102]]}}};
   scene.track = 'tcp'; scene.span = 1; scene.showMap = true;
   scene.showMapAxes = true; scene.showWorldAxes = true;
   scene.map = {coordinates: 'trajectory', bounds: [[100, 100, 100], [102, 102, 102]], keyframes: [],

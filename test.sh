@@ -16,44 +16,44 @@ done
 
 RUN_CHECKS=0
 RUN_UNIT=1
-RUN_LEGACY=1
 RUN_JS=1
+TEST_TARGETS=()
 
 usage() {
-    echo "用法: $0 [选项]"
+    echo "用法: $0 [选项] | $0 --unit [测试模块或用例 ...]"
     echo ""
     echo "选项:"
-    echo "  --unit       仅运行主测试套件 (tests/ 下 unittest)"
-    echo "  --legacy     仅运行夹爪开合历史测试 (software/gripper_width/legacy/tests/)"
+    echo "  --unit       运行 Python 测试；可指定 test_rear_assets 或 模块.类.方法"
     echo "  --js         仅运行查看器前端测试 (node --test)"
     echo "  --checks     仅运行 CLI 运行时健康检查 (umi-calib check, umi-scene check)"
-    echo "  --all        运行全部（单元测试 + 历史测试 + 前端测试 + CLI 检查）"
+    echo "  --all        运行全部（单元测试 + 前端测试 + CLI 检查）"
     echo "  -h, --help   显示帮助信息"
+    echo ""
+    echo "示例: $0 --unit test_rear_assets test_calibration_inventory"
 }
 
-if [ $# -gt 1 ]; then
+if [ $# -gt 1 ] && [ "$1" != "--unit" ]; then
     usage >&2
     exit 2
 fi
 
 if [ $# -gt 0 ]; then
     case "$1" in
-        --unit)
-            RUN_LEGACY=0; RUN_JS=0 ;;
-        --legacy)
-            RUN_UNIT=0; RUN_JS=0 ;;
-        --js)
-            RUN_UNIT=0; RUN_LEGACY=0 ;;
-        --checks)
-            RUN_UNIT=0; RUN_LEGACY=0; RUN_JS=0; RUN_CHECKS=1 ;;
-        --all)
-            RUN_CHECKS=1 ;;
-        -h|--help)
-            usage; exit 0 ;;
-        *)
-            echo "未知选项: $1" >&2; usage >&2; exit 2 ;;
+        --unit) RUN_JS=0; shift; TEST_TARGETS=("$@") ;;
+        --js) RUN_UNIT=0 ;;
+        --checks) RUN_UNIT=0; RUN_JS=0; RUN_CHECKS=1 ;;
+        --all) RUN_CHECKS=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "未知选项: $1" >&2; usage >&2; exit 2 ;;
     esac
 fi
+
+for test_target in "${TEST_TARGETS[@]}"; do
+    if [[ "$test_target" == -* ]]; then
+        echo "--unit 后请填写测试模块或用例，不接受其他选项：$test_target" >&2
+        exit 2
+    fi
+done
 
 echo "=================================================="
 echo "          UMI Data Collection 统一测试"
@@ -62,24 +62,20 @@ echo "=================================================="
 # 1. 主单元测试
 if [ "$RUN_UNIT" -eq 1 ]; then
     echo ""
-    echo "[1/3] 运行主单元测试套件 (tests/)..."
-    "$TEST_PY" -m unittest discover -s tests -q
+    echo "[单元] 运行主单元测试套件 (tests/)..."
+    if [ ${#TEST_TARGETS[@]} -gt 0 ]; then
+        PYTHONPATH="$ROOT_DIR/tests${PYTHONPATH:+:$PYTHONPATH}" \
+            "$TEST_PY" -m unittest -q "${TEST_TARGETS[@]}"
+    else
+        "$TEST_PY" -m unittest discover -s tests -q
+    fi
     echo "✓ 主单元测试通过"
 fi
 
-# 2. 夹爪开合历史测试
-if [ "$RUN_LEGACY" -eq 1 ]; then
-    echo ""
-    echo "[2/3] 运行夹爪开合历史测试 (legacy/tests/)..."
-    # 本套测试不使用外部 pytest 插件，避免加载系统 ROS 等无关依赖。
-    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 "$TEST_PY" -m pytest -q -p no:cacheprovider software/gripper_width/legacy/tests
-    echo "✓ 夹爪开合测试通过"
-fi
-
-# 3. 前端查看器测试
+# 2. 前端查看器测试
 if [ "$RUN_JS" -eq 1 ]; then
     echo ""
-    echo "[3/3] 运行三维查看器 JS 测试..."
+    echo "[前端] 运行三维查看器 JS 测试..."
     if command -v node >/dev/null 2>&1; then
         node --test tests/js/viewer.test.mjs
         echo "✓ 查看器前端测试通过"
@@ -88,10 +84,10 @@ if [ "$RUN_JS" -eq 1 ]; then
     fi
 fi
 
-# 4. CLI 运行时健康检查（可选）
+# 3. CLI 运行时健康检查（可选）
 if [ "$RUN_CHECKS" -eq 1 ]; then
     echo ""
-    echo "[4/4] 运行 CLI 运行时自检..."
+    echo "[自检] 运行 CLI 运行时自检..."
     ./umi-calib check
     ./umi-scene check
     echo "✓ CLI 自检通过"

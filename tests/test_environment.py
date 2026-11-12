@@ -4,15 +4,42 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 from software.environment import python_executable
 
 
+class TrajectoryHealthTests(unittest.TestCase):
+    def test_health_check_uses_current_inventory_and_reports_broken_assets(self):
+        from software.calibration import inventory
+        from software.trajectory.pipeline import runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trajectory = root/'trajectory'
+            for relative in ('assets/calib/calibration_r1440.json', 'assets/config/front_x3_r1440_720.yaml',
+                             'assets/config/front_hand_mask.png', 'Vocabulary/ORBvoc.txt', 'solver'):
+                target = trajectory/relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text('test')
+            healthy = dict(serial='CAMERA', status='active', front_default='001', ok=True, errors=[], versions=[])
+            broken = dict(healthy, ok=False, versions=[dict(ok=False, error='资产哈希不一致')])
+            with patch.object(runtime, 'HERE', trajectory), patch.object(runtime, 'REPO', root), \
+                 patch.dict(os.environ, dict(ORB3_DIR=str(trajectory), ORB3_VOCAB=str(trajectory/'Vocabulary/ORBvoc.txt'))), \
+                 patch.object(runtime.shutil, 'which', return_value='test-tool'), \
+                 patch.object(runtime.visual_runtime, 'orb_executable', return_value=trajectory/'solver'), \
+                 patch.object(runtime.subprocess, 'run', return_value=SimpleNamespace(stdout='libx264', stderr='', returncode=0)), \
+                 patch.object(runtime.console, 'write') as messages:
+                for devices, expected in (([healthy], 0), ([broken], 1), ([], 1)):
+                    with self.subTest(devices=devices), patch.object(inventory, 'device_inventory', return_value=devices):
+                        self.assertEqual(runtime.check(), expected)
+                self.assertTrue(any('资产哈希不一致' in call.args[0] for call in messages.call_args_list))
+
+
 class InterpreterSelectionTests(unittest.TestCase):
-    def test_new_environment_takes_priority_and_old_installations_still_work(self):
-        self.assertEqual(python_executable({'UMI_PY': 'new', 'KIWI_PY': 'old'}), 'new')
-        self.assertEqual(python_executable({'KIWI_PY': 'old'}), 'old')
+    def test_project_and_tools_interpreters_are_explicit(self):
+        self.assertEqual(python_executable({'UMI_PY': 'base'}), 'base')
         self.assertEqual(python_executable({}, default='fallback'), 'fallback')
-        self.assertEqual(python_executable({'UMI_PY_TOOLS': 'tools', 'KIWI_PY_TOOLS': 'oldtools', 'UMI_PY': 'base'}, tools=True), 'tools')
+        self.assertEqual(python_executable({'UMI_PY_TOOLS': 'tools', 'UMI_PY': 'base'}, tools=True), 'tools')
         with self.assertRaisesRegex(ValueError, 'UMI_PY'):
             python_executable({})
 

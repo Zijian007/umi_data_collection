@@ -4,234 +4,28 @@ Numerical defaults live in config/*.yaml. Load once at a workflow boundary and
 pass the immutable stage settings down. This module has no numerical dependencies
 and never creates output directories or changes environment variables.
 """
+
 from __future__ import annotations
 
-import hashlib
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
+from pathlib import Path
+from typing import get_type_hints
 import json
 import math
-from dataclasses import asdict, dataclass, fields, is_dataclass, replace
-from functools import lru_cache
-from pathlib import Path
-
-from software.environment import python_executable
-from typing import get_type_hints
 
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from software import provenance as artifact_identity
 from software.camera.x3.frame import validate_video_parameters
+from software.parameters import TrajectoryParameters, CalibrationParameters
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_VERSION = 1
 
 
-@dataclass(frozen=True)
-class InputParameters:
-    mode: str
-    allow_irregular: bool
-
-
-@dataclass(frozen=True)
-class VideoCropParameters:
-    size_px: int
-    offset_x_px: int
-    offset_y_px: int
-
-
-@dataclass(frozen=True)
-class VideoParameters:
-    crop: VideoCropParameters
-    frame_step: int
-    size_px: int
-    codec: str
-    pixel_format: str
-    resize_filter: str
-    crf: int
-    preset: str
-    keep_audio: bool
-    audio_bitrate_kbps: int
-
-
-@dataclass(frozen=True)
-class OrbParameters:
-    features: int
-    scale_factor: float
-    levels: int
-    initial_fast: int
-    minimum_fast: int
-    far_points_map_units: float
-    aruco_dictionary: int
-    initial_tag_id: int
-    initial_tag_size_m: float
-
-
-@dataclass(frozen=True)
-class RetryParameters:
-    max_tries: int
-    minimum_full_fraction: float
-    maximum_placements: int
-    maximum_scale_change_ratio: float
-
-
-@dataclass(frozen=True)
-class ImuParameters:
-    gyro_noise: float
-    acc_noise: float
-    gyro_bias_rw: float
-    acc_bias_rw: float
-
-
-@dataclass(frozen=True)
-class FusionParameters:
-    gravity_m_s2: float
-    step: int
-    node_stride: int
-    position_sigma_m: float
-    segment_s: float
-    continuity_log_scale_sigma: float
-    continuity_rotation_sigma_deg: float
-    continuity_position_sigma_m: float
-    maximum_relative_scale_std: float
-    other_lens_rms_m: float
-    other_lens_rotation_deg: float
-    lever_sigma_m: float
-    optimize_front_lever: bool
-    split_rotation_deg: float
-    refine_chain_pairs: int
-    group_scale_ratio: float
-    adaptive_sigma: bool
-    map_residual: bool
-    acc_noise: float
-    gyro_noise: float
-    acc_bias_rw: float
-    gyro_bias_rw: float
-    integration_covariance: float
-    huber: float
-    visual_rotation_sigma_deg: float
-    scale_prior_sigma: float
-    gauge_rotation_sigma_rad: float
-    rotation_prior_sigma_rad: float
-    gauge_position_sigma_m: float
-    position_prior_sigma_m: float
-    acc_bias_prior_sigma: float
-    gyro_bias_prior_sigma: float
-    velocity_prior_sigma_m_s: float
-    initial_static_gyro_rad_s: float
-    initial_bias_max_samples: int
-    initial_bias_min_samples: int
-    minimum_alignment_pairs: int
-    minimum_chain_pairs: int
-    gravity_tolerance_m_s2: float
-    maximum_acc_bias_m_s2: float
-    minimum_common_frames: int
-    lm_iterations: int
-    linear_iterations: int
-    linear_tolerance: float
-
-
-@dataclass(frozen=True)
-class ZuptParameters:
-    enabled: bool
-    half_window_s: float
-    minimum_samples: int
-    maximum_gyro_rad_s: float
-    maximum_acc_norm_std_m_s2: float
-    velocity_sigma_m_s: float
-
-
-@dataclass(frozen=True)
-class NoteParameters:
-    minimum_full_fraction: float
-    maximum_leading_imu_s: float
-    minimum_mapping_fraction: float
-
-
-@dataclass(frozen=True)
-class TrajectoryParameters:
-    schema_version: int
-    input: InputParameters
-    video: VideoParameters
-    orb: OrbParameters
-    retry: RetryParameters
-    fusion: FusionParameters
-    zupt: ZuptParameters
-    notes: NoteParameters
-
-
-@dataclass(frozen=True)
-class BoardParameters:
-    intrinsics_step: int
-    validation_step: int
-    detection_upscale: float
-    minimum_pnp_tags: int
-    minimum_reference_tags: int
-    normalized_inlier_threshold: float
-    minimum_bearing_z: float
-    refinement_iterations: int
-    minimum_comparison_frames: int
-    coverage_reach: float
-    coverage_percentile: float
-    minimum_direction_frames: int
-
-
-@dataclass(frozen=True)
-class GravityParameters:
-    window_s: float
-    maximum_gyro_deg_s: float
-    maximum_acc_norm_std_m_s2: float
-    minimum_samples: int
-    gravity_m_s2: float
-    distinct_direction_cosine: float
-    minimum_window_span_fraction: float
-
-
-@dataclass(frozen=True)
-class TrajectoryValidationParameters:
-    config: str
-
-
-@dataclass(frozen=True)
-class CheckParameters:
-    ate_fail_mm: float
-    ate_warn_mm: float
-    scale_warn: float
-    scale_fail: float
-    minimum_board_frames: int
-    minimum_board_extent_m: float
-    intrinsics_minimum_corners: int
-    intrinsics_minimum_reach: float
-    intrinsics_reprojection_px: float
-    focal_warn_fraction: float
-    focal_fail_fraction: float
-    principal_point_warn_px: float
-    camera_imu_minimum_corners: int
-    minimum_gyro_p95_rad_s: float
-    camera_imu_reprojection_px: float
-    translation_warn_mm: float
-    translation_fail_mm: float
-    rotation_warn_deg: float
-    rotation_fail_deg: float
-    time_offset_warn_ms: float
-    gravity_residual_m_s2: float
-    minimum_gravity_directions: int
-
-
-@dataclass(frozen=True)
-class CalibrationParameters:
-    schema_version: int
-    imu: ImuParameters
-    board: BoardParameters
-    gravity: GravityParameters
-    trajectory_validation: TrajectoryValidationParameters
-    checks: CheckParameters
-
-
-def canonical_hash(value: dict) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _merge(base: dict, overlay: dict, prefix: str = '') -> dict:
+def merge_overrides(base: dict, overlay: dict, prefix: str = '') -> dict:
     result = dict(base)
     for name, value in overlay.items():
         if not isinstance(name, str):
@@ -242,26 +36,26 @@ def _merge(base: dict, overlay: dict, prefix: str = '') -> dict:
         if isinstance(base[name], dict):
             if not isinstance(value, dict):
                 raise ValueError(f'{key} 必须是配置表')
-            result[name] = _merge(base[name], value, key + '.')
+            result[name] = merge_overrides(base[name], value, key + '.')
         else:
             result[name] = value
     return result
 
 
-def _typed(cls, data: dict, prefix: str = ''):
-    if not isinstance(data, dict):
+def _decode_dataclass(cls, configuration_values: dict, prefix: str = ''):
+    if not isinstance(configuration_values, dict):
         raise ValueError(f"{prefix or cls.__name__} 必须是配置表")
     hints = get_type_hints(cls)
     result = {}
-    if data.keys() != hints.keys():
+    if configuration_values.keys() != hints.keys():
         raise ValueError(f'{prefix or cls.__name__} 配置字段不完整或含未知项')
     for field in fields(cls):
         name, typ = field.name, hints[field.name]
-        value, key = data[name], prefix + name
+        value, key = configuration_values[name], prefix + name
         if is_dataclass(typ):
             if not isinstance(value, dict):
                 raise ValueError(f'{key} 必须是配置表')
-            result[name] = _typed(typ, value, key + '.')
+            result[name] = _decode_dataclass(typ, value, key + '.')
             continue
         if typ is float and type(value) in (float, int):
             value = float(value)
@@ -273,16 +67,16 @@ def _typed(cls, data: dict, prefix: str = ''):
     return cls(**result)
 
 
-def _validate(values) -> None:
+def _validate_parameters(values) -> None:
     if values.schema_version != SCHEMA_VERSION:
         raise ValueError(f'不支持配置版本 {values.schema_version}；需要 {SCHEMA_VERSION}')
     # 除以下明确允许关闭/零起点的量，其余算法数值必须为正。
     zero_allowed = {'crf', 'initial_tag_id', 'aruco_dictionary', 'segment_s',
                     'split_rotation_deg', 'refine_chain_pairs', 'group_scale_ratio',
-                    'minimum_full_fraction', 'minimum_mapping_fraction', 'maximum_leading_imu_s'}
-    def walk(obj, prefix=''):
-        for f in fields(obj):
-            v, key = getattr(obj, f.name), prefix + f.name
+                    'minimum_full_fraction', 'minimum_mapping_fraction', 'maximum_leading_imu_s', 'tag_sigma_per_radius_px'}
+    def walk(parameter_group, prefix=''):
+        for f in fields(parameter_group):
+            v, key = getattr(parameter_group, f.name), prefix + f.name
             if is_dataclass(v):
                 walk(v, key + '.')
             elif key in ('video.crop.offset_x_px', 'video.crop.offset_y_px'):
@@ -292,6 +86,8 @@ def _validate(values) -> None:
     walk(values)
     if isinstance(values, TrajectoryParameters):
         p = values
+        if p.environment_tags.tag_minimum_frames < 3:
+            raise ValueError('environment_tags.tag_minimum_frames 至少为 3')
         if p.input.mode not in ('handheld', 'dual'):
             raise ValueError('input.mode 必须为 handheld 或 dual')
         validate_video_parameters(p.video)
@@ -331,12 +127,22 @@ def _validate(values) -> None:
             raise ValueError('board 需要 minimum_reference_tags >= minimum_pnp_tags >= 4')
 
 
-def from_dict(kind: str, data: dict):
+def decode_parameters(kind: str, configuration_values: dict):
     """Decode a complete snapshot, including child-process boundaries; no defaults."""
     cls = {'calibration': CalibrationParameters, 'trajectory': TrajectoryParameters}[kind]
-    values = _typed(cls, data)
-    _validate(values)
+    values = _decode_dataclass(cls, configuration_values)
+    _validate_parameters(values)
     return values
+
+
+def computation_values(kind: str, values: dict) -> dict:
+    configuration_values = json.loads(json.dumps(values))
+    configuration_values.pop('notes' if kind == 'trajectory' else 'checks', None)
+    configuration_values.pop('trajectory_validation', None)
+    if kind == 'calibration' and 'factory' in configuration_values:
+        for field in ('minimum_holdout_frames', 'holdout_warn_rms_px'):
+            configuration_values['factory'].pop(field, None)
+    return configuration_values
 
 
 @dataclass(frozen=True)
@@ -349,15 +155,15 @@ class Configuration:
 
     @property
     def computation_hash(self) -> str:
-        data = asdict(self.values)
-        data.pop('notes' if self.kind == 'trajectory' else 'checks')
-        # Related trajectory values are fingerprinted separately, not their file location.
-        data.pop('trajectory_validation', None)
-        return canonical_hash(data)
+        return artifact_identity.canonical_hash(computation_values(self.kind, asdict(self.values)))
 
     @property
     def evaluation_hash(self) -> str:
-        return canonical_hash(asdict(self.values.notes if self.kind == 'trajectory' else self.values.checks))
+        if self.kind == 'trajectory':
+            return artifact_identity.canonical_hash(asdict(self.values.notes))
+        return artifact_identity.canonical_hash(dict(checks=asdict(self.values.checks), factory=dict(
+            minimum_holdout_frames=self.values.factory.minimum_holdout_frames,
+            holdout_warn_rms_px=self.values.factory.holdout_warn_rms_px)))
 
     def snapshot(self) -> dict:
         return dict(kind=self.kind, schema_version=SCHEMA_VERSION, values=asdict(self.values),
@@ -371,7 +177,11 @@ class Configuration:
         target = Path(path).expanduser() if path else None
         if target is not None and not target.is_absolute():
             target = Path(self.sources[-1]).parent / target
-        overrides = {'orb': {'initial_tag_size_m': tag_size_m}} if tag_size_m is not None else None
+        # C validates one candidate camera independently; task-only poster/dual
+        # selections must never leak in from a shared trajectory configuration.
+        overrides = {'environment_tags': {'tag_fusion_enabled': False}, 'input': {'mode': 'handheld'}}
+        if tag_size_m is not None:
+            overrides['orb'] = {'initial_tag_size_m': tag_size_m}
         return load('trajectory', target, overrides)
 
 
@@ -381,12 +191,12 @@ def _read_yaml(path: Path) -> dict:
     parser.version = (1, 2)
     parser.allow_duplicate_keys = False
     with path.open(encoding='utf-8') as source:
-        data = parser.load(source)
+        configuration_values = parser.load(source)
     if parser.version != (1, 2):
         raise ValueError(f'{path} 仅支持 YAML 1.2；请移除其他版本的 YAML 指令')
-    if not isinstance(data, dict):
+    if not isinstance(configuration_values, dict):
         raise ValueError(f'{path} 的配置顶层必须是映射（键: 值）；空覆盖请写 {{}}')
-    return data
+    return configuration_values
 
 
 def load(kind: str, path: Path | None = None, overrides: dict | None = None, *, inline: dict | None = None) -> Configuration:
@@ -399,19 +209,19 @@ def load(kind: str, path: Path | None = None, overrides: dict | None = None, *, 
             path = Path(path).expanduser().resolve()
             overlay = _read_yaml(path)
             sources.append(str(path))
-        data = _merge(defaults, overlay)
-        data = _merge(data, inline or {})
-        data = _merge(data, overrides or {})
-        effective = from_dict(kind, data)
-        changed = _differences(defaults, asdict(effective))
+        configuration_values = merge_overrides(defaults, overlay)
+        configuration_values = merge_overrides(configuration_values, inline or {})
+        configuration_values = merge_overrides(configuration_values, overrides or {})
+        effective = decode_parameters(kind, configuration_values)
+        changed = _changed_values(defaults, asdict(effective))
         return Configuration(kind, effective, tuple(sources), json.dumps(changed, sort_keys=True),
                              json.dumps(overrides or {}, sort_keys=True))
     except (OSError, YAMLError) as error:
         raise ValueError(f'读取 {kind} 配置失败：{error}') from error
 
 
-def _differences(defaults: dict, effective: dict) -> dict:
-    return {name: (_differences(defaults[name], value) if isinstance(value, dict) else value)
+def _changed_values(defaults: dict, effective: dict) -> dict:
+    return {name: (_changed_values(defaults[name], value) if isinstance(value, dict) else value)
             for name, value in effective.items() if defaults[name] != value}
 
 
@@ -431,57 +241,6 @@ def resolve_trajectory_request(request):
                    max_tries=p.retry.max_tries)
 
 
-def code_identity(domain: str) -> dict:
-    """Content hashes cover uncommitted source too; never rely on Git HEAD alone."""
-    paths = [ROOT / 'software/pose_io.py', ROOT / 'software/config.py', ROOT / 'software/registry.py', ROOT / 'software/storage.py', ROOT / 'software/environment.py', *sorted((ROOT / 'software' / domain).rglob('*.py')),
-             *sorted((ROOT / 'software/camera').rglob('*.py')), *sorted((ROOT / 'software/vision').rglob('*.py'))]
-    if domain == 'trajectory':
-        paths += sorted((ROOT / 'software/trajectory/assets/config').glob('*.yaml'))
-    return {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
-
-
-def file_hash(path: Path) -> str:
-    with path.open('rb') as source:
-        return hashlib.file_digest(source, 'sha256').hexdigest()
-
-
-def engine_identity(domain: str) -> dict:
-    """Hash installed engines and numerical package metadata without running them."""
-    import os
-    import shutil
-    import sys
-    from software.vision.paths import orb_directory, orb_executable
-    paths = {}
-    if domain == 'trajectory':
-        orb = orb_directory(os.environ)
-        paths.update(orb_wrapper=orb_executable(orb),
-                     orb_library=orb / 'lib/libORB_SLAM3.so',
-                     orb_vocabulary=Path(os.environ.get('ORB3_VOCAB') or orb / 'Vocabulary/ORBvoc.txt'))
-    else:
-        basalt = Path(os.environ.get('UMI_BASALT_DIR') or
-                      Path(os.environ.get('UMI_DEPS', ROOT / '.deps')) / 'basalt/umi-basalt-0.1.7-fsoffset-linux-x86_64') / 'bin'
-        paths.update({name: basalt / name for name in ('basalt_calibrate', 'basalt_calibrate_imu')})
-    if domain == 'trajectory':
-        for path in sorted(orb.glob('Thirdparty/*/lib/*.so*')):
-            paths[str(path.relative_to(orb))] = path
-    for name in ('ffmpeg', 'ffprobe'):
-        executable = shutil.which(name)
-        if executable:
-            paths[name] = Path(executable)
-    python = Path(python_executable(os.environ, default=sys.executable))
-    paths['fusion_python'] = python
-    # Package metadata identifies dependency versions without importing heavy modules.
-    prefixes = {python.parent.parent, Path(sys.prefix)}
-    for prefix in prefixes:
-        for path in prefix.glob('lib/python*/site-packages/gtsam/*.so'):
-            paths[f'{prefix.name}/gtsam/{path.name}'] = path
-        for package in ('numpy', 'scipy', 'gtsam', 'opencv*', 'av'):
-            for path in prefix.glob(f'lib/python*/site-packages/{package}-*.dist-info/METADATA'):
-                paths[f'{prefix.name}/{path.parent.name}'] = path
-    return {name: _engine_hash(path, path.stat().st_mtime_ns, path.stat().st_size) if path.is_file() else 'unavailable'
-            for name, path in sorted(paths.items())}
-
-
 def write_yaml(path: Path, values) -> None:
     """Emit the complete resolved parameters for a child process."""
     writer = YAML(typ='safe', pure=True)
@@ -491,10 +250,3 @@ def write_yaml(path: Path, values) -> None:
     with path.open('w', encoding='utf-8') as output:
         writer.dump(asdict(values), output)
 
-
-# Engines are immutable during a run; cache only their hashes by filesystem
-# identity. Camera/gripper assets are deliberately hashed on every selection.
-
-@lru_cache(maxsize=128)
-def _engine_hash(path: Path, mtime_ns: int, size: int) -> str:
-    return file_hash(path)

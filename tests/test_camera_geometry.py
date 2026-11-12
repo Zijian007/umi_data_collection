@@ -1,3 +1,4 @@
+from software import provenance as artifact_identity
 """共用外参与逐帧位姿换算：非零杆臂、转动和四元数约定。"""
 import json
 from pathlib import Path
@@ -8,8 +9,7 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.camera.geometry import imu_from_camera, camera_from_tcp, compose_pose_series, tcp_frame_definition, describe_tcp_frame, transform
-from software import config
+from software.camera.geometry import imu_from_camera, camera_from_tcp, compose_pose_series, tcp_frame_definition, describe_tcp_frame
 
 
 class CameraGeometryTests(unittest.TestCase):
@@ -151,4 +151,4 @@ class CameraGeometryTests(unittest.TestCase):
 
     def test_shared_geometry_is_fingerprinted_for_both_workflows(self):
         for domain in ('scene', 'trajectory'):
-            self.assertIn('software/camera/geometry.py', config.code_identity(domain))
+            self.assertIn('software/camera/geometry.py', artifact_identity.code_identity(domain))

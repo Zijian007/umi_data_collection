@@ -1,9 +1,81 @@
-# 共享场景的默认算法参数；每次建图/任务结果保存完整快照与内容指纹。
-# 场景定义位于 scenes/<场景>/scene.yaml，在 parameters 映射中内联填写覆盖项。
-# 只需写变更项；未知字段会被拒绝。
-# 场景对齐和视觉融合的生效范围见 config/README.md；与单段轨迹同类的阈值由这里独立管理。
+# 共享场景参数：配对 → 预检 → 建图尺度 → 地图放置 → 任务定位 → 融合 → 夹爪测量 → 输出。
+# 每次建图/任务结果保存完整快照与内容指纹；详细生效范围见 config/README.md。
+# 在 scenes/<场景>/scene.yaml 的 parameters 中内联覆盖，只写变更项；未知字段会被拒绝。
+# 下方编号只是阅读分区，字段保持平铺；覆盖时不要增加 pairing / fusion 等嵌套层。
+# sigma 控制优化权重，minimum / maximum 多为筛选或验收门限，具体行为以字段注释为准。
+# 固定场景融合还复用 trajectory.yaml 的 IMU 噪声、初始 bias、相关先验、LM 和 ZUPT。
+
+# 配置结构版本；不是算法调参项。
 schema_version: 1
 
+# 环境海报（场景 tags.layout 启用后）：默认只估计海报位姿并报告，不改变轨迹。
+# true 时在现有地图+IMU 图上加入海报角点；有效观测矛盾则拒绝，不静默回退。
+# 这些初值尚未经过含海报的真实任务调参，不改变建图尺度或现有定位验收门槛。
+tag_fusion_enabled: false
+# 原始 1920 半幅像素，单标签最短投影边长；调大减少小标签观测。
+tag_minimum_side_px: 8.0
+# 同一海报至少有多少个有效时刻；同帧不同 ID 不重复计数。
+tag_minimum_frames: 3
+# 原始像素角点标准差；超出主点半径 720 px 后按半径超出比例增加噪声。
+tag_corner_sigma_px: 1.0
+tag_sigma_per_radius_px: 40.0
+# 每次标签四角点的白化残差共同使用 Huber；调大减少异常观测降权。
+tag_huber: 1.345
+# 初始化/融合后海报角点原始像素 RMS 上限；调小更严格，非真实轨迹精度。
+tag_maximum_reprojection_rms_px: 5.0
+
+# 建图海报：先开启诊断；尺度修正需另行显式开启。两者均需 tags.layout。
+# 地图形状不变，海报位姿不作为后续任务的位置先验。门槛/地板尚待实测调参。
+tag_mapping_enabled: false
+tag_mapping_scale_enabled: false
+tag_mapping_minimum_frames: 6
+# 看到海报期间，建图镜头中心的移动范围（用 IMU 尺度计算包围盒对角线）。
+tag_mapping_minimum_motion_m: 0.15
+# 已观测板角点在板面 x/y 两方向的最小跨度；不强制多个 ID。
+tag_mapping_minimum_board_extent_m: 0.08
+tag_mapping_maximum_relative_std: 0.15
+# 相对标准差地板，与统计方差相加；不能将同板多个 ID 当成独立尺度来源。
+tag_mapping_imu_std_floor: 0.03
+tag_mapping_tag_std_floor: 0.02
+tag_mapping_compatibility_sigma: 3.0
+# 两尺度之比与 1 的最大偏差；同时必须通过归一化对数尺度差检查。
+tag_mapping_maximum_scale_difference: 0.20
+
+# 1. 原片入库配对
+# ────────────────────────────────────────────────────────────────────
+# 入库配对只在同一套装内进行；文件名时间为候选依据，不用于估计时钟偏移。
+# 相机命名以秒计时，允许少量启动和停止操作差异。超出时保留为待确认。
+pairing_start_tolerance_s: 2.0
+
+# 同套装录像的时长差容差，单位 s。
+pairing_duration_tolerance_s: 1.0
+
+# 2. 原片质量预检
+# ────────────────────────────────────────────────────────────────────
+# 原片检查的最短有效时长，单位秒。
+recording_min_duration_s: 3.0
+
+# 记录开头静止质量的窗口；不满足时提醒，不拒绝固定地图中的任务。
+recording_static_window_s: 2.0
+
+# 窗口内角速度模长第 95 百分位的上限，单位 rad/s；超限提醒。
+recording_max_static_gyro_rad_s: 1.0
+
+# 窗口内加速度平均模长偏离 IMU 重力参考的上限，单位 m/s²；超限提醒。
+recording_max_static_acc_dev_m_s2: 2.0
+
+# 窗口内加速度模长标准差的上限，单位 m/s²；超限提醒。
+recording_max_static_acc_std_m_s2: 0.8
+
+# 快门时长中位数的上限，单位 s；超限为 FAIL。
+# 曝光记录缺失时记为 UNKNOWN，不宣称通过。
+recording_max_shutter_s: 0.020
+
+# 快门时长的变异系数（标准差 / 均值）上限，无量纲；超限为 FAIL。
+recording_max_exposure_cv: 0.25
+
+# 3. 场景建图 · 米制尺度与惯性对齐质量
+# ────────────────────────────────────────────────────────────────────
 # 用间隔约 0.25 秒的可靠视觉节点检查共享尺度的可观测性。
 # 尺度求解与坏段筛选复用 trajectory.yaml 的 fusion.step / split_rotation_deg / refine_chain_pairs。
 alignment_node_dt_s: 0.25
@@ -33,54 +105,93 @@ maximum_alignment_rms_m: 0.05
 # 场景建图时取代 trajectory.fusion.maximum_acc_bias_m_s2。
 maximum_acc_bias_m_s2: 2.0
 
-# 同时看到前、后地图时，用于确定前地图场景放置的最少位姿对。
+# 4. 双镜头地图放置 · 优化权重与质量门限
+# ────────────────────────────────────────────────────────────────────
+# 同时看到工作镜头、环境镜头地图时，用于确定工作镜头地图场景放置的最少位姿对。
 minimum_pose_pairs: 10
 
-# 前地图到后地图的刚体放置优化使用的位置/朝向噪声。
+# 工作镜头地图到环境镜头地图的刚体放置优化：位置标准差，单位 m。
 placement_position_sigma_m: 0.015
+
+# 同一放置优化的旋转标准差，单位 °；与位置标准差一起决定观测权重。
 placement_rotation_sigma_deg: 1.0
 
-# 放置完成后允许的位姿对 RMS，超出则拒绝发布共享场景。
+# 地图放置位姿对的位置 RMS 上限，单位 m；超出拒绝发布共享场景。
+# 同时用于固定场景任务融合后的视觉位置残差 RMS 检查。
 maximum_placement_rms_m: 0.05
+
+# 地图放置位姿对的旋转 RMS 上限，单位 °；超出拒绝发布共享场景。
 maximum_placement_rotation_deg: 5.0
 
-# 每只手至少有多少比例的帧获得前或后地图位置约束，0.5 即 50%。
+# 5. 任务定位 · 双向补全与覆盖质量门限
+# ────────────────────────────────────────────────────────────────────
+# 固定地图任务：正向定位有缺失时反向定位，只补通过同地图位姿一致性检查的连续段。
+# 建图尺度求解仍使用原有正向观测；反向仅用于已有米制地图的任务定位。
+localization_bidirectional: true
+
+# 优先反向处理缺失帧及两侧上下文（秒）；未完全补齐时退回整段反向。
+localization_reverse_context_s: 1.0
+
+# 每个反向连续段至少需要的正反向重叠帧数，不得小于 3。
+localization_minimum_overlap_frames: 3
+
+# 每个重叠帧的位置差上限，单位 m；不重新拟合两方向之间的坐标变换。
+localization_max_position_difference_m: 0.03
+
+# 每个重叠帧的旋转差上限，单位 °。
+localization_max_rotation_difference_deg: 3.0
+
+# 每只手至少有多少比例的帧获得工作或环境镜头的地图位置约束，0.5 即 50%。
 minimum_localization_fraction: 0.5
 
 # 最长连续无视觉位置约束时长，包含开头和结尾，单位秒。
 # 放宽会允许更长 IMU 衔接，不代表该片段仍有可靠位置精度。
 maximum_visual_gap_s: 2.0
 
-# 场景融合中的视觉位置噪声，单位米；旋转噪声单位度。
+# 6. 固定场景融合 · 视觉观测权重
+# ────────────────────────────────────────────────────────────────────
 # 固定场景任务使用这里的视觉噪声和 huber，不使用 trajectory.fusion 的对应视觉参数。
+# 工作镜头视觉位置标准差，单位 m；调小更信任该镜头的位置观测。
 front_position_sigma_m: 0.015
+
+# 环境镜头视觉位置标准差，单位 m。
 rear_position_sigma_m: 0.020
+
+# 视觉旋转标准差，单位 °。
 visual_rotation_sigma_deg: 1.0
 
-# 视觉与放置残差的 Huber 阈值，减轻离群观测影响。
+# 视觉与地图放置残差的 Huber 阈值，作用于噪声归一化后的残差，无量纲。
+# 调小会更早降低离群观测权重；不是米或度的误差上限。
 huber: 2.5
 
-# 入库配对只在同一套装内进行；文件名时间为候选依据，不用于估计时钟偏移。
-# 相机命名以秒计时，允许少量启动和停止操作差异。超出时保留为待确认。
-pairing_start_tolerance_s: 2.0
-pairing_duration_tolerance_s: 1.0
+# 7. 夹爪测量 · 标签中心距与宽度处理
+# ────────────────────────────────────────────────────────────────────
+# 标签检测固定搜索范围：工作镜头原始 1920 半幅的 LEFT TOP RIGHT BOTTOM，单位像素。
+tag_distance_roi_px: [600, 980, 1350, 1250]
 
-# 宽度处理：缺口两端最大间隔（秒，0 表示不填补）、闭合判定阈值（毫米）。
+# 两枚指尖标签的三维中心间距：原始像素重投影 RMS 门限。
+tag_distance_max_reprojection_error_px: 2.0
+
+# 平面标签两解的重投影误差相差 <=0.25 px、中心差超过此毫米数时拒绝。
+tag_distance_max_center_ambiguity_mm: 2.0
+
+# 每只手最终轨迹帧中有效三维标签中心距的最低比例，达到即通过。
+tag_distance_min_valid_fraction: 0.5
+
+# 每只手最多允许连续多少个输出帧没有有效中心距；首尾也计入，0 表示不允许缺失。
+tag_distance_max_missing_frames: 15
+
+# 宽度填补：缺口两端最大间隔，单位 s；0 表示不填补。
 # 实测 anchors / verified 保存在套件宽度 JSON，不在这里配置。
 gripper_width_max_gap_s: 0.2
+
+# 宽度闭合判定阈值，单位 mm。
 gripper_width_closed_threshold_mm: 3.0
-# 默认只输出对齐后的宽度 CSV；排障时附加原片逐帧检测 CSV。
+
+# 8. 诊断输出
+# ────────────────────────────────────────────────────────────────────
+# 宽度排障：默认只输出对齐后的宽度 CSV；true 时附加原片逐帧检测 CSV。
 gripper_width_diagnostics: false
 
-# 原片检查的最短有效时长，单位秒。
-recording_min_duration_s: 3.0
-
-# 记录开头静止质量的窗口；不满足时提醒，不拒绝固定地图中的任务。
-recording_static_window_s: 2.0
-recording_max_static_gyro_rad_s: 1.0
-recording_max_static_acc_dev_m_s2: 2.0
-recording_max_static_acc_std_m_s2: 0.8
-
-# 快门和曝光波动检查。曝光记录缺失时记为 UNKNOWN，不宣称通过。
-recording_max_shutter_s: 0.020
-recording_max_exposure_cv: 0.25
+# 排障时导出可由 TCP 和固定外参重建的相机/IMU TUM 轨迹。
+export_auxiliary_trajectories: false

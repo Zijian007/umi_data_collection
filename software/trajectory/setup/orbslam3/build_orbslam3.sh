@@ -8,11 +8,18 @@
 #   拉不到再退回原作者仓库；两种来源都按固定的提交号校验，所以编出来的是同一份代码。
 #      + opencv47_aruco_api.patch（OpenCV >= 4.7 的 ArUco 接口）
 #      + orbslam3_map_select.patch（环境变量 ORB_MAP_INDEX 选定位用的地图）
+#      + orbslam3_offline_sync.patch（离线单目逐帧完成建图/闭环，避免调度影响结果）
+#      + orbslam3_stable_order.patch（按稳定 ID 处理平分、观测和优化输入）
+#      + orbslam3_tag_init.patch（标签已校正坐标的畸变向量显式清零）
+#      + orbslam3_kb4_forward.patch（默认启用，修复前向 KB4 并限制 <=85° 射线）
+#      + orbslam3_feature_parallel.patch（并行 ORB 层，初始化后跳过无用途标签检测）
 #      + x3_mono_slam.cc（纯视觉单目驱动，逐帧写位姿）
 #   产物：<deps>/src/ORB_SLAM3/lib/libORB_SLAM3.so、Examples/Monocular-Inertial/x3_mono_slam、Vocabulary/ORBvoc.txt
 #
 # 环境变量：JOBS（并行编译数，默认 nproc）、ORB3_MARCH（默认 native = 按本机 CPU；
 #   要在别的 CPU 上复用同一份编译结果时设成 x86-64-v2 之类）。
+# UMI_ORB_KB4_FORWARD 默认 1：启用已经验证的 KB4 前向域修复（<=85° 射线），
+# 包括反投影、标签初始化、特征筛选及实际相机测试；不宣称完整 >180° 支持。
 # 编译器、OpenCV、Eigen、Boost、OpenSSL、OpenGL 全部来自 conda 环境（$CONDA_PREFIX），不碰系统。
 set -euo pipefail
 DEPS=$(mkdir -p "${1:?deps dir}" && cd "$1" && pwd)
@@ -92,6 +99,69 @@ if [ ! -f "$O/.umi_patched" ]; then
   touch "$O/.umi_patched"
 fi
 
+# Existing installations must also receive driver and lifecycle updates.
+for PATCH_NAME in orbslam3_offline_sync.patch orbslam3_stable_order.patch; do
+  if git -C "$O" apply --check "$HERE/$PATCH_NAME" 2>/dev/null; then
+    git -C "$O" apply "$HERE/$PATCH_NAME"
+  elif ! git -C "$O" apply --reverse --check "$HERE/$PATCH_NAME"; then
+    echo "$PATCH_NAME conflicts with this source; inspect changes before rebuilding." >&2
+    exit 1
+  fi
+done
+cp "$HERE/x3_mono_slam.cc" "$O/Examples/Monocular/x3_mono_slam.cc"
+cp "$HERE/offline_sync_check.cc" "$O/Examples/Monocular/offline_sync_check.cc"
+cp "$HERE/stable_order_check.cc" "$O/Examples/Monocular/stable_order_check.cc"
+if ! grep -q 'add_executable(umi_offline_check' "$O/CMakeLists.txt"; then
+  printf '\nadd_executable(umi_offline_check Examples/Monocular/offline_sync_check.cc)\ntarget_link_libraries(umi_offline_check ${PROJECT_NAME})\n' >> "$O/CMakeLists.txt"
+fi
+if ! grep -q 'add_executable(umi_stable_check' "$O/CMakeLists.txt"; then
+  printf '\nadd_executable(umi_stable_check Examples/Monocular/stable_order_check.cc)\ntarget_link_libraries(umi_stable_check ${PROJECT_NAME})\n' >> "$O/CMakeLists.txt"
+fi
+
+# Both forward and legacy optics need a zero distortion vector for rectified tags.
+if git -C "$O" apply --check "$HERE/orbslam3_tag_init.patch" 2>/dev/null; then
+  git -C "$O" apply "$HERE/orbslam3_tag_init.patch"
+elif ! git -C "$O" apply --reverse --check "$HERE/orbslam3_tag_init.patch"; then
+  echo 'Tag initialization patch conflicts with this source; inspect changes before rebuilding.' >&2
+  exit 1
+fi
+
+KB4_TARGETS=()
+FORWARD=${UMI_ORB_KB4_FORWARD:-1}
+if [ "$FORWARD" = 1 ]; then
+  if git -C "$O" apply --check "$HERE/orbslam3_kb4_forward.patch"; then
+    git -C "$O" apply "$HERE/orbslam3_kb4_forward.patch"
+  elif ! git -C "$O" apply --reverse --check "$HERE/orbslam3_kb4_forward.patch"; then
+    echo 'KB4 forward patch conflicts with this source; inspect changes before rebuilding.' >&2
+    exit 1
+  fi
+  cp "$HERE/kb4_bearing.h" "$O/include/CameraModels/kb4_bearing.h"
+  cp "$HERE/kb4_camera_check.cc" "$O/Examples/Monocular/kb4_camera_check.cc"
+  if ! grep -q 'add_executable(umi_kb4_check' "$O/CMakeLists.txt"; then
+    printf '\nadd_executable(umi_kb4_check Examples/Monocular/kb4_camera_check.cc)\ntarget_link_libraries(umi_kb4_check ${PROJECT_NAME})\n' >> "$O/CMakeLists.txt"
+  fi
+  KB4_TARGETS=(umi_kb4_check)
+elif [ -f "$O/include/CameraModels/kb4_bearing.h" ]; then
+  echo 'This source contains the KB4 forward patch. Enable UMI_ORB_KB4_FORWARD=1 or use a separate clean dependency directory for legacy optics.' >&2
+  exit 1
+fi
+
+if ! grep -q 'UMI_KB4_FORWARD_ENABLED' "$O/CMakeLists.txt"; then
+  printf '\ntarget_compile_definitions(x3_mono_slam PRIVATE UMI_KB4_FORWARD=$<BOOL:${UMI_KB4_FORWARD_ENABLED}>)\n' >> "$O/CMakeLists.txt"
+fi
+
+PERFORMANCE_PATCH="$HERE/orbslam3_feature_parallel.patch"
+if git -C "$O" apply --check "$PERFORMANCE_PATCH" 2>/dev/null; then
+  git -C "$O" apply "$PERFORMANCE_PATCH"
+elif ! git -C "$O" apply --reverse --check "$PERFORMANCE_PATCH"; then
+  echo 'Feature extraction patch conflicts with this source; inspect changes before rebuilding.' >&2
+  exit 1
+fi
+cp "$HERE/feature_extraction_check.cc" "$O/Examples/Monocular/feature_extraction_check.cc"
+if ! grep -q 'add_executable(umi_feature_check' "$O/CMakeLists.txt"; then
+  printf '\nadd_executable(umi_feature_check Examples/Monocular/feature_extraction_check.cc)\ntarget_link_libraries(umi_feature_check ${PROJECT_NAME} OpenMP::OpenMP_CXX)\n' >> "$O/CMakeLists.txt"
+fi
+
 if [ ! -f "$O/Thirdparty/DBoW2/lib/libDBoW2.so" ]; then
   echo "[orbslam3] DBoW2"
   cmake -S "$O/Thirdparty/DBoW2" -B "$O/Thirdparty/DBoW2/build" "${CMAKE_COMMON[@]}" -DOpenCV_DIR="$ENV/lib/cmake/opencv4"
@@ -109,12 +179,23 @@ if ! grep -q 'add_executable(umi_export_atlas' "$O/CMakeLists.txt"; then
   printf '\nadd_executable(umi_export_atlas Examples/Monocular/export_atlas.cc)\ntarget_link_libraries(umi_export_atlas ${PROJECT_NAME})\n' >> "$O/CMakeLists.txt"
 fi
 cmake -S "$O" -B "$O/build" "${CMAKE_COMMON[@]}" -DOpenCV_DIR="$ENV/lib/cmake/opencv4" \
-  -DEigen3_DIR="$ENV/share/eigen3/cmake" -DPangolin_DIR="$DEPS/pangolin/lib/cmake/Pangolin"
-cmake --build "$O/build" -j "$JOBS" --target ORB_SLAM3 x3_mono_slam umi_export_atlas
+  -DEigen3_DIR="$ENV/share/eigen3/cmake" -DPangolin_DIR="$DEPS/pangolin/lib/cmake/Pangolin" \
+  -DUMI_KB4_FORWARD_ENABLED="$FORWARD"
+cmake --build "$O/build" -j "$JOBS" --target ORB_SLAM3 x3_mono_slam umi_export_atlas umi_offline_check umi_stable_check umi_feature_check "${KB4_TARGETS[@]}"
+"$O/Examples/Monocular-Inertial/umi_stable_check"
+OMP_WAIT_POLICY=PASSIVE "$O/Examples/Monocular-Inertial/umi_feature_check"
+if [ "${#KB4_TARGETS[@]}" -gt 0 ]; then
+  "$O/Examples/Monocular-Inertial/umi_kb4_check"
+fi
 
 if [ ! -f "$O/Vocabulary/ORBvoc.txt" ]; then
   echo "[orbslam3] vocabulary"
   tar -xzf "$O/Vocabulary/ORBvoc.txt.tar.gz" -C "$O/Vocabulary"
 fi
+CHECK_LOG="$O/build/offline_sync_check.log"
+timeout 60 "$O/Examples/Monocular-Inertial/umi_offline_check" "$O/Vocabulary/ORBvoc.txt" \
+  "$HERE/offline_sync_check.yaml" > "$CHECK_LOG" 2>&1 || { cat "$CHECK_LOG"; exit 1; }
+# ORB's settings reader can exit(0) on invalid settings: require the completion marker too.
+grep -q '^offline lifecycle: .*PASS$' "$CHECK_LOG" || { cat "$CHECK_LOG"; exit 1; }
 sha256sum "$O/lib/libORB_SLAM3.so" "$O/Examples/Monocular-Inertial/x3_mono_slam" "$O/Vocabulary/ORBvoc.txt" | sed 's|  .*/|  |'
 echo BUILD_ORBSLAM3_DONE

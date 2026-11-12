@@ -1,24 +1,25 @@
 """按批次套件接收原片，再为明确的左右手生成任务；重复导入不重复建任务。"""
+
 from __future__ import annotations
 
-from software.scene import layout
-
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
-import math
-import json
-import os
 from pathlib import Path
+import json
+import math
+import os
 import re
-from contextlib import nullcontext
 
-from software import registry
 from . import inputs
 from .episodes import invalidate_task_state
-from software.scene.pipeline import recordings
-from software.scene.models import SceneParameters, Session
+from software import provenance as artifact_identity
+from software.scene import layout
 from software.scene.layout import locked
+from software.scene.models import SceneParameters, Session
+from software.scene.pipeline import recordings
 from software.storage import write_json, write_yaml
+
 
 @dataclass(frozen=True)
 class RecordingMetadata:
@@ -123,18 +124,21 @@ def plan_tasks(recording_infos: list[RecordingMetadata], arms: dict[str, str], p
     expected = inputs.read_arms(list(arms))
     plans, pending = [], []
     for path, items in sorted(grouped.items()):
-        plan = {arm: [item for item in items if item.serial == serial] for arm, serial in arms.items()}
+        task_expected = inputs.read_arms(layout.task_configuration(layout.owner(path)).get('expected_arms', expected), expected)
+        if any(item.serial not in {arms[arm] for arm in task_expected} for item in items):
+            raise ValueError(f'{layout.owner(path).name} 原片与 task.yaml 预期使用的手不一致')
+        plan = {arm: [item for item in items if item.serial == arms[arm]] for arm in task_expected}
         if path.exists() and any(not values for values in plan.values()):
             unassigned.extend(items)
             continue
         if any(len(values) > 1 for values in plan.values()):
-            pending.extend(dict(**item.summary(), status='ambiguous_task', expected_arms=list(expected),
+            pending.extend(dict(**item.summary(), status='ambiguous_task', expected_arms=list(task_expected),
                                 reason='同一 take 每只手只能有一段原片，请按操作拆分 take') for item in items)
             continue
         plan = {arm: values[0] for arm, values in plan.items() if values}
         plans.append((path, plan))
-        if set(plan) != set(expected):
-            pending.extend(dict(**item.summary(), status='missing_peer', expected_arms=list(expected)) for item in items)
+        if set(plan) != set(task_expected):
+            pending.extend(dict(**item.summary(), status='missing_peer', expected_arms=list(task_expected)) for item in items)
     paired, unmatched = plan_episodes(unassigned, arms, parameters)
     pending.extend(unmatched)
     names = [path.name for path in batch.iterdir()] if batch.exists() else []
@@ -154,7 +158,7 @@ def plan_tasks(recording_infos: list[RecordingMetadata], arms: dict[str, str], p
 def _remove_pending_source(source: Path, target: Path, pending: Path, digest: str) -> None:
     """清单成功保存后，移除已归位的待配对副本，保留外部源文件。"""
     if source != target and source.is_relative_to(pending.resolve()) and source.is_file():
-        if registry.sha256_file(source) != digest:
+        if artifact_identity.file_hash(source) != digest:
             raise ValueError(f'待配对原片归位后发生变化，已保留：{source}')
         source.unlink()
         directory = source.parent
@@ -166,20 +170,13 @@ def _remove_pending_source(source: Path, target: Path, pending: Path, digest: st
             directory = directory.parent
 
 
-def _write_episode(session: Session, path: Path, recording_refs: dict) -> None:
+def _write_episode(path: Path, recording_refs: dict) -> None:
     """保存自动登记结果；相同内容不改清单和验收，补片保留任务描述。"""
-    expected_arms = session.expected_arms
     previous_record = inputs.read_yaml(path) if path.exists() else {}
-    if previous_record and inputs.read_arms(previous_record.get('expected_arms', session.expected_arms)) != expected_arms:
-        raise ValueError('已有任务的预期使用手不能改变，请建立新任务')
     task_record = dict(schema_version=previous_record.get('schema_version', 5), recordings=recording_refs)
-    if expected_arms != session.expected_arms:
-        task_record['expected_arms'] = list(expected_arms)
-    instruction = previous_record.get('instruction', '')
-    if instruction:
-        task_record['instruction'] = instruction
-    if task_record['schema_version'] == 5 and len(expected_arms) > 1 and 'synchronization' in previous_record:
-        task_record['synchronization'] = previous_record['synchronization']
+    configuration = layout.task_configuration(layout.owner(path))
+    if previous_record.keys() & layout.TASK_FIELDS:
+        write_yaml(layout.owner(path) / 'task.yaml', configuration)
     if task_record != previous_record:
         write_yaml(path, task_record)
         invalidate_task_state(path)
@@ -202,8 +199,8 @@ def register_recordings(session: Session, *, dry_run: bool = False) -> dict:
                               for recording in recordings_metadata if recording.serial not in arm_serials.values()]
         recordings_metadata = [recording for recording in recordings_metadata if recording.serial in arm_serials.values()]
         recording_owners, incomplete_tasks = {}, {}
-        for path in sorted(layout.manifest(child, 'episode.yaml') for child in session.root.iterdir()
-                           if child.is_dir() and layout.manifest(child, 'episode.yaml').is_file()):
+        for path in (layout.manifest(task, 'episode.yaml') for task in inputs.batch_task_directories(batch)
+                     if layout.manifest(task, 'episode.yaml').is_file()):
             if layout.owner(path).name.startswith('.') or layout.owner(path).name in inputs.INTERNAL_DIRECTORIES:
                 continue
             episode = inputs.read_episode(path, verify=False)
@@ -219,7 +216,7 @@ def register_recordings(session: Session, *, dry_run: bool = False) -> dict:
         candidates = [recording for recording in recordings_metadata if recording.sha256 not in complete_hashes]
         for index, recording in enumerate(candidates):
             pending_file = pending_root / serial_arms[recording.serial] / recording.path.name
-            if pending_file.is_file() and registry.sha256_file(pending_file) == recording.sha256:
+            if pending_file.is_file() and artifact_identity.file_hash(pending_file) == recording.sha256:
                 candidates[index] = replace(recording, path=pending_file)
         # 不完整任务也参与补齐，保留先前原片与后补原片的关联。
         for episode in incomplete_tasks.values():
@@ -242,7 +239,7 @@ def register_recordings(session: Session, *, dry_run: bool = False) -> dict:
                         target, recording.serial, recording.sha256, recording.started_at_unix_s, recording.duration_s)
                 recording_refs = {arm: imported_recordings[recording.sha256].reference(task_root)
                                   for arm, recording in plan.items()}
-                _write_episode(session, path, recording_refs)
+                _write_episode(path, recording_refs)
                 for recording in plan.values():
                     _remove_pending_source(recording.path, imported_recordings[recording.sha256].path, pending_root, recording.sha256)
         task_sources = [source.resolve() for task in inputs.batch_task_directories(batch)

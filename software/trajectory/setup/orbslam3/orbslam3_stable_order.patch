@@ -1,0 +1,360 @@
+diff --git a/include/StableOrder.h b/include/StableOrder.h
+new file mode 100644
+--- /dev/null
++++ b/include/StableOrder.h
+@@ -0,0 +1,20 @@
++#ifndef ORB_SLAM3_STABLE_ORDER_H
++#define ORB_SLAM3_STABLE_ORDER_H
++#include <algorithm>
++#include <map>
++#include <vector>
++namespace ORB_SLAM3 {
++// Pointer address order is not a semantic tie-breaker and changes across processes.
++template<class Range> std::vector<typename Range::value_type> ById(const Range& values) {
++    std::vector<typename Range::value_type> ordered(values.begin(), values.end());
++    std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) { return a->mnId < b->mnId; });
++    return ordered;
++}
++template<class Key, class Value>
++std::vector<std::pair<Key*, Value>> ByKeyId(const std::map<Key*, Value>& values) {
++    std::vector<std::pair<Key*, Value>> ordered(values.begin(), values.end());
++    std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.first->mnId < b.first->mnId; });
++    return ordered;
++}
++}
++#endif
+diff --git a/src/Map.cc b/src/Map.cc
+--- a/src/Map.cc
++++ b/src/Map.cc
+@@ -18,6 +18,7 @@
+ 
+ 
+ #include "Map.h"
++#include "StableOrder.h"
+ 
+ #include<mutex>
+ 
+@@ -147,13 +148,13 @@
+ vector<KeyFrame*> Map::GetAllKeyFrames()
+ {
+     unique_lock<mutex> lock(mMutexMap);
+-    return vector<KeyFrame*>(mspKeyFrames.begin(),mspKeyFrames.end());
++    return ById(mspKeyFrames);
+ }
+ 
+ vector<MapPoint*> Map::GetAllMapPoints()
+ {
+     unique_lock<mutex> lock(mMutexMap);
+-    return vector<MapPoint*>(mspMapPoints.begin(),mspMapPoints.end());
++    return ById(mspMapPoints);
+ }
+ 
+ long unsigned int Map::MapPointsInMap()
+diff --git a/src/MapPoint.cc b/src/MapPoint.cc
+--- a/src/MapPoint.cc
++++ b/src/MapPoint.cc
+@@ -17,6 +17,7 @@
+ */
+ 
+ #include "MapPoint.h"
++#include "StableOrder.h"
+ #include "ORBmatcher.h"
+ 
+ #include<mutex>
+@@ -188,7 +189,7 @@
+             mObservations.erase(pKF);
+ 
+             if(mpRefKF==pKF)
+-                mpRefKF=mObservations.begin()->first;
++                mpRefKF = mObservations.empty() ? nullptr : ByKeyId(mObservations).front().first;
+ 
+             // If only 2 observations or less, discard point
+             if(nObs<=2)
+@@ -345,7 +346,8 @@
+ 
+     vDescriptors.reserve(observations.size());
+ 
+-    for(map<KeyFrame*,tuple<int,int>>::iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
++    const auto orderedObservations = ByKeyId(observations);
++    for(auto mit=orderedObservations.begin(), mend=orderedObservations.end(); mit!=mend; mit++)
+     {
+         KeyFrame* pKF = mit->first;
+ 
+@@ -444,7 +446,8 @@
+     Eigen::Vector3f normal;
+     normal.setZero();
+     int n=0;
+-    for(map<KeyFrame*,tuple<int,int>>::iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
++    const auto orderedObservations = ByKeyId(observations);
++    for(auto mit=orderedObservations.begin(), mend=orderedObservations.end(); mit!=mend; mit++)
+     {
+         KeyFrame* pKF = mit->first;
+ 
+diff --git a/src/KeyFrame.cc b/src/KeyFrame.cc
+--- a/src/KeyFrame.cc
++++ b/src/KeyFrame.cc
+@@ -17,6 +17,7 @@
+ */
+ 
+ #include "KeyFrame.h"
++#include "StableOrder.h"
+ #include "Converter.h"
+ #include "ImuTypes.h"
+ #include<mutex>
+@@ -209,7 +210,9 @@
+     for(map<KeyFrame*,int>::iterator mit=mConnectedKeyFrameWeights.begin(), mend=mConnectedKeyFrameWeights.end(); mit!=mend; mit++)
+        vPairs.push_back(make_pair(mit->second,mit->first));
+ 
+-    sort(vPairs.begin(),vPairs.end());
++    sort(vPairs.begin(),vPairs.end(), [](const auto& a, const auto& b) {
++        return a.first != b.first ? a.first < b.first : a.second->mnId > b.second->mnId;
++    });
+     list<KeyFrame*> lKFs;
+     list<int> lWs;
+     for(size_t i=0, iend=vPairs.size(); i<iend;i++)
+@@ -424,7 +427,8 @@
+     vPairs.reserve(KFcounter.size());
+     if(!upParent)
+         cout << "UPDATE_CONN: current KF " << mnId << endl;
+-    for(map<KeyFrame*,int>::iterator mit=KFcounter.begin(), mend=KFcounter.end(); mit!=mend; mit++)
++    const auto orderedCounter = ByKeyId(KFcounter);
++    for(auto mit=orderedCounter.begin(), mend=orderedCounter.end(); mit!=mend; mit++)
+     {
+         if(!upParent)
+             cout << "  UPDATE_CONN: KF " << mit->first->mnId << " ; num matches: " << mit->second << endl;
+@@ -446,7 +450,9 @@
+         pKFmax->AddConnection(this,nmax);
+     }
+ 
+-    sort(vPairs.begin(),vPairs.end());
++    sort(vPairs.begin(),vPairs.end(), [](const auto& a, const auto& b) {
++        return a.first != b.first ? a.first < b.first : a.second->mnId > b.second->mnId;
++    });
+     list<KeyFrame*> lKFs;
+     list<int> lWs;
+     for(size_t i=0; i<vPairs.size();i++)
+@@ -620,7 +626,8 @@
+             KeyFrame* pC;
+             KeyFrame* pP;
+ 
+-            for(set<KeyFrame*>::iterator sit=mspChildrens.begin(), send=mspChildrens.end(); sit!=send; sit++)
++            const auto orderedChildren = ById(mspChildrens);
++            for(auto sit=orderedChildren.begin(), send=orderedChildren.end(); sit!=send; sit++)
+             {
+                 KeyFrame* pKF = *sit;
+                 if(pKF->isBad())
+diff --git a/src/Tracking.cc b/src/Tracking.cc
+--- a/src/Tracking.cc
++++ b/src/Tracking.cc
+@@ -18,6 +18,7 @@
+ 
+ 
+ #include "Tracking.h"
++#include "StableOrder.h"
+ 
+ #include "ORBmatcher.h"
+ #include "FrameDrawer.h"
+@@ -3222,7 +3223,8 @@
+     mvpLocalKeyFrames.reserve(3*keyframeCounter.size());
+ 
+     // All keyframes that observe a map point are included in the local map. Also check which keyframe shares most points
+-    for(map<KeyFrame*,int>::const_iterator it=keyframeCounter.begin(), itEnd=keyframeCounter.end(); it!=itEnd; it++)
++    const auto orderedCounter = ByKeyId(keyframeCounter);
++    for(auto it=orderedCounter.begin(), itEnd=orderedCounter.end(); it!=itEnd; it++)
+     {
+         KeyFrame* pKF = it->first;
+ 
+@@ -3240,13 +3242,14 @@
+     }
+ 
+     // Include also some not-already-included keyframes that are neighbors to already-included keyframes
+-    for(vector<KeyFrame*>::const_iterator itKF=mvpLocalKeyFrames.begin(), itEndKF=mvpLocalKeyFrames.end(); itKF!=itEndKF; itKF++)
++    const size_t originalLocalCount = mvpLocalKeyFrames.size();
++    for(size_t localIndex = 0; localIndex < originalLocalCount; ++localIndex)
+     {
+         // Limit the number of keyframes
+         if(mvpLocalKeyFrames.size()>80) // 80
+             break;
+ 
+-        KeyFrame* pKF = *itKF;
++        KeyFrame* pKF = mvpLocalKeyFrames[localIndex];
+ 
+         const vector<KeyFrame*> vNeighs = pKF->GetBestCovisibilityKeyFrames(10);
+ 
+@@ -3265,8 +3268,8 @@
+             }
+         }
+ 
+-        const set<KeyFrame*> spChilds = pKF->GetChilds();
+-        for(set<KeyFrame*>::const_iterator sit=spChilds.begin(), send=spChilds.end(); sit!=send; sit++)
++        const auto spChilds = ById(pKF->GetChilds());
++        for(auto sit=spChilds.begin(), send=spChilds.end(); sit!=send; sit++)
+         {
+             KeyFrame* pChildKF = *sit;
+             if(!pChildKF->isBad())
+diff --git a/src/Optimizer.cc b/src/Optimizer.cc
+--- a/src/Optimizer.cc
++++ b/src/Optimizer.cc
+@@ -18,6 +18,7 @@
+ 
+ 
+ #include "Optimizer.h"
++#include "StableOrder.h"
+ 
+ 
+ #include <complex>
+@@ -144,11 +145,11 @@
+         vPoint->setMarginalized(true);
+         optimizer.addVertex(vPoint);
+ 
+-       const map<KeyFrame*,tuple<int,int>> observations = pMP->GetObservations();
++       const auto observations = ByKeyId(pMP->GetObservations());
+ 
+         int nEdges = 0;
+         //SET EDGES
+-        for(map<KeyFrame*,tuple<int,int>>::const_iterator mit=observations.begin(); mit!=observations.end(); mit++)
++        for(auto mit=observations.begin(); mit!=observations.end(); mit++)
+         {
+             KeyFrame* pKF = mit->first;
+             if(pKF->isBad() || pKF->mnId>maxKFid)
+@@ -606,13 +607,13 @@
+         vPoint->setMarginalized(true);
+         optimizer.addVertex(vPoint);
+ 
+-        const map<KeyFrame*,tuple<int,int>> observations = pMP->GetObservations();
++        const auto observations = ByKeyId(pMP->GetObservations());
+ 
+ 
+         bool bAllFixed = true;
+ 
+         //Set edges
+-        for(map<KeyFrame*,tuple<int,int>>::const_iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
++        for(auto mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
+         {
+             KeyFrame* pKFi = mit->first;
+ 
+@@ -1163,8 +1164,8 @@
+     list<KeyFrame*> lFixedCameras;
+     for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
+     {
+-        map<KeyFrame*,tuple<int,int>> observations = (*lit)->GetObservations();
+-        for(map<KeyFrame*,tuple<int,int>>::iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
++        const auto observations = ByKeyId((*lit)->GetObservations());
++        for(auto mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
+         {
+             KeyFrame* pKFi = mit->first;
+ 
+@@ -1290,10 +1291,10 @@
+         optimizer.addVertex(vPoint);
+         nPoints++;
+ 
+-        const map<KeyFrame*,tuple<int,int>> observations = pMP->GetObservations();
++        const auto observations = ByKeyId(pMP->GetObservations());
+ 
+         //Set edges
+-        for(map<KeyFrame*,tuple<int,int>>::const_iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
++        for(auto mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
+         {
+             KeyFrame* pKFi = mit->first;
+ 
+@@ -2482,8 +2483,8 @@
+ 
+     for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
+     {
+-        map<KeyFrame*,tuple<int,int>> observations = (*lit)->GetObservations();
+-        for(map<KeyFrame*,tuple<int,int>>::iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
++        const auto observations = ByKeyId((*lit)->GetObservations());
++        for(auto mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
+         {
+             KeyFrame* pKFi = mit->first;
+ 
+@@ -2719,10 +2720,10 @@
+         vPoint->setId(id);
+         vPoint->setMarginalized(true);
+         optimizer.addVertex(vPoint);
+-        const map<KeyFrame*,tuple<int,int>> observations = pMP->GetObservations();
++        const auto observations = ByKeyId(pMP->GetObservations());
+ 
+         // Create visual constraints
+-        for(map<KeyFrame*,tuple<int,int>>::const_iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
++        for(auto mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
+         {
+             KeyFrame* pKFi = mit->first;
+ 
+@@ -3649,10 +3650,10 @@
+         optimizer.addVertex(vPoint);
+ 
+ 
+-        const map<KeyFrame*,tuple<int,int>> observations = pMPi->GetObservations();
++        const auto observations = ByKeyId(pMPi->GetObservations());
+         int nEdges = 0;
+         //SET EDGES
+-        for(map<KeyFrame*,tuple<int,int>>::const_iterator mit=observations.begin(); mit!=observations.end(); mit++)
++        for(auto mit=observations.begin(); mit!=observations.end(); mit++)
+         {
+             KeyFrame* pKF = mit->first;
+             if(pKF->isBad() || pKF->mnId>maxKFid || pKF->mnBALocalForMerge != pMainKF->mnId || !pKF->GetMapPoint(get<0>(mit->second)))
+@@ -3851,8 +3852,8 @@
+         if(pMPi->isBad())
+             continue;
+ 
+-        const map<KeyFrame*,tuple<int,int>> observations = pMPi->GetObservations();
+-        for(map<KeyFrame*,tuple<int,int>>::const_iterator mit=observations.begin(); mit!=observations.end(); mit++)
++        const auto observations = ByKeyId(pMPi->GetObservations());
++        for(auto mit=observations.begin(); mit!=observations.end(); mit++)
+         {
+             KeyFrame* pKF = mit->first;
+             if(pKF->isBad() || pKF->mnId>maxKFid || pKF->mnBALocalForKF != pMainKF->mnId || !pKF->GetMapPoint(get<0>(mit->second)))
+@@ -4079,10 +4080,10 @@
+     int i=0;
+     for(vector<pair<MapPoint*,int>>::iterator lit=pairs.begin(), lend=pairs.end(); lit!=lend; lit++, i++)
+     {
+-        map<KeyFrame*,tuple<int,int>> observations = lit->first->GetObservations();
++        const auto observations = ByKeyId(lit->first->GetObservations());
+         if(i>=maxCovKF)
+             break;
+-        for(map<KeyFrame*,tuple<int,int>>::iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
++        for(auto mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
+         {
+             KeyFrame* pKFi = mit->first;
+ 
+@@ -4305,10 +4306,10 @@
+         vPoint->setMarginalized(true);
+         optimizer.addVertex(vPoint);
+ 
+-        const map<KeyFrame*,tuple<int,int>> observations = pMP->GetObservations();
++        const auto observations = ByKeyId(pMP->GetObservations());
+ 
+         // Create visual constraints
+-        for(map<KeyFrame*,tuple<int,int>>::const_iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
++        for(auto mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
+         {
+             KeyFrame* pKFi = mit->first;
+ 
+diff --git a/src/LoopClosing.cc b/src/LoopClosing.cc
+--- a/src/LoopClosing.cc
++++ b/src/LoopClosing.cc
+@@ -18,6 +18,7 @@
+ 
+ 
+ #include "LoopClosing.h"
++#include "StableOrder.h"
+ 
+ #include "Sim3Solver.h"
+ #include "Converter.h"
+@@ -2187,13 +2188,13 @@
+             while(!lpKFtoCheck.empty())
+             {
+                 KeyFrame* pKF = lpKFtoCheck.front();
+-                const set<KeyFrame*> sChilds = pKF->GetChilds();
++                const auto sChilds = ById(pKF->GetChilds());
+                 //cout << "---Updating KF " << pKF->mnId << " with " << sChilds.size() << " childs" << endl;
+                 //cout << " KF mnBAGlobalForKF: " << pKF->mnBAGlobalForKF << endl;
+                 Sophus::SE3f Twc = pKF->GetPoseInverse();
+                 //cout << "Twc: " << Twc << endl;
+                 //cout << "GBA: Correct KeyFrames" << endl;
+-                for(set<KeyFrame*>::const_iterator sit=sChilds.begin();sit!=sChilds.end();sit++)
++                for(auto sit=sChilds.begin();sit!=sChilds.end();sit++)
+                 {
+                     KeyFrame* pChild = *sit;
+                     if(!pChild || pChild->isBad())

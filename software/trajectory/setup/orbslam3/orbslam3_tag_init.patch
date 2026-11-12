@@ -1,0 +1,8 @@
+diff --git a/src/CameraModels/KannalaBrandt8.cpp b/src/CameraModels/KannalaBrandt8.cpp
+--- a/src/CameraModels/KannalaBrandt8.cpp
++++ b/src/CameraModels/KannalaBrandt8.cpp
+@@ -249,3 +249,3 @@
+         // localize tags
+-        cv::Mat distCoeffs = cv::Mat1f(5, 1);
++        cv::Mat distCoeffs = cv::Mat::zeros(5, 1, CV_32F);
+         std::vector<cv::Vec3d> rvecs1, tvecs1, rvecs2, tvecs2;

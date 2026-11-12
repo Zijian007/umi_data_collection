@@ -18,7 +18,7 @@ gates, parallel/antiparallel gravity handling, explicit scene/calibration versio
 configuration-driven noise, and integration with the X3 timestamp convention.
 These files are modified adaptations, not unmodified upstream KIWI code.
 Shared-map scale estimation and motion-segment screening now call the common
-solver in `trajectory/algorithms/fusion_alignment.py`; the three-node system in
+solver in `trajectory/algorithms/fusion_alignment_solver.py`; the three-node system in
 `geometry.py` is retained only as an observability check. Shared maps fit one
 scale, gravity vector and accelerometer bias across accepted segments, rather
 than adopting independent per-segment map placements.

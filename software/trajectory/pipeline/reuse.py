@@ -4,39 +4,41 @@ Large recordings use path/size/mtime identity to avoid rehashing gigabytes befor
 skipping. Small calibration assets use full SHA256 content hashes. This is a
 reuse check, not a guarantee against deliberately altered file timestamps.
 """
+
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
 from software import config
-from software.trajectory.models import TrajectoryRequest
+from software import parameters as parameter_models
+from software import provenance as artifact_identity
 from software.trajectory.calibration.selection import SelectedCalibration
+from software.trajectory.models import TrajectoryRequest
+from software.trajectory.pipeline.calibration_assets import EnvironmentAssets, load_frozen_rear
 from software.trajectory.reporting.results import load_summary, result_path
+
 
 REQUIRED_OUTPUTS = ('traj_tcp.txt', 'traj_camera.txt', 'traj_imu.txt', 'frames.csv', 'run_settings.json')
 
 
-def run_fingerprint(video: Path, selected: SelectedCalibration, request: TrajectoryRequest) -> dict:
+def run_fingerprint(video: Path, selected: SelectedCalibration, request: TrajectoryRequest, *, environment_assets: EnvironmentAssets) -> dict:
     request = config.resolve_trajectory_request(request)
     stat = video.stat()
     assets = selected.assets.hashes()
-    if request.mode == 'dual':
-        rear_settings = Path(__file__).resolve().parents[1] / 'assets/config/rear_basalt065_720.yaml'
-        assets['rear_slam_settings'] = hashlib.sha256(rear_settings.read_bytes()).hexdigest()
-        assets['rear_geometry'] = config.file_hash(rear_settings.parents[1] / 'calib/rear_sample.json')
+    assets.update(environment_assets.fingerprint_assets())
     fingerprint = {
         'version': 2,
         'recording': dict(path=str(video.resolve()), bytes=stat.st_size, mtime_ns=stat.st_mtime_ns),
-        'calibration': dict(serial=selected.camera_serial, assets=assets),
+        'calibration': dict(serial=selected.camera_serial, assets=assets,
+                            version=selected.calibration_id, intrinsics_source=selected.intrinsics_source),
         'options': dict(mode=request.mode, allow_irregular=request.allow_irregular,
                         max_tries=request.max_tries),
         'algorithm_parameters': request.configuration.computation_hash,
-        'code': config.code_identity('trajectory'),
-        'engines': config.engine_identity('trajectory'),
+        'code': artifact_identity.code_identity('trajectory'),
+        'engines': artifact_identity.engine_identity('trajectory'),
     }
-    fingerprint['computation_hash'] = config.canonical_hash(fingerprint)
+    fingerprint['computation_hash'] = artifact_identity.canonical_hash(fingerprint)
     fingerprint['evaluation_hash'] = request.configuration.evaluation_hash
     return fingerprint
 
@@ -47,7 +49,7 @@ class ReuseDecision:
     reason: str
 
 
-def reuse_decision(output: Path, fingerprint: dict, *, notes: config.NoteParameters) -> ReuseDecision:
+def reuse_decision(output: Path, fingerprint: dict, *, notes: parameter_models.NoteParameters) -> ReuseDecision:
     try:
         summary = load_summary(output)
     except (OSError, ValueError):
@@ -69,6 +71,19 @@ def reuse_decision(output: Path, fingerprint: dict, *, notes: config.NoteParamet
             return ReuseDecision(None, reason)
     required = REQUIRED_OUTPUTS if 'tcp_geometry' in fingerprint['calibration']['assets'] else tuple(
         name for name in REQUIRED_OUTPUTS if name != 'traj_tcp.txt')
+    if 'rear_calibration' in fingerprint['calibration']['assets']:
+        try:
+            load_frozen_rear(output/'devices/rear/manifest.json',
+                 expected_hash=fingerprint['calibration']['assets']['rear_calibration'],
+                 expected_identity=fingerprint['calibration']['assets']['rear_identity'])
+        except (OSError, ValueError, KeyError, TypeError):
+            return ReuseDecision(None, 'rear 冻结标定缺失或发生变化')
+    if 'environment_poster' in fingerprint['calibration']['assets']:
+        try:
+            from .poster_assets import load
+            load(output/'environment_poster/input.json')
+        except (OSError,ValueError,KeyError):
+            return ReuseDecision(None,'海报冻结资产缺失或发生变化')
     for name in required:
         path = result_path(output, name)
         if not path.is_file() or path.stat().st_size == 0:

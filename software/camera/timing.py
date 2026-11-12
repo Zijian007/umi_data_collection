@@ -3,6 +3,7 @@
 video_s：原片视频时钟；imu_s：同机 IMU 时钟。
 cam_time_offset_ns 的符号沿用 Basalt：t_imu = t_video + offset。
 """
+
 from __future__ import annotations
 
 import numpy as np

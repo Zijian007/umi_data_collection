@@ -1,11 +1,12 @@
 """固定 ROI 的无界面宽度检测：按视频时间采样，CSV 与可选叠加 MP4 输出。"""
+
 from __future__ import annotations
 
-import csv
 from contextlib import ExitStack
 from fractions import Fraction
-import math
 from pathlib import Path
+import csv
+import math
 import sys
 import time
 
@@ -13,38 +14,16 @@ import av
 import cv2
 import numpy as np
 
+from .detection import MarkerDetector, validate_roi
+from .frame_processing import detect_frame
+from .preview import PreviewWriter
 from software.camera.x3.frame import SRC_H, SRC_W
 from software.console import Console
 from software.storage import atomic_file
-from .detection import FrameDetection, MarkerDetector, validate_roi
-from .preview import PreviewWriter
+
 
 console = Console('宽度检测')
 HEADER = ('t_video_s', 'id0_x_px', 'id0_y_px', 'id1_x_px', 'id1_y_px', 'distance_px', 'detect_ms')
-
-
-def crop_gray(frame: av.VideoFrame, roi: tuple[int, int, int, int],
-              converter: av.video.reformatter.VideoReformatter) -> np.ndarray:
-    """先按色度采样边界裁剪 YUV，再转灰度；最终保留调用者指定的原始像素范围。"""
-    left, top, right, bottom = roi
-    left, right = left + SRC_W // 2, right + SRC_W // 2
-    if frame.format.name not in ('yuv420p', 'yuvj420p'):
-        gray = converter.reformat(frame, format='gray', threads=1).to_ndarray()
-        return gray[top:bottom, left:right]
-    aligned_left, aligned_top = left // 2 * 2, top // 2 * 2
-    aligned_right, aligned_bottom = (right + 1) // 2 * 2, (bottom + 1) // 2 * 2
-    cropped = av.VideoFrame(aligned_right - aligned_left, aligned_bottom - aligned_top, frame.format.name)
-    cropped.colorspace, cropped.color_range = frame.colorspace, frame.color_range
-    for index, (source, target) in enumerate(zip(frame.planes, cropped.planes)):
-        subsample = 1 if index == 0 else 2
-        source_pixels = np.ndarray((source.height, source.width), np.uint8, buffer=source,
-                                   strides=(source.line_size, 1))
-        target_pixels = np.ndarray((target.height, target.width), np.uint8, buffer=target,
-                                   strides=(target.line_size, 1))
-        target_pixels[:] = source_pixels[aligned_top // subsample:aligned_bottom // subsample,
-                                         aligned_left // subsample:aligned_right // subsample]
-    gray = converter.reformat(cropped, format='gray', threads=1).to_ndarray()
-    return gray[top - aligned_top:bottom - aligned_top, left - aligned_left:right - aligned_left]
 
 
 def run(video: Path, roi: tuple[int, int, int, int], *, hz: float = 30.,
@@ -136,7 +115,7 @@ def _measure(source, stream, roi, hz, destination, benchmark, video_writer: Prev
             late_dropped += 1
             continue
         began = time.perf_counter()
-        detected = detector.detect(crop_gray(frame, roi, converter))
+        detected = detect_frame(frame, detector, roi, converter)
         detect_ms = (time.perf_counter() - began) * 1000
         costs.append(detect_ms)
         if not benchmark:
@@ -146,16 +125,13 @@ def _measure(source, stream, roi, hz, destination, benchmark, video_writer: Prev
         coordinates = []
         for tag in (0, 1):
             centre = detected.centres.get(tag)
-            coordinates.extend(('', '') if centre is None else (f'{centre[0] + left:.6f}', f'{centre[1] + top:.6f}'))
+            coordinates.extend(('', '') if centre is None else (f'{centre[0]:.6f}', f'{centre[1]:.6f}'))
         distance = detected.distance_px
         valid = np.isfinite(distance)
         writer.writerow((f'{timestamp:.9f}', *coordinates, f'{distance:.6f}' if valid else '', f'{detect_ms:.3f}'))
         destination.flush()
         if video_writer is not None:
-            origin = np.array([left, top], dtype=np.float32)
-            native = FrameDetection(tuple(polygon + origin for polygon in detected.corners), detected.ids,
-                                    {tag: centre + origin for tag, centre in detected.centres.items()})
-            video_writer.write(frame, native, roi=roi)
+            video_writer.write(frame, detected, roi=roi)
         samples += 1
         paired += int(valid)
         if time.perf_counter() - progress >= 5:

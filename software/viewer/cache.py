@@ -1,14 +1,14 @@
 """查看器可再生缓存：输入身份、跨进程锁与原子发布；不写录像目录。"""
+
 from __future__ import annotations
 
+from contextlib import contextmanager
+from pathlib import Path
+import fcntl
 import hashlib
 import json
 import os
 import tempfile
-from contextlib import contextmanager
-from pathlib import Path
-
-import fcntl
 
 
 def file_identity(path: Path) -> tuple:

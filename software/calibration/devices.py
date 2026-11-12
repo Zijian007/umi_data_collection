@@ -2,31 +2,32 @@
 
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
-
-from software import config, registry
-import json
-from datetime import datetime
-from zoneinfo import ZoneInfo
 from contextlib import nullcontext
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+import json
+import shutil
 import tempfile
-from software.storage import locked
+
+from software import provenance as artifact_identity
+from software import registry
+from software.calibration import reports
 from software.calibration import result_io
 from software.calibration.models import Decision, Step
-from software.trajectory.calibration import assets as trajectory_calibration
-from software.calibration import reports
 from software.calibration.pipeline import runtime
+from software.storage import locked
+from software.trajectory.calibration import assets as trajectory_calibration
 
 
 def activation_status(doc):
     result = dict(checked_at=datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds'))
     subject = doc['subject']
     if subject['lens'] != 'front' or not subject.get('parameter_sha256'):
-        return dict(result, state='unavailable', message='未查询前镜头默认标定')
+        return dict(result, state='unavailable', message='未查询工作镜头默认标定')
     try:
         selected = registry.get(subject['serial'])
-        if config.file_hash(Path(selected['json'])) == subject['parameter_sha256']:
+        if artifact_identity.file_hash(Path(selected['json'])) == subject['parameter_sha256']:
             return dict(result, state='active', message='已设为该设备默认标定', version=selected['calibration_version'])
         return dict(result, state='inactive', message='设备当前启用的是另一份标定')
     except registry.UnknownCameraError:
@@ -90,30 +91,39 @@ def install_rear(measurement: Path) -> int:
             metadata = raw.pop('validation')
             if (raw.pop('kind') != 'umi_rear_calibration' or raw.pop('camera_serial') != doc['subject']['serial'] or
                     raw.pop('lens') != 'rear' or metadata['evidence_fingerprint'] != result_io.fingerprint(doc)):
-                raise ValueError('后镜头文件与当前验收身份不一致')
+                raise ValueError('环境镜头文件与当前验收身份不一致')
             raw.pop('parameters')
+            origin = raw.pop('provenance', {})
+            manifest = json.loads((output/'manifest.json').read_text())
+            if origin != manifest.get('provenance', {}):
+                raise ValueError('环境镜头来源记录与验收清单不一致')
             if raw != expected or metadata['C'] != result_io.measurement(doc, Step.TRAJECTORY) or metadata['D'] != result_io.measurement(doc, Step.GRAVITY):
-                raise ValueError('后镜头文件与当前参数或证据不一致')
+                raise ValueError('环境镜头文件与当前参数或证据不一致')
             result = registry.register_rear(measurement)
     except (OSError, ValueError, KeyError, RuntimeError, trajectory_calibration.CalibrationError) as error:
         runtime.console.write(str(error), state='失败')
         return 2
-    runtime.console.write(f"已登记后镜头标定：相机 {result['serial']}；版本 {result['version']}", state='完成')
+    runtime.console.write(f"已登记环境镜头标定：相机 {result['serial']}；版本 {result['version']}", state='完成')
     return 0
 
 
-def list_devices() -> int:
-    rows = registry.list_devices()
-    if not rows:
-        runtime.console.write("设备档案是空的")
-        return 1
-    print("%-20s %-8s %s" % ("相机序列号", "状态", "标定"))
-    status_labels = {"active": "已启用", "sample": "样例", "retired": "已停用"}
-    for device in rows:
-        print("%-20s %-8s %s" % (device["serial"], status_labels.get(device["status"], device["status"]), device.get("calib_id") or "?"))
-        if not device.get("ok"):
-            print("  ", device.get("error"))
-    return 0 if all(device.get("ok") for device in rows) else 1
+def list_devices(*, kit: str | None = None, json_output: bool = False,
+                 intrinsics_source: str | None = None, require_rear: bool = False) -> int:
+    from software.calibration import inventory
+
+    exit_code = None
+    try:
+        inventory_report = inventory.report(kit=kit, intrinsics_source=intrinsics_source, require_rear=require_rear)
+    except inventory.READ_ERRORS as error:
+        inventory_report = dict(schema_version=1, ok=False, errors=[str(error)])
+        exit_code = 2
+    if json_output:
+        print(json.dumps(inventory_report, ensure_ascii=False, indent=2))
+    else:
+        reports.show_inventory(inventory_report)
+        if inventory_report.get('devices') == []:
+            print('设备档案是空的')
+    return exit_code if exit_code is not None else (0 if inventory_report['ok'] else 1)
 
 
 def retire(camera_serial: str) -> int:
@@ -139,8 +149,8 @@ def upgrade_device(serial: str, *, dry_run: bool = False) -> dict:
     with nullcontext() if dry_run else locked(registry.ROOT, '.registry.lock'):
         # 原版本必须仍然存在且校验通过；不依赖期间可能改变的当前默认指针。
         registry.get(serial, calibration=old_version, allow_retired=True)
-        with tempfile.TemporaryDirectory(prefix='umi-upgrade-') as temp:
-            bundle = Path(temp)/'bundle'
+        with tempfile.TemporaryDirectory(prefix='umi-upgrade-') as temporary_bundle:
+            bundle = Path(temporary_bundle)/'bundle'
             trajectory_calibration.make_bundle(Path(selected['json']), bundle, note=dict(upgraded_from=old_version))
             if registry.bundle_sha256(bundle) != selected['bundle_sha256']:
                 raise ValueError('升级期间源测量发生变化，拒绝发布')
@@ -169,5 +179,7 @@ def activate_calibration(serial: str, version: str) -> dict:
         index = registry.load_index()
         previous = index['devices'][serial]['calibration']
         index['devices'][serial]['calibration'] = version
+        if 'calibration_sources' in index['devices'][serial]:
+            index['devices'][serial]['calibration_sources'][selected['intrinsics_source']] = version
         registry.save_index(index)
     return dict(status='activated', serial=serial, version=version, previous=previous)

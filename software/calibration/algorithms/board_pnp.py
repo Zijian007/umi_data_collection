@@ -7,15 +7,18 @@ trajectory, so the C recording can check a new calibration against it.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
+import json
 
 import cv2
 import numpy as np
 
 from software import config
+from software import parameters as parameter_models
 from software.calibration.models import Kb4
+from software.camera.x3.factory import Kb4Model
 from software.camera.x3.frame import SRC_H
+
 
 # Half the original square lens image; independent of the 1440 calibration crop.
 COVERAGE_RADIUS_PX = SRC_H / 2
@@ -28,14 +31,8 @@ def read_kb4(calib_json: Path) -> Kb4:
 
 
 def kb4_unproject(uv: np.ndarray, kb4: Kb4) -> np.ndarray:
-    fx, fy, cx, cy, k1, k2, k3, k4 = kb4
-    K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], float)
-    D = np.array([k1, k2, k3, k4], float)
-    pts = uv.reshape(-1, 1, 2).astype(np.float64)
-    und = cv2.fisheye.undistortPoints(pts, K, D)  # normalised coordinates (x/z, y/z)
-    n = und.reshape(-1, 2)
-    b = np.concatenate([n, np.ones((len(n), 1))], 1)
-    return b / np.linalg.norm(b, axis=1, keepdims=True)
+    """Unit bearings, preserving theta > pi/2 and negative z (no OpenCV clipping)."""
+    return Kb4Model(*kb4).unproject(uv)
 
 
 def grid_points_3d(grid: dict) -> dict:
@@ -50,21 +47,23 @@ def grid_points_3d(grid: dict) -> dict:
     return out
 
 
-def pnp_from_detections(dets: dict, kb4: Kb4, pts3d: dict, *, parameters: config.BoardParameters | None = None) -> dict | None:
+def pnp_from_detections(dets: dict, kb4: Kb4, pts3d: dict, *, parameters: parameter_models.BoardParameters | None = None) -> dict | None:
     """dets = {tag_id: 4x2 pixel corners (BL,BR,TR,TL)} -> camera pose in the board frame T_bc (metres)."""
     parameters = parameters or config.load("calibration").values.board
     min_tags, inlier_thresh = parameters.minimum_pnp_tags, parameters.normalized_inlier_threshold
     ids = [i for i in dets if i in pts3d]
     if len(ids) < min_tags:
         return None
-    obj = np.concatenate([pts3d[i] for i in ids], 0)
+    board_object_points = np.concatenate([pts3d[i] for i in ids], 0)
     img = np.concatenate([dets[i] for i in ids], 0)
     b = kb4_unproject(img, kb4)
-    keep = b[:, 2] > parameters.minimum_bearing_z
+    # The PnP initializer is a forward virtual pinhole. Exclude backward rays
+    # explicitly here, rather than folding them into fabricated forward bearings.
+    keep = np.isfinite(b).all(axis=1) & (b[:, 2] > parameters.minimum_bearing_z)
     if keep.sum() < 4 * min_tags:
         return None
     n = b[keep, :2] / b[keep, 2:3]
-    objk = obj[keep]
+    objk = board_object_points[keep]
     cands = []
     ok, rvec, tvec = cv2.solvePnP(objk, n, np.eye(3), None, flags=cv2.SOLVEPNP_SQPNP)
     if ok:
@@ -92,7 +91,7 @@ def pnp_from_detections(dets: dict, kb4: Kb4, pts3d: dict, *, parameters: config
             return None
     rvec, tvec = cv2.solvePnPRefineLM(objk[inl], n[inl], np.eye(3), None, rvec, tvec)
     R = cv2.Rodrigues(rvec)[0]
-    Xc = (R @ obj[keep].T + tvec).T
+    Xc = (R @ board_object_points[keep].T + tvec).T
     bp = Xc / np.linalg.norm(Xc, axis=1, keepdims=True)
     ang = np.degrees(np.arccos(np.clip((bp * b[keep]).sum(1), -1, 1)))
     T_cb = np.eye(4)
@@ -103,7 +102,7 @@ def pnp_from_detections(dets: dict, kb4: Kb4, pts3d: dict, *, parameters: config
             "reproj_deg_med": float(np.median(ang)), "reproj_deg_p95": float(np.percentile(ang, 95))}
 
 
-def board_reference(found: dict, kb4: Kb4, grid: dict, *, parameters: config.BoardParameters | None = None) -> dict:
+def board_reference(found: dict, kb4: Kb4, grid: dict, *, parameters: parameter_models.BoardParameters | None = None) -> dict:
     """PnP camera pose for every frame of `found` (raw board detections) with at least `min_tags_keep` decoded tags (PnP itself
     runs with minimum_pnp_tags and the pose is kept or dropped afterwards).
     Returns {"idx": frame indices, "p": Nx3 camera positions in the board frame, "reproj_deg_med": ..., "n_frames": total}."""
@@ -122,7 +121,7 @@ def board_reference(found: dict, kb4: Kb4, grid: dict, *, parameters: config.Boa
             "video_time_s": np.asarray(found["video_time_s"])[idx]}
 
 
-def measure_board_coverage(found: dict, kb4: Kb4, grid: dict, *, parameters: config.BoardParameters | None = None) -> dict:
+def measure_board_coverage(found: dict, kb4: Kb4, grid: dict, *, parameters: parameter_models.BoardParameters | None = None) -> dict:
     """How well a recording shows the board (found = raw board detections).
 
     Every radius is r = corner distance from the principal point / coverage_radius_px.  Per frame the farthest corner

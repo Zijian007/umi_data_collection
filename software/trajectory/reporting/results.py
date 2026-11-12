@@ -1,13 +1,15 @@
 """发布结果、兼容旧布局；成功后可单独清理 debug 中的临时数据。"""
+
 from __future__ import annotations
 
+from pathlib import Path
+from typing import TYPE_CHECKING
 import json
 import os
 import re
 import shutil
 import tempfile
-from pathlib import Path
-from typing import TYPE_CHECKING
+
 
 if TYPE_CHECKING:
     from software.trajectory.models import RecordingPaths

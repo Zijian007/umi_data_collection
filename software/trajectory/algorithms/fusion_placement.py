@@ -1,12 +1,14 @@
 """将连续跟踪段放入独立录像的米制世界，并划分优化段。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import numpy as np
-from scipy.spatial.transform import Rotation as Rot
 
-from software import config
+from scipy.spatial.transform import Rotation as Rot
+import numpy as np
+
+from software import parameters as parameter_models
 from software.camera.x3.frame import output_frame_rate
 from software.trajectory.algorithms.fusion_alignment import AlignmentResult
 
@@ -22,7 +24,7 @@ class MapPlacements:
     gates: list
 
 
-def place_maps(aligned: AlignmentResult, parameters: config.TrajectoryParameters, *, log=print) -> MapPlacements:
+def place_maps(aligned: AlignmentResult, parameters: parameter_models.TrajectoryParameters, *, log=print) -> MapPlacements:
     """冻结初始化镜头的参考段，再放置其它跟踪段和镜头。"""
     fusion_parameters = parameters.fusion
     gravity_m_s2, frame_rate_hz = fusion_parameters.gravity_m_s2, float(output_frame_rate(parameters.video.frame_step))

@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import json
 import os
 import shutil
 import subprocess
-from pathlib import Path
 
-from software import config
-from software.environment import python_executable
+from software import parameters as parameter_models
 from software.console import Console
+from software.environment import python_executable
 from software.trajectory.calibration import assets as calibration_assets
 from software.trajectory.models import ReconstructionSettings
 from software.vision import runtime as visual_runtime
+
 
 __all__ = [
     "console",
@@ -27,17 +28,24 @@ console = Console("轨迹")
 
 
 def reconstruction_settings(environment: dict[str, str], *, camera_json: Path, front_mask: Path,
-                            output: Path, parameters: config.TrajectoryParameters) -> ReconstructionSettings:
+                            output: Path, parameters: parameter_models.TrajectoryParameters,
+                            rear_measurement: dict | None = None) -> ReconstructionSettings:
     """Validate engines, then combine explicit measurements and algorithm settings."""
     from dataclasses import asdict
     camera = calibration_assets.read_basalt(camera_json)
-    rear = json.loads((HERE / 'assets/calib/rear_sample.json').read_text())
+    rear = json.loads((HERE / 'assets/calib/rear_sample.json').read_text()) if rear_measurement is None else None
     visual = visual_runtime.visual_settings(environment, lens_settings={
         'front': calibration_assets.slam_settings_text(camera, parameters),
-        'rear': calibration_assets.slam_settings_text(camera, parameters, rear=True)},
+        'rear': (calibration_assets.slam_settings_text(rear_measurement, parameters) if rear_measurement is not None
+                 else calibration_assets.slam_settings_text(camera, parameters, rear=True))},
         front_mask=front_mask, output=output, parameters=parameters)
     parameters_file = output / 'parameters.json'
     parameters_file.write_text(json.dumps(asdict(parameters)), encoding='utf-8')
+    if rear_measurement is not None:
+        import numpy as np
+        from software.camera.geometry import imu_from_camera
+        rear = dict(q_imu_camera_xyzw=rear_measurement['q_xyzw'],
+                    lever_camera_imu_m=np.linalg.inv(imu_from_camera(rear_measurement))[:3,3].tolist())
     return ReconstructionSettings(
         **asdict(visual), fusion_python=python_executable(environment),
         fusion_script=calibration_assets.FUSION_SCRIPT, parameters_file=parameters_file,
@@ -87,15 +95,15 @@ def check() -> int:
               HERE / "assets" / "config" / "front_x3_r1440_720.yaml", HERE / "assets" / "config" / "front_hand_mask.png"):
         line(path.is_file(), "配置文件 " + str(path.relative_to(REPO)))
     try:
-        from software.registry import list_devices
-        rows = list_devices()
-        line(bool(rows), "设备档案", "%d 台相机" % len(rows))
-        for device in rows:
-            line(bool(device.get("ok")), "  " + str(device.get("serial")),
-                 ("状态 %s；标定 %s" % (device.get("status"), device.get("calib_id")))
-                 if device.get("ok") else device.get("error", ""))
+        from software.calibration.inventory import device_inventory
+        devices = device_inventory()
+        line(bool(devices), "设备档案", f"{len(devices)} 台相机")
+        for device in devices:
+            problems = device['errors'] + [version['error'] for version in device['versions'] if not version['ok']]
+            line(device['ok'], '  ' + device['serial'], '; '.join(problems) if problems else
+                 f"状态 {device['status']}；工作镜头默认标定 {device['front_default']}")
     except Exception as error:
         line(False, "设备档案", repr(error))
-    console.write("环境检查通过" if ok else "依赖不完整；请运行 install.sh，安装日志见 <deps>/logs/",
+    console.write("环境检查通过" if ok else "环境或设备档案检查失败；请按上方缺失项修复，依赖安装日志见 <deps>/logs/",
                   state="完成" if ok else "失败")
     return 0 if ok else 1

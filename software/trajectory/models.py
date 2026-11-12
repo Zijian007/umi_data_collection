@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from software import config
+from software import parameters as parameter_models
 from software.vision.models import RecordingPaths as VisualPaths, VisualSettings, VisualContext
 
 
@@ -25,6 +26,9 @@ class TrajectoryRequest:
     config: Path | None = None
     dry_run: bool = False
     configuration: config.Configuration | None = None
+    intrinsics_source: str | None = None
+    tag_layout: Path | None = None
+    rear_calibration: str | None = None
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,8 @@ class ReconstructionSettings(VisualSettings):
     rear_lever: str
     camera_json: Path
     parameters_file: Path
+    poster_manifest: Path | None = None
+    rear_manifest: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -66,14 +72,14 @@ class ReconstructionContext:
         return VisualContext(self.paths, self.settings, self.parameters, self.frame_count, self.request.cores)
 
     @property
-    def parameters(self) -> config.TrajectoryParameters:
+    def parameters(self) -> parameter_models.TrajectoryParameters:
         return self.request.configuration.values
 
 
 @dataclass(frozen=True)
-class FusionResult:
+class FusionArtifacts:
     trajectory: Path
-    info: Path
+    quality_report: Path
 
 
 @dataclass(frozen=True)
@@ -83,5 +89,3 @@ class AttemptResult:
     directory: Path | None
     reason: str | None = None
     failed_stage: str | None = None
-
-

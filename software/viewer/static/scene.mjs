@@ -8,7 +8,7 @@ const add = (a, b) => a.map((v, i) => v + b[i]);
 export class TrajectoryScene {
   constructor(canvas, onPick) {
     this.canvas = canvas; this.ctx = canvas.getContext('2d'); this.onPick = onPick;
-    this.data = null; this.track = 'tcp'; this.index = 0; this.pose = true; this.overlay = false;
+    this.recording = null; this.track = 'tcp'; this.index = 0; this.pose = true; this.overlay = false;
     this.map = null; this.showMap = true; this.keyframes = true; this.showMapAxes = true; this.showWorldAxes = true;
     this.azimuth = -1.0; this.elevation = .55; this.zoom = 1; this.pan = [0, 0]; this.center = [0, 0, 0]; this.span = 1; this.floor = -.15;
     new ResizeObserver(() => this.draw()).observe(canvas);
@@ -33,16 +33,16 @@ export class TrajectoryScene {
     canvas.addEventListener('pointercancel', () => { this.drag = null; });
     canvas.addEventListener('dblclick', () => this.view('home'));
   }
-  load(data, track = 'tcp') {
-    this.data = data; this.track = track; this.index = 0; this.map = null;
+  load(recording, track = 'tcp') {
+    this.recording = recording; this.track = track; this.index = 0; this.map = null;
     this.view('home');
   }
   setMap(map) { this.map = map; this.fit(); this.draw(); }
   get rawMap() { return this.showMap && this.map?.coordinates === 'map'; }
   fit() {
     const map = this.showMap ? this.map : null;
-    const p = this.rawMap ? [] : [...this.data.tracks[this.track].position];
-    if (!this.rawMap && this.data.companion_tracks?.[this.track]) p.push(...this.data.companion_tracks[this.track].position);
+    const p = this.rawMap ? [] : [...this.recording.tracks[this.track].position];
+    if (!this.rawMap && this.recording.companion_tracks?.[this.track]) p.push(...this.recording.companion_tracks[this.track].position);
     if (map) {
       if (map.bounds) p.push(...map.bounds);
       p.push(...map.keyframes.map(frame => frame.position));
@@ -65,7 +65,7 @@ export class TrajectoryScene {
     this.pan = [0, 0]; this.zoom = 1;
   }
   view(name) {
-    if (name === 'home' && this.data) this.fit();
+    if (name === 'home' && this.recording) this.fit();
     const views = {home: [-1.0, .55], top: [-Math.PI / 2, Math.PI / 2 - .001], front: [-Math.PI / 2, 0], side: [0, 0]};
     [this.azimuth, this.elevation] = views[name] || views.home;
     this.pan = [0, 0]; this.zoom = 1; this.draw();
@@ -132,7 +132,7 @@ export class TrajectoryScene {
       end: translation.map((value, row) => value + rotation[row][axis] * scale * length)}))};
   }
   worldAxes() {
-    if (!this.data || this.rawMap) return null;
+    if (!this.recording || this.rawMap) return null;
     const length = niceStep((this.axisSpan ?? this.span) * .15);
     return {name: 'world', originLabel: 'O_world', unit: 'm', origin: [0, 0, 0], length,
       axes: AXES.map(([name, color], axis) => ({name, color, end: [0, 1, 2].map(k => k === axis ? length : 0)}))};
@@ -194,10 +194,10 @@ export class TrajectoryScene {
     const ctx = this.ctx; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, this.width, this.height);
     this.grid();
     this.drawMap();
-    if (this.data && !this.rawMap) {
-      const track = this.data.tracks[this.track], position = track.position, index = clamp(this.index, 0, position.length - 1);
-      if (this.overlay) for (const [name, other] of Object.entries(this.data.tracks)) if (name !== this.track) this.path(other.position, other.position.length - 1, COLORS[name] + '70', 1, true);
-      const companion = this.data.companion_tracks?.[this.track];
+    if (this.recording && !this.rawMap) {
+      const track = this.recording.tracks[this.track], position = track.position, index = clamp(this.index, 0, position.length - 1);
+      if (this.overlay) for (const [name, other] of Object.entries(this.recording.tracks)) if (name !== this.track) this.path(other.position, other.position.length - 1, COLORS[name] + '70', 1, true);
+      const companion = this.recording.companion_tracks?.[this.track];
       const primaryColor = companion ? '#8ee3bf' : COLORS[this.track];
       this.path(position, position.length - 1, primaryColor + '70', 1.5);
       this.path(position, index, primaryColor, 2.2);
@@ -224,11 +224,11 @@ export class TrajectoryScene {
     this.triad();
   }
   pick(event) {
-    if (!this.data) return;
+    if (!this.recording) return;
     const box = this.canvas.getBoundingClientRect(), x = event.clientX - box.left, y = event.clientY - box.top;
     let best = Infinity, index = 0;
-    const candidates = this.rawMap ? this.map.keyframes.map(frame => [frame.position, nearestIndex(this.data.times, frame.time)])
-      : this.data.tracks[this.track].position.map((point, i) => [point, i]);
+    const candidates = this.rawMap ? this.map.keyframes.map(frame => [frame.position, nearestIndex(this.recording.times, frame.time)])
+      : this.recording.tracks[this.track].position.map((point, i) => [point, i]);
     candidates.forEach(([point, i]) => { const p = this.project(point); const distance = Math.hypot(p[0] - x, p[1] - y); if (distance < best) { best = distance; index = i; } });
     if (best < 24) this.onPick(index);
   }

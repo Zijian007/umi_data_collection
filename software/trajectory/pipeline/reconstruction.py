@@ -3,37 +3,46 @@
 镜头视频已准备好。每次尝试依次：建图 -> 在每张图中定位并合并 -> IMU 融合。
 质量不理想时重做这一整轮；视频只读共用。算法命令与参数沿用原实现。
 """
+
 from __future__ import annotations
 
+from pathlib import Path
 import hashlib
 import json
 import time
-from pathlib import Path
 
-from software.storage import write_json
 from . import runtime
+from software.storage import write_json
+from software.trajectory.algorithms.fusion_quality import scale_failure
+from software.trajectory.models import AttemptResult, FusionArtifacts, ReconstructionContext
 from software.vision import runtime as visual_runtime, slam
-from software.trajectory.models import AttemptResult, FusionResult, ReconstructionContext
 from software.vision.models import LensLocalization, LensVideo, RecordingData, ProcessingError
 from software.vision.runtime import write_error_log
-from software.trajectory.algorithms.fusion_quality import scale_failure
 
 
-def run_attempts(videos: tuple[LensVideo, ...], data: RecordingData,
+class RepeatedAlignmentFailure(ProcessingError):
+    """本次运行中，完全相同的融合输入已被确定性初始化拒绝。"""
+
+
+def run_attempts(videos: tuple[LensVideo, ...], run_inputs: RecordingData,
                  context: ReconstructionContext, *, recording_name: str) -> AttemptResult:
     """管理重试与选择；单轮具体阶段顺序见 run_attempt()。"""
     tries, best, last_stage = [], None, None
+    alignment_failures = {}
     for number in range(1, context.request.max_tries + 1):
         directory = context.paths.attempt(number)
         directory.mkdir(parents=True, exist_ok=True)
         quality, return_code, reason = None, 0, None
+        repeated = False
         try:
-            fusion = run_attempt(videos, data, context, directory, recording_name=recording_name, attempt=number)
+            fusion = run_attempt(videos, run_inputs, context, directory, recording_name=recording_name, attempt=number,
+                                 alignment_failures=alignment_failures)
             quality = assess_try(fusion, context.parameters.retry)
         except Exception as error:
             last_stage = error.stage if isinstance(error, ProcessingError) else '轨迹重建'
             return_code = error.return_code if isinstance(error, ProcessingError) else 1
             reason = str(error)
+            repeated = isinstance(error, RepeatedAlignmentFailure)
             write_error_log(directory / 'stage_error.log', error)
         finally:
             # 每个命令保留独立原始日志；runner_tryN 汇总阶段进度及失败原因。
@@ -47,6 +56,10 @@ def run_attempts(videos: tuple[LensVideo, ...], data: RecordingData,
         if reason:
             try_entry.update({'failed_stage': last_stage, 'reason': reason})
         tries.append(try_entry)
+        if repeated:
+            try_entry['stop_reason'] = 'identical_alignment_inputs'
+            runtime.console.write(reason, recording=Path(recording_name).stem, attempt=number, state='停止重试')
+            break
         if quality is not None and quality['usable'] and (best is None or try_key(quality) < try_key(tries[best - 1])):
             best = number
         if quality is not None and not quality['suspicious']:
@@ -63,8 +76,8 @@ def run_attempts(videos: tuple[LensVideo, ...], data: RecordingData,
     return AttemptResult(tries, best, context.paths.attempt(best))
 
 
-def run_attempt(videos: tuple[LensVideo, ...], data: RecordingData, context: ReconstructionContext,
-                directory: Path, *, recording_name: str, attempt: int) -> FusionResult:
+def run_attempt(videos: tuple[LensVideo, ...], run_inputs: RecordingData, context: ReconstructionContext,
+                directory: Path, *, recording_name: str, attempt: int, alignment_failures=None) -> FusionArtifacts:
     """一轮完整重建。阶段产物显式传递，不从目录反推执行到了哪一步。"""
     _start_run(directory, context, recording_name)
     stage = '建图'
@@ -79,7 +92,7 @@ def run_attempt(videos: tuple[LensVideo, ...], data: RecordingData, context: Rec
 
         stage = 'IMU 融合'
         runtime.console.write('IMU 融合', recording=Path(recording_name).stem, attempt=attempt)
-        fusion = fuse_visual_imu(localization, data, context, directory)
+        fusion = fuse_visual_imu(localization, run_inputs, context, directory, alignment_failures=alignment_failures)
         status = 'ok'
         slam.append_run(directory, f'UMI_DONE {_utc_time()} trajectory={fusion.trajectory}')
         return fusion
@@ -93,21 +106,55 @@ def run_attempt(videos: tuple[LensVideo, ...], data: RecordingData, context: Rec
         write_json(directory / 'logs/run.json', record)
 
 
-def fuse_visual_imu(localization: tuple[LensLocalization, ...], data: RecordingData,
-                    context: ReconstructionContext, directory: Path) -> FusionResult:
+def fuse_visual_imu(localization: tuple[LensLocalization, ...], run_inputs: RecordingData,
+                    context: ReconstructionContext, directory: Path, *, alignment_failures=None) -> FusionArtifacts:
     """逐帧视觉定位 + 同一录像 IMU -> 米制、重力对齐的 IMU 世界位姿。"""
     settings = context.settings
     frames = {item.lens: item.frames_csv for item in localization}
-    extra = ['--times', str(data.times_csv)] if data.times_csv is not None else []
+    extra = ['--times', str(run_inputs.times_csv)] if run_inputs.times_csv is not None else []
+    if settings.poster_manifest is not None:
+        extra += ['--poster',str(settings.poster_manifest)]
+    if settings.rear_manifest is not None:
+        extra += ['--rear-calibration', str(settings.rear_manifest)]
     command = [settings.fusion_python, str(settings.fusion_script),
-               str(frames.get('rear', frames['front'])), str(frames['front']), str(data.imu_csv),
+               str(frames.get('rear', frames['front'])), str(frames['front']), str(run_inputs.imu_csv),
                settings.time_offset_ns, settings.rear_q_ic, str(directory / 'fuse'),
                '--lever_prior', settings.rear_lever, '--calibration', str(settings.camera_json),
                '--parameters', str(settings.parameters_file), *extra]
     log = directory / 'logs/fuse.log'
-    visual_runtime.run_logged(visual_runtime.engine_command(context.visual, command), log, stage='IMU 融合',
-                       environment=settings.environment, failure_code=4)
-    fusion = FusionResult(directory / 'fuse/traj_tum.txt', directory / 'fuse/fuse_info.json')
+    # 只复用当前 run_attempts 内有结构化诊断的初始化失败；超时/崩溃仍正常重试。
+    from software.provenance import canonical_hash, file_hash
+    assets = dict(imu=run_inputs.imu_csv, calibration=settings.camera_json,
+                  parameters=settings.parameters_file, **frames)
+    if run_inputs.times_csv is not None:
+        assets['times'] = run_inputs.times_csv
+    if settings.poster_manifest is not None:
+        assets['poster'] = settings.poster_manifest
+    if settings.rear_manifest is not None:
+        assets['rear_calibration'] = settings.rear_manifest.parent / 'calibration.json'
+        assets['rear_manifest'] = settings.rear_manifest
+    identity = canonical_hash(dict(assets={name: file_hash(path) for name, path in assets.items()},
+                                   offset=settings.time_offset_ns, rear_q=settings.rear_q_ic, rear_lever=settings.rear_lever))
+    if alignment_failures is not None and identity in alignment_failures:
+        previous = alignment_failures[identity]
+        reason = f'融合输入与先前失败完全相同，停止重复求解；初始化诊断：{previous}'
+        log.write_text(reason + '\n', encoding='utf-8')
+        raise RepeatedAlignmentFailure('IMU 融合', reason, return_code=4)
+    try:
+        visual_runtime.run_logged(visual_runtime.engine_command(context.visual, command), log, stage='IMU 融合',
+                           environment=settings.environment, failure_code=4)
+    except ProcessingError as error:
+        diagnostic = directory / 'fuse/alignment_failure.json'
+        try:
+            evidence = json.loads(diagnostic.read_text())
+        except (OSError, ValueError):
+            raise error
+        if evidence.get('code') != 'NO_USABLE_LENS':
+            raise error
+        if alignment_failures is not None:
+            alignment_failures[identity] = diagnostic
+        raise ProcessingError('IMU 融合', f'尺度/重力初始化未通过；诊断：{diagnostic}', return_code=4) from error
+    fusion = FusionArtifacts(directory / 'fuse/traj_tum.txt', directory / 'fuse/fuse_info.json')
     if not fusion.trajectory.is_file() or fusion.trajectory.stat().st_size == 0:
         raise ProcessingError('IMU 融合', f'未生成 IMU 轨迹；日志：{log}', return_code=4)
     slam.append_run(directory, 'fuse rc=0')
@@ -142,22 +189,22 @@ def _start_run(directory: Path, context: ReconstructionContext, recording_name: 
                   'libORB_SLAM3.so': _asset_hash(settings.orb_directory / 'lib/libORB_SLAM3.so')}))
 
 
-def assess_try(fusion: FusionResult, parameters=None) -> dict:
+def assess_try(fusion: FusionArtifacts, parameters=None) -> dict:
     """返回本轮质量；读取或计算失败时保留实际原因，由重试入口统一处理。"""
     from software import config
     parameters = parameters or config.load("trajectory").values.retry
     try:
-        info = json.loads(fusion.info.read_text(encoding='utf-8'))
-        lens = info.get('init_lens') or 'front'
-        chains = (info.get('chains') or {}).get(lens, [])
+        attempt_diagnostics = json.loads(fusion.quality_report.read_text(encoding='utf-8'))
+        lens = attempt_diagnostics.get('init_lens') or 'front'
+        chains = (attempt_diagnostics.get('chains') or {}).get(lens, [])
         full = [c for c in chains if c[1] == 'full']
-        grouped = (info.get('params', {}).get('chain_groups') or {}).get(lens, {})
+        grouped = (attempt_diagnostics.get('params', {}).get('chain_groups') or {}).get(lens, {})
         placements = max(1, len(full) - len(grouped))
-        n = max(1, int(info.get('frames') or 1))
+        n = max(1, int(attempt_diagnostics.get('frames') or 1))
         full_fraction = sum(int(c[0][1]) - int(c[0][0]) + 1 for c in full) / n
     except Exception as error:
-        raise ProcessingError('重建质量检查', f'无法读取融合质量指标：{error}；指标文件：{fusion.info}') from error
-    scale = info.get('scale_consistency')
+        raise ProcessingError('重建质量检查', f'无法读取融合质量指标：{error}；指标文件：{fusion.quality_report}') from error
+    scale = attempt_diagnostics.get('scale_consistency')
     failure = scale_failure(scale, parameters.maximum_scale_change_ratio)
     quality = dict(placements=placements, full_fraction=round(full_fraction, 4),
         scale_consistency=scale, usable=failure is None,

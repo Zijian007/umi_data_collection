@@ -1,11 +1,11 @@
 """小尺寸暗标签补检、原始坐标与歧义拒绝。"""
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
 
-from software.gripper_width.detection import FULL_SEARCH_INTERVAL, MarkerDetector
+from software.gripper_width.detection import FULL_SEARCH_INTERVAL, MarkerDetector, CascadeMarkerDetector, FrameDetection
 
 
 def dark_markers(tags: tuple[int, ...], *, size=(24, 14), sigma=.4, positions=(20, 120, 220)) -> np.ndarray:
@@ -28,6 +28,41 @@ def bright_markers(positions: tuple[tuple[int, int, int], ...], *, shape=(1200, 
     for tag, left, top in positions:
         gray[top:top + 40, left:left + 40] = cv2.aruco.generateImageMarker(dictionary, tag, 40)
     return gray
+
+
+class CascadeDetectionTests(unittest.TestCase):
+    def test_unique_fast_pair_skips_full_detection_and_preserves_native_coordinates(self):
+        detector = CascadeMarkerDetector((550, 650, 900, 800))
+        detector._fallback._detect_region = Mock(side_effect=AssertionError('unnecessary fallback'))
+        found = detector.detect(bright_markers(((0, 600, 700), (1, 800, 700))))
+        self.assertAlmostEqual(found.distance_px, 200., delta=.3)
+        np.testing.assert_allclose(found.centres[0], [619.5, 719.5], atol=.3)
+        detector._fallback._detect_region.assert_not_called()
+
+    def test_faint_pair_uses_full_fallback_without_reusing_previous_frame(self):
+        detector = CascadeMarkerDetector()
+        detector._fallback._detect_region = Mock(wraps=detector._fallback._detect_region)
+        found = detector.detect(dark_markers((0, 1), size=(20, 12), sigma=.3, positions=(40, 180)))
+        self.assertAlmostEqual(found.distance_px, 140., delta=.4)
+        self.assertEqual(detector._fallback._detect_region.call_count, 1)
+        self.assertFalse(np.isfinite(detector.detect(np.zeros((240, 320), np.uint8)).distance_px))
+
+    def test_duplicate_detected_by_fast_pass_cannot_be_hidden_by_fallback(self):
+        detector = CascadeMarkerDetector()
+        detector._fallback._detect_region = Mock(side_effect=AssertionError('ambiguity must be retained'))
+        found = detector.detect(bright_markers(((0, 100, 100), (0, 200, 100), (1, 300, 100))))
+        self.assertFalse(np.isfinite(found.distance_px))
+        detector._fallback._detect_region.assert_not_called()
+
+    def test_disagreeing_positions_or_ids_between_passes_are_rejected(self):
+        polygon = np.array([[[20., 30.], [40., 30.], [40., 50.], [20., 50.]]], dtype=np.float32)
+        quick = FrameDetection((polygon,), np.array([[0]]), {0: polygon[0].mean(axis=0)})
+        for corners in ((polygon + 50, polygon + 100), (polygon + 100, polygon)):
+            complete = FrameDetection(corners, np.array([[0], [1]]),
+                                      {tag: p[0].mean(axis=0) for tag, p in enumerate(corners)})
+            with self.subTest(corners=corners), patch.object(MarkerDetector, '_detect_region', side_effect=[quick, complete]):
+                found = CascadeMarkerDetector().detect(np.zeros((240, 320), np.uint8))
+                self.assertFalse(np.isfinite(found.distance_px))
 
 
 class MarkerDetectionTests(unittest.TestCase):

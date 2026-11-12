@@ -1,11 +1,12 @@
 """文字报告与终端展示；不决定重试、复用或清理策略。"""
 
-import json
 from pathlib import Path
+import json
 
-from software.trajectory.pipeline import runtime
 from software.camera.geometry import describe_tcp_frame
 from software.trajectory.calibration.selection import SelectedCalibration
+from software.trajectory.pipeline import runtime
+
 
 STATUS_LABELS = {"ok": "完成", "skipped": "跳过", "failed": "失败", "planned": "预检通过"}
 SELECTION_LABELS = {"registry": "设备档案", "UMI_TRAJ_CALIB": "环境变量覆盖"}
@@ -53,9 +54,15 @@ def write_result_report(output: Path, summary: dict) -> None:
     if (output / 'front.mp4').is_file():
         size_px = configuration.get('values', {}).get('video', {}).get('size_px') if configuration else None
         dimensions = f'{size_px}×{size_px}，' if size_px else ''
-        lines += ['', f'前镜头视频：front.mp4（{dimensions}保留鱼眼畸变）']
+        lines += ['', f'工作镜头视频：front.mp4（{dimensions}保留鱼眼畸变）']
     if (output / 'details/map.json').is_file():
-        lines.append('环境地图：details/map.json（前镜头稀疏点云与关键帧，umi-view 可查看）')
+        lines.append('环境地图：details/map.json（工作镜头稀疏点云与关键帧，umi-view 可查看）')
+    poster = summary.get('fusion',{}).get('environment_poster')
+    rear = summary.get('rear_calibration')
+    if rear is not None:
+        lines += [f"环境镜头标定：{rear['version']} / {rear['intrinsics_source']}；冻结资产：devices/rear/"]
+    if poster is not None:
+        lines += [f'环境海报：{poster["status"]}；真实轨迹误差未测量。']
     lines += ['', '辅助轨迹、逐帧信息、完整配置和摘要：details/', '运行日志：debug/logs/']
     if summary.get('debug_retained'):
         lines.append('中间数据：debug/（已保留）')
@@ -100,5 +107,3 @@ def show_recording(summary: dict) -> None:
                               recording=name, state=state)
     if "wall_s" in summary or summary["status"] == "skipped":
         runtime.console.write(f"报告：{output / 'report.txt'}；日志：{output / 'debug/logs'}", recording=name)
-
-

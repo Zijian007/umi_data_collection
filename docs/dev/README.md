@@ -2,12 +2,14 @@
 
 [文档导航](../README.md) · [当前待办](todo.md) · [来源与变更历史](PROVENANCE.md)
 
+最近的全项目结构检查、已完成重构及剩余重点见[架构扫描与重构](架构扫描与重构.md)。
+
 ## 从入口沿流程阅读
 
 | 流程 | 阅读入口 |
 |---|---|
 | 标定 | [标定代码指南](../../software/calibration/README.md)：`cli.main()` → `workflow.run()` / `verify()` |
-| 共享场景 | [场景代码指南](../../software/scene/README.md)：`cli.main()` → `management.processing.run()` / `build()` → `workflow.build_scene()` / `run_episode()`（架构子包：`management/`, `spatial/`, `pipeline/`） |
+| 共享场景 | [场景代码指南](../../software/scene/README.md)：`cli.main()` → `management.processing.run()` / `build()` → `pipeline.map_lifecycle.build_scene()` / `workflow.run_episode()` |
 | 轨迹抽取 | [轨迹代码指南](../../software/trajectory/README.md)：`cli.main()` → `workflow.run_batch()` → `run_recording()`（架构子包：`calibration/`, `pipeline/`, `reporting/`, `algorithms/`） |
 | 三维查看 | [查看器代码指南](../../software/viewer/README.md)：`server.main()` → `RecordingCatalog` → 浏览器播放状态 |
 | 共用视觉 | [视觉代码指南](../../software/vision/README.md)：录像准备、ORB 建图/定位、视觉上下文与执行验收 |
@@ -20,7 +22,7 @@
 
 ## 参数管理
 
-见 [统一参数配置](../../config/README.md)。数值默认值写在 `config/*.yaml`，共享加载、校验、快照和指纹在 `software/config.py`。workflow 加载一次，向阶段传递不可变的参数对象。修改参数后同时核对复用、报告与默认数值回归。
+见 [统一参数配置](../../config/README.md)。数值默认值写在 `config/*.yaml`，不可变模型位于 `software/parameters.py`，加载、校验、覆盖和快照位于 `software/config.py`。源代码、引擎、文件内容及规范 JSON 的身份计算集中在 `software/provenance.py`；设备登记、场景和标定共用同一实现。workflow 加载一次，向阶段传递不可变参数。修改参数后同时核对复用、报告与默认数值回归。
 
 ## 命名和终端约定
 
@@ -33,21 +35,26 @@
 完成[安装](../安装与日常使用.md)与标定组件安装后，可直接通过根目录的统一脚本一键测试：
 
 ```bash
-./test.sh        # 一键测试：主单元测试 (unittest) + 夹爪历史测试 (pytest) + 前端测试 (node)
+./test.sh        # 一键测试：主单元测试 (unittest，含宽度映射) + 前端测试 (node)
 ./test.sh --all  # 包含 CLI check 运行时检查
+./test.sh --unit test_rear_assets test_calibration_inventory  # 日常改动：只跑相关模块
+./test.sh --unit test_config.ConfigTests.test_c_isolates_task_poster_and_dual_mode_but_keeps_solver_parameters
 ```
 
 也可分项执行各环境原生命令：
 
 ```bash
 .deps/calib_env/bin/python -m unittest discover -s tests -q
-.deps/env/bin/python -m pytest -q -p no:cacheprovider software/gripper_width/legacy/tests
 node --test tests/js/viewer.test.mjs
 ./umi-calib check
 ./umi-scene check
 ```
 
 Node 只用于查看器前端测试，运行查看器不需要 Node。Python 测试覆盖输入、标定验收、流程、复用、重建协议、产物布局与查看器；涉及求解器和 SLAM 的单元测试使用替代引擎。真实录像端到端回归和独立误差评估需另外记录输入、设备标定、版本及结果。
+
+`--unit` 不带模块时仍运行全部 Python 测试；带模块时接受 `test_模块` 或 `test_模块.测试类.方法`，从 `tests/` 解析。定位和迭代时运行相关模块，涉及公共配置、登记表或融合接口的改动收尾再跑全量。选跑不会自动推断依赖，也不会替代最后的跨模块回归。
+
+复用测试夹具时导入模块或独立 fixture，避免把其他文件的 `TestCase` 类直接导入测试模块顶层：unittest 会再次收集该类。查重应比较源码文件、类和方法；仅按测试 ID 检查会漏掉 `tests.test_x` 与 `test_x` 的别名重复。
 
 ## 文档怎么维护
 

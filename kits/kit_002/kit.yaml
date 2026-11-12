@@ -1,0 +1,9 @@
+# kits/kit_002/kit.yaml
+arms:
+  right:
+    serial: IAQEB26097M4CP
+    calibration: '002'
+    gripper:
+      tcp: tcp_camera.json
+      width: left_width.json
+      tag_distance: tag_distance.json

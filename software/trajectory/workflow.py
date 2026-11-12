@@ -4,24 +4,27 @@
          → 生成相机/TCP 轨迹 → 发布视频与报告 → 清理临时数据。
 重建内部按“建图 → 逐图定位与合并 → IMU 融合”执行，见 reconstruction.run_attempt()。
 """
+
 from __future__ import annotations
 
+from functools import partial
+from dataclasses import asdict, replace
+from pathlib import Path
 import concurrent.futures as cf
 import json
 import os
 import shutil
 import time
-from functools import partial
-from pathlib import Path
 
 from software import config, registry
-from software.vision import recordings as visual_recordings, runtime as visual_runtime
+from software import provenance as artifact_identity
+from software.trajectory.algorithms import postprocess
 from software.trajectory.calibration import selection
-from software.trajectory.pipeline import inputs as recording_data, reconstruction, reuse, runtime
+from software.trajectory.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
+from software.trajectory.pipeline import calibration_assets, poster_assets, inputs as recording_data, reconstruction, reuse, runtime
 from software.trajectory.reporting import map_data, reports, results
 from software.trajectory.reporting.quality import evaluate_notes
-from software.trajectory.algorithms import postprocess
-from software.trajectory.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
+from software.vision import recordings as visual_recordings, runtime as visual_runtime
 from software.vision.models import ProcessingError
 from software.vision.runtime import write_error_log
 
@@ -62,20 +65,24 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
     # 先验证设备标定和输入指纹；无有效标定时，即使 --force 也保留旧结果。
     try:
         request = config.resolve_trajectory_request(request)
-        selected = selection.select_calibration(video, device=request.device, tcp=request.tcp, mask=request.mask or selection.DEFAULT_FRONT_MASK)
+        selected = selection.select_calibration(video, device=request.device, tcp=request.tcp,
+            mask=request.mask or selection.DEFAULT_FRONT_MASK, **(dict(intrinsics_source=request.intrinsics_source)
+                                                                  if request.intrinsics_source else {}))
+        environment_assets = calibration_assets.select_environment_assets(video, selected, request)
         if not request.dry_run:
             visual_runtime.validate_engines(dict(os.environ))
-        fingerprint = reuse.run_fingerprint(video, selected, request)
+        fingerprint = reuse.run_fingerprint(video, selected, request, environment_assets=environment_assets)
         previous = None if request.force or request.dry_run else reuse.reuse_decision(paths.output, fingerprint, notes=request.configuration.values.notes)
     except (registry.RegistryError, ProcessingError, OSError, ValueError, KeyError, TypeError) as error:
         summary.update(reason=str(error), failed_stage="选择标定与检查复用")
         reports.show_recording(summary)
         return summary
     reports.show_calibration(selected, recording=recording_name)
-    provenance = dict(configuration=request.configuration.snapshot(), code=config.code_identity('trajectory'),
-                      engines=config.engine_identity('trajectory'), computation_hash=fingerprint['computation_hash'])
+    provenance = dict(configuration=request.configuration.snapshot(), code=artifact_identity.code_identity('trajectory'),
+                      engines=artifact_identity.engine_identity('trajectory'), computation_hash=fingerprint['computation_hash'])
     if request.dry_run:
         print(json.dumps(dict(video=str(video), output=str(paths.output), calibration=selected.summary(),
+                              rear_calibration=asdict(environment_assets.rear.identity) if environment_assets.rear else None,
                               **provenance), indent=2, ensure_ascii=False))
         return dict(summary, status='planned')
     if previous is not None and previous.summary is not None:
@@ -108,28 +115,44 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
 
     started = time.monotonic()
     summary.update(calibration_used=selected.summary(), run_fingerprint=fingerprint, parameters=provenance)
+    if environment_assets.rear is not None:
+        summary['rear_calibration'] = asdict(environment_assets.rear.identity)
     stage = "读取录像"
     try:
         # 1. 读取容器帧时间和尾部 IMU，不解码图像；此处检查丢帧策略。
         runtime.console.write("读取录像时间戳和 IMU", recording=recording_name, step=(1, 4))
-        data = visual_recordings.prepare(video, paths, allow_irregular=request.allow_irregular,
+        run_inputs = visual_recordings.prepare(video, paths, allow_irregular=request.allow_irregular,
             frame_step=request.configuration.values.video.frame_step)
-        frames = data.manifest["frames"]
+        frames = run_inputs.manifest["frames"]
         runtime.console.write(f"{frames['n_frames_used']} 帧；时长 {frames['duration_s']:.1f} 秒", recording=recording_name)
 
         # 2. 原片只裁切一次，所有建图与定位尝试复用相同镜头视频。
         stage = "准备镜头视频"
         runtime.console.write("准备镜头视频，供所有重建尝试共用", recording=recording_name, step=(2, 4))
+        rear_manifest = (calibration_assets.freeze_rear_calibration(environment_assets.rear, paths.output/'devices/rear')
+                         if environment_assets.rear else None)
+        rear_measured = calibration_assets.load_frozen_rear(rear_manifest) if rear_manifest else None
         settings = runtime.reconstruction_settings(dict(os.environ), camera_json=selected.assets.camera_json,
                                                     front_mask=selected.assets.front_mask,
-                                                    output=paths.debug / "settings", parameters=request.configuration.values)
+                                                    output=paths.debug / "settings", parameters=request.configuration.values,
+                                                    **(dict(rear_measurement=rear_measured) if rear_measured is not None else {}))
+        settings = replace(settings, rear_manifest=rear_manifest)
+        if environment_assets.poster is not None:
+            expected_poster_hashes = poster_assets.PosterAssetHashes(
+                layout_sha256=environment_assets.poster.board.asset_hash,
+                rear_sha256=environment_assets.rear.identity.sha256)
+            poster_manifest = poster_assets.prepare(
+                video, paths.output/'environment_poster', environment_assets.poster.path,
+                rear_manifest.parent/'calibration.json', request.configuration.values.environment_tags,
+                expected=expected_poster_hashes, progress=runtime.console.write)
+            settings = replace(settings, poster_manifest=poster_manifest)
         context = ReconstructionContext(paths, request, settings, frames['n_frames_used'])
         videos = visual_recordings.prepare_lens_videos(video, context.visual, lenses=('front', 'rear') if request.mode == 'dual' else ('front',))
 
         # 3. 重试一整轮“建图 → 定位 → 融合”，依据融合质量选择最佳尝试。
         stage = "轨迹重建"
         runtime.console.write("重建轨迹：建图 → 逐图定位与合并 → IMU 融合", recording=recording_name, step=(3, 4))
-        attempt = reconstruction.run_attempts(videos, data, context, recording_name=video.name)
+        attempt = reconstruction.run_attempts(videos, run_inputs, context, recording_name=video.name)
         summary["tries"] = attempt.attempts
         if attempt.reason:
             raise ProcessingError(attempt.failed_stage or stage, attempt.reason)
@@ -142,7 +165,11 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
         calibration_record = selected.as_postprocess_dict(fingerprint["calibration"]["assets"])
         calibration_record.update(yaml=str(settings.front_settings), rear_yaml=str(settings.rear_settings),
                                   mask=str(settings.front_mask), source_mask=str(selected.assets.front_mask))
-        metrics = postprocess.export_trajectories(attempt.directory, data.manifest, paths.output, request.mode, video.name,
+        if rear_manifest is not None:
+            calibration_record['rear_calibration_manifest'] = str(rear_manifest)
+        if settings.poster_manifest is not None:
+            calibration_record['environment_poster_manifest'] = str(settings.poster_manifest)
+        metrics = postprocess.export_trajectories(attempt.directory, run_inputs.manifest, paths.output, request.mode, video.name,
                                          calibration_record, command={
             "parameters": provenance, "max_tries": request.max_tries, "chosen_try": attempt.chosen, "tries": attempt.attempts,
             "allow_irregular": request.allow_irregular, "keep_work": request.keep_work, "force": request.force, "cores": request.cores or None,

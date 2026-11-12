@@ -1,4 +1,6 @@
+from software import provenance as artifact_identity
 """main 宽度算法的场景集成：标定冻结、原片检测、时钟、缺失值与训练导出。"""
+from software.scene.management import camera_assets
 import csv
 from dataclasses import replace
 from fractions import Fraction
@@ -14,7 +16,7 @@ import cv2
 import numpy as np
 from software.scene.result_io import pose_rows
 
-from software import config, registry
+from software import registry
 from software.dataset.export import build, load_episode
 from software.gripper_width import calibration, detection, pipeline, series
 from software.scene.management import batches, episodes, inputs
@@ -29,6 +31,14 @@ def measurement():
 
 
 class WidthNumericalTests(unittest.TestCase):
+    def test_mapping_clamps_closed_and_flags_extrapolated_openings(self):
+        anchors = [dict(x=277.35, mm=0.), dict(x=543.02, mm=112.)]
+        widths_mm, exceeds_range = calibration.pixel_distances_to_widths(
+            np.array([200., 277.35, 410.185, 600.]), anchors)
+        np.testing.assert_allclose(widths_mm[:3], [0., 0., 56.])
+        self.assertGreater(widths_mm[3], 112.)
+        np.testing.assert_array_equal(exceeds_range, [False, False, False, True])
+
     def test_nanosecond_clock_rounding_does_not_mix_a_missing_neighbour(self):
         measured = series.WidthSeries(np.array([0., .033366667, .066733333]),
             np.array([np.nan, 40., 40.]), np.array([series.MISSING, series.TWO_TAGS, series.TWO_TAGS], dtype=np.uint8))
@@ -74,10 +84,10 @@ class WidthNumericalTests(unittest.TestCase):
             output = root / 'result'
             output.mkdir()
             times = np.arange(10)/60.
-            detected = detection.DetectionSeries(times, np.full(10, 240.))
+            detected = detection.DetectionSeries(times, np.full(10, 240.), np.full((10, 2, 4, 2), np.nan))
             def process(offset=-.12, *, gap=.2, threshold=3., diagnostics=False, recording='a'*64):
                 return pipeline.process(root/'raw.insv', calibration.read(path), times[::2], offset, output, root/'cache', recording,
-                                        calibration_sha256=config.file_hash(path), max_gap_s=gap, closed_threshold_mm=threshold, diagnostics=diagnostics)
+                                        calibration_sha256=artifact_identity.file_hash(path), max_gap_s=gap, closed_threshold_mm=threshold, diagnostics=diagnostics)
             with patch.object(detection, 'detect', return_value=detected) as detect:
                 process()
                 self.assertFalse((output / 'details').exists())
@@ -106,7 +116,7 @@ class WidthNumericalTests(unittest.TestCase):
     def test_detection_cache_rejects_tampering(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            measured = detection.DetectionSeries(np.array([0., .1]), np.array([240., np.nan]))
+            measured = detection.DetectionSeries(np.array([0., .1]), np.array([240., np.nan]), np.full((2, 2, 4, 2), np.nan))
             with patch.object(detection, 'detect', return_value=measured) as detect:
                 detection.cached(root / 'raw.insv', root, 'a'*64)
                 next(root.rglob('detections.npz')).write_bytes(b'tampered')
@@ -129,7 +139,7 @@ class WidthNumericalTests(unittest.TestCase):
             image = np.full((1920, 3840, 3), 255, np.uint8)
             for tag, u in ((0, 200), (1, 500)):
                 marker = cv2.aruco.generateImageMarker(dictionary, tag, 80)
-                # Below the 1440px trajectory crop: width detection needs the full native lens.
+                # 显式选择整幅原始镜头范围时，仍按原始坐标检测，不能套用轨迹裁切坐标。
                 image[1750:1830, 1920+u:2000+u] = marker[:, :, None]
             with av.open(str(path), 'w') as container:
                 stream = container.add_stream('mpeg4', rate=30)
@@ -141,9 +151,11 @@ class WidthNumericalTests(unittest.TestCase):
                         container.mux(packet)
                 for packet in stream.encode():
                     container.mux(packet)
-            detected = detection.detect(path)
+            detected = detection.detect(path, roi=(0, 0, 1920, 1920))
             np.testing.assert_allclose(detected.times_s, np.arange(3)/30., atol=1e-8)
             np.testing.assert_allclose(detected.distance_px, 300., atol=1.)
+            self.assertEqual(detected.corners_px.shape, (3, 2, 4, 2))
+            np.testing.assert_allclose(detected.corners_px[0].mean(axis=1), [[239.5,1789.5],[539.5,1789.5]], atol=1.)
 
 
 class WidthKitTests(unittest.TestCase):
@@ -170,9 +182,9 @@ class WidthKitTests(unittest.TestCase):
         batch = inputs.read_batch(manifest)
         scene = replace(batch.scene, devices=batch.devices)
         with patch.object(registry, 'read_insv_serial', return_value='CAMERA_A'):
-            selected = inputs.select_camera(self.f.root / 'recording.insv', scene)
+            selected = camera_assets.select_camera(self.f.root / 'recording.insv', scene)
         self.assertEqual(selected.files['width'], self.width)
-        self.assertNotIn('width', inputs.camera_identity(selected)['assets'])
+        self.assertNotIn('width', camera_assets.camera_identity(selected)['assets'])
         self.assertFalse((registry.CAMERAS / 'CAMERA_A/gripper_width').exists())
 
     def test_missing_and_invalid_width_sources_are_rejected(self):
@@ -183,10 +195,10 @@ class WidthKitTests(unittest.TestCase):
         with patch.object(registry, 'read_insv_serial', return_value='CAMERA_A'):
             self.width.unlink()
             with self.assertRaises(OSError):
-                inputs.select_camera(self.f.root / 'recording.insv', scene)
+                camera_assets.select_camera(self.f.root / 'recording.insv', scene)
             write_json(self.width, dict(anchors=[]))
             with self.assertRaisesRegex(ValueError, 'anchors'):
-                inputs.select_camera(self.f.root / 'recording.insv', scene)
+                camera_assets.select_camera(self.f.root / 'recording.insv', scene)
 
     def test_user_width_paths_must_stay_inside_the_kit(self):
         for filename in ('../escape.json', str(self.f.root / 'width.json'), '', 'left_width.yaml', None):
@@ -244,7 +256,7 @@ class WidthWorkflowTests(unittest.TestCase):
             distances = np.full(len(times), 240. if video == self.f.recording_paths['left'] else 280.)
             if self.gap:
                 distances[(times > 2) & (times < 3)] = np.nan
-            return detection.DetectionSeries(times, distances)
+            return detection.DetectionSeries(times, distances, np.full((len(times), 2, 4, 2), np.nan))
         mocked = patch.object(detection, 'detect', side_effect=detect)
         self.detect = mocked.start()
         self.addCleanup(mocked.stop)

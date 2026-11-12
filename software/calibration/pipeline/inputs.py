@@ -1,14 +1,12 @@
 """Resolve recordings without guessing when a stage has multiple candidates."""
 
-import json
-import math
 from argparse import Namespace
 from pathlib import Path
+import json
+import math
 
 from software import registry
-from software.calibration.models import (
-    CalibrationInputs, CalibrationRequest, SegmentPaths, VerificationInputs, VerificationRequest,
-)
+from software.calibration.models import CalibrationInputs, CalibrationRequest, SegmentPaths, VerificationInputs, VerificationRequest
 from software.calibration.pipeline import runtime
 
 
@@ -24,7 +22,7 @@ def discover_recordings(folder: Path) -> dict[str, Path]:
     stages = {k: folder / k for k in "ABCD"}
     if any(p.exists() for p in stages.values()):
         if direct:
-            raise ValueError("目录同时包含 .insv 和 A/B/C/D 子目录，请整理为一种布局，或用 --a --b --c --d 明确指定。")
+            raise ValueError("目录同时包含 .insv 和 A/B/C/D 子目录，请整理为一种布局。")
         result = {}
         for stage, directory in stages.items():
             if not directory.is_dir():
@@ -50,7 +48,8 @@ def prepare_inputs(request: CalibrationRequest) -> CalibrationInputs:
         raise ValueError('需要 A/B/C/D 四段录像。')
     for name, path in recordings.items():
         runtime.console.write(f"{name} = {path.name}")
-    runtime.console.write("分段用途：A 内参；B 相机–IMU；C 轨迹验证；D 多朝向静止。--a --b --c --d 可显式指定录像。")
+    runtime.console.write(f"本次标定：{'工作镜头 front' if request.lens == 'front' else '环境镜头 rear'}")
+    runtime.console.write("分段用途：A 内参求解/验证；B 相机–IMU；C 轨迹验证；D 多朝向静止。")
     serials = {name: registry.read_insv_serial(path) for name, path in recordings.items()}
     if len(set(serials.values())) != 1:
         raise ValueError("四段录像不是同一台相机：" + "，".join(f"{name}={camera_serial}" for name, camera_serial in serials.items()))
@@ -60,21 +59,28 @@ def prepare_inputs(request: CalibrationRequest) -> CalibrationInputs:
     return CalibrationInputs(recordings=recordings, camera_serial=camera_serial, grid=grid)
 
 
+def recording_lens(folder: Path) -> str:
+    """镜头身份由传入目录的末级名称明确指定，不搜索父目录或猜测。"""
+    lens = folder.expanduser().name
+    if lens not in ('front', 'rear'):
+        raise ValueError('标定目录必须命名为 front（工作镜头）或 rear（环境镜头），并直接传入该目录')
+    return lens
+
+
 def parse_run_args(args: Namespace) -> CalibrationRequest:
-    """Convert CLI values into a request; reject mixed or incomplete input modes."""
-    explicit = [args.a, args.b, args.c, args.d]
-    if args.folder and any(explicit):
-        raise ValueError('文件夹和 --a --b --c --d 不能同时指定，请选择一种输入方式。')
-    if not args.folder and not all(explicit):
-        raise ValueError('给一个放着 4 段录像的文件夹，或者用 --a --b --c --d 分别指定。')
-    recordings = SegmentPaths(*(Path(path).expanduser() for path in explicit)) if all(explicit) else None
+    """从目录约定生成请求；此处不读取录像，供执行和配置预览共用。"""
+    folder = Path(args.folder).expanduser()
+    lens = recording_lens(folder)
+    if lens == 'rear' and args.compare_sample:
+        raise ValueError('--compare-sample 仅适用于 front 工作镜头')
     return CalibrationRequest(
-        folder=Path(args.folder).expanduser() if args.folder else None,
-        recordings=recordings, output=Path(args.out).expanduser() if args.out else None,
+        folder=folder, recordings=None, output=Path(args.out).expanduser() if args.out else None,
         tag_size_mm=args.tag_size_mm, cores=args.cores, keep_work=args.keep_work,
         force=args.force, install=args.install, compare_sample=args.compare_sample,
         config=args.config, dry_run=args.dry_run,
         resume=getattr(args, 'resume', False), workers=getattr(args, 'workers', None),
+        lens=lens,
+        intrinsics_source=getattr(args, 'intrinsics_source', 'measured'),
     )
 
 
@@ -149,5 +155,3 @@ def board_layout_problems() -> list[str]:
         except (OSError, ValueError, KeyError, TypeError) as error:
             problems.append(f"无法读取 {path.name}：{error}")
     return problems
-
-

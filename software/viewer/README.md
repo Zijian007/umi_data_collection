@@ -4,13 +4,15 @@
 
 ## 阅读顺序
 
-`server.main()` 创建 `RecordingCatalog` 并启动 HTTP 服务；`data.py` 通过轨迹模块的统一入口读取结果、视频和摘要。浏览器的 `app.mjs` 管理选择与播放状态，三维、视频、曲线共用轨迹时间轴。
+`server.main()` 创建 `RecordingCatalog` 并启动 HTTP 服务；`data.py` 负责目录发现与结果装配，`readers.py` 解析轨迹、逐帧约束和标签间距，`errors.py` 定义输入错误。浏览器的 `app.mjs` 管理选择与播放状态，三维、视频、曲线共用轨迹时间轴。
 
 ## 文件职责
 
 ```text
 software/viewer/
-  data.py            结果发现、TUM / CSV 读取和时间对齐
+  data.py            目录发现、访问边界与结果装配
+  readers.py         TUM / CSV、逐帧约束和标签测距协议解析
+  errors.py          查看器输入错误
   server.py          HTTP API、本地静态资源与视频 Range 流
   media.py           兼容模式的限并发 FFmpeg 解码
   cache.py           查看器磁盘缓存、文件身份、跨进程锁与原子发布
@@ -21,10 +23,13 @@ software/viewer/
     chart.mjs        速度曲线与点击定位
     media.mjs        兼容画面请求合并、解码及与位姿同步
     math.mjs         时间定位与四元数运算
+    measurements.mjs 标签间距格式化和双手时间选择
     viewer.css       自适应布局
 ```
 
 浏览器侧自行计算三维透视投影，Canvas 显示轨迹；不从 CDN 加载绘图库。大轨迹只在绘制轮廓时降采样，逐帧读取和时间定位保留原始索引。对录像目录外的软链接不暴露文件内容，视频支持 HEAD 和单段 HTTP Range，便于拖动跳转。
+
+配置了标签三维测距的结果，在视频下方随当前帧显示“标签中心间距 mm”，双手分别显示。后端从统一 CSV 的 `tag_distance_mm` / `tag_distance_valid` / `tag_distance_source` 读取，检查时间、有限数值和有效标志；缺失值以 JSON null 和界面“—”保留。双手共同区间裁切也同步裁切主手间距，另一手按自身时间轴取对应帧。历史结果没有这些列时隐藏该项，不将像素锚点宽度当作标签中心间距。
 
 测试与依赖环境见 [代码维护](../../docs/dev/README.md#验证)。Node 仅用于前端测试。
 
@@ -32,13 +37,15 @@ software/viewer/
 
 共享场景任务由 `software/scene/management/episodes.py` 适配：通过 ruamel.yaml 读取采集清单以展示待处理或缺片任务，处理和验收状态从 state.json 读取，不加载算法环境。已有结果只读当前 `results` 指针、校验两只手的场景版本/坐标身份，裁出共同时间区间，再对另一只手的位置和四元数插值。浏览器的 `paired.mjs` 跟随主时间同步第二路视频；两路各自使用 `video_time_offset_s`，不把共同区间起点误当成视频起点。
 
+场景结果默认仅保存 TCP 主轨迹；缺少相机/IMU TUM 时，`poses.py` 以已记录的固定外参按需重建这两条显示轨迹。该路径只用标准库，不引入 NumPy、SciPy 或求解器依赖；已保存的历史辅助轨迹仍优先使用。
+
 `GET /api/recordings/<id>/map` 独立加载地图，不阻塞轨迹与视频。新场景任务通过 `software.scene.result_io` 从根 `episode.json` 读取各手指标和共享 `map` 引用，历史结果继续读取每手摘要。查看器校验相对路径、本场景范围、版本、坐标系与 SHA256，不在每只手的结果里复制地图。单独查看原位置的任务结果也使用同一共享文件。
 
 独立 内部逐段轨迹引擎 结果优先读取 `details/map.json`；旧结果从摘要选中轮次的 `.osa` 转换。转换结果在查看器缓存目录持久保存，内存保留最近 4 份；服务重启后不必再次加载 ORB 词典。输入地图、选中轮次、轨迹、定位文件或转换代码/引擎发生变化时使用新缓存身份，不写回录像目录。真正转换时串行加载词典，读取其他已有磁盘缓存不排队。
 
 `software/trajectory/reporting/map_data.py` 用独立的 `umi_export_atlas` 读取图集，再将逐帧定位与最终相机轨迹拟合为 Sim(3) 展示变换。退化或残差过大时保留原始地图坐标，浏览器隐藏轨迹叠加并更换单位提示；不合并不同子地图。
 
-每张子地图最多展示 50000 点，关键帧保留时间、位置和姿态，原始 `.osa` 不改变。展示拟合不修改融合算法，残差不能解释为真实轨迹精度。后镜头地图暂不展示。
+每张子地图最多展示 50000 点，关键帧保留时间、位置和姿态，原始 `.osa` 不改变。展示拟合不修改融合算法，残差不能解释为真实轨迹精度。环境镜头地图暂不展示。
 
 ## 视频加载与缓存
 
@@ -48,4 +55,4 @@ software/viewer/
 
 缓存默认在 `$XDG_CACHE_HOME/umi-view`（通常为 `~/.cache/umi-view`），`UMI_VIEW_CACHE` 可指定其他目录。`maps/`、`previews/`、`posters/` 都是可再生数据，与录像目录隔离。大文件以路径、尺寸、mtime、ctime、inode 识别变更，预览编码选项及 FFmpeg 身份也进入缓存键；跨进程文件锁防重复生成，原子发布避免读取半成品。缓存可以清理，之后按需重建；不自动删除用户录像或轨迹。
 
-默认扫描 `scenes/`，场景任务以“场景/套件/批次/任务”显示。采集批次位于 `scenes/<场景>/<批次>/`，套件身份从 `.umi/manifest.yaml` 读取；自动扫描跳过 `archive/` 历史归档，直接指定归档目录仍可查看独立结果。
+默认扫描 `scenes/`，场景任务以“场景/套件/批次/任务”显示。采集批次位于 `scenes/<场景>/<批次>/`，各批次独立保存 `.umi/maps/`；任务内部数据集中在该批次 `.umi/tasks/<任务>/`，单独打开任务仍可查看其结果。套件身份从 `.umi/manifest.yaml` 读取；自动扫描跳过 `archive/` 历史归档，直接指定归档目录仍可查看独立结果。

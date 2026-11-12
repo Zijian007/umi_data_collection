@@ -1,8 +1,10 @@
 """视觉因子、连续性因子及解析 Jacobian 自检；不读取命令行或数据文件。"""
-import numpy as np
+
+from gtsam.symbol_shorthand import X
 from scipy.spatial.transform import Rotation as Rot
 import gtsam
-from gtsam.symbol_shorthand import X
+import numpy as np
+
 
 def skew(w):
     return np.array([[0, -w[2], w[1]], [w[2], 0, -w[0]], [-w[1], w[0], 0]])
@@ -147,5 +149,3 @@ def selftest():
         print("selftest", name, "max |analytic - numeric| so far", "%.2e" % worst)
     print("SELFTEST", "PASS" if worst < 1e-4 else "FAIL", "%.2e" % worst)
     return worst < 1e-4
-
-

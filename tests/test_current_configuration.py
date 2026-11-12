@@ -1,11 +1,12 @@
+from software import provenance as artifact_identity
+from software.scene.spatial import mapping
 """当前配置是运行输入；内部记录不覆盖配置，历史成果保持原内容。"""
+from software.scene.pipeline import reconstruction
 import json
 import unittest
 from unittest.mock import patch
 
-from software import registry
-from software.scene import workflow
-from software.scene.management import batches, inputs, processing
+from software.scene.management import inputs, processing
 from software.storage import write_json, write_yaml
 import test_processing
 
@@ -57,7 +58,7 @@ class CurrentConfigurationTests(unittest.TestCase):
         processing.prepare_batch(self.batch)
         latest = inputs.read_batch(self.batch)
         self.assertNotEqual(latest.mapping['left']['sha256'], before)
-        self.assertEqual(latest.mapping['left']['sha256'], registry.sha256_file(source))
+        self.assertEqual(latest.mapping['left']['sha256'], artifact_identity.file_hash(source))
 
     def test_changed_config_preview_is_readonly_and_task_entry_refreshes_it(self):
         self.assertEqual(processing.run([self.batch])[0]['status'], 'ok')
@@ -75,7 +76,7 @@ class CurrentConfigurationTests(unittest.TestCase):
         data['arms']['left']['gripper']['width'] = 'left_width.json'
         write_json(self.kit.parent / 'left_width.json', dict(anchors=[dict(x=100., mm=0.), dict(x=200., mm=50.)]))
         write_yaml(self.kit, data)
-        with patch.object(workflow.mapping, 'build_maps',
+        with patch.object(mapping, 'build_maps',
                 side_effect=AssertionError('width-only change must not rebuild map')):
             self.assertEqual(processing.run([self.batch])[0]['status'], 'ok')
         self.assertEqual(inputs.read_batch(self.batch).map_version, version)
@@ -86,14 +87,14 @@ class CurrentConfigurationTests(unittest.TestCase):
         source = self.f.f.source / 'left/tcp.json'
         original_geometry = source.read_bytes()
         original_trajectory = (previous / 'left/trajectory.csv').read_bytes()
-        original = workflow.reconstruct_arm_in_scene
+        original = reconstruction.reconstruct_arm_in_scene
         def solve(*args, **kwargs):
             self.update_calibration()
             changed = json.loads(original_geometry)
             changed['T_camera_tcp']['t_m'] = [10., 0., 0.]
             write_json(source, changed)
             return original(*args, **kwargs)
-        with patch.object(workflow, 'reconstruct_arm_in_scene', side_effect=solve):
+        with patch.object(reconstruction, 'reconstruct_arm_in_scene', side_effect=solve):
             result = processing.run([self.batch], force=True)
         self.assertEqual(result[0]['status'], 'ok')
         current = (self.batch / 'take_001/results').resolve()
@@ -110,6 +111,6 @@ class CurrentConfigurationTests(unittest.TestCase):
         version = inputs.read_batch(self.batch).map_version
         write_yaml(self.f.f.scene_path, dict(parameters=dict(gripper_width_max_gap_s=0.,
             gripper_width_closed_threshold_mm=5., gripper_width_diagnostics=True)))
-        with patch.object(workflow.mapping, 'build_maps', side_effect=AssertionError('width policy rebuilt map')):
+        with patch.object(mapping, 'build_maps', side_effect=AssertionError('width policy rebuilt map')):
             self.assertEqual(processing.run([self.batch])[0]['status'], 'ok')
         self.assertEqual(inputs.read_batch(self.batch).map_version, version)

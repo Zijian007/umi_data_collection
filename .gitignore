@@ -18,12 +18,18 @@ recordings/**/c_repeat_*/
 .pytest_cache/
 datasets/*
 !datasets/README.md
+exports/*
+!exports/README.md
 scenes/**/maps/
 scenes/**/runs/
 scenes/**/results
+scenes/**/local_results
 .scene.lock
 .registry.lock
 scenes/**/archive/
 scenes/**/cache/
 scenes/**/imports/
 scenes/**/.umi/
+# umi-calib preview-width / detect-width 默认写在原片旁的叠加视频
+*_width_detect.mp4
+*_width_preview.mp4

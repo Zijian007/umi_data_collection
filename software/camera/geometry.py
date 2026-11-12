@@ -3,10 +3,11 @@
 T_a_b 将 b 系坐标映射到 a 系。长度使用米，四元数使用 xyzw。
 地图尺度与坐标放置属于各自业务流程，不在这里处理。
 """
+
 from __future__ import annotations
 
-import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
+import numpy as np
 
 
 def transform(rotation, translation) -> np.ndarray:

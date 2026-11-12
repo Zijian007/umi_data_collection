@@ -1,17 +1,20 @@
 """Dependency-free local HTTP server for the UMI trajectory viewer."""
+
 from __future__ import annotations
 
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlsplit
 import argparse
 import json
 import mimetypes
 import os
 import re
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
 
-from software.viewer.data import RecordingCatalog, ViewerDataError
+from software.viewer.data import RecordingCatalog
+from software.viewer.errors import ViewerDataError
 from software.viewer.media import decode_frame, preview_file, preview_status, video_version
+
 
 STATIC = Path(__file__).resolve().parent / 'static'
 DEFAULT_ROOT = Path(__file__).resolve().parents[2] / 'scenes'
@@ -109,7 +112,7 @@ def make_handler(catalog: RecordingCatalog):
                     elif media:
                         path = catalog.video_path(key)
                         if path is None:
-                            self.json({'error': '未找到前镜头视频'}, 404)
+                            self.json({'error': '未找到工作镜头视频'}, 404)
                         elif media == '/preview':
                             status = preview_status(path)
                             if status['status'] == 'ready':
@@ -149,12 +152,37 @@ def make_handler(catalog: RecordingCatalog):
     return ViewerHandler
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(prog='umi-view', description='本地 UMI 三维轨迹、姿态和视频同步查看器')
-    parser.add_argument('root', nargs='?', type=Path, default=DEFAULT_ROOT, help='录像总目录或单个轨迹结果目录')
+def parse_port(value: str) -> int:
+    port = int(value)
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError('端口必须在 0–65535 之间；0 表示自动选择空闲端口')
+    return port
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog='umi-view', description='本地 UMI 三维轨迹、姿态和视频同步查看器',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='示例：\n  umi-view\n  umi-view scenes/test_shelf --port 9092\n'
+               '  umi-view /path/to/take_001/results\n启动后按终端地址访问网页，Ctrl+C 停止。')
+    parser.add_argument('root', nargs='?', type=Path, default=DEFAULT_ROOT,
+                        help='场景/批次/任务目录或单个结果目录；默认扫描本项目的 scenes/')
     parser.add_argument('--host', default='127.0.0.1', help='默认仅本机访问；远程访问可指定 0.0.0.0')
-    parser.add_argument('--port', type=int, default=9091)
+    parser.add_argument('--port', type=parse_port, default=9091,
+                        help='监听端口，默认 %(default)s；范围 0–65535，0 自动选择空闲端口')
+    parser.add_argument('--show-config', action='store_true', help='只输出生效启动配置 JSON，不扫描结果、不监听端口；查看器不读取算法 YAML')
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
+    if args.show_config:
+        print(json.dumps(dict(program='umi-view', operation='serve', scope='configuration_only',
+            precedence=['program_defaults', 'command_line'],
+            defaults=dict(root=str(DEFAULT_ROOT), host='127.0.0.1', port=9091),
+            effective=dict(root=str(args.root.expanduser().resolve()), host=args.host, port=args.port)),
+            ensure_ascii=False, indent=2))
+        return 0
     try:
         catalog = RecordingCatalog(args.root)
         catalog.scan()

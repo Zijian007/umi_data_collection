@@ -23,24 +23,14 @@ UNITS AND CLOCK (the only two things downstream is allowed to assume):
 
 from __future__ import annotations
 
+from pathlib import Path
 import hashlib
 import struct
-from pathlib import Path
 
 import numpy as np
 
-from software.camera.x3.insv_reader import (
-    FIELD_FIRMWARE,
-    FIELD_FIRST_FRAME_TS_US,
-    FIELD_GYRO_CFG_INFO,
-    FIELD_OFFSET_V3,
-    FIELD_SERIAL,
-    RECORD_GYRO,
-    RECORD_METADATA,
-    parse_metadata_record,
-    parse_trailer,
-    records_by_id,
-)
+from software.camera.x3.insv_reader import FIELD_FIRMWARE, FIELD_FIRST_FRAME_TS_US, FIELD_GYRO_CFG_INFO, FIELD_OFFSET_V3, FIELD_SERIAL, RECORD_GYRO, RECORD_METADATA, parse_metadata_record, parse_trailer, records_by_id
+
 
 #: 1 g in m/s^2.
 G0 = 9.80665
@@ -85,7 +75,7 @@ def infer_timebase(span_raw: float, n_samples: int) -> dict:
             "candidates": cands, "method": "auto: no unique unit in [50,8000] Hz"}
 
 
-def gyro_integrity(ts: np.ndarray, data: bytes, stride: int) -> dict:
+def gyro_integrity(ts: np.ndarray, gyro_record_bytes: bytes, stride: int) -> dict:
     """Timestamp integrity: monotonicity, negative jumps, forward gaps, whole-block duplicates."""
     d = np.diff(ts)
     dt_med = float(np.median(d[d > 0])) if np.any(d > 0) else 0.0
@@ -95,7 +85,7 @@ def gyro_integrity(ts: np.ndarray, data: bytes, stride: int) -> dict:
     B = GYRO_BLOCK_RECORDS
     dup_runs = []
     if n >= 2 * B:
-        digests = [hashlib.md5(data[b * stride:(b + B) * stride]).hexdigest()
+        digests = [hashlib.md5(gyro_record_bytes[b * stride:(b + B) * stride]).hexdigest()
                    for b in range(0, n - B + 1, B)]
         i = 0
         while i < len(digests):
@@ -113,21 +103,21 @@ def gyro_integrity(ts: np.ndarray, data: bytes, stride: int) -> dict:
             "dt_median_raw": dt_med, "duplicate_block_runs": dup_runs}
 
 
-def parse_gyro(data: bytes) -> dict:
+def parse_gyro(gyro_record_bytes: bytes) -> dict:
     """Decode a gyro record: recognise the layout, then judge integrity separately.
 
     Layout mismatch -> ``layout = "UNPARSED"`` (no guessing).  Layout fine but timestamps broken ->
     the layout is still reported and ``integrity.status = "DEFECTIVE"``.
     """
     for stride, kind in GYRO_LAYOUTS:
-        if len(data) % stride != 0 or len(data) < stride * 4:
+        if len(gyro_record_bytes) % stride != 0 or len(gyro_record_bytes) < stride * 4:
             continue
-        n = len(data) // stride
+        n = len(gyro_record_bytes) // stride
         ts = np.empty(n, dtype=np.float64)
         ok = True
         mags = []
         for i in range(n):
-            chunk = data[i * stride:(i + 1) * stride]
+            chunk = gyro_record_bytes[i * stride:(i + 1) * stride]
             ts[i] = struct.unpack("<Q", chunk[:8])[0]
             if i % max(1, n // 20000) == 0:
                 if kind == "f64x6":
@@ -140,7 +130,7 @@ def parse_gyro(data: bytes) -> dict:
                 mags.append(float(np.linalg.norm(vals[3:6])))
         if not ok or ts[-1] <= ts[0]:
             continue
-        integ = gyro_integrity(ts, data, stride)
+        integ = gyro_integrity(ts, gyro_record_bytes, stride)
         span_raw = float(ts[-1] - ts[0])
         tb = infer_timebase(span_raw, int(n))
         dur_s = span_raw / tb["divisor"] if tb["divisor"] else None
@@ -160,8 +150,8 @@ def parse_gyro(data: bytes) -> dict:
         if tb.get("divisor") and integ["status"] == "DEFECTIVE":
             out["integrity"]["forward_gap_total_s"] = round(integ["forward_gap_total_raw"] / tb["divisor"], 3)
         return out
-    return {"layout": "UNPARSED", "bytes": len(data),
-            "head_hex": data[:64].hex(), "note": "does not match the known 56/20B layouts; not guessed"}
+    return {"layout": "UNPARSED", "bytes": len(gyro_record_bytes),
+            "head_hex": gyro_record_bytes[:64].hex(), "note": "does not match the known 56/20B layouts; not guessed"}
 
 
 def read_imu_and_meta(imu_insv: Path) -> dict:

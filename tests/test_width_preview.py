@@ -61,7 +61,7 @@ class WidthPreviewTests(unittest.TestCase):
         recording(self.source)
         original = self.source.read_bytes()
         with patch.object(cv2, 'putText', wraps=cv2.putText) as labels, redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(cli.main(['preview-width', str(self.source)]), 0)
+            self.assertEqual(cli.main(['preview-width', str(self.source), '--roi', '0', '0', '1920', '1920']), 0)
         summary = json.loads(output.getvalue())
         path = self.source.with_name('width_width_preview.mp4')
         self.assertEqual(summary['output'], str(path))
@@ -86,11 +86,11 @@ class WidthPreviewTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), original)
         self.assertEqual({path.name for path in self.root.iterdir()}, {'width.insv', 'width_width_preview.mp4'})
 
-    def test_preview_uses_same_frame_measurements_as_width_extraction(self):
+    def test_preview_and_extraction_agree_on_bright_unambiguous_tags(self):
         recording(self.source)
-        measured = detection.detect(self.source)
+        measured = detection.detect(self.source, roi=(0, 0, 1920, 1920))
         with patch.object(preview, 'annotate', wraps=preview.annotate) as annotation:
-            preview.render(self.source)
+            preview.render(self.source, roi=(0, 0, 1920, 1920))
         displayed = [call.args[1].distance_px for call in annotation.call_args_list]
         np.testing.assert_allclose(displayed, measured.distance_px, equal_nan=True)
 

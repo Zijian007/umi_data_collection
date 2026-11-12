@@ -21,33 +21,24 @@ The frame-timing check compares against the configured sampling grid; default st
 
 from __future__ import annotations
 
+from pathlib import Path
 import argparse
-import hashlib
 import json
 import sys
-from pathlib import Path
 
 import numpy as np
 
+from software import provenance as artifact_identity
+from software.camera.x3.frame import FPS_SRC, PROFILE, STEP, T0_S, detect_profile_from_streams, output_frame_rate, FPS_TOLERANCE, REGULAR_GRID_TOLERANCE_MS, GAP_INTERVAL_RATIO, IMU_COVERAGE_TOLERANCE_S
 from software.camera.x3.imu_reader import ImuReadError, read_imu_and_meta
-from software.camera.x3.frame import (
-    FPS_SRC, PROFILE, STEP, T0_S, detect_profile_from_streams, output_frame_rate,
-    FPS_TOLERANCE, REGULAR_GRID_TOLERANCE_MS, GAP_INTERVAL_RATIO, IMU_COVERAGE_TOLERANCE_S,
-)
+
+
 EUROC_IMU_HEADER = ("#timestamp [ns],w_RS_S_x [rad s^-1],w_RS_S_y [rad s^-1],w_RS_S_z [rad s^-1],"
                     "a_RS_S_x [m s^-2],a_RS_S_y [m s^-2],a_RS_S_z [m s^-2]")
 
 
 class Refused(RuntimeError):
     """The recording cannot be processed; the message says why (exit code 2 from the CLI)."""
-
-
-def sha256_file(path: Path, chunk: int = 8 << 20) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for b in iter(lambda: f.read(chunk), b""):
-            h.update(b)
-    return h.hexdigest()
 
 
 def video_stream_info(insv: Path) -> dict:
@@ -97,13 +88,13 @@ def write_imu(imu: dict, path: Path) -> int:
 def extract(insv: Path, out: Path, with_sha256: bool = True, *, frame_step: int = STEP) -> dict:
     frame_rate = float(output_frame_rate(frame_step))
     insv = Path(insv)
-    info = video_stream_info(insv)
-    profile = detect_profile_from_streams(info["video_streams"])
+    recording_identity = video_stream_info(insv)
+    profile = detect_profile_from_streams(recording_identity["video_streams"])
     if profile != PROFILE:
-        raise Refused(f"{insv.name}: video streams {info['video_streams']} -> profile '{profile}'. Only the X3 '360 4K60' "
+        raise Refused(f"{insv.name}: video streams {recording_identity['video_streams']} -> profile '{profile}'. Only the X3 '360 4K60' "
                       f"recording mode (one 3840x1920 stream, both lenses side by side) is calibrated for this tool.")
-    if info["average_rate"] is None or abs(info["average_rate"] - FPS_SRC) > FPS_TOLERANCE:
-        raise Refused(f"{insv.name}: frame rate {info['average_rate']} fps, expected 59.94 (X3 360 4K60)")
+    if recording_identity["average_rate"] is None or abs(recording_identity["average_rate"] - FPS_SRC) > FPS_TOLERANCE:
+        raise Refused(f"{insv.name}: frame rate {recording_identity['average_rate']} fps, expected 59.94 (X3 360 4K60)")
     try:
         imu = read_imu_and_meta(insv)
     except ImuReadError as e:
@@ -142,11 +133,11 @@ def extract(insv: Path, out: Path, with_sha256: bool = True, *, frame_step: int 
                 "integrity": imu.get("integrity")}
     man = {"tool": "software/camera/x3/extraction.py",
            "source": {"name": insv.name, "bytes": insv.stat().st_size,
-                      "sha256": sha256_file(insv) if with_sha256 else None, "firmware": imu.get("firmware"),
+                      "sha256": artifact_identity.file_hash(insv) if with_sha256 else None, "firmware": imu.get("firmware"),
                       "serial": imu.get("serial")},
            "input_contract": {"fps_tolerance": FPS_TOLERANCE, "regular_grid_tolerance_ms": REGULAR_GRID_TOLERANCE_MS,
                               "gap_interval_ratio": GAP_INTERVAL_RATIO, "imu_coverage_tolerance_s": IMU_COVERAGE_TOLERANCE_S},
-           "profile": profile, "video": info, "frames": timing, "imu": imu_info,
+           "profile": profile, "video": recording_identity, "frames": timing, "imu": imu_info,
            "time_base": "t_ns = video presentation time (first frame = 0) + 1 s; IMU on the same clock via metadata "
                         "first_frame_timestamp (device-asserted)"}
     (out / "extract_manifest.json").write_text(json.dumps(man, indent=1, ensure_ascii=False), encoding="utf-8")

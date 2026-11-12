@@ -1,26 +1,29 @@
 """检测原片中的双标记像素距离；缓存不依赖毫米测量、阈值或输出时间轴。"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-import json
 from pathlib import Path
+import json
 
 import numpy as np
 
-from software import config
+from software import provenance as artifact_identity
 from software.camera.x3.frame import SRC_H, SRC_W
+from software.gripper_width import DEFAULT_TAG_ROI
 from software.storage import atomic_file, write_json
+
 
 FULL_SEARCH_INTERVAL = 30
 
 
 def validate_roi(roi, shape: tuple[int, int] = (SRC_H, SRC_H)) -> tuple[int, int, int, int]:
-    if len(roi) != 4:
+    if not isinstance(roi, (tuple, list)) or len(roi) != 4 or any(type(value) is not int for value in roi):
         raise ValueError('ROI 需要 LEFT TOP RIGHT BOTTOM 四个原始像素坐标')
     left, top, right, bottom = roi
     if not (0 <= left < right <= shape[1] and 0 <= top < bottom <= shape[0]):
-        raise ValueError(f'ROI 必须位于 {shape[1]}×{shape[0]} 前镜头半幅内，且 RIGHT > LEFT、BOTTOM > TOP')
+        raise ValueError(f'ROI 必须位于 {shape[1]}×{shape[0]} 工作镜头半幅内，且 RIGHT > LEFT、BOTTOM > TOP')
     return left, top, right, bottom
 
 
@@ -28,6 +31,7 @@ def validate_roi(roi, shape: tuple[int, int] = (SRC_H, SRC_H)) -> tuple[int, int
 class DetectionSeries:
     times_s: np.ndarray
     distance_px: np.ndarray
+    corners_px: np.ndarray  # [frame, ID 0/1, corner, xy]，原始工作半幅坐标
 
 
 @dataclass(frozen=True)
@@ -40,19 +44,38 @@ class FrameDetection:
     def distance_px(self) -> float:
         return float(np.linalg.norm(self.centres[0] - self.centres[1])) if len(self.centres) == 2 else float('nan')
 
+    @property
+    def has_duplicate_targets(self) -> bool:
+        marker_ids = [] if self.ids is None else self.ids.flatten().tolist()
+        return any(marker_ids.count(tag) > 1 for tag in (0, 1))
+
+    def target_corners(self) -> np.ndarray:
+        corners = np.full((2, 4, 2), np.nan, dtype=np.float32)
+        if self.ids is not None:
+            for polygon, tag in zip(self.corners, self.ids.flatten()):
+                if tag in self.centres:
+                    corners[int(tag)] = polygon[0]
+        return corners
+
+    def translated(self, origin: tuple[int, int]) -> FrameDetection:
+        offset = np.asarray(origin, dtype=np.float32)
+        return FrameDetection(tuple(polygon + offset for polygon in self.corners), self.ids,
+                              {tag: centre + offset for tag, centre in self.centres.items()})
+
 
 def identity() -> dict:
     import cv2
 
-    return dict(opencv=cv2.__version__, detector_sha256=config.file_hash(Path(__file__)),
-                source_size=[SRC_W, SRC_H], lens_half='right')
+    return dict(opencv=cv2.__version__, detector_sha256=artifact_identity.file_hash(Path(__file__)),
+                frame_processing_sha256=artifact_identity.file_hash(Path(__file__).with_name('frame_processing.py')),
+                source_size=[SRC_W, SRC_H], lens_half='right', default_roi_px=list(DEFAULT_TAG_ROI))
 
 
 class MarkerDetector:
     """自动收敛到标签活动区域，逐帧解码并定期全图重定位。"""
 
     def __init__(self, roi: tuple[int, int, int, int] | None = None, *, fast: bool = False,
-                 contrast: float = 1.) -> None:
+                 contrast: float = 1., candidate_limit: int = 96) -> None:
         import cv2
 
         if not np.isfinite(contrast) or contrast < 1:
@@ -79,6 +102,7 @@ class MarkerDetector:
         self._fixed_roi = tuple(roi) if roi is not None else None
         self._fast = fast
         self._contrast = contrast
+        self._candidate_limit = candidate_limit
 
     def detect(self, gray: np.ndarray) -> FrameDetection:
         if self._frame_shape != gray.shape:
@@ -93,9 +117,7 @@ class MarkerDetector:
         else:
             left, top, right, bottom = self._search_bounds
             cropped = self._detect_region(gray[top:bottom, left:right])
-            origin = np.array([left, top], dtype=np.float32)
-            detected = FrameDetection(tuple(polygon + origin for polygon in cropped.corners), cropped.ids,
-                                      {tag: centre + origin for tag, centre in cropped.centres.items()})
+            detected = cropped.translated((left, top))
         if self._fixed_roi is None and np.isfinite(detected.distance_px):
             self._expand_search_bounds(gray.shape, detected)
         return detected
@@ -161,7 +183,7 @@ class MarkerDetector:
                             missing_ids: set[int]) -> Iterator[tuple[np.ndarray, int]]:
         import cv2
 
-        for left, top, width, height in _candidate_regions(rejected):
+        for left, top, width, height in _candidate_regions(rejected, limit=self._candidate_limit):
             padding = max(width, height) // 2 + 4
             crop_left, crop_top = max(0, left - padding), max(0, top - padding)
             crop = gray[crop_top:min(gray.shape[0], top + height + padding),
@@ -187,6 +209,39 @@ class MarkerDetector:
                     break
 
 
+class CascadeMarkerDetector(MarkerDetector):
+    """先快速解码；目标缺失时在同一搜索区域执行完整补检。"""
+
+    def __init__(self, roi: tuple[int, int, int, int] | None = None, *, contrast: float = 1.) -> None:
+        super().__init__(roi, fast=True, contrast=contrast)
+        self._fallback = MarkerDetector(contrast=contrast)
+
+    def _detect_region(self, gray: np.ndarray) -> FrameDetection:
+        quick = super()._detect_region(gray)
+        if np.isfinite(quick.distance_px):
+            return quick
+        # 已发现重复目标时保留歧义，不让另一次漏检把它变成有效测量。
+        if quick.has_duplicate_targets:
+            return quick
+        complete = self._fallback._detect_region(gray)
+        return reconcile_detections(quick, complete)
+
+
+def reconcile_detections(quick: FrameDetection, complete: FrameDetection) -> FrameDetection:
+    """不同检测轮次的同 ID 位置冲突或同一标签被赋予不同 ID 时，保留歧义。"""
+    if quick.has_duplicate_targets:
+        return quick
+    quick_ids = [] if quick.ids is None else quick.ids.flatten().tolist()
+    complete_ids = [] if complete.ids is None else complete.ids.flatten().tolist()
+    for polygon, tag in zip(quick.corners, quick_ids):
+        if tag not in (0, 1):
+            continue
+        for other, other_tag in zip(complete.corners, complete_ids):
+            if other_tag in (0, 1) and ((tag == other_tag) != _same_marker(polygon, other)):
+                return FrameDetection(complete.corners, complete.ids, {})
+    return complete
+
+
 def _same_marker(first: np.ndarray, second: np.ndarray) -> bool:
     """识别同一物理标签，避免重复补入或给已有标签分配另一个 ID。"""
     separation = np.linalg.norm(first[0].mean(axis=0) - second[0].mean(axis=0))
@@ -195,7 +250,7 @@ def _same_marker(first: np.ndarray, second: np.ndarray) -> bool:
     return bool(separation < shortest_edge * .5)
 
 
-def _candidate_regions(rejected: Iterable[np.ndarray]) -> list[tuple[int, int, int, int]]:
+def _candidate_regions(rejected: Iterable[np.ndarray], *, limit: int = 96) -> list[tuple[int, int, int, int]]:
     """合并嵌套候选并限制补检开销；不硬编码夹爪在画面中的位置。"""
     import cv2
 
@@ -211,47 +266,56 @@ def _candidate_regions(rejected: Iterable[np.ndarray]) -> list[tuple[int, int, i
                < max(width, height) * .4 for other_left, other_top, other_width, other_height in selected):
             continue
         selected.append((left, top, width, height))
-        if len(selected) == 96:
+        if len(selected) == limit:
             break
     return selected
 
 
-def detect(video: Path) -> DetectionSeries:
+def detect(video: Path, *, roi: tuple[int, int, int, int] = DEFAULT_TAG_ROI) -> DetectionSeries:
     import av
+    from software.gripper_width.frame_processing import detect_frame
 
-    detector = MarkerDetector()
-    times_s, distances_px = [], []
+    left, top, right, bottom = validate_roi(roi)
+    detector = CascadeMarkerDetector((0, 0, right - left, bottom - top))
+    converter = av.video.reformatter.VideoReformatter()
+    times_s, distances_px, corners_px = [], [], []
     with av.open(str(video)) as container:
         stream = container.streams.video[0]
         if (stream.codec_context.width, stream.codec_context.height) != (SRC_W, SRC_H):
-            raise ValueError('夹爪宽度估计需要 X3 原始 3840×1920 前镜头画面')
+            raise ValueError('夹爪宽度估计需要 X3 原始 3840×1920 工作镜头画面')
         for frame in container.decode(stream):
             if frame.pts is None or frame.time_base is None:
                 raise ValueError('宽度检测原片缺少帧时间戳')
-            gray = frame.to_ndarray(format='gray')[:, SRC_W // 2:]
-            detected = detector.detect(gray)
+            detected = detect_frame(frame, detector, roi, converter)
             times_s.append(float(frame.pts * frame.time_base))
             distances_px.append(detected.distance_px)
+            corners = np.full((2, 4, 2), np.nan, dtype=np.float32)
+            if detected.ids is not None:
+                for polygon, tag in zip(detected.corners, detected.ids.flatten()):
+                    if tag in detected.centres:
+                        corners[int(tag)] = polygon[0]
+            corners_px.append(corners)
     timestamps = np.asarray(times_s)
     if len(timestamps) < 2 or not np.isfinite(timestamps).all() or not np.all(np.diff(timestamps) > 0):
         raise ValueError('宽度检测视频时间无效或非递增')
-    return DetectionSeries(timestamps, np.asarray(distances_px))
+    return DetectionSeries(timestamps, np.asarray(distances_px), np.asarray(corners_px))
 
 
 def cached(video: Path, cache: Path, recording_sha256: str) -> DetectionSeries:
     fingerprint = dict(recording_sha256=recording_sha256, detector=identity())
-    directory = cache / config.canonical_hash(fingerprint)[:20]
+    directory = cache / artifact_identity.canonical_hash(fingerprint)[:20]
     marker = directory / 'ready.json'
     array_path = directory / 'detections.npz'
     if marker.is_file():
         saved = json.loads(marker.read_text())
-        if saved['inputs'] != fingerprint or config.file_hash(array_path) != saved['sha256']:
+        if saved['inputs'] != fingerprint or artifact_identity.file_hash(array_path) != saved['sha256']:
             raise ValueError('夹爪原始检测缓存身份或哈希变化')
         with np.load(array_path, allow_pickle=False) as arrays:
-            return DetectionSeries(arrays['times_s'], arrays['distance_px'])
+            return DetectionSeries(arrays['times_s'], arrays['distance_px'], arrays['corners_px'])
     detected = detect(video)
     directory.mkdir(parents=True, exist_ok=True)
     with atomic_file(array_path) as temporary, temporary.open('wb') as stream:
-        np.savez_compressed(stream, times_s=detected.times_s, distance_px=detected.distance_px)
-    write_json(marker, dict(inputs=fingerprint, sha256=config.file_hash(array_path)))
+        np.savez_compressed(stream, times_s=detected.times_s, distance_px=detected.distance_px,
+                            corners_px=detected.corners_px)
+    write_json(marker, dict(inputs=fingerprint, sha256=artifact_identity.file_hash(array_path)))
     return detected

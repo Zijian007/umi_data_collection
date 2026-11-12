@@ -5,10 +5,10 @@ arms:
     calibration: '002'
     gripper:
       tcp: tcp_camera.json
-      width: left_width.json
+      tag_distance: tag_distance.json
   left:
     serial: IAQEB2609JPAR3
     calibration: '002'
     gripper:
       tcp: tcp_camera.json
-      width: right_width.json
+      tag_distance: tag_distance.json

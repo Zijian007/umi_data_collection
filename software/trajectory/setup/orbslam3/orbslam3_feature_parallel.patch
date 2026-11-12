@@ -1,0 +1,131 @@
+--- a/src/ORBextractor.cc
++++ b/src/ORBextractor.cc
+@@ -57,6 +57,7 @@
+ #include <opencv2/features2d/features2d.hpp>
+ #include <opencv2/imgproc/imgproc.hpp>
+ #include <vector>
++#include <omp.h>
+ #include <iostream>
+ 
+ #include "ORBextractor.h"
+@@ -784,6 +785,8 @@
+ 
+         const float W = 35;
+ 
++        // Each pyramid level owns its keypoints and descriptors.
++        #pragma omp parallel for num_threads(4) schedule(static,1)
+         for (int level = 0; level < nlevels; ++level)
+         {
+             const int minBorderX = EDGE_THRESHOLD-3;
+@@ -891,6 +894,7 @@
+         }
+ 
+         // compute orientations
++        #pragma omp parallel for num_threads(4) schedule(static,1)
+         for (int level = 0; level < nlevels; ++level)
+             computeOrientation(mvImagePyramid[level], allKeypoints[level], umax);
+     }
+@@ -1117,7 +1121,17 @@
+         //_keypoints.reserve(nkeypoints);
+         _keypoints = vector<cv::KeyPoint>(nkeypoints);
+ 
+-        int offset = 0;
++        // Keep descriptor generation parallel, then merge in the original level
++        // order so monocular/stereo indices and all downstream matching stay stable.
++        std::vector<cv::Mat> level_descriptors(nlevels);
++        #pragma omp parallel for num_threads(4) schedule(static,1)
++        for (int level = 0; level < nlevels; ++level) {
++            if (allKeypoints[level].empty()) continue;
++            Mat workingMat = mvImagePyramid[level].clone();
++            GaussianBlur(workingMat, workingMat, Size(7, 7), 2, 2, BORDER_REFLECT_101);
++            computeDescriptors(workingMat, allKeypoints[level], level_descriptors[level], pattern);
++        }
++
+         //Modified for speeding up stereo fisheye matching
+         int monoIndex = 0, stereoIndex = nkeypoints-1;
+         for (int level = 0; level < nlevels; ++level)
+@@ -1128,17 +1142,7 @@
+             if(nkeypointsLevel==0)
+                 continue;
+ 
+-            // preprocess the resized image
+-            Mat workingMat = mvImagePyramid[level].clone();
+-            GaussianBlur(workingMat, workingMat, Size(7, 7), 2, 2, BORDER_REFLECT_101);
+-
+-            // Compute the descriptors
+-            //Mat desc = descriptors.rowRange(offset, offset + nkeypointsLevel);
+-            Mat desc = cv::Mat(nkeypointsLevel, 32, CV_8U);
+-            computeDescriptors(workingMat, keypoints, desc, pattern);
+-
+-            offset += nkeypointsLevel;
+-
++            const Mat& desc = level_descriptors[level];
+ 
+             float scale = mvScaleFactor[level]; //getScale(level, firstLevel, scaleFactor);
+             int i = 0;
+--- a/src/Frame.cc
++++ b/src/Frame.cc
+@@ -269,9 +269,11 @@
+     mvLevelSigma2 = mpORBextractorLeft->GetScaleSigmaSquares();
+     mvInvLevelSigma2 = mpORBextractorLeft->GetInverseScaleSigmaSquares();
+ 
+-    // ArUcO detection
+-    cv::Ptr<cv::aruco::DetectorParameters> parameters = cv::makePtr<cv::aruco::DetectorParameters>();
+-    cv::aruco::detectMarkers(imGray, aruco_dict, markerCorners, markerIds, parameters, rejectedCandidates);
++    // A null dictionary disables tags when Tracking has no consumer for them.
++    if (aruco_dict) {
++        const auto parameters = cv::makePtr<cv::aruco::DetectorParameters>();
++        cv::aruco::detectMarkers(imGray, aruco_dict, markerCorners, markerIds, parameters, rejectedCandidates);
++    }
+ 
+     // ORB extraction
+     ExtractORB(0,imGray,0,1000);
+--- a/src/Tracking.cc
++++ b/src/Tracking.cc
+@@ -1173,10 +1173,20 @@
+ 
+     if (mSensor == System::MONOCULAR)
+     {
++        // Tags serve initialization and the native viewer, not visual tracking.
++        // Decide before creating each frame: resets immediately re-enable detection.
++        const bool needsTags = mpViewer || mState==NO_IMAGES_YET || mState==NOT_INITIALIZED;
++        cv::Ptr<cv::aruco::Dictionary> frameDictionary;
++        if (needsTags)
++            frameDictionary = cv::makePtr<cv::aruco::Dictionary>(
++                cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50));
++        // Preserve the existing MONOCULAR dictionary and IMU defaults.
+         if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET ||(lastID - initID) < mMaxFrames)
+-            mCurrentFrame = Frame(mImGray,timestamp,mpIniORBextractor,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth);
+-        else
+-            mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth);
++            mCurrentFrame = Frame(mImGray,timestamp,mpIniORBextractor,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth,
++                                  nullptr,IMU::Calib(),frameDictionary);
++        else
++            mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth,
++                                  nullptr,IMU::Calib(),frameDictionary);
+     }
+     else if(mSensor == System::IMU_MONOCULAR)
+     {
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -42,6 +42,7 @@
+ 
+ find_package(Eigen3 3.1.0 REQUIRED)
+ find_package(Pangolin REQUIRED)
++find_package(OpenMP REQUIRED COMPONENTS CXX)
+ 
+ include_directories(
+ ${PROJECT_SOURCE_DIR}
+@@ -114,9 +115,12 @@
+ include/Config.h
+ include/Settings.h)
+ 
++# Limit OpenMP compilation to the extractor; BA/Eigen compilation stays unchanged.
++set_source_files_properties(src/ORBextractor.cc PROPERTIES COMPILE_FLAGS "${OpenMP_CXX_FLAGS}")
+ add_subdirectory(Thirdparty/g2o)
+ 
+ target_link_libraries(${PROJECT_NAME}
++${OpenMP_CXX_LIBRARIES}
+ ${OpenCV_LIBS}
+ ${EIGEN3_LIBS}
+ ${Pangolin_LIBRARIES}

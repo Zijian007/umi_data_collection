@@ -65,16 +65,29 @@ class FusionRegressionTests(unittest.TestCase):
             for t, g, a in zip(ti, gyro, specific):
                 writer.writerow([round((1+t)*1e9)+self.camera['cam_time_offset_ns'], *g, *a])
 
-    def solve(self, parameters, camera=assets.SAMPLE_CAMERA_JSON):
+    def solve(self, parameters, camera=assets.SAMPLE_CAMERA_JSON, *, refine=False):
         path = self.root/'parameters.json'
         path.write_text(json.dumps(asdict(parameters)))
         output = self.root/'out'
         command = [sys.executable, str(assets.FUSION_SCRIPT), str(self.frames), str(self.frames), str(self.imu),
                    str(self.camera['cam_time_offset_ns']), '.500794,.498606,-.501155,.499441', str(output),
                    '--lever_prior', '.0147,-.0093,-.0163', '--calibration', str(camera), '--parameters', str(path)]
+        if refine:
+            command.append('--refine-initialization')
         result = subprocess.run(command, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr+result.stdout[-1500:])
         return np.loadtxt(output/'traj_tum.txt'), json.loads((output/'fuse_info.json').read_text())
+
+    def test_explicit_refinement_reaches_graph_and_published_evidence(self):
+        trajectory, info = self.solve(config.load('trajectory').values, refine=True)
+        self.assertTrue(np.isfinite(trajectory).all())
+        self.assertEqual(trajectory.shape, (241, 8))
+        self.assertIn('front', info['initialization_refinement'])
+        self.assertIn('front', info['linear_stage1'])
+        report = info['initialization_refinement']['front'][0]
+        self.assertTrue(report['applied'])
+        self.assertEqual(report['status'], 'accepted')
+        self.assertTrue(all(v['rms_after_m'] < v['rms_before_m'] for v in report['validation']))
 
     def test_defaults_match_original_fixed_observation_result(self):
         trajectory, info = self.solve(config.load('trajectory').values)
@@ -178,3 +191,25 @@ class FusionRegressionTests(unittest.TestCase):
         process = subprocess.run(command, capture_output=True, text=True, timeout=60)
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertTrue((output/'traj_tum.txt').is_file())
+
+    def test_failed_initialization_writes_evidence_without_trajectory(self):
+        from software.trajectory.algorithms.fusion_cli import main
+        with self.frames.open() as stream:
+            rows = list(csv.DictReader(stream))
+        with self.frames.open('w') as stream:
+            writer = csv.DictWriter(stream, fieldnames=rows[0].keys())
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(dict(row, tx=0, ty=0, tz=0))
+        parameters = self.root/'parameters.json'
+        parameters.write_text(json.dumps(asdict(config.load('trajectory').values)))
+        output = self.root/'failed'
+        with self.assertRaises(SystemExit) as caught:
+            main([str(self.frames), str(self.frames), str(self.imu), str(self.camera['cam_time_offset_ns']),
+                  '0,0,0,1', str(output), '--lever_prior=0,0,0', '--calibration', str(assets.SAMPLE_CAMERA_JSON),
+                  '--parameters', str(parameters)])
+        self.assertEqual(caught.exception.code, 2)
+        evidence = json.loads((output/'alignment_failure.json').read_text())
+        self.assertEqual(evidence['code'], 'NO_USABLE_LENS')
+        self.assertIn('invalid_scale', evidence['stage1']['front']['chains'][0]['rejection_reasons'])
+        self.assertFalse((output/'traj_tum.txt').exists())

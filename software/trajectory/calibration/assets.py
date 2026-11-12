@@ -6,18 +6,19 @@ for each run; fusion always executes the shared algorithm, never a bundle script
 
 from __future__ import annotations
 
+from pathlib import Path
 import ast
 import hashlib
 import json
 import os
 import re
 import shutil
-from pathlib import Path
 
-import numpy as np
 from scipy.spatial.transform import Rotation as Rot
+import numpy as np
 
 from software.camera.x3.frame import CROP, scale_intrinsics, validate_video_size, video_intrinsics, output_frame_rate
+
 
 HERE = Path(__file__).resolve().parents[1]
 REPO = HERE.parents[1]
@@ -26,7 +27,7 @@ FRONT_SETTINGS_TEMPLATE = HERE / "assets" / "config" / "front_x3_r1440_720.yaml"
 FUSION_SCRIPT = HERE / "algorithms" / "fusion_cli.py"
 
 
-class CalibrationError(Exception):
+class CalibrationError(ValueError):
     pass
 
 
@@ -37,6 +38,12 @@ def _sha12(path: Path) -> str:
 def read_basalt(path: Path) -> dict:
     """The fields the pipeline needs from a Basalt calibration.json (single kb4 camera, 1440x1440 crop)."""
     raw_data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return parse_basalt(raw_data, label=str(path))
+
+
+def parse_basalt(raw_data: dict, *, label: str) -> dict:
+    """Validate an in-memory measurement with the same rules as a frozen file."""
+    path = label
     raw_data = raw_data.get("value0") or raw_data
     try:
         imu_cam_extrinsics = raw_data["T_imu_cam"][0]
@@ -180,6 +187,7 @@ def describe(bundle_dir: Path, source: str) -> dict:
     json_path = SAMPLE_CAMERA_JSON if source == 'factory' else calibration_path(bundle_dir)
     calib_info = read_basalt(json_path)
     version = 2
+    meta = {}
     if source != 'factory':
         try:
             modern = json_path.name == 'calibration.json'
@@ -200,7 +208,16 @@ def describe(bundle_dir: Path, source: str) -> dict:
                 _check_legacy(bundle_dir, calib_info)
         except (OSError, ValueError, KeyError) as error:
             raise CalibrationError(f'无法读取标定包 {bundle_dir}：{error}') from error
-    return {'source': source, 'dir': str(bundle_dir), 'json': str(json_path),
+    from software.camera import calibration_source
+    intrinsic_source = 'sample' if source == 'factory' else calibration_source.source(meta)
+    if intrinsic_source == 'factory':
+        try:
+            calibration_source.validate_factory(meta, calib_info, serial=meta['camera_serial'], lens=meta['lens'])
+        except ValueError as error:
+            raise CalibrationError(str(error)) from error
+    return {'source': source, 'intrinsics_source': intrinsic_source,
+            'intrinsics_provenance': calibration_source.provenance(meta),
+            'dir': str(bundle_dir), 'json': str(json_path),
             'yaml': str(FRONT_SETTINGS_TEMPLATE), 'fuser': str(FUSION_SCRIPT), 'id': _sha12(json_path),
             'bundle_schema_version': version, 'measurement': calib_info,
             'cam_time_offset_ns': calib_info['cam_time_offset_ns'],
@@ -212,7 +229,7 @@ def slam_settings_text(calib_info: dict, parameters, *, rear: bool = False) -> s
     size = parameters.video.size_px
     validate_video_size(size)
     if rear:
-        # 后镜头只有样例模板；按其原始尺寸转换，不借用前镜头的实测内参。
+        # 环境镜头只有样例模板；按其原始尺寸转换，不借用工作镜头的实测内参。
         txt = (HERE / 'assets/config/rear_basalt065_720.yaml').read_text()
         intrinsics = {key: float(re.search(rf'(?m)^Camera1\.{key}: (\S+)$', txt)[1])
                       for key in ('fx', 'fy', 'cx', 'cy')}
@@ -230,8 +247,6 @@ def slam_settings_text(calib_info: dict, parameters, *, rear: bool = False) -> s
              'ORBextractor.nLevels': orb_params.levels, 'ORBextractor.iniThFAST': orb_params.initial_fast,
              'ORBextractor.minThFAST': orb_params.minimum_fast, 'System.thFarPoints': orb_params.far_points_map_units}
     return txt + '\n' + '\n'.join(f'{key}: {value}' for key, value in knobs.items()) + '\n'
-
-
 
 
 def active() -> dict:

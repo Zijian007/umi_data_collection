@@ -14,6 +14,7 @@ import numpy as np
 
 from software.calibration import cli
 from software.gripper_width import monitor
+from software.gripper_width.frame_processing import crop_gray
 from test_width_preview import recording
 
 ROI = (100, 700, 900, 1000)
@@ -94,7 +95,7 @@ class WidthMonitorTests(unittest.TestCase):
             timestamps = [float(frame.pts * frame.time_base) for frame in video.decode(video=0)]
         np.testing.assert_allclose(timestamps, [0., .1], atol=1e-5)
 
-    def test_yuv_crop_matches_full_gray_for_odd_bounds_and_rgb_fallback(self):
+    def test_yuv_and_rgb_crops_match_full_gray_for_odd_bounds(self):
         converter = av.video.reformatter.VideoReformatter()
         with av.open(str(self.video)) as source:
             frame = next(source.decode(video=0))
@@ -102,7 +103,7 @@ class WidthMonitorTests(unittest.TestCase):
             for current in (frame, rgb):
                 roi = (101, 701, 649, 999)
                 expected = current.to_ndarray(format='gray')[701:999, 2021:2569]
-                actual = monitor.crop_gray(current, roi, converter)
+                actual = crop_gray(current, roi, converter)
                 np.testing.assert_array_equal(actual, expected)
 
     def test_invalid_requests_existing_output_and_failed_detection_are_safe(self):
