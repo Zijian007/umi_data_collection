@@ -483,7 +483,7 @@ def algorithm_identity() -> dict:
     identity = artifact_identity.code_identity('scene')
     return {name: digest for name, digest in identity.items() if Path(name).name not in {
         'cli.py', 'batches.py', 'ingest.py', 'recording_checks.py', 'episodes.py', '__main__.py',
-        'processing.py', 'migration.py', 'diagnostics.py'}}
+        'processing.py', 'diagnostics.py'}}
 
 
 def configuration_identity(batch_root: Path) -> str | None:

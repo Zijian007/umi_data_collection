@@ -49,7 +49,7 @@ class CodeIdentityScopeTests(unittest.TestCase):
         self.assertFalse(provenance.PRESENTATION_SOURCES & trajectory.keys())
         self.assertIn('software/trajectory/algorithms/fusion_graph.py', trajectory)
         scene = inputs.algorithm_identity()
-        for name in ('processing.py', 'migration.py', 'diagnostics.py', 'cli.py'):
+        for name in ('processing.py', 'diagnostics.py', 'cli.py'):
             self.assertFalse([path for path in scene if path.endswith('/' + name) and '/scene/' in path], name)
         self.assertIn('software/scene/spatial/fusion.py', scene)
 

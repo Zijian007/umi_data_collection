@@ -36,9 +36,6 @@ def configured_batches(paths: list[Path]) -> list[Path]:
 
 def prepare_batch(batch: Path, *, dry_run: bool = False, intrinsics_source: str | None = None, overrides: SceneOverrides | None = None) -> dict:
     """预览与实际运行共用原片规划；预览只构造内存中的批次快照。"""
-    if not dry_run:
-        from .migration import migrate_scene
-        migrate_scene(batch.parent)
     batch_inputs = batches.read_inputs(batch, intrinsics_source=intrinsics_source, overrides=overrides)
     if dry_run:
         snapshot = inputs.batch_from_record(layout.metadata(batch, 'manifest.yaml'), batches.make_record(batch_inputs), overrides=overrides)
@@ -55,9 +52,6 @@ def build(batch: Path, *, force: bool = False, keep_work: bool = False,
         batch = layout.owner(batch)
     if batch.name == layout.INTERNAL:
         batch = batch.parent
-    if not dry_run:
-        from .migration import migrate_scene
-        migrate_scene(batch.parent)
     if (batch / 'batch.yaml').is_file():
         batch_inputs = batches.read_inputs(batch, intrinsics_source=intrinsics_source, overrides=overrides)
         if dry_run:
@@ -109,12 +103,6 @@ def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '
             summaries.append(dict(path=str(batch), name=batch.name, status='failed', error=str(error)))
     # 已登记的旧批次和显式任务路径继续使用相同的处理引擎。
     direct = episodes.episode_paths(paths, exclude=batch_roots)
-    if not dry_run:
-        from .migration import migrate_scene
-        legacy_scenes = {layout.owner(path).parent.parent for path in direct}
-        for scene in sorted(legacy_scenes):
-            migrate_scene(scene)
-        direct = [layout.manifest(path, 'episode.yaml') for path in direct]
     for batch in sorted({layout.owner(path).parent for path in direct
                          if (layout.owner(path).parent / 'batch.yaml').is_file()}):
         selected = [path for path in direct if layout.owner(path).parent == batch]

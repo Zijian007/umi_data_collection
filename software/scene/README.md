@@ -64,7 +64,7 @@ run → processing.prepare_batch() → ingest.register_recordings()
 
 场景名称和当前套件 ID 从目录推导，上级场景和批次清单由固定层级确定。生成清单省略空描述、默认模式、空覆盖和未绑定地图；当前套件省略 ID，批次快照仍保存 ID 和标定资产版本。批次快照不复制套件描述。
 
-新任务原片清单 schema 5 仅保存原片身份与引用，集中在批次 `.umi/tasks/<任务>/episode.yaml`。人工选项 instruction、expected_arms、synchronization 位于外层任务 `task.yaml`；读取历史清单时合并这些选项，实际迁移时提取到 task.yaml。双手默认零偏移但未经确认；批次默认使用套件全部手，任务默认继承批次。缺片不会隐式降为单手。
+新任务原片清单 schema 5 仅保存原片身份与引用，集中在批次 `.umi/tasks/<任务>/episode.yaml`。人工选项 instruction、expected_arms、synchronization 位于外层任务 `task.yaml`；读取历史清单时合并这些选项，重新登记时提取到 task.yaml。双手默认零偏移但未经确认；批次默认使用套件全部手，任务默认继承批次。缺片不会隐式降为单手。
 
 指令进入结果 episode.json 和导出清单；修改指令或同步按有效任务选项的规范化哈希失效（仅修改注释不失效），需重新 run 和验收。训练格式由独立 [dataset 模块](../dataset/README.md) 负责，scene 不承担训练采样。
 
