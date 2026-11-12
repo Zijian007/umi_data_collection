@@ -482,7 +482,8 @@ def validate_assets(directory: Path, hashes: dict) -> None:
 def algorithm_identity() -> dict:
     identity = artifact_identity.code_identity('scene')
     return {name: digest for name, digest in identity.items() if Path(name).name not in {
-        'cli.py', 'batches.py', 'ingest.py', 'recording_checks.py', 'episodes.py', '__main__.py'}}
+        'cli.py', 'batches.py', 'ingest.py', 'recording_checks.py', 'episodes.py', '__main__.py',
+        'processing.py', 'migration.py', 'diagnostics.py'}}
 
 
 def configuration_identity(batch_root: Path) -> str | None:
@@ -514,7 +515,7 @@ def episode_inputs(episode, cameras, map_manifest) -> dict:
         episode_manifest_sha256=artifact_identity.file_hash(episode.path),
         task_configuration_sha256=layout.task_configuration_hash(episode.root),
         scene_manifest_sha256=artifact_identity.canonical_hash(scene_definition(
-            read_yaml(episode.scene.path) if episode.scene.path.is_file() else dict(schema_version=2), episode.scene.name)),
+            read_yaml(episode.scene.path) if episode.scene.path.is_file() else {}, episode.scene.name)),
         recordings={arm: recording_identity(video) for arm, video in episode.recordings.items()},
         cameras={arm: camera_assets.camera_identity(camera) for arm, camera in cameras.items()},
         synchronization_sha256=artifact_identity.canonical_hash(episode.synchronization),

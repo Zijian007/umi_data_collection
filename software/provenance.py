@@ -6,6 +6,8 @@ from functools import lru_cache
 from pathlib import Path
 import hashlib
 import json
+import os
+import threading
 
 from software.environment import python_executable
 
@@ -18,6 +20,14 @@ def canonical_hash(value: dict) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+# 只负责命令行解析、终端/文字报告和预览图的文件不改变数值结果，
+# 修改它们不应让已有结果、验收或缓存失效。
+PRESENTATION_SOURCES = frozenset({
+    'software/trajectory/cli.py', 'software/trajectory/__main__.py',
+    'software/trajectory/reporting/reports.py', 'software/trajectory/reporting/plots.py',
+})
+
+
 def code_identity(domain: str) -> dict:
     """Content hashes cover uncommitted source too; never rely on Git HEAD alone."""
     shared_sources = [ROOT / 'software' / filename for filename in (
@@ -28,18 +38,35 @@ def code_identity(domain: str) -> dict:
                     *sorted((ROOT / 'software/vision').rglob('*.py'))]
     if domain == 'trajectory':
         source_paths += sorted((ROOT / 'software/trajectory/assets/config').glob('*.yaml'))
-    return {str(source_path.relative_to(ROOT)): hashlib.sha256(source_path.read_bytes()).hexdigest()
-            for source_path in source_paths}
+    return {name: hashlib.sha256(source_path.read_bytes()).hexdigest()
+            for source_path in source_paths
+            if (name := str(source_path.relative_to(ROOT))) not in PRESENTATION_SOURCES}
+
+
+# 原片、地图和镜头视频在一次运行中会被多个阶段核对。大文件按文件系统身份
+# 记忆摘要，避免重复整读；小文件始终重读，保留对配置/标定改动的即时检测。
+LARGE_FILE_BYTES = 16 * 1024 * 1024
+_large_file_hashes: dict[tuple, str] = {}
+_large_file_lock = threading.Lock()
 
 
 def file_hash(path: Path) -> str:
     with path.open('rb') as source:
-        return hashlib.file_digest(source, 'sha256').hexdigest()
+        stat = os.fstat(source.fileno())
+        if stat.st_size < LARGE_FILE_BYTES:
+            return hashlib.file_digest(source, 'sha256').hexdigest()
+        key = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        with _large_file_lock:
+            cached = _large_file_hashes.get(key)
+        if cached is None:
+            cached = hashlib.file_digest(source, 'sha256').hexdigest()
+            with _large_file_lock:
+                _large_file_hashes[key] = cached
+        return cached
 
 
 def engine_identity(domain: str) -> dict:
     """Hash installed engines and numerical package metadata without running them."""
-    import os
     import shutil
     import sys
     from software.vision.paths import orb_directory, orb_executable

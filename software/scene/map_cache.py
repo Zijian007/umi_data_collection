@@ -57,6 +57,8 @@ def source_identity(stage: str) -> dict[str, str]:
     dependencies = {
         'prepare': PREPARATION_SOURCES,
         'visual': VISUAL_SOURCES,
+        'localize': (*PREPARATION_SOURCES, *VISUAL_SOURCES, 'software/scene/spatial/geometry.py',
+                     'software/scene/spatial/relocalization.py', 'software/scene/pipeline/reconstruction.py'),
         'map': (*PREPARATION_SOURCES, *VISUAL_SOURCES, *PLACEMENT_SOURCES),
     }
     paths = set()

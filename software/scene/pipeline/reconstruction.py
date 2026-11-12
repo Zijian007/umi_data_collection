@@ -16,6 +16,7 @@ from software.camera.timing import video_to_imu_seconds
 from software.scene import layout
 from software.scene.management import camera_assets
 from software.scene.management import inputs
+from software.scene.map_cache import source_identity
 from software.scene.models import FusedTrajectory, CalibratedCamera, Episode, PreparedRecording
 from software.scene.pipeline import diagnostics, recordings
 from software.scene.spatial import fusion, slam
@@ -26,7 +27,7 @@ from software.storage import write_json
 def prepare_cached(episode, arm, camera, scene, cores):
     key = artifact_identity.canonical_hash(dict(recording=episode.recording_refs[arm]['sha256'], camera=camera_assets.camera_identity(camera),
         video=asdict(scene.trajectory.values.video), orb=asdict(scene.trajectory.values.orb),
-        code=artifact_identity.code_identity('trajectory'), preparation=artifact_identity.file_hash(Path(recordings.__file__))))[:20]
+        code=source_identity('prepare')))[:20]
     cache_dir = layout.metadata(episode.root, 'cache/prepare') / key
     cache_manifest_path = cache_dir / 'ready.json'
     if cache_manifest_path.exists():
@@ -46,8 +47,7 @@ def localize_cached(episode, arm, recording, lens, map_archive, map_index, map_m
     key = artifact_identity.canonical_hash(dict(recording=episode.recording_refs[arm]['sha256'], lens=lens,
         camera=camera_assets.camera_identity(recording.camera), map_version=map_manifest['version'], index=map_index,
         video=asdict(episode.scene.trajectory.values.video), orb=asdict(episode.scene.trajectory.values.orb),
-        code=artifact_identity.code_identity('trajectory'), localization=artifact_identity.file_hash(Path(slam.__file__)),
-        recovery=artifact_identity.file_hash(Path(relocalization.__file__)), policy=relocalization.policy(episode.scene.parameters),
+        code=source_identity('localize'), policy=relocalization.policy(episode.scene.parameters),
         metric_scale=metric_scale, engines=artifact_identity.engine_identity('trajectory')))[:20]
     cache_dir = layout.metadata(episode.root, 'cache/localization') / key
     cache_manifest_path = cache_dir / 'ready.json'
