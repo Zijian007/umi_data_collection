@@ -2,7 +2,7 @@
 
 `umi-calib` 启动脚本只定位项目、载入基础环境并转交参数。`__main__.py` 调用 `cli.main(prepare_environment=True)`，先完成 argparse 和输入方式/执行选项校验，再按命令调用 `runtime.use_calibration_environment()`：正式 run 可补装缺失组件；check 只使用已存在的标定解释器并报告缺失。帮助、无子命令、错误参数、verify 和 dry-run 不触发安装。程序内直接调用 `cli.main()` 可使用调用方准备的环境。
 
-求解环境使用 `sys.prefix` 判断，避免两个 venv 的 python 指向同一个二进制时反复重启；切换通过 exec 保留参数边界、信号和退出码。参数说明集中在 Python CLI；标定板 `--tag-size-mm` 和套件的夹爪标签尺寸分别说明。
+求解环境使用 `sys.prefix` 判断，避免两个 venv 的 python 指向同一个二进制时反复重启；切换通过 exec 保留参数边界、信号和退出码。参数定义集中在 Python CLI，用户参考见[命令行参数](../../docs/命令行参数.md#umi-calib)；标定板 `--tag-size-mm` 和套件的夹爪标签尺寸分别说明。
 
 从 [`cli.py`](cli.py) → [`workflow.py`](workflow.py) 阅读。工作镜头、环境镜头共用 A/B/D/C 的生命周期；环境镜头只替换 C 的轨迹生成器。标定测量描述相机机身，不描述工作区地图、夹爪 TCP 或任务精度。
 
@@ -150,3 +150,5 @@ Basalt 保留 bag 输入、KB4、噪声先验和 `--fixed-scale-opt-offset`。�
 factory 的硬条件包括：有效单调前向模型、1440 分辨率下转换 RMS ≤1 px/P99 ≤2 px、各原片相对 B 的最大射线差 ≤0.1°。这些是 `config/calibration.yaml` 中可配置的初始工程门槛，不是外部真值精度承诺。A 至少 6 个有效留出帧；缺证据不可安装，留出 RMS 超过 2 px 给 WARN，和实测 A 重投影提醒采用相同语义。C 的 30 mm/10% 失败门槛保持原值。只有完整、可验收的结果才能正常安装。
 
 `factory` 新开关与历史 `UMI_TRAJ_CALIB=factory` 不同：后者仍指实验室样例。内部使用独立的 `intrinsics_source` 字段区分新来源。工厂参数包要求引擎 `--capabilities` 报告 `forward_v1/85°`；项目构建默认启用此实现，两种来源共用同一引擎。1920 全镜头仍仅诊断。
+
+运行预算统一在 `config/runtime.yaml`，机器覆盖用 `config/runtime.local.yaml`；夹爪检测预算在 `config/tag_detection.yaml`。`--show-config` 同时展示配置来源与实际 CPU/线程预算，启动终端输出精简摘要。覆盖顺序与缓存规则见 [配置说明](../../config/README.md#运行与查看器默认值)。

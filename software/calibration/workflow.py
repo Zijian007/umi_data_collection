@@ -322,9 +322,7 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
     finally:
         resources.close()
     if code == 0 and request.install:
-        if request.lens == 'rear':
-            return devices.install_rear(paths.output/'rear_calibration.json')
-        return devices.install_bundle(paths.output, force=False, camera_serial=source.camera_serial)
+        return devices.install(paths.output, force=False, camera_serial=source.camera_serial)
     return code
 
 

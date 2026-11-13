@@ -7,7 +7,7 @@ from gtsam.symbol_shorthand import X
 
 from software.camera.geometry import imu_from_camera, resample_pose_series
 from software.vision.poster_pose import (camera_model, estimate_board, project_observations,
-                                        residual_and_jacobians, PosterGeometryError)
+                                        residual_and_jacobians, residual_metrics, PosterGeometryError)
 
 BOARD_KEY = gtsam.symbol('h', 0)  # l0 已被独立图的 rear 杆臂占用。
 
@@ -32,6 +32,8 @@ class PosterContext:
     board_pose: np.ndarray
     parameters: object
     evidence: dict
+    frame_ids: np.ndarray
+    tag_ids: np.ndarray
     node_keys: list | None = None
 
     def augment_nodes(self, nodes, frame_times):
@@ -70,11 +72,14 @@ class PosterContext:
         board = values.atPose3(BOARD_KEY).matrix()
         bodies = np.array([values.atPose3(X(k)).matrix() for k in self.node_keys])
         pixels,points = project_observations(board,bodies @ np.linalg.inv(self.camera_from_imu),self.points,self.model)
-        rms = float(np.sqrt(np.mean(np.sum((pixels-self.pixels)**2,axis=2))))
+        metrics = residual_metrics(pixels, self.pixels,
+                                   frame_ids=self.frame_ids, tag_ids=self.tag_ids)
+        rms = metrics['rms_px']
         if (not np.isfinite(rms) or not np.isfinite(final_error) or final_error > initial_error+1e-5
                 or rms > self.parameters.tag_maximum_reprojection_rms_px or np.any(points[:,:,2] <= 0)):
             raise PosterGeometryError('独立海报融合未通过正深度、像素残差或优化下降检查')
-        return dict(self.evidence,status='fused',final_reprojection_rms_px=rms,T_world_board=board.tolist())
+        return dict(self.evidence, status='fused', final_reprojection_rms_px=rms,
+                    final_reprojection_metrics=metrics, T_world_board=board.tolist())
 
 
 def prepare(inputs, baseline, parameters):
@@ -99,13 +104,26 @@ def prepare(inputs, baseline, parameters):
     camera_from_imu = np.linalg.inv(imu_from_camera(tags.measured))
     points = np.array([tags.board.corners_m[int(i)] for i in observations.tag_ids[selected]])
     pixels = observations.corners_px[selected]
+    frame_ids = observations.sample_indices[selected]
+    tag_ids = observations.tag_ids[selected]
     bodies = resample_pose_series(baseline.video_times_s,baseline.T_world_imu,times)
     try:
-        pose,rms = estimate_board(bodies @ np.linalg.inv(camera_from_imu),points,pixels,model,p.tag_maximum_reprojection_rms_px)
+        pose, rms, metrics = estimate_board(
+            bodies @ np.linalg.inv(camera_from_imu), points, pixels, model,
+            p.tag_maximum_reprojection_rms_px, frame_ids=frame_ids, tag_ids=tag_ids,
+            return_metrics=True)
     except (ValueError,RuntimeError) as error:
-        if p.tag_fusion_enabled: raise PosterGeometryError(f'独立海报初始化失败：{error}') from error
-        return None,dict(evidence,status='rejected_diagnostics',reason=str(error))
-    evidence.update(status='diagnostics_only',initial_reprojection_rms_px=rms,T_world_board_initial=pose.tolist(),
+        if p.tag_fusion_enabled:
+            raise PosterGeometryError(f'独立海报初始化失败：{error}',
+                                      metrics=getattr(error, 'metrics', None)) from error
+        rejected = dict(evidence, status='rejected_diagnostics', reason=str(error))
+        if getattr(error, 'metrics', None) is not None:
+            rejected['reprojection_metrics'] = error.metrics
+        return None, rejected
+    evidence.update(status='diagnostics_only', initial_reprojection_rms_px=rms,
+                    initial_reprojection_metrics=metrics,
+                    T_world_board_initial=pose.tolist(),
                     first_video_clock_time_s=float(times[0]),last_video_clock_time_s=float(times[-1]))
     if not p.tag_fusion_enabled: return None,evidence
-    return PosterContext(baseline,times,points,pixels,model,camera_from_imu,pose,p,evidence),evidence
+    return PosterContext(baseline, times, points, pixels, model, camera_from_imu, pose, p,
+                         evidence, frame_ids, tag_ids), evidence

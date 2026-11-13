@@ -140,17 +140,20 @@ class SceneWorkflowTests(unittest.TestCase):
         for arm, video in self.recording_paths.items():
             video.write_bytes(arm.encode())
         self.device_pins = {f'SERIAL_{arm}': dict(calibration='test', gripper=dict(tcp=str(self.source / arm / 'tcp.json'))) for arm in models.ARMS}
-        write_yaml(self.scene_path, dict(schema_version=2,
-                   mapping=dict(left=self.ref('left')), devices=self.device_pins))
+        write_yaml(self.scene_path, dict(schema_version=3))
         self.scene = inputs.read_scene(self.scene_path)
         kit = self.write_kit('test_kit', {arm: dict(serial='SERIAL_'+arm, **self.device_pins['SERIAL_'+arm]) for arm in models.ARMS})
-        self.session_path = self.scene.root / '20261025_001/manifest.yaml'
-        self.scene = replace(self.scene, batch_root=self.session_path.parent)
-        write_yaml(self.session_path, dict(schema_version=4,
+        self.batch_root = self.scene.root / '20261025_001'
+        self.session_path = self.batch_root / '.pipeline/manifest.yaml'
+        mapping_reference = dict(self.ref('left'), **{key: value for key, value in kit['arms']['left'].items() if key != 'serial'})
+        write_yaml(self.session_path, dict(schema_version=5, mapping=dict(left=mapping_reference),
                    map=dict(version='pending', manifest_sha256='0'*64),
                    kit=kit))
-        self.episode_path = self.session_path.parent / 'take_001/episode.yaml'
-        write_yaml(self.episode_path, dict(schema_version=4,
+        self.scene = inputs.read_batch(self.session_path).scene
+        self.task_root = self.batch_root / 'take_001'
+        self.task_root.mkdir()
+        self.episode_path = self.batch_root / '.pipeline/tasks/take_001/episode.yaml'
+        write_yaml(self.episode_path, dict(schema_version=5,
                    recordings={arm: self.ref(arm) for arm in self.recording_paths}))
         self.rear_files = {}
         self.cameras = {}
@@ -211,16 +214,22 @@ class SceneWorkflowTests(unittest.TestCase):
         from registry_fakes import write_kit
         return write_kit(name, {arm: arms[arm] for arm in models.ARMS if arm in arms})
 
-    def build_scene(self, **kwargs):
-        self.scene = replace(inputs.read_scene(self.scene_path), batch_root=self.session_path.parent)
+    def build_scene(self, *, bind=False, **kwargs):
+        """bind=True 与 umi-scene build 一样把新版本绑定到批次清单；默认只绑定第一次建图。"""
+        self.scene = inputs.read_batch(self.session_path).scene
         built = map_lifecycle._build_scene(self.scene, **kwargs)
         if built['status'] != 'planned':
             data = inputs.read_yaml(models.layout.manifest(self.session_path, 'manifest.yaml'))
-            if data['map']['version'] == 'pending':
+            if bind or data['map']['version'] == 'pending':
                 directory = self.scene.map_root / 'versions' / built['version']
                 data['map'] = dict(version=built['version'], manifest_sha256=artifact_identity.file_hash(directory / 'manifest.json'))
                 write_yaml(models.layout.manifest(self.session_path, 'manifest.yaml'), data)
         return built
+
+    def bound_map_version(self):
+        """夹具批次清单当前绑定且已发布的地图版本；尚未建图时为 None。"""
+        version = inputs.read_yaml(self.session_path)['map']['version']
+        return version if (self.scene.map_root / 'versions' / version).is_dir() else None
 
     def build(self, recording, lens, directory, **kwargs):
         directory.mkdir(parents=True)
@@ -240,7 +249,7 @@ class SceneWorkflowTests(unittest.TestCase):
 
     def make_legacy_result(self):
         """把测试结果还原成 schema 2，覆盖历史读取、验收和导出。"""
-        output = self.episode_path.parent / 'results'
+        output = self.task_root / 'results'
         metadata = json.loads((output / 'episode.json').read_text())
         for arm in metadata['arms']:
             summary, settings = read_arm_summary(output / arm), read_arm_settings(output / arm)
@@ -267,9 +276,9 @@ class SceneWorkflowTests(unittest.TestCase):
             left=recording_checks.RecordingCheckReport('left.insv', True, checks=[check])))
         with patch.object(recording_checks, 'check_episode', return_value=report):
             workflow.run_episode(self.episode_path)
-        output = self.episode_path.parent / 'results'
+        output = self.task_root / 'results'
         names = {str(path.relative_to(output)) for path in output.rglob('*') if path.is_file()}
-        expected = {'report.txt', 'episode.json', 'bimanual.csv'} | {
+        expected = {'report.txt', 'episode.json', 'run_report.json', 'bimanual.csv'} | {
             f'{arm}/{name}' for arm in ('left', 'right') for name in (
                 'trajectory.csv', 'front.mp4', 'details/frames.csv')}
         expected |= {f'devices/SERIAL_{arm}/{name}' for arm in ('left', 'right')
@@ -277,6 +286,15 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertEqual(names, expected)
         metadata = json.loads((output / 'episode.json').read_text())
         self.assertEqual(metadata['schema_version'], 4)
+        run_report = json.loads((output / 'run_report.json').read_text())
+        self.assertEqual(run_report['kind'], 'umi_scene_run_report')
+        self.assertTrue(run_report['map']['map_version'])
+        self.assertEqual(run_report['coordinate']['units'], 'metres')
+        self.assertEqual(set(run_report['arms']), {'left', 'right'})
+        self.assertIn('environment_tags', run_report)
+        self.assertTrue(run_report['cache']['task'])
+        self.assertIn(run_report['cache']['task'][0]['status'], {'reused', 'computed'})
+        self.assertEqual(run_report['cache']['map']['status'], 'manifest_timings')
         self.assertEqual(metadata['preflight']['videos']['left']['checks'][0]['status'], 'WARN')
         for arm in ('left', 'right'):
             self.assertEqual(metadata['arm_results'][arm]['localization']['front']['status'], 'forward_complete')
@@ -291,7 +309,8 @@ class SceneWorkflowTests(unittest.TestCase):
 
     def single_arm_episode(self):
         document = inputs.read_yaml(self.episode_path)
-        document.update(expected_arms=['right'], recordings={'right': self.ref('right')})
+        document['recordings'] = {'right': self.ref('right')}
+        write_yaml(self.task_root / 'task.yaml', dict(expected_arms=['right']))
         write_yaml(self.episode_path, document)
 
     def local_fusion_result(self):
@@ -311,7 +330,7 @@ class SceneWorkflowTests(unittest.TestCase):
             self.assertEqual(result['status'], 'local_ok')
             output = Path(result['output'])
             self.assertEqual(output.name, 'local_results')
-            self.assertFalse((self.episode_path.parent / 'results').exists())
+            self.assertFalse((self.task_root / 'results').exists())
             manifest = json.loads((output / 'episode.json').read_text())
             self.assertEqual(manifest['kind'], 'umi_local_episode')
             self.assertEqual(manifest['scene']['scope'], 'local')
@@ -349,7 +368,7 @@ class SceneWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(fusion.SceneFusionQualityError, '场景定位不足'):
                 workflow.run_episode(self.episode_path)
             local.assert_not_called()
-        self.assertFalse((self.episode_path.parent / 'local_results').exists())
+        self.assertFalse((self.task_root / 'local_results').exists())
 
     def test_single_arm_generic_error_does_not_trigger_fallback(self):
         self.single_arm_episode()
@@ -395,7 +414,7 @@ class SceneWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '有效比例'):
                 workflow.run_episode(self.episode_path, force=True)
             self.assertEqual(output.resolve(), first)
-            self.assertFalse((self.episode_path.parent / 'results').exists())
+            self.assertFalse((self.task_root / 'results').exists())
 
     def test_fallback_and_double_failure_preserve_previous_shared_result(self):
         self.single_arm_episode()
@@ -416,7 +435,7 @@ class SceneWorkflowTests(unittest.TestCase):
                 workflow.run_episode(self.episode_path, force=True)
             self.assertEqual(Path(shared_result['output']).resolve(), shared_output)
             self.assertEqual(Path(result['output']).resolve(), local_output)
-            failures = list((models.layout.metadata(self.episode_path.parent, 'runs')).glob('failed-*/error.json'))
+            failures = list((models.layout.metadata(self.task_root, 'runs')).glob('failed-*/error.json'))
             self.assertEqual(len(failures), 1)
             reason = json.loads(failures[0].read_text())['reason']
             self.assertIn('覆盖不足', reason)
@@ -425,7 +444,7 @@ class SceneWorkflowTests(unittest.TestCase):
     def test_legacy_scene_results_remain_readable_and_reusable_without_rewriting(self):
         self.build_scene()
         workflow.run_episode(self.episode_path)
-        output = self.episode_path.parent / 'results'
+        output = self.task_root / 'results'
         expected = {arm: (read_arm_summary(output / arm), read_arm_settings(output / arm)) for arm in ('left', 'right')}
         self.make_legacy_result()
         before = {path: path.read_bytes() for path in output.rglob('*') if path.is_file()}
@@ -445,13 +464,13 @@ class SceneWorkflowTests(unittest.TestCase):
     def test_skip_preflight_is_recorded_in_compact_metadata(self):
         self.build_scene()
         workflow.run_episode(self.episode_path, check_recordings=False)
-        output = self.episode_path.parent / 'results'
+        output = self.task_root / 'results'
         self.assertIsNone(json.loads((output / 'episode.json').read_text())['preflight'])
         self.assertIn('原片检查：跳过', (output / 'report.txt').read_text())
 
     def test_dual_scene_builds_three_maps_and_keeps_both_hands_in_rear_frame(self):
         data = inputs.read_yaml(self.scene_path)
-        data.update(mode='dual', mapping={arm: self.ref(arm) for arm in self.recording_paths})
+        data.update(mode='dual')
         rear_transform = geometry.transform(Rotation.from_euler('y', np.pi).as_matrix(), [0., 0., -.03])
         for video, camera in list(self.cameras.items()):
             rear_file = camera.files['front'].parent / 'rear.json'
@@ -461,7 +480,7 @@ class SceneWorkflowTests(unittest.TestCase):
             payload['T_imu_cam'] = [dict(px=0., py=0., pz=-.03, qx=float(q[0]), qy=float(q[1]), qz=float(q[2]), qw=float(q[3]))]
             measured.update(kind='umi_rear_calibration', camera_serial=camera.serial, lens='rear', validation=dict(verdict='PASS'))
             write_json(rear_file, measured)
-            data['devices'][camera.serial]['rear_calibration'] = 'rear_test'
+            self.device_pins[camera.serial]['rear_calibration'] = 'rear_test'
             self.rear_files[camera.serial] = rear_file
             camera = replace(camera, measurements=dict(camera.measurements, rear=calibration_assets.read_basalt(rear_file)),
                              files=dict(camera.files, rear=rear_file))
@@ -471,15 +490,16 @@ class SceneWorkflowTests(unittest.TestCase):
             self.prepared_recordings[video] = replace(rec, camera=camera, lens_videos=(*rec.lens_videos, rear_video))
         write_yaml(self.scene_path, data)
         session_data = inputs.read_yaml(models.layout.manifest(self.session_path, 'manifest.yaml'))
-        session_data['kit'] = self.write_kit('test_kit', {arm:dict(serial='SERIAL_'+arm,**data['devices']['SERIAL_'+arm]) for arm in models.ARMS})
+        session_data['mapping'] = {arm: self.ref(arm) for arm in self.recording_paths}
+        session_data['kit'] = self.write_kit('test_kit', {arm:dict(serial='SERIAL_'+arm,**self.device_pins['SERIAL_'+arm]) for arm in models.ARMS})
         write_yaml(self.session_path, session_data)
         built = self.build_scene()
-        _, manifest = map_lifecycle.load_published(replace(inputs.read_scene(self.scene_path), batch_root=self.session_path.parent))
+        _, manifest = map_lifecycle.load_published(inputs.read_batch(self.session_path).scene)
         self.assertEqual(set(manifest['maps']), {'shared_rear', 'left_front', 'right_front'})
         self.assertEqual(slam.build.call_count, 3)
         result = workflow.run_episode(self.episode_path)
         self.assertEqual(result['frame_id'], built['frame_id'])
-        with (self.episode_path.parent / 'results/bimanual.csv').open() as stream:
+        with (self.task_root / 'results/bimanual.csv').open() as stream:
             rows = list(csv.DictReader(stream))
         separation = [np.linalg.norm([float(row['right_'+axis])-float(row['left_'+axis]) for axis in 'xyz']) for row in rows]
         np.testing.assert_allclose(separation, .6, atol=.003)
@@ -557,24 +577,22 @@ class SceneWorkflowTests(unittest.TestCase):
             result = workflow.run_episode(self.episode_path)
         self.assertEqual(result['status'], 'ok')
         self.assertEqual([call.args[3] for call in localize.call_args_list], ['front', 'front'])
-        summary = read_arm_summary(self.episode_path.parent / 'results/left')
-        settings = read_arm_settings(self.episode_path.parent / 'results/left')
+        summary = read_arm_summary(self.task_root / 'results/left')
+        settings = read_arm_settings(self.task_root / 'results/left')
         self.assertFalse(settings['frame_geometry']['rear_lens']['used'])
         self.assertIn('rear', settings['measurements'])
         self.assertEqual(summary['fusion']['actual_error'], 'not_measured')
 
     def test_robot_tcp_convention_is_written_with_bimanual_results(self):
         declaration = inputs.read_yaml(self.scene_path)
-        parameter_path = self.scene_path.parent / 'result-parameters.yaml'
-        write_yaml(parameter_path, dict(export_auxiliary_trajectories=True))
-        declaration['parameters'] = parameter_path.name
+        declaration['parameters'] = dict(export_auxiliary_trajectories=True)
         write_yaml(self.scene_path, declaration)
         source = Path(__file__).resolve().parents[1] / 'hardware/grippers/archive/handheld_v1/003/t_tcp_camera.json'
         for camera in self.cameras.values():
             camera.files['tcp'].write_bytes(source.read_bytes())
         self.build_scene()
         self.assertEqual(workflow.run_episode(self.episode_path)['status'], 'ok')
-        output = self.episode_path.parent / 'results'
+        output = self.task_root / 'results'
         metadata = json.loads((output / 'episode.json').read_text())
         for arm in ('left', 'right'):
             tcp_frame = metadata['tcp_frames'][arm]
@@ -591,7 +609,7 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertEqual(built['status'], 'ok')
         self.assertEqual(self.build_scene()['status'], 'skipped')
         first = workflow.run_episode(self.episode_path)
-        output = self.episode_path.parent / 'results'
+        output = self.task_root / 'results'
         metadata = json.loads((output / 'episode.json').read_text())
         self.assertEqual(metadata['scene']['frame_id'], built['frame_id'])
         self.assertEqual(workflow.run_episode(self.episode_path)['status'], 'skipped')
@@ -611,11 +629,12 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertGreater(left[0, 1], 2.)
         self.assertGreater(left[0, 0], .09)
         # 同场景第二个任务沿用原地图，原始 .osa 哈希和版本始终不变。
-        second_path = self.session_path.parent / 'take_002/episode.yaml'
+        second_path = self.batch_root / '.pipeline/tasks/take_002/episode.yaml'
+        models.layout.owner(second_path).mkdir(exist_ok=True)
         write_yaml(second_path, inputs.read_yaml(self.episode_path))
         second = workflow.run_episode(second_path)
         self.assertEqual(first['frame_id'], second['frame_id'])
-        self.assertEqual(json.loads((self.scene.map_root / 'current.json').read_text())['version'], built['version'])
+        self.assertEqual(inputs.read_yaml(self.session_path)['map']['version'], built['version'])
         slam.build.assert_called_once()
         # 只读查看器在同一时间轴中返回双手；offset 不能在裁到共同时间时被重置。
         catalog = RecordingCatalog(self.scene.root)
@@ -661,7 +680,6 @@ class SceneWorkflowTests(unittest.TestCase):
                 manifest.update(version=old_version, frame_id=f'lab/{old_version}')
                 write_json(old_dir / 'manifest.json', manifest)
                 pointer = dict(version=old_version, manifest_sha256=artifact_identity.file_hash(old_dir / 'manifest.json'))
-                write_json(self.scene.map_root / 'current.json', pointer)
                 session = inputs.read_yaml(self.session_path)
                 session['map'] = pointer
                 write_yaml(self.session_path, session)
@@ -679,8 +697,9 @@ class SceneWorkflowTests(unittest.TestCase):
         # 旧清单两处都存了配置；读取仍使用已有的 inputs.definition，无需改写旧文件。
         manifest['definition'] = manifest['inputs']['definition']
         write_json(map_dir / 'manifest.json', manifest)
-        write_json(self.scene.map_root / 'current.json', dict(version=built['version'],
-            manifest_sha256=artifact_identity.file_hash(map_dir / 'manifest.json')))
+        session = inputs.read_yaml(self.session_path)
+        session['map'] = dict(version=built['version'], manifest_sha256=artifact_identity.file_hash(map_dir / 'manifest.json'))
+        write_yaml(self.session_path, session)
         self.assertEqual(map_lifecycle.load_published(self.scene, check_definition=True)[1], manifest)
         self.assertEqual(self.build_scene()['status'], 'skipped')
 
@@ -701,7 +720,7 @@ class SceneWorkflowTests(unittest.TestCase):
     def test_failed_run_preserves_success_and_rejects_tampered_map(self):
         self.build_scene()
         workflow.run_episode(self.episode_path)
-        output = self.episode_path.parent / 'results'
+        output = self.task_root / 'results'
         previous = output.resolve()
         with patch('software.scene.spatial.fusion.fuse', side_effect=ValueError('failed fusion')):
             with self.assertRaisesRegex(ValueError, 'failed fusion'):
@@ -732,18 +751,17 @@ class SceneWorkflowTests(unittest.TestCase):
 
     def test_scene_parameter_changes_require_explicit_build(self):
         first = self.build_scene()
-        overrides = self.root / 'params.yaml'
-        write_yaml(overrides, dict(placement_position_sigma_m=.02))
         data = inputs.read_yaml(self.scene_path)
-        data['parameters'] = str(overrides)
+        data['parameters'] = dict(placement_position_sigma_m=.02)
         write_yaml(self.scene_path, data)
         with self.assertRaisesRegex(ValueError, '建图配置已变化'):
-            map_lifecycle.load_published(replace(inputs.read_scene(self.scene_path), batch_root=self.session_path.parent), check_definition=True)
+            map_lifecycle.load_published(inputs.read_batch(self.session_path).scene, check_definition=True)
         self.assertEqual(workflow.run_episode(self.episode_path)['frame_id'], first['frame_id'])
-        second = self.build_scene()
+        second = self.build_scene(bind=True)
         self.assertNotEqual(first['frame_id'], second['frame_id'])
-        write_yaml(overrides, dict(placement_position_sigma_m=.02, pairing_start_tolerance_s=3.))
-        _, map_manifest = map_lifecycle.load_published(replace(inputs.read_scene(self.scene_path), batch_root=self.session_path.parent))
+        data['parameters']['pairing_start_tolerance_s'] = 3.
+        write_yaml(self.scene_path, data)
+        _, map_manifest = map_lifecycle.load_published(inputs.read_batch(self.session_path).scene)
         self.assertEqual(map_manifest['version'], second['version'])
 
     def test_device_swapping_across_scenes_without_rebuilding_map(self):
@@ -757,9 +775,10 @@ class SceneWorkflowTests(unittest.TestCase):
         self.cameras[swapped_video] = swapped_cam
         self.prepared_recordings[swapped_video] = replace(self.prepared_recordings[self.recording_paths['right']], camera=swapped_cam)
 
-        swapped_episode_path = self.session_path.parent / 'take_swapped/episode.yaml'
+        swapped_episode_path = self.batch_root / '.pipeline/tasks/take_swapped/episode.yaml'
         ep_data = inputs.read_yaml(self.episode_path)
         ep_data['recordings']['right'] = dict(path=str(swapped_video), serial=swapped_serial, sha256=artifact_identity.file_hash(swapped_video))
+        models.layout.owner(swapped_episode_path).mkdir(exist_ok=True)
         write_yaml(swapped_episode_path, ep_data)
 
         # 换设备先在采集清单中固定新的套件配置，再复用地图。
@@ -774,7 +793,7 @@ class SceneWorkflowTests(unittest.TestCase):
     def test_viewer_rejects_different_frames_and_path_escape(self):
         self.build_scene()
         workflow.run_episode(self.episode_path)
-        output = self.episode_path.parent / 'results'
+        output = self.task_root / 'results'
         metadata = json.loads((output / 'episode.json').read_text())
         metadata['scene']['frame_id'] = 'other-frame'
         write_json(output / 'episode.json', metadata)
@@ -791,9 +810,11 @@ class SceneWorkflowTests(unittest.TestCase):
     def test_batch_episodes_concurrent_execution_and_resume(self):
         built = self.build_scene()
         ep1 = self.episode_path
-        ep2 = self.session_path.parent / 'take_002/episode.yaml'
-        ep3 = self.session_path.parent / 'take_003/episode.yaml'
+        ep2 = self.batch_root / '.pipeline/tasks/take_002/episode.yaml'
+        ep3 = self.batch_root / '.pipeline/tasks/take_003/episode.yaml'
+        models.layout.owner(ep2).mkdir(exist_ok=True)
         write_yaml(ep2, inputs.read_yaml(ep1))
+        models.layout.owner(ep3).mkdir(exist_ok=True)
         write_yaml(ep3, inputs.read_yaml(ep1))
 
         # 并发 2 个 workers 批量运行
@@ -810,7 +831,7 @@ class SceneWorkflowTests(unittest.TestCase):
     def test_batch_episodes_resilient_to_partial_failure(self):
         self.build_scene()
         ep1 = self.episode_path
-        ep_bad = self.session_path.parent / 'take_bad/episode.yaml'
+        ep_bad = self.batch_root / '.pipeline/tasks/take_bad/episode.yaml'
         bad_data = inputs.read_yaml(ep1)
         bad_data['recordings'].pop('right')
         write_yaml(ep_bad, bad_data)
@@ -824,10 +845,10 @@ class SceneWorkflowTests(unittest.TestCase):
 
     def test_batch_summary_formatting(self):
         summaries = [
-            dict(name='take_001', path='/p/take_001/episode.yaml', status='ok', common_interval_s=(0.5, 12.85), output='/out/1'),
-            dict(name='take_002', path='/p/take_002/episode.yaml', status='skipped', output='/out/2'),
-            dict(name='take_003', path='/p/take_003/episode.yaml', status='failed', error='快门过慢'),
-            dict(name='take_004', path='/p/take_004/episode.yaml', status='planned', output='/out/4'),
+            dict(name='take_001', path='/p/.pipeline/tasks/take_001/episode.yaml', status='ok', common_interval_s=(0.5, 12.85), output='/out/1'),
+            dict(name='take_002', path='/p/.pipeline/tasks/take_002/episode.yaml', status='skipped', output='/out/2'),
+            dict(name='take_003', path='/p/.pipeline/tasks/take_003/episode.yaml', status='failed', error='快门过慢'),
+            dict(name='take_004', path='/p/.pipeline/tasks/take_004/episode.yaml', status='planned', output='/out/4'),
         ]
         text = workflow.format_batch_summary(summaries)
         self.assertIn('take_001', text)
@@ -839,7 +860,8 @@ class SceneWorkflowTests(unittest.TestCase):
     def test_cli_batch_run_with_jobs_and_json(self):
         self.build_scene()
         ep1 = self.episode_path
-        ep2 = self.session_path.parent / 'take_002/episode.yaml'
+        ep2 = self.batch_root / '.pipeline/tasks/take_002/episode.yaml'
+        models.layout.owner(ep2).mkdir(exist_ok=True)
         write_yaml(ep2, inputs.read_yaml(ep1))
 
         from software.scene import cli

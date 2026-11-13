@@ -168,7 +168,7 @@ class CommandHelpTests(unittest.TestCase):
 
     def test_viewer_port_bounds_are_checked_before_server_start(self):
         parser = viewer_server.build_parser()
-        self.assertEqual(parser.parse_args([]).port, 9091)
+        self.assertIsNone(parser.parse_args([]).port)  # YAML resolves the default after parsing.
         self.assertEqual(parser.parse_args(['--port', '0']).port, 0)
         self.assertEqual(parser.parse_args(['--port', '65535']).port, 65535)
         for port in ('-1', '65536', 'not-a-number'):

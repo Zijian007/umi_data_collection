@@ -150,13 +150,10 @@ class PosterMappingWorkflowTests(unittest.TestCase):
         return helper
 
     def configure(self, helper, *, correction):
-        # Legacy fixture uses a parameter override file; exercise both schema paths.
-        override = helper.root/'parameters.yaml'
-        write_yaml(override, dict(tag_mapping_enabled=True, tag_mapping_scale_enabled=correction))
         declaration = inputs.read_yaml(helper.scene_path)
-        declaration.update(tags=dict(layout=str(tag_board.DEFAULT_LAYOUT)), parameters=str(override))
+        declaration.update(tags=dict(layout=str(tag_board.DEFAULT_LAYOUT)), parameters=dict(tag_mapping_enabled=True, tag_mapping_scale_enabled=correction))
         write_yaml(helper.scene_path, declaration)
-        helper.scene = replace(inputs.read_scene(helper.scene_path), batch_root=helper.session_path.parent)
+        helper.scene = inputs.read_batch(helper.session_path).scene
         for video, camera in list(helper.cameras.items()):
             helper.cameras[video] = replace(camera, measurements=dict(camera.measurements, rear=camera.measurements['front']),
                                             files=dict(camera.files, rear=camera.files['front']))
@@ -222,8 +219,8 @@ class PosterMappingWorkflowTests(unittest.TestCase):
         self.assertEqual(saved['scale'],old['scale'])
         self.assertEqual(saved['T_scene_metric_map'],old['T_scene_metric_map'])
         self.assertEqual(saved['evidence']['environment_poster']['status'],'insufficient_observations')
-        pointer = (root/'current.json').read_bytes()
+        pointer = helper.session_path.read_bytes()
         with patch.object(tags,'cached',side_effect=self.fake_cache(self.detections(helper,shifted=True))):
             with self.assertRaisesRegex(ValueError,'海报'):
                 helper.build_scene(force=True)
-        self.assertEqual((root/'current.json').read_bytes(),pointer)
+        self.assertEqual(helper.session_path.read_bytes(),pointer)

@@ -72,8 +72,8 @@ def import_video(video: Path, directory: Path, *, metadata: dict, link: bool = F
 def prepare_recording(recording_path: Path, camera: CalibratedCamera, scene: Scene, cache_dir: Path, *, cores: str = '', reuse: bool = False,
                       cache: MapBuildCache | None = None) -> PreparedRecording:
     identity = cache.preparation_inputs(recording_path, camera, scene) if cache else {}
-    with (cache.stage('prepare', f'{camera.serial} 建图录像准备', identity, cache_dir,
-                      roots=('debug/dataset', 'debug/lens_videos')) if cache else nullcontext(reuse)) as reuse:
+    with (cache.stage('prepare', f'{camera.serial} 录像准备', identity, cache_dir,
+                      roots=('debug/dataset', 'debug/lens_videos'), link=True) if cache else nullcontext(reuse)) as reuse:
         paths = RecordingPaths(cache_dir)
         paths.logs.mkdir(parents=True, exist_ok=True)
         if reuse:

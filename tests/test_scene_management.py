@@ -55,11 +55,13 @@ class RegistryVersionTests(unittest.TestCase):
         calibration_assets.make_bundle(calibration_assets.SAMPLE_CAMERA_JSON, second, note=dict(source='new'))
         self.assertEqual(registry.register('CAMERA_A', second)['calibration_version'], '002')
         self.assertEqual(registry.register('CAMERA_A', second)['calibration_version'], '002')
-        self.assertEqual(registry.register('CAMERA_A', self.bundle)['calibration_version'], '001')
+        self.assertEqual(registry.register('CAMERA_A', self.bundle)['calibration_version'], '003')
         self.assertEqual(registry.get('CAMERA_A')['bundle_sha256'], original['bundle_sha256'])
-        self.assertEqual(registry.get('CAMERA_A', calibration='002')['calibration_version'], '002')
-        self.assertEqual(len(list((registry.CAMERAS / 'CAMERA_A/calibrations').iterdir())), 2)
-        self.assertEqual({device['front_default'] for device in inventory.device_inventory()}, {'001'})
+        self.assertEqual(registry.get('CAMERA_A')['calibration_version'], '003')
+        self.assertEqual({p.name for p in (registry.CAMERAS / 'CAMERA_A/calibrations').iterdir()}, {'003'})
+        with self.assertRaises(registry.RegistryError):
+            registry.get('CAMERA_A', calibration='001')
+        self.assertEqual({device['front_default'] for device in inventory.device_inventory()}, {'001', '003'})
 
     def test_index_contains_only_camera_identity_and_calibration(self):
         registry.register('CAMERA_B', self.bundle, note='source measurement')
@@ -92,32 +94,6 @@ class RegistryVersionTests(unittest.TestCase):
         self.assertEqual({p.name for p in parent.iterdir()}, {'001', '999'})
         registry.version_assets(parent / '999')
 
-    def test_upgrade_is_previewable_immutable_and_requires_explicit_activation(self):
-        from software.calibration import devices
-        registry.register('CAMERA_OLD', self.legacy_bundle)
-        pinned = registry.pin('CAMERA_OLD')
-        old = registry.get('CAMERA_OLD', **pinned)
-        before = {str(p.relative_to(registry.ROOT)): p.read_bytes() for p in registry.ROOT.rglob('*') if p.is_file()}
-        planned = devices.upgrade_device('CAMERA_OLD', dry_run=True)
-        self.assertEqual(planned['status'], 'planned')
-        self.assertEqual(before, {str(p.relative_to(registry.ROOT)): p.read_bytes() for p in registry.ROOT.rglob('*') if p.is_file()})
-        stored = devices.upgrade_device('CAMERA_OLD')
-        self.assertEqual(pinned['calibration'], '001')
-        self.assertEqual(stored['version'], '002')
-        self.assertEqual(planned['version'], stored['version'])
-        self.assertEqual(registry.pin('CAMERA_OLD'), pinned)
-        modern = registry.get('CAMERA_OLD', calibration=stored['version'])
-        self.assertEqual(modern['bundle_schema_version'], 2)
-        self.assertEqual(Path(old['json']).read_bytes(), Path(modern['json']).read_bytes())
-        self.assertEqual({p.name for p in Path(modern['dir']).iterdir()}, {'bundle.json', 'calibration_r1440.json'})
-        self.assertEqual(devices.upgrade_device('CAMERA_OLD')['version'], stored['version'])
-        devices.activate_calibration('CAMERA_OLD', stored['version'])
-        self.assertEqual(registry.pin('CAMERA_OLD')['calibration'], stored['version'])
-        self.assertEqual(registry.get('CAMERA_OLD', **pinned)['json'], old['json'])
-        for name, contents in before.items():
-            if name != 'index.json':
-                self.assertEqual((registry.ROOT/name).read_bytes(), contents)
-
     def test_new_defaults_keep_pinned_camera_calibration_reproducible(self):
         pinned = registry.pin('CAMERA_A')
         old = registry.get('CAMERA_A', **pinned)
@@ -125,7 +101,8 @@ class RegistryVersionTests(unittest.TestCase):
         calibration_assets.make_bundle(calibration_assets.SAMPLE_CAMERA_JSON, second, note=dict(source='new'))
         registry.register('CAMERA_A', second)
         self.assertNotEqual(registry.pin('CAMERA_A')['calibration'], pinned['calibration'])
-        self.assertEqual(registry.get('CAMERA_A', **pinned)['json'], old['json'])
+        with self.assertRaises(registry.RegistryError):
+            registry.get('CAMERA_A', **pinned)
 
     def test_tampered_assets_and_retired_devices_are_rejected(self):
         pinned = registry.pin('CAMERA_A')
@@ -147,7 +124,7 @@ class RegistryVersionTests(unittest.TestCase):
         target = registry.rear_path('CAMERA_A', installed['version'])
         self.assertEqual(source.read_bytes(), target.read_bytes())
         self.assertEqual(registry.register_rear(source), installed)
-        with self.assertRaises(OSError):
+        with self.assertRaises(registry.RegistryError):
             registry.rear_path('CAMERA_B', installed['version'])
         rear['validation']['verdict'] = 'FAIL'
         write_json(source, rear)
@@ -194,8 +171,7 @@ class SessionManagementTests(unittest.TestCase):
     def session(self, scene_path, name):
         self.f.write_kit('fixture', {arm:dict(serial='SERIAL_'+arm,**self.f.device_pins['SERIAL_'+arm]) for arm in models.ARMS})
         scene = inputs.read_scene(scene_path)
-        pointer = (self.f.scene.map_root if scene.root == self.f.scene.root else scene.map_root) / 'current.json'
-        version = json.loads(pointer.read_text())['version'] if pointer.is_file() else None
+        version = self.f.bound_map_version() if scene.root == self.f.scene.root else None
         return write_batch(scene_path, name, kit='fixture', map_version=version)
 
     def episode(self, session, name):
@@ -210,10 +186,13 @@ class SessionManagementTests(unittest.TestCase):
     def test_interleaved_scenes_reuse_devices_with_distinct_map_frames(self):
         first = self.session(self.f.scene_path, 'morning')
         other_path = self.f.root / 'other_market/scene.yaml'
-        data = inputs.read_yaml(self.f.scene_path); data['name'] = 'other_market'
+        data = inputs.read_yaml(self.f.scene_path)
         write_yaml(other_path, data)
-        map_lifecycle.build_scene(other_path)
         other = self.session(other_path, 'afternoon')
+        record = inputs.read_yaml(other)
+        record['mapping'] = dict(left=self.f.ref('left'))
+        write_yaml(other, record)
+        map_lifecycle.build_scene(other)
         first_task, other_task = self.episode(first, 'take_001'), self.episode(other, 'take_001')
         a, b = workflow.run_episode(first_task), workflow.run_episode(other_task)
         self.assertNotEqual(a['frame_id'], b['frame_id'])
@@ -228,7 +207,7 @@ class SessionManagementTests(unittest.TestCase):
         session = self.session(self.f.scene_path, 'fixed')
         task = self.episode(session, 'take_001')
         original = workflow.run_episode(task)['frame_id']
-        new = map_lifecycle.build_scene(self.f.scene_path, force=True)
+        new = map_lifecycle.build_scene(self.f.session_path, force=True)
         self.assertNotEqual(original, new['frame_id'])
         self.assertEqual(workflow.run_episode(task, force=True)['frame_id'], original)
         manifest = inputs.read_yaml(session)

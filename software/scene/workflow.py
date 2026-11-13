@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from dataclasses import asdict, replace
 from pathlib import Path
 import concurrent.futures as cf
@@ -20,17 +20,18 @@ from ruamel.yaml.error import YAMLError
 
 from software import provenance as artifact_identity
 from software.console import Console
-from software.scene import layout
+from software.scene import layout, scheduling
 from software.scene.configuration import SceneOverrides
 from software.scene.layout import locked
 from software.scene.management import camera_assets
-from software.scene.management import episodes, inputs
+from software.scene.management import cleanup, episodes, inputs
 from software.scene.models import Episode
 from software.scene.models import EpisodeRunResult
 from software.scene.result_io import scene_reference
-from software.scene.pipeline import map_lifecycle, reconstruction, fallback
+from software.scene.pipeline import map_lifecycle, reconstruction, fallback, reporting
 from software.scene.spatial.fusion import SceneFusionQualityError
-from software.scene.pipeline import recording_checks, results, measurements
+from software.scene.pipeline import recording_checks, results, measurements, cache_audit
+from software.scene.pipeline import synchronization
 from software.storage import publish_link, write_json
 from software.vision import runtime
 
@@ -51,18 +52,32 @@ def record_failure(episode: Episode, directory: Path, reason: str, *, identity: 
     else:
         directory.rename(target)
     episodes.record_attempt(episode, status, target)
+    cleanup.after_task(episode.root)
 
 
 def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recordings=True,
-                map_version: str | None = None, overrides: SceneOverrides | None = None) -> EpisodeRunResult:
+                map_version: str | None = None, overrides: SceneOverrides | None = None,
+                parallel_arms: bool = True, batch_map: map_lifecycle.BatchMap | None = None) -> EpisodeRunResult:
     """预检并固定地图 → 准备录像 → 各手独立求解 → 核对输入 → 发布结果。
 
     锁、缓存复用、失败记录与成功指针由本层管理；算法与结果写入分别
     交给 reconstruct_arm_in_scene() 和 results。失败保留已有成功入口。
     """
     episode = inputs.read_episode(path, overrides=overrides)
+    if episode.synchronization.get('method') == 'audio_auto':
+        sync_path = layout.metadata(episode.root, 'sync.json')
+        raw = synchronization.estimate_audio_sync(episode.recordings,
+            output=None if dry_run else sync_path)
+        raise ValueError(
+            f'audio_auto 已生成原始音频偏移 {raw["raw_audio_offset_s"]}，'
+            f'记录在 {sync_path}；完成 recording-mode A/V 修正后才能运行轨迹抽取')
     video_offsets_s = episode.offsets()
     name = episode.root.name
+    requested_map_version = map_version
+    if episode.map_version is not None:
+        if requested_map_version is not None and requested_map_version != episode.map_version:
+            raise ValueError('命令行 map_version 与 task.yaml 的 map_version 不一致')
+        requested_map_version = episode.map_version
 
     # --- 阶段 0: 原片录像预检 (Preflight Check) ---
     check_report = recording_checks.check_episode(episode) if check_recordings else None
@@ -79,7 +94,10 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
 
     with nullcontext() if dry_run else locked(episode.root):
         # --- 阶段 1: 地图版本绑定与输入指纹比对 (Bind Map & Verify Cache) ---
-        episode, map_dir, map_manifest = map_lifecycle.bind_map(episode, map_version, dry_run)
+        if batch_map is not None and batch_map.requested != requested_map_version:
+            raise ValueError('批量运行中的任务需要不同地图版本，请按地图版本分组运行')
+        episode, map_dir, map_manifest = (batch_map.bind(episode) if batch_map is not None else
+            map_lifecycle.bind_map(episode, requested_map_version, dry_run, cores=cores))
         scene = episode.scene
         device_scene = replace(
             scene,
@@ -115,12 +133,16 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
                 reference = scene_reference(old)
                 inputs.validate_assets(output.resolve(), old['assets'])
                 episodes.record_attempt(episode, status, output.resolve())
+                cleanup.after_task(episode.root)
                 return dict(status=status, output=str(output), frame_id=reference['frame_id'])
 
         # --- 阶段 2: 独立计算隔离运行 (Isolated Run) ---
         run_dir = layout.metadata(episode.root, 'runs') / uuid.uuid4().hex
         run_dir.mkdir(parents=True)
-        started = time.monotonic()
+        # 解码产物从缓存链接到运行期工作目录，结束即删；发布结果只保留自包含文件。
+        work_dir = layout.metadata(episode.root, 'work') / run_dir.name
+        started, started_at = time.monotonic(), time.time()
+        cache_events = cache_audit.CacheAudit()
 
         try:
             if check_report is not None:
@@ -138,7 +160,9 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
                     scene=replace(episode.scene, tag_layout=frozen_layout)))
             # Step 1: 准备录像与公共时间区间
             console.write('准备任务录像与时间轴', recording=name, step=(1, 3))
-            prepared_recordings = reconstruction.prepare_episode_recordings(episode, cameras, video_offsets_s, cores=cores)
+            allocation = scheduling.arm_cores(tuple(episode.recordings), cores, parallel=parallel_arms)
+            prepared_recordings = reconstruction.prepare_episode_recordings(episode, cameras, video_offsets_s,
+                work_dir=work_dir, cores=cores, arm_cores=allocation, cache_audit=cache_events)
             display_map_path = map_dir / 'map.json'
             scene_metadata = dict(
                 name=scene.name,
@@ -151,12 +175,15 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             tracks = {}
             widths = {}
             distances = {}
-            for arm, recording in prepared_recordings.items():
+            def run_arm(arm):
+                recording = prepared_recordings[arm]
+                arm_scene = scene_metadata
+                measurements.prepare_detections(episode, arm, recording)
                 console.write(f'{arm}：已有场景地图定位 → 固定场景系融合', recording=name, step=(2, 3))
                 try:
                     fusion_result = reconstruction.reconstruct_arm_in_scene(
                         episode, arm, recording, map_dir, map_manifest,
-                        diagnostic_dir=run_dir / arm)
+                        diagnostic_dir=run_dir / arm, cache_audit=cache_events)
                 except SceneFusionQualityError as shared_error:
                     if len(episode.expected_arms) != 1 or len(prepared_recordings) != 1:
                         raise
@@ -166,21 +193,32 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
                         fusion_result = fallback.reconstruct(episode, arm, recording, run_dir / arm / 'independent')
                     except Exception as local_error:
                         raise ValueError(f'共享场景失败：{shared_error}；独立回退失败：{local_error}') from local_error
-                    scene_metadata = dict(name=scene.name, session=episode.session.name, version=None,
+                    arm_scene = dict(name=scene.name, session=episode.session.name, version=None,
                         frame_id=f'local:{run_dir.name}:{arm}', scope='local',
                         fallback=dict(shared_failure=str(shared_error), shared_frame_id=map_manifest['frame_id']))
-                    display_map_path = None
                 measured = measurements.measure(episode, arm, recording, video_offsets_s[arm], run_dir / arm)
+                track = results.write_arm(
+                    arm, recording, fusion_result, video_offsets_s[arm], arm_scene, run_dir / arm,
+                    width=measured.width, tag_distance=measured.tag_distance,
+                    export_auxiliary_trajectories=scene.parameters.export_auxiliary_trajectories,
+                    localization_lenses=('front',) if arm_scene.get('scope') == 'local' else scene.localization_lenses(arm),
+                )
+                return arm, track, measured, arm_scene
+
+            if allocation:
+                console.write('左右手并行重建', recording=name, step=(2, 3))
+                with cf.ThreadPoolExecutor(max_workers=len(prepared_recordings), thread_name_prefix='scene-arm') as executor:
+                    arm_results = list(executor.map(run_arm, prepared_recordings))
+            else:
+                arm_results = [run_arm(arm) for arm in prepared_recordings]
+            for arm, track, measured, arm_scene in arm_results:
+                tracks[arm] = track
                 if measured.width is not None:
                     widths[arm] = measured.width.report
                 if measured.tag_distance is not None:
                     distances[arm] = measured.tag_distance.report
-                tracks[arm] = results.write_arm(
-                    arm, recording, fusion_result, video_offsets_s[arm], scene_metadata, run_dir / arm,
-                    width=measured.width, tag_distance=measured.tag_distance,
-                    export_auxiliary_trajectories=scene.parameters.export_auxiliary_trajectories,
-                    localization_lenses=('front',) if scene_metadata.get('scope') == 'local' else scene.localization_lenses(arm),
-                )
+                if arm_scene.get('scope') == 'local':
+                    scene_metadata, display_map_path = arm_scene, None
 
             # Step 3: 双手对齐、防篡改校验与原子发布
             console.write('写入轨迹、报告并发布结果', recording=name, step=(3, 3))
@@ -190,7 +228,25 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             current_recordings = {arm: inputs.recording_identity(video) for arm, video in episode.recordings.items()}
             if input_identity['recordings'] != current_recordings:
                 raise ValueError('任务期间录像发生变化，拒绝发布')
+            epoch_plan = layout.metadata(episode.session.root, 'map_epochs.yaml')
+            current_epoch_plan = artifact_identity.file_hash(epoch_plan) if epoch_plan.is_file() else None
+            if input_identity.get('map_epoch_plan_sha256') != current_epoch_plan:
+                raise ValueError('地图 epoch 清单在任务期间发生变化，拒绝发布')
+            if batch_map is not None:
+                batch_map.validate(check_configuration=False)
 
+            reporting.write_run_report(
+                run_dir,
+                episode=episode,
+                map_manifest=map_manifest,
+                input_identity=input_identity,
+                tracks=tracks,
+                video_offsets_s=video_offsets_s,
+                scene_record=scene_metadata,
+                gripper_width=widths,
+                tag_distance=distances,
+                cache_audit=cache_events,
+            )
             results.write_episode(
                 episode,
                 tracks,
@@ -209,9 +265,14 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             output = local_output if is_local else episode.output
             publish_link(run_dir, output)
             episodes.record_attempt(episode, 'local_ok' if is_local else 'ok', run_dir)
+            cleanup.after_task(episode.root, used_since=started_at)
         except Exception as error:
             record_failure(episode, run_dir, str(error), identity=input_identity, error=error)
             raise
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            with suppress(OSError):
+                work_dir.parent.rmdir()
 
         return dict(
             status='local_ok' if is_local else 'ok',
@@ -230,12 +291,24 @@ def run_episodes(paths: list[Path], *, jobs: int = 1, force=False, cores='', dry
         return []
 
     console.write(f'共 {len(resolved)} 个任务；并发数 {jobs}')
+    batch_maps = {}
+    for path in resolved:
+        batch_root = layout.owner(path).parent
+        task_map_version = inputs.read_episode(path, verify=False).map_version
+        requested = map_version
+        if task_map_version is not None:
+            if requested is not None and requested != task_map_version:
+                raise ValueError('命令行 map_version 与 task.yaml 的 map_version 不一致')
+            requested = task_map_version
+        batch_maps.setdefault((batch_root, requested), map_lifecycle.BatchMap(requested, dry_run, cores=cores))
 
     def _execute(path: Path) -> dict:
         name = layout.owner(path).name
         try:
             episode_result = run_episode(path, force=force, cores=cores, dry_run=dry_run, check_recordings=check_recordings, map_version=map_version,
-                                         overrides=overrides)
+                                         overrides=overrides, parallel_arms=jobs == 1,
+                                         batch_map=batch_maps[(layout.owner(path).parent,
+                                                               inputs.read_episode(path, verify=False).map_version or map_version)])
             return dict(path=str(path), name=name, **episode_result)
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, YAMLError) as error:
             if not dry_run and path.is_file():

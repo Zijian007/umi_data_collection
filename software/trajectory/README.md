@@ -39,7 +39,7 @@ cli.main() → workflow.run_batch() → workflow.run_recording()
 ```bash
 .deps/env/bin/python -m software.trajectory.reporting.initialization_review \
   --run-dir umi_traj_out/VID_20261111_183645_00_026 \
-  --calibration registry/cameras/IAQEB26097M4CP/calibrations/002/bundle/calibration.json \
+  --calibration registry/cameras/IAQEB26097M4CP/calibrations/front/measured/bundle/calibration.json \
   --output umi_traj_out/initialization_review/VID_20261111_183645_00_026/refinement_review.json
 ```
 
@@ -233,7 +233,7 @@ umi_traj_out/VID_20261003_182246_00_067/
 
 独立工作镜头引擎可用 `--intrinsics-source measured|factory` 选择设备中对应的完整标定版本，已选目录（`UMI_TRAJ_CALIB`）也必须匹配来源。未指定时继续使用已启用版本。factory 是工厂 MEI 拟合 KB4 加重新实测的 B；历史样例选择值 `UMI_TRAJ_CALIB=factory` 含义保持独立。
 
-双镜头来源选择可用 `umi-scene` 套件，或独立入口的 `--mode dual --rear-calibration rear_<hash>`；不要求提供海报。未绑定正式 rear 时，尝试当前 X3 INSV 工厂内参/双镜头外参 + 本设备 front B 兜底；沿用 front 时差，标记 `NOT_EVALUATED`，不使用历史 rear 样例。`--intrinsics-source` 选择 front 来源并核对显式正式 rear 的来源一致；兜底的 rear 来源独立记录为 factory。项目构建默认启用已验证的 ≤85° 前向 KB4，两种来源使用同一几何与 0.2 秒选帧策略；1920 全镜头与 >180° 仍不属于正式范围。
+双镜头参数来源选择可用 `umi-scene` 套件，或独立入口的 `--mode dual --rear-calibration measured`；不要求提供海报。未绑定正式 rear 时，尝试当前 X3 INSV 工厂内参/双镜头外参 + 本设备 front B 兜底；沿用 front 时差，标记 `NOT_EVALUATED`，不使用历史 rear 样例。`--intrinsics-source` 选择 front 参数来源并核对显式正式 rear 的来源一致；兜底的 rear 来源独立记录为 factory。项目构建默认启用已验证的 ≤85° 前向 KB4，两种来源使用同一几何与 0.2 秒选帧策略；1920 全镜头与 >180° 仍不属于正式范围。
 
 ```bash
 python -m software.trajectory /path/to/task.insv --mode dual --rear-calibration rear_ACTUAL_HASH
@@ -244,7 +244,7 @@ python -m software.trajectory /path/to/task.insv --mode dual --rear-calibration 
 
 ## 环境海报
 
-独立 `handheld` / `dual` 支持 `--tag-layout FILE`，可加 `--rear-calibration rear_<hash>` 选择本设备已登记的完整 rear 标定，要求序列号、来源和验收匹配。省略时按上述规则兜底，显式绑定损坏则拒绝。两种路径均冻结 rear 参数和来源到 `devices/rear/`；工厂转换不合格或元数据缺失时在预检失败，保留旧结果。指定资产默认只诊断；通过 YAML `environment_tags.tag_fusion_enabled: true` 显式启用。阈值在 `config/trajectory.yaml` 的 `environment_tags` 内，默认值尚待实拍调参。
+独立 `handheld` / `dual` 支持 `--tag-layout FILE`，可加 `--rear-calibration measured` 选择本设备已登记的完整 rear 标定，要求序列号、参数来源和验收匹配。省略时按上述规则兜底，显式绑定损坏则拒绝。两种路径均冻结 rear 参数和来源到 `devices/rear/`；工厂转换不合格或元数据缺失时在预检失败，保留旧结果。指定资产默认只诊断；通过 YAML `environment_tags.tag_fusion_enabled: true` 显式启用。阈值在 `config/trajectory.yaml` 的 `environment_tags` 内，默认值尚待实拍调参。
 
 `pipeline/poster_assets.py` 冻结已选布局并缓存原始角点，不再选择镜头版本；`algorithms/fusion_poster.py` 在原生图中添加单板角点因子。原有地图分段尺度仍是变量，不把上一轮融合轨迹作为固定地图先验再平滑一次。真实 rear 观测时刻插入 IMU 节点；恢复全帧轨迹时使用这些实际时间节点。dual 地图定位也按镜头时差重采样，不跨丢帧/地图切换。没有海报观测时保持原图输出；仍需通过惯性初始化和原有质量验收。
 

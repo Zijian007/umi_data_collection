@@ -55,8 +55,7 @@ class NewLayoutTests(unittest.TestCase):
 
     def session(self, name='20261104_001', *, scene=None, kit='rig'):
         selected = inputs.read_scene(scene or self.f.scene.root)
-        pointer = (self.f.scene.map_root if selected.root == self.f.scene.root else selected.map_root) / 'current.json'
-        version = json.loads(pointer.read_text())['version'] if pointer.is_file() else None
+        version = self.f.bound_map_version() if selected.root == self.f.scene.root else None
         return write_batch(scene or self.f.scene.root, name, kit=kit, map_version=version)
 
     def prepare_imported(self, path):
@@ -69,10 +68,9 @@ class NewLayoutTests(unittest.TestCase):
         first = self.session()
         other_scene = self.f.root / 'counter/scene.yaml'
         data = inputs.read_yaml(self.f.scene_path)
-        data['name'] = 'counter'
         write_yaml(other_scene, data)
         other = self.session(scene=other_scene)
-        self.assertEqual(first, self.f.scene.root / '20261104_001/.umi/manifest.yaml')
+        self.assertEqual(first, self.f.scene.root / '20261104_001/.pipeline/manifest.yaml')
         self.assertEqual(inputs.read_batch(first).kit, inputs.read_batch(other).kit)
         self.assertEqual(inputs.read_kit('rig'), self.kit)
         updated = write_kit('rig', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(right='SERIAL_right')).items()})
@@ -107,7 +105,7 @@ class NewLayoutTests(unittest.TestCase):
         video.parent.mkdir(parents=True)
         video.write_text('right_task')
         before = {p: (p.read_bytes(), p.stat().st_ino) for p in (declaration, mapping, video)}
-        self.assertFalse((batch / '.umi').exists())
+        self.assertFalse((batch / '.pipeline').exists())
         info = ingest.RecordingMetadata(video, 'SERIAL_right', artifact_identity.file_hash(video), None, 8.)
         with patch.object(registry, 'read_insv_serial', return_value='SERIAL_right'), \
                 patch.object(ingest, 'scan_raw_videos', return_value=([info], [])):
@@ -138,10 +136,9 @@ class NewLayoutTests(unittest.TestCase):
         for video in episode.recordings.values():
             self.assertEqual(video.parent.parent, self.f.scene.root / '20261104_001/take_001')
         self.prepare_imported(path)
-        data = inputs.read_yaml(path)
-        data.update(instruction='双手把盒子放入托盘', synchronization=dict(
+        data = dict(instruction='双手把盒子放入托盘', synchronization=dict(
             offsets_s=dict(left=0., right=-.12), confirmed=True, note='共同事件，首尾已核验'))
-        write_yaml(path, data)
+        write_yaml(layout.owner(path) / 'task.yaml', data)
         workflow.run_episode(path)
         self.assertEqual(capture_status(layout.owner(path))['status'], 'ok')
         self.assertIsNotNone(inputs.read_batch(manifest).map_version)

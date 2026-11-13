@@ -81,10 +81,13 @@ def write_task(session, name: str, recording_paths: dict, *, expected_arms=None,
         metadata = recordings.inspect(video)
         target = recordings.import_video(video, directory / arm, metadata=metadata, owned_root=directory)
         task_record['recordings'][arm] = dict(metadata, path=os.path.relpath(target, directory))
+    configuration = {}
     if expected_arms is not None:
-        task_record['expected_arms'] = list(expected_arms)
+        configuration['expected_arms'] = list(expected_arms)
     if instruction is not None:
-        task_record['instruction'] = instruction
+        configuration['instruction'] = instruction
+    if configuration:
+        write_yaml(directory / 'task.yaml', configuration)
     path = layout.metadata(directory, 'episode.yaml')
     write_yaml(path, task_record)
     return path

@@ -1,0 +1,11 @@
+{
+  "kind": "umi_camera_calibration",
+  "serial": "IAQEB2609JPAR3",
+  "lens": "front",
+  "intrinsics_source": "measured",
+  "assets": {
+    "bundle/calibration.json": "ef5f874cf8ad8ca479f404ec8f172c39fb1aee5e9a6991c8129380347b779b28",
+    "bundle/manifest.json": "91828e9fb310f5c2591ff5daed685d92bb7c17edeca38449eb3605a34da73119"
+  },
+  "note": "umi-calib install from /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB2609JPAR3/20261113/front/calibration_result"
+}

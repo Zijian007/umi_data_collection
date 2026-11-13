@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from software import settings as operational
+
 from dataclasses import replace
 from pathlib import Path
 import csv
@@ -110,7 +112,8 @@ def run_orb(video: LensVideo, output: Path, context: VisualContext, directory: P
     if frame_range is not None:
         command += ['--frame_start', str(start), '--frame_end', str(end)]
     command += extra
-    timeout_s = expected_frames // 30 * 16 + 300
+    budget = operational.values('runtime')
+    timeout_s = expected_frames // 30 * budget['slam_timeout_per_30_frames_s'] + budget['slam_timeout_base_s']
     # 已有引擎曾在 Shutdown/析构阶段以 SIGSEGV 退出；只有完成全部帧且
     # 写出终结统计的 139/-11 可进入兼容验收。超时和其他错误一律失败。
     return_code = runtime.run_logged(runtime.engine_command(context, command, timeout_s=timeout_s), output / 'log.txt',

@@ -29,7 +29,7 @@ class RecordingCatalog:
             return True
         # 单独打开任务时，允许读取该任务在批次内的集中产物。
         if layout.is_batch(self.root.parent):
-            internal = self.root.parent / '.umi/tasks' / self.root.name
+            internal = self.root.parent / layout.INTERNAL / 'tasks' / self.root.name
             if internal.resolve().is_relative_to(self.root.parent):
                 return resolved.is_relative_to(internal.resolve())
         return False

@@ -48,12 +48,12 @@ class SceneVideoLayoutTests(unittest.TestCase):
         self.assertEqual(len(preview['episodes']), 1)
         self.assertEqual(preview['episodes'][0]['name'], 'take_001')
         self.assertFalse((scene / 'scene.yaml').exists())
-        self.assertFalse((batch / '.umi/manifest.yaml').exists())
+        self.assertFalse((batch / '.pipeline/manifest.yaml').exists())
         self.assertFalse((scene / '.scene.lock').exists())
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
             processing.prepare_batch(batch)
-        manifest = batch / '.umi/manifest.yaml'
-        episode = inputs.read_episode(batch / 'take_001/.umi/episode.yaml')
+        manifest = batch / '.pipeline/manifest.yaml'
+        episode = inputs.read_episode(batch / 'take_001')
         self.assertEqual(episode.recordings, {arm: infos[index].path for index, arm in enumerate(('left', 'right'))})
         self.assertEqual(inputs.read_batch(manifest).scene.recordings['left'], mapping)
         self.assertEqual({path: (path.read_bytes(), path.stat().st_ino) for path in scene.rglob('*.insv')}, before)
@@ -71,7 +71,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
         self.assertEqual(batches.save_record(batches.read_inputs(batch, require_mapping=False)), manifest)
         self.assertEqual({path: (path.read_bytes(), path.stat().st_ino) for path in batch.rglob('*') if path.is_file()}, before)
         other = self.f.scene.root / 'other'
-        write_yaml(other / 'take_001/.umi/episode.yaml', dict(schema_version=5))
+        write_yaml(other / 'take_001/.pipeline/episode.yaml', dict(schema_version=5))
         with self.assertRaisesRegex(ValueError, '只允许'):
             write_batch(self.f.scene.root, other.name, kit='rig')
 
@@ -132,15 +132,16 @@ class SceneVideoLayoutTests(unittest.TestCase):
         self.assertEqual({info.path: info.path.stat().st_ino for info in infos}, before)
 
     def test_multiple_candidates_in_one_task_are_retained_for_confirmation(self):
-        for mode in ('flat', 'mixed'):
+        for mode in ('flat', 'nested'):
             with self.subTest(mode=mode):
                 batch = self.f.scene.root / ('ambiguous_' + mode)
                 infos = []
                 for arm, name in (('left', 'one'), ('left', 'two'), ('right', 'one')):
                     root = batch / 'take_001'
-                    if mode == 'mixed' and name == 'two':
-                        root /= 'videos'
-                    path = root / arm / (name + '.insv')
+                    root /= arm
+                    if mode == 'nested' and name == 'two':
+                        root /= 'extra'
+                    path = root / (name + '.insv')
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(arm + '_' + name)
                     infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, artifact_identity.file_hash(path), None, 8.))
@@ -168,8 +169,9 @@ class SceneVideoLayoutTests(unittest.TestCase):
     def test_batch_discovery_scans_only_raw_arm_directories_and_pending(self):
         batch = self.f.root / 'discovery'
         wanted = ['take_001/left/a.INSV', 'take_001/right/b.insv',
-                  'take_002/videos/left/c.insv', 'pending/right/d.insv']
-        ignored = ['take_001/results/left/output.insv', 'take_001/.umi/cache/raw.insv',
+                  'take_002/left/extra/c.insv', 'pending/right/d.insv']
+        ignored = ['take_001/results/left/output.insv', 'take_001/.pipeline/cache/raw.insv',
+                   'take_002/videos/left/old.insv',
                    'mapping/left/map.insv', '.hidden/left/hidden.insv',
                    'results/left/result.insv', 'cache/left/cache.insv']
         for name in wanted + ignored:
@@ -183,7 +185,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual({item.path for item in found}, {batch / name for name in wanted})
 
-    def test_legacy_and_mixed_tasks_preserve_paths_and_repeated_import(self):
+    def test_legacy_and_mixed_tasks_are_rejected_without_changing_videos(self):
         for mode in ('legacy', 'mixed'):
             with self.subTest(mode=mode):
                 batch = self.f.scene.root / mode
@@ -196,25 +198,15 @@ class SceneVideoLayoutTests(unittest.TestCase):
                     path.parent.mkdir(parents=True)
                     path.write_text(arm)
                     infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, artifact_identity.file_hash(path), None, 8.))
-                manifest = write_batch(self.f.scene.root, batch.name, kit='rig')
                 before = {item.path: (item.path.read_bytes(), item.path.stat().st_ino) for item in infos}
-                with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
-                    snapshot = {p: p.read_bytes() for p in batch.rglob('*') if p.is_file()}
-                    self.assertEqual(ingest.register_recordings(inputs.read_batch(manifest), dry_run=True)['status'], 'planned')
-                    self.assertEqual({p: p.read_bytes() for p in batch.rglob('*') if p.is_file()}, snapshot)
-                    result = ingest.register_recordings(inputs.read_batch(manifest))
-                    self.assertEqual(result['status'], 'ok')
-                    task = inputs.read_episode(Path(result['episodes'][0]['path']))
-                    self.assertEqual(task.recordings, {arm: item.path for arm, item in zip(('left', 'right'), infos)})
-                    record = task.path.read_bytes(), task.path.stat().st_mtime_ns
-                    self.assertEqual(ingest.register_recordings(inputs.read_batch(manifest))['skipped'], ['take_001'])
-                    self.assertEqual((task.path.read_bytes(), task.path.stat().st_mtime_ns), record)
+                with self.assertRaisesRegex(ValueError, '未登记任务只允许'):
+                    write_batch(self.f.scene.root, batch.name, kit='rig')
                 self.assertEqual({item.path: (item.path.read_bytes(), item.path.stat().st_ino) for item in infos}, before)
-                self.assertFalse((batch / 'take_001/left').exists())
+                self.assertFalse(layout.metadata(batch, 'manifest.yaml').exists())
 
-    def test_legacy_incomplete_task_accepts_flat_peer_without_copying_original(self):
+    def test_incomplete_task_accepts_peer_without_copying_original(self):
         batch = self.f.scene.root / 'supplement'
-        left = batch / 'take_001/videos/left/VID.insv'
+        left = batch / 'take_001/left/VID.insv'
         left.parent.mkdir(parents=True)
         left.write_text('left')
         manifest = write_batch(self.f.scene.root, batch.name, kit='rig')
@@ -231,7 +223,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
         self.assertEqual(episode.recordings['left'], left)
         self.assertEqual(episode.recordings['right'], batch / 'take_001/right/right.insv')
         self.assertEqual(left.stat().st_ino, inode)
-        self.assertFalse((batch / 'take_001/videos/right').exists())
+        self.assertFalse((batch / 'take_001/videos').exists())
 
     def test_flat_right_only_task_preserves_hand_identity_and_has_no_videos_layer(self):
         batch = self.f.scene.root / 'right_only'

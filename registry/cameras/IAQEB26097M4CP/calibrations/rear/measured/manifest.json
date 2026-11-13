@@ -1,0 +1,9 @@
+{
+  "kind": "umi_rear_calibration",
+  "serial": "IAQEB26097M4CP",
+  "lens": "rear",
+  "intrinsics_source": "measured",
+  "assets": {
+    "rear_calibration.json": "c71515bd50f5c94bd3aa8a1db1a6e7bf62de0b6009e15067b9ba2dd96281a120"
+  }
+}

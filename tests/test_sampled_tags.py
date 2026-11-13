@@ -146,12 +146,12 @@ class SampledTagTests(unittest.TestCase):
 
     def test_frame_clock_implementation_change_invalidates_sampled_corner_cache(self):
         self.process()
-        original_hash = sampled_detection.artifact_identity.file_hash
+        original_hash = sampled_detection.artifact_identity.source_hash
 
         def changed_hash(path):
             return 'new-frame-clock' if str(path).endswith('camera/x3/frame.py') else original_hash(path)
 
-        with patch.object(sampled_detection.artifact_identity, 'file_hash', side_effect=changed_hash):
+        with patch.object(sampled_detection.artifact_identity, 'source_hash', side_effect=changed_hash):
             self.process()
         self.assertEqual(len(self.quick_calls), 8)
 
@@ -339,7 +339,7 @@ class TagDistanceAcceptanceTests(unittest.TestCase):
         self.addCleanup(fixture.doCleanups)
         fixture.build_scene()
         workflow.run_episode(fixture.episode_path)
-        output = fixture.episode_path.parent / 'results'
+        output = fixture.task_root / 'results'
         previous = output.resolve()
         original = (previous / 'episode.json').read_bytes()
         for video, camera in list(fixture.cameras.items()):
@@ -355,7 +355,7 @@ class TagDistanceAcceptanceTests(unittest.TestCase):
 
         def measure(request, cache, **kwargs):
             calls.append(request)
-            if len(calls) == 2:
+            if request.video == fixture.recording_paths['right']:
                 raise tag_distance.TagDistanceAcceptanceError(report)
             times = request.video_times_s + request.episode_offset_s
             return TagDistanceResult(TagDistanceSeries(times, np.full(len(times), 50.),

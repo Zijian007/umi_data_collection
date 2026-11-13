@@ -6,7 +6,8 @@
 #   ./umi-scene run --help
 # 套件和标定来源写法见 kits/README.md；操作说明见 docs/场景处理.md。
 # 命令行 / YAML / 资产分工及 --config 覆盖规则见 config/README.md。
-# 参数由 software/scene/cli.py 解析；UMI_DEPS 覆盖依赖目录。
+# 完整参数见 docs/命令行参数.md；参数由 software/scene/cli.py 解析。
+# UMI_DEPS 覆盖依赖目录；UMI_PY 覆盖基础解释器。
 set -euo pipefail
 
 PROJECT_ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)

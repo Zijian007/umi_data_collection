@@ -1,6 +1,8 @@
 """标定配置预览；不解析录像或访问设备档案。"""
 from __future__ import annotations
 
+from software import settings
+
 from argparse import Namespace
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -37,4 +39,4 @@ def effective_report(arguments: Namespace, request: CalibrationRequest | None = 
                    if key in ('cores', 'workers', 'force', 'resume', 'keep_work', 'install', 'compare_sample')},
         selection=dict(lens=request.lens if request is not None else 'front',
                        intrinsics_source=getattr(arguments, 'intrinsics_source', 'installed_version')),
-        effective=effective)
+        effective=effective, operational=settings.execution_report(cores=arguments.cores or '', workers=arguments.workers, calibration=True))

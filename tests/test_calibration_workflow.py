@@ -38,12 +38,29 @@ class DeviceCommandTests(unittest.TestCase):
             listing.assert_called_once_with(kit=None, json_output=False, intrinsics_source=None, require_rear=False)
 
     def test_install_flags_map_to_explicit_device_parameters(self):
-        with patch.object(devices, 'install_bundle', return_value=0) as install:
+        with patch.object(devices, 'install', return_value=0) as install:
             self.assertEqual(cli.main(['install', '/result', '--serial', 'camera', '--force']), 0)
-            install.assert_called_once_with(Path('/result'), True, camera_serial='camera')
+            install.assert_called_once_with(Path('/result'), force=True, camera_serial='camera')
+
+    def test_install_dispatches_front_or_rear_from_one_public_entrypoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            front = root / 'front_result'
+            rear = root / 'rear_result'
+            front.mkdir()
+            rear.mkdir()
+            (rear / 'rear_calibration.json').write_text('{}')
+            with patch.object(devices, 'install_bundle', return_value=3) as front_install, \
+                 patch.object(devices, '_install_rear_asset', return_value=4) as rear_install:
+                self.assertEqual(devices.install(front), 3)
+                self.assertEqual(devices.install(rear), 4)
+            front_install.assert_called_once_with(front, force=False, camera_serial=None)
+            rear_install.assert_called_once_with(rear / 'rear_calibration.json', force=False, camera_serial=None)
 
     def test_help_contains_only_supported_device_commands(self):
-        self.assertNotIn('adopt-sample', cli.build_parser().format_help())
+        help_text = cli.build_parser().format_help()
+        self.assertNotIn('adopt-sample', help_text)
+        self.assertNotIn('install-rear', help_text)
 
 
 class AcceptanceTests(unittest.TestCase):
@@ -212,7 +229,7 @@ class FullWorkflowTests(unittest.TestCase):
                 stack.enter_context(patch.object(module, name, return_value=value))
             stack.enter_context(patch.object(runtime, "run_logged", side_effect=run_logged))
             stack.enter_context(patch.object(recordings, "build", side_effect=build))
-            install = stack.enter_context(patch("software.calibration.devices.install_bundle", return_value=0)) if mock_install else None
+            install = stack.enter_context(patch("software.calibration.devices.install", return_value=0)) if mock_install else None
             yield args, commands, install
 
     def read_result(self, args):
@@ -537,7 +554,7 @@ class FullWorkflowTests(unittest.TestCase):
             with patch.object(basalt, 'estimate_camera_imu', side_effect=KeyboardInterrupt):
                 with self.assertRaises(KeyboardInterrupt):
                     workflow.run(inputs.parse_run_args(args))
-            # simulation patches install_bundle, so validate the public evidence reader directly.
+            # simulation patches install, so validate the public evidence reader directly.
             with self.assertRaisesRegex(ValueError, '尚未完成'):
                 result_io.load_result(Path(args.out), complete=True)
 

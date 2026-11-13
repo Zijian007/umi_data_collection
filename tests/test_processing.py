@@ -57,7 +57,7 @@ class ProcessingTests(unittest.TestCase):
              redirect_stdout(io.StringIO()) as output:
             self.assertEqual(cli.main(['build', str(self.batch), '--show-config']), 0)
         inspect.assert_not_called()
-        self.assertFalse((self.batch/'.umi').exists())
+        self.assertFalse((self.batch/'.pipeline').exists())
         self.assertEqual(json.loads(output.getvalue())['configuration'][0]['selection']['kit']['id'], 'rig')
 
     def test_runtime_overrides_survive_map_binding_and_preserve_reuse(self):
@@ -148,7 +148,7 @@ class ProcessingTests(unittest.TestCase):
         declaration = self.batch / 'batch.yaml'
         kit = inputs.KITS / 'rig/kit.yaml'
         before = {path: path.read_bytes() for path in (declaration, kit)}
-        self.assertFalse((self.batch / '.umi').exists())
+        self.assertFalse((self.batch / '.pipeline').exists())
         with redirect_stdout(io.StringIO()) as output:
             self.assertEqual(cli.main(['run', str(declaration), '--json']), 0)
         self.assertEqual({path: path.read_bytes() for path in before}, before)
@@ -200,6 +200,36 @@ class ProcessingTests(unittest.TestCase):
         processing.prepare_batch(self.batch)
         self.assertEqual(inputs.read_batch(self.batch).kit['id'], 'another_kit')
 
+    def test_problem_in_one_take_blocks_complete_tasks_and_explicit_task_entry(self):
+        processing.prepare_batch(self.batch)
+        incomplete = self.batch / 'take_002/left/VID.insv'
+        incomplete.parent.mkdir(parents=True)
+        incomplete.write_text('left_unpaired')
+        self.bind_fake_video(incomplete, 'left')
+        self.infos.append(ingest.RecordingMetadata(incomplete, 'SERIAL_left',
+            artifact_identity.file_hash(incomplete), None, 8.))
+        for target in (self.batch, self.batch / 'take_001'):
+            for dry_run in (False, True):
+                with self.subTest(target=target, dry_run=dry_run), \
+                        patch.object(workflow, 'run_episodes') as run:
+                    report = processing.run([target], dry_run=dry_run)
+                    self.assertTrue(report)
+                    self.assertTrue(all(item['status'] == 'failed' for item in report))
+                    run.assert_not_called()
+        self.assertFalse((self.batch / 'take_001/results').exists())
+        self.assertIsNone(inputs.read_batch(self.batch).map_version)
+
+    def test_scan_errors_and_ignored_recordings_block_complete_tasks(self):
+        processing.prepare_batch(self.batch)
+        for category in ('errors', 'ignored'):
+            report = dict(episodes=[], skipped=['take_001'], pending=[], errors=[], ignored=[])
+            report[category].append(dict(path='bad.insv', reason='invalid input'))
+            with self.subTest(category=category), \
+                    patch.object(processing, 'prepare_batch', return_value=report), \
+                    patch.object(workflow, 'run_episodes') as run:
+                self.assertEqual(processing.run([self.batch])[0]['status'], 'failed')
+                run.assert_not_called()
+
     def test_run_preview_reads_current_kit_and_keeps_snapshot_unchanged(self):
         processing.prepare_batch(self.batch)
         write_kit('single', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(right='SERIAL_right')).items()})
@@ -219,7 +249,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(planned['status'], 'planned')
         self.assertEqual(planned['inputs']['definition']['mapping'], {'left': str(self.batch / 'mapping/map.INSV')})
         self.assertEqual({p: p.read_bytes() for p in self.batch.rglob('*') if p.is_file()}, before)
-        self.assertFalse((self.batch / '.umi').exists())
+        self.assertFalse((self.batch / '.pipeline').exists())
 
     def test_preview_and_registration_agree_when_all_clips_are_already_registered(self):
         processing.prepare_batch(self.batch)

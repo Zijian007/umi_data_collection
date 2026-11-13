@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from software import settings
+
 from dataclasses import dataclass
 from pathlib import Path
 import csv
@@ -24,7 +26,7 @@ def identity() -> dict:
     import cv2
 
     directory = Path(__file__).parent
-    return dict(opencv=cv2.__version__, files={name: artifact_identity.file_hash(directory/name)
+    return dict(detector=detection.identity(), opencv=cv2.__version__, files={name: artifact_identity.source_hash(directory/name)
         for name in ('__init__.py', 'calibration.py', 'detection.py', 'frame_processing.py', 'series.py', 'pipeline.py')})
 
 

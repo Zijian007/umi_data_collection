@@ -41,6 +41,24 @@ function recordingLabel(name) {
   const match = name.match(/VID_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);
   return match ? `${match[1]}.${match[2]}.${match[3]} · ${match[4]}:${match[5]}:${match[6]}` : name;
 }
+function renderDualHandSummary(recording) {
+  const root = $('dual-hand-summary');
+  if (!recording.companion) { root.hidden = true; return; }
+  const duration = recording.times.at(-1) - recording.times[0];
+  const tracks = {
+    [recording.primary_arm]: recording.tracks.tcp,
+    [recording.companion.arm]: recording.companion_tracks?.tcp,
+  };
+  for (const arm of ['left', 'right']) {
+    const card = root.querySelector(`[data-hand-summary="${arm}"]`);
+    const track = tracks[arm];
+    card.hidden = !track;
+    if (!track) continue;
+    card.querySelector('[data-hand-time]').textContent = `${duration.toFixed(2)} s`;
+    card.querySelector('[data-hand-path]').textContent = `${track.path_length.toFixed(3)} m`;
+  }
+  root.hidden = false;
+}
 function renderLibrary() {
   const filter = $('search').value.trim().toLowerCase();
   const entries = state.catalog.filter(entry => `${entry.name} ${entry.serial || ''} ${entry.path}`.toLowerCase().includes(filter));
@@ -88,7 +106,9 @@ async function load(id) {
     if (request !== state.load) return;
     state.recording = recording; state.track = 'tcp'; state.index = 0; state.videoReady = false; state.frameMode = false; state.playTime = recording.times[0]; state.manualFrameMode = false;
     companionVideo.reset(recording.companion);
-    $('video-title').textContent = recording.primary_arm ? (recording.primary_arm === 'left' ? '左手工作镜头' : '右手工作镜头') : '工作镜头';
+    const primaryLabel = recording.primary_arm === 'right' ? '右手' : '左手';
+    $('video-title').textContent = recording.companion ? '双手工作镜头' : `${primaryLabel}工作镜头`;
+    $('video-hand-label').textContent = recording.companion ? `${primaryLabel}工作镜头 · 主时间轴` : `${primaryLabel}工作镜头`;
     video.closest('.video-panel').classList.toggle('paired', Boolean(recording.companion));
     framePreview.reset(); video.hidden = false;
     $('compatibility-mode').textContent = '兼容播放';
@@ -114,11 +134,12 @@ async function load(id) {
       $('detail-calibration').textContent = `L ${selection.id} / R ${other.id}`;
     }
     $('detail-rows').textContent = recording.times.length.toLocaleString();
+    renderDualHandSummary(recording);
     $('timeline').max = recording.times.length - 1; $('timeline').disabled = false; $('play').disabled = false;
     $('total-time').textContent = formatTime(recording.times.at(-1) - recording.times[0]);
     $('scene-empty').hidden = true;
     for (const button of document.querySelectorAll('[data-track]')) { button.disabled = !recording.tracks[button.dataset.track]; button.classList.toggle('active', button.dataset.track === 'tcp'); }
-    scene.load(recording); chart.load(recording.times, recording.tracks.tcp.speed); setTrack('tcp'); renderLibrary();
+    scene.load(recording); chart.load(recording.times, recording.tracks.tcp.speed, recording.companion_tracks?.tcp?.speed); setTrack('tcp'); renderLibrary();
     loadMaps(id, request);
     const url = new URL(location.href); url.searchParams.set('recording', id); history.replaceState(null, '', url);
     const warnings = [...recording.notes];
@@ -187,14 +208,21 @@ function updateMapLegend() {
 function setTrack(track) {
   if (!state.recording?.tracks[track]) return;
   state.track = track; scene.track = track;
-  $('legend-track').textContent = (state.recording.companion ? '左手 · 右手橙色 / ' : '') + {tcp: 'TCP 轨迹', camera: '相机轨迹', imu: 'IMU 轨迹'}[track];
+  const primaryLabel = state.recording.primary_arm === 'right' ? '右手' : '左手';
+  const companionLabel = state.recording.companion?.arm === 'right' ? '右手' : '左手';
+  $('legend-track').textContent = (state.recording.companion ? `${primaryLabel} · ${companionLabel}橙色 / ` : '') + {tcp: 'TCP 轨迹', camera: '相机轨迹', imu: 'IMU 轨迹'}[track];
+  $('legend-companion').hidden = !state.recording.companion;
+  $('legend-companion-text').textContent = `${companionLabel}轨迹`;
+  $('chart-hand-legend').hidden = !state.recording.companion;
+  $('chart-hand-legend').querySelector('[data-primary]').textContent = primaryLabel;
   $('legend-color').style.background = state.recording.companion ? '#8ee3bf' : {tcp: '#8ee3bf', camera: '#91b7f4', imu: '#d9b67b'}[track];
   document.querySelectorAll('[data-track]').forEach(button => button.classList.toggle('active', button.dataset.track === track));
   $('stat-path').replaceChildren(document.createTextNode(state.recording.tracks[track].path_length.toFixed(2)), unit(' m'));
   $('stat-path').previousElementSibling.textContent = track === 'tcp' ? 'TCP 路程' : track === 'camera' ? '相机路程' : 'IMU 路程';
   const coverage = state.recording.summary.constraint_fraction?.full;
   $('stat-coverage').replaceChildren(document.createTextNode(Number.isFinite(coverage) ? (coverage * 100).toFixed(0) : '—'), unit(' %'));
-  chart.load(state.recording.times, state.recording.tracks[track].speed); renderFrame(state.index);
+  chart.load(state.recording.times, state.recording.tracks[track].speed,
+    state.recording.companion_tracks?.[track]?.speed || null); renderFrame(state.index);
   updateMapLegend();
 }
 function renderFrame(index, imageReady = false) {

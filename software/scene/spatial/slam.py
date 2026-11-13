@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from software import settings
+
 from contextlib import nullcontext
 from pathlib import Path
 import json
@@ -95,7 +97,7 @@ def export_map(archive: Path, map_index: int, placement: dict, directory: Path) 
         raise ValueError('缺少 umi_export_atlas，请运行 install.sh 更新轨迹组件')
     raw = directory / 'raw_atlas.json'
     log = directory / 'export.log'
-    runtime.run_logged(['timeout', '180', str(executable), str(archive), str(vocabulary), str(raw)], log,
+    runtime.run_logged(['timeout', str(settings.values('runtime')['map_export_timeout_s']), str(executable), str(archive), str(vocabulary), str(raw)], log,
                        stage='导出场景地图', environment=dict(os.environ))
     atlas_record = json.loads(raw.read_text())
     selected = next((item for item in atlas_record['maps'] if item['index'] == map_index), None)

@@ -1,0 +1,21 @@
+# 浏览器查看器默认值；机器覆盖请写 viewer.local.yaml。
+host: 127.0.0.1
+port: 9092
+decode_concurrency: 2
+preview_workers: 1
+preview_pending: 2  # 包含运行中与排队任务
+frame_cache_entries: 64
+map_cache_entries: 4
+frame_width: 720
+frame_quality: 4
+preview_width: 720
+preview_bitrate_kbps: 1500
+preview_crf: 12
+preview_gop: 30
+preview_encode_threads: 4
+preview_decode_threads: 2
+decode_wait_s: 5
+frame_timeout_s: 15
+preview_timeout_s: 600
+map_timeout_s: 240
+map_max_points: 50000  # 每个子地图的显示预算；上限为发布格式的 50000

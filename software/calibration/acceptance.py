@@ -42,10 +42,13 @@ def c_items(checks: list, c: dict, which: str, parameters: parameter_models.Chec
         return
     item(checks, f"C 段：{which}轨迹误差 ATE (mm)", round(c["ate_se3_rmse_mm"], 2), c["ate_se3_rmse_mm"] <= p.ate_fail_mm, f"<= {p.ate_fail_mm:g}", failure="FAIL", code='trajectory.ate')
     sc = c["scale_board_over_trajectory"]
-    item(checks, f"C 段：{which}尺度（板 / 轨迹）", round(sc, 4), 1 - p.scale_warn <= sc <= 1 + p.scale_warn, f"1 ± {p.scale_warn:g}（超出 1 ± {p.scale_fail:g} 判失败）",
+    item(checks, f"C 段：{which}尺度（板 / 轨迹）", round(sc, 4), 1 - p.scale_warn <= sc <= 1 + p.scale_warn,
+         f"1 ± {p.scale_warn:g}（超出 1 ± {p.scale_fail:g} 判失败）",
          failure=("FAIL" if not 1 - p.scale_fail <= sc <= 1 + p.scale_fail else "WARN"), code='trajectory.scale')
-    item(checks, "C 段：有效板参考位姿帧数", c["board_frames"], c["board_frames"] >= p.minimum_board_frames, f">= {p.minimum_board_frames}（太少则这项验证不够可靠）", code='trajectory.board_frames')
-    item(checks, "C 段：共同有效时间点的板参考移动范围 (m)", round(c["board_extent_m"], 3), c["board_extent_m"] >= p.minimum_board_extent_m, f">= {p.minimum_board_extent_m:g}（太小则量不准尺度）", failure="UNAVAILABLE", code='trajectory.extent', required=True)
+    item(checks, "C 段：有效板参考位姿帧数", c["board_frames"], c["board_frames"] >= p.minimum_board_frames,
+         f">= {p.minimum_board_frames}（太少则这项验证不够可靠）", code='trajectory.board_frames')
+    item(checks, "C 段：共同有效时间点的板参考移动范围 (m)", round(c["board_extent_m"], 3), c["board_extent_m"] >= p.minimum_board_extent_m,
+         f">= {p.minimum_board_extent_m:g}（太小则量不准尺度）", failure="UNAVAILABLE", code='trajectory.extent', required=True)
 
 
 def rot_angle_deg(qa, qb) -> float:
@@ -62,7 +65,8 @@ def solver_fit_items(checks: list, stage: str, metrics: dict, minimum_corners: f
     mean = metrics["mean_reprojection_px"]
     item(checks, f"{label}：重投影误差均值 (px)", mean, mean is not None and mean <= maximum_reprojection_px,
          f"<= {maximum_reprojection_px:g}（每个角点像素误差的算术平均）", code=f"{stage.lower()}.reprojection_mean")
-    item(checks, f"{label}：重投影误差 RMS (px)", metrics["rms_reprojection_px"], None, "仅供参考（均方根，不小于均值）", code=f"{stage.lower()}.reprojection_rms")
+    item(checks, f"{label}：重投影误差 RMS (px)", metrics["rms_reprojection_px"], None,
+         "仅供参考（均方根，不小于均值）", code=f"{stage.lower()}.reprojection_rms")
 
 
 def coverage_items(checks: list, metrics: dict, minimum_reach: float) -> None:
@@ -72,7 +76,8 @@ def coverage_items(checks: list, metrics: dict, minimum_reach: float) -> None:
          reach, reach >= minimum_reach, f">= {minimum_reach:g}（板要扫到画面边上）", code='intrinsics.coverage_radius')
     by_direction = metrics["frames_reaching_by_direction"]
     item(checks, f"A 段：最远角点半径达到 {metrics['coverage_reach_threshold']:g} 的帧数（右 / 左 / 下 / 上）",
-         " / ".join(str(by_direction[key]) for key in ("right", "left", "down", "up")), None, "仅供参考（四个方向都有、越均匀越好）", code='intrinsics.coverage_directions')
+         " / ".join(str(by_direction[key]) for key in ("right", "left", "down", "up")), None,
+         "仅供参考（四个方向都有、越均匀越好）", code='intrinsics.coverage_directions')
 
 
 def assess_intrinsics(result: IntrinsicsResult, reference: dict | None, parameters: parameter_models.CheckParameters) -> list[dict]:
@@ -82,13 +87,17 @@ def assess_intrinsics(result: IntrinsicsResult, reference: dict | None, paramete
     solver_fit_items(checks, "A", result.solver_metrics, p.intrinsics_minimum_corners, p.intrinsics_reprojection_px)
     ab = result.board_metrics
     coverage_items(checks, ab, p.intrinsics_minimum_reach)
-    item(checks, "A 段：能认出标定板的帧占比；相机到板的距离 (m)", f"{ab['board_pose_fraction']}；{ab['board_distance_m']}", None, "仅供参考", code='intrinsics.observations')
+    item(checks, "A 段：能认出标定板的帧占比；相机到板的距离 (m)",
+         f"{ab['board_pose_fraction']}；{ab['board_distance_m']}", None, "仅供参考", code='intrinsics.observations')
     if reference is None:
         return checks
     df = abs(kb4.fx / sample["fx"] - 1)
-    item(checks, "内参：焦距与样例标定相差", round(df, 4), df <= p.focal_warn_fraction, f"<= {100*p.focal_warn_fraction:g} %（同型号相机应接近；> {100*p.focal_fail_fraction:g} % 判失败）", failure=("FAIL" if df > p.focal_fail_fraction else "WARN"), code='intrinsics.sample_focal')
+    item(checks, "内参：焦距与样例标定相差", round(df, 4), df <= p.focal_warn_fraction,
+         f"<= {100*p.focal_warn_fraction:g} %（同型号相机应接近；> {100*p.focal_fail_fraction:g} % 判失败）",
+         failure=("FAIL" if df > p.focal_fail_fraction else "WARN"), code='intrinsics.sample_focal')
     dc = float(np.hypot(kb4.cx - sample["cx"], kb4.cy - sample["cy"]))
-    item(checks, "内参：主点与样例标定相差 (px)", round(dc, 1), dc <= p.principal_point_warn_px, f"<= {p.principal_point_warn_px:g}", code='intrinsics.sample_principal')
+    item(checks, "内参：主点与样例标定相差 (px)", round(dc, 1), dc <= p.principal_point_warn_px,
+         f"<= {p.principal_point_warn_px:g}", code='intrinsics.sample_principal')
 
     return checks
 
@@ -98,15 +107,20 @@ def assess_camera_imu(result: CameraImuResult, imu_metrics: dict, reference: dic
     new, sample = result.parameters, reference
     solver_fit_items(checks, "B", result.solver_metrics, p.camera_imu_minimum_corners, p.camera_imu_reprojection_px)
     gy = imu_metrics["gyro_norm_p95_rad_s"]
-    item(checks, "B 段：转动快慢（角速度的 95 分位，rad/s）", gy, gy >= p.minimum_gyro_p95_rad_s, f">= {p.minimum_gyro_p95_rad_s:g}（太小说明动作不够）", code='camera_imu.excitation')
+    item(checks, "B 段：转动快慢（角速度的 95 分位，rad/s）", gy, gy >= p.minimum_gyro_p95_rad_s,
+         f">= {p.minimum_gyro_p95_rad_s:g}（太小说明动作不够）", code='camera_imu.excitation')
     if reference is None:
         return checks
     dp = float(np.linalg.norm(np.array(new["p"]) - np.array(sample["p"])) * 1e3)
-    item(checks, "相机–IMU：平移与样例标定相差 (mm)", round(dp, 2), dp <= p.translation_warn_mm, f"<= {p.translation_warn_mm:g}（同型号相机应接近；> {p.translation_fail_mm:g} 判失败）", failure=("FAIL" if dp > p.translation_fail_mm else "WARN"), code='camera_imu.sample_translation')
+    item(checks, "相机–IMU：平移与样例标定相差 (mm)", round(dp, 2), dp <= p.translation_warn_mm,
+         f"<= {p.translation_warn_mm:g}（同型号相机应接近；> {p.translation_fail_mm:g} 判失败）",
+         failure=("FAIL" if dp > p.translation_fail_mm else "WARN"), code='camera_imu.sample_translation')
     dr = rot_angle_deg(new["q_xyzw"], sample["q_xyzw"])
-    item(checks, "相机–IMU：旋转与样例标定相差 (°)", round(dr, 3), dr <= p.rotation_warn_deg, f"<= {p.rotation_warn_deg:g}", failure=("FAIL" if dr > p.rotation_fail_deg else "WARN"), code='camera_imu.sample_rotation')
+    item(checks, "相机–IMU：旋转与样例标定相差 (°)", round(dr, 3), dr <= p.rotation_warn_deg,
+         f"<= {p.rotation_warn_deg:g}", failure=("FAIL" if dr > p.rotation_fail_deg else "WARN"), code='camera_imu.sample_rotation')
     dt = abs(new["cam_time_offset_ns"] - sample["cam_time_offset_ns"]) / 1e6
-    item(checks, "相机–IMU：时间差与样例标定相差 (ms)", round(dt, 3), dt <= p.time_offset_warn_ms, f"<= {p.time_offset_warn_ms:g}", code='camera_imu.sample_time_offset')
+    item(checks, "相机–IMU：时间差与样例标定相差 (ms)", round(dt, 3), dt <= p.time_offset_warn_ms,
+         f"<= {p.time_offset_warn_ms:g}", code='camera_imu.sample_time_offset')
 
     return checks
 
@@ -122,7 +136,8 @@ def assess_gravity(result: GravityResult, parameters: parameter_models.CheckPara
     item(checks, "D 段：静止时测到的重力与配置值的最大偏差 (m/s²)", round(rmax, 3) if rmax is not None else "没有找到静止的时段",
          measured and rmax <= p.gravity_residual_m_s2, f"<= {p.gravity_residual_m_s2}（{result.windows or 0} 个静止时段）", failure="WARN", code='gravity.residual')
     nd = result.directions
-    item(checks, "D 段：静止朝向数", nd, bool(nd) and nd >= p.minimum_gravity_directions, f">= {p.minimum_gravity_directions}（应为 6 个）", code='gravity.directions')
+    item(checks, "D 段：静止朝向数", nd, bool(nd) and nd >= p.minimum_gravity_directions,
+         f">= {p.minimum_gravity_directions}（应为 6 个）", code='gravity.directions')
 
     return checks
 

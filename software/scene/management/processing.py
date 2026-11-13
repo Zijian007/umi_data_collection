@@ -7,7 +7,7 @@ import os
 
 from ruamel.yaml.error import YAMLError
 
-from . import batches, camera_assets, episodes, ingest, inputs
+from . import batches, camera_assets, cleanup, episodes, ingest, inputs
 from software.scene import layout
 from software.scene.configuration import SceneOverrides
 from software.scene import workflow
@@ -65,8 +65,23 @@ def build(batch: Path, *, force: bool = False, keep_work: bool = False,
             raise ValueError('build 需要采集批次目录及 batch.yaml；将建图原片放入该批次的 mapping/')
         if intrinsics_source is not None:
             camera_assets.require_calibration_source(inputs.read_batch(path, overrides=overrides).kit, intrinsics_source)
-    return map_lifecycle.build_scene(path, force=force, keep_work=keep_work, cores=cores, dry_run=dry_run,
-                                     overrides=overrides)
+    result = map_lifecycle.build_scene(path, force=force, keep_work=keep_work, cores=cores, dry_run=dry_run,
+                                       overrides=overrides)
+    if not dry_run:
+        cleanup.after_batch(layout.owner(path))
+    return result
+
+
+def clean(paths: list[Path], *, dry_run: bool = False, cache: bool = False) -> dict:
+    """对已有批次执行与自动清理相同的保留规则。"""
+    batch_roots = configured_batches(paths)
+    if not batch_roots:
+        raise ValueError(f'没有找到批次 batch.yaml：{", ".join(map(str, paths))}')
+    removal = cleanup.Removal(dry_run=dry_run)
+    for batch in batch_roots:
+        cleanup.clean_batch(batch, removal, cache=cache)
+    common = Path(os.path.commonpath(batch_roots)) if len(batch_roots) > 1 else batch_roots[0]
+    return removal.summary(common)
 
 
 def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '', dry_run: bool = False,
@@ -86,6 +101,7 @@ def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '
                                    for item in problems)
                 summaries.append(dict(path=str(batch), name=batch.name, status='failed',
                     error='存在无法读取、设备不匹配或待补齐的原片：' + detail, details=problems))
+                continue
             registered = episodes.episode_paths([batch])
             if dry_run:
                 for item in imported['episodes']:
@@ -141,6 +157,10 @@ def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '
         summaries.extend(workflow.run_episodes(ready, jobs=jobs, force=force, cores=cores, dry_run=dry_run,
             check_recordings=check_recordings, map_version=map_version,
             overrides=overrides))
+        if not dry_run:
+            # 任务运行已各自清理；全部结束后再删除不再被引用的地图版本。
+            for batch in sorted({layout.owner(path).parent for path in ready}):
+                cleanup.after_batch(batch)
     if not summaries:
         raise ValueError('没有找到批次配置或任务清单；请准备 batch.yaml 和 take_001/left/、right/ 原片')
     return summaries

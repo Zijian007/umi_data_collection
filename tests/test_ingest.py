@@ -26,7 +26,10 @@ class IngestTests(unittest.TestCase):
         ):
             item.start(); self.addCleanup(item.stop)
         # 预置流程测试里的任务与本次入库无关。
-        self.f.episode_path.unlink(); self.f.episode_path.parent.rmdir()
+        self.f.episode_path.unlink(); self.f.episode_path.parent.rmdir(); self.f.task_root.rmdir()
+        data = inputs.read_yaml(self.f.session_path)
+        data.pop('mapping')
+        write_yaml(self.f.session_path, data)
 
     def run_ingest(self, **kwargs):
         return ingest.register_recordings(inputs.read_batch(self.f.session_path), **kwargs)
@@ -48,17 +51,17 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(first['status'], 'ok')
         path = Path(first['episodes'][0]['path'])
         episode = inputs.read_episode(path)
-        self.assertEqual(layout.owner(path).parent, self.f.session_path.parent)
-        self.assertFalse((self.f.session_path.parent / 'episodes').exists())
+        self.assertEqual(layout.owner(path).parent, self.f.batch_root)
+        self.assertFalse((self.f.batch_root / 'episodes').exists())
         self.assertEqual(episode.recordings['left'].parent.parent,
-                         self.f.session_path.parent / 'take_001')
+                         self.f.batch_root / 'take_001')
         self.assertEqual(episode.offsets(), {'left':0., 'right':0.})
         self.assertEqual(episode.synchronization['method'], 'assumed_simultaneous')
-        count = len(list((self.f.session_path.parent).rglob('*.insv')))
+        count = len(list((self.f.batch_root).rglob('*.insv')))
         second = self.run_ingest()
         self.assertFalse(second['episodes'])
         self.assertEqual(second['skipped'], ['take_001'])
-        self.assertEqual(len(list((self.f.session_path.parent).rglob('*.insv'))), count)
+        self.assertEqual(len(list((self.f.batch_root).rglob('*.insv'))), count)
         json.dumps(second)
 
     def test_missing_peer_does_not_become_single_and_later_import_completes_pair(self):
@@ -67,11 +70,11 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(first['status'], 'pending')
         self.assertFalse(first['episodes'])
         self.assertEqual(first['pending'][0]['expected_arms'], ['left','right'])
-        self.assertTrue(list((self.f.session_path.parent).rglob('*.insv')))
+        self.assertTrue(list((self.f.batch_root).rglob('*.insv')))
         self.items = self.infos
         second = self.run_ingest()
         self.assertEqual(len(second['episodes']), 1)
-        self.assertEqual(len(list((self.f.session_path.parent).rglob('*.insv'))), 2)
+        self.assertEqual(len(list((self.f.batch_root).rglob('*.insv'))), 2)
 
     def test_right_only_kit_and_left_only_task_keep_actual_arm(self):
         data = inputs.read_yaml(self.f.session_path)
@@ -102,8 +105,8 @@ class IngestTests(unittest.TestCase):
         after={str(path.relative_to(self.f.root)):(path.stat().st_size,path.stat().st_mtime_ns)
                for path in self.f.root.rglob('*') if path.is_file()}
         self.assertEqual(before,after)
-        self.assertFalse(list(self.f.session_path.parent.rglob('*.insv')))
-        self.assertFalse((self.f.session_path.parent/'imports').exists())
+        self.assertFalse(list(self.f.batch_root.rglob('*.insv')))
+        self.assertFalse((self.f.batch_root/'imports').exists())
 
     def test_automatic_registration_fills_missing_hand_without_replacing_original(self):
         session = inputs.read_batch(self.f.session_path)
@@ -119,26 +122,25 @@ class IngestTests(unittest.TestCase):
     def test_repeated_automatic_registration_keeps_description_and_review_unchanged(self):
         first = self.run_ingest()
         path = Path(first['episodes'][0]['path'])
-        task_record = inputs.read_yaml(path)
-        task_record['instruction'] = '取出商品'
-        write_yaml(path, task_record)
+        configuration_path = layout.owner(path) / 'task.yaml'
+        write_yaml(configuration_path, dict(instruction='取出商品'))
         state_path = layout.metadata(layout.owner(path), 'state.json')
         write_json(state_path, dict(review=dict(decision='accepted', reviewer='reviewer')))
-        before = {entry: (entry.read_bytes(), entry.stat().st_mtime_ns) for entry in (path, state_path)}
+        before = {entry: (entry.read_bytes(), entry.stat().st_mtime_ns) for entry in (path, configuration_path, state_path)}
         self.run_ingest()
         self.assertEqual({entry: (entry.read_bytes(), entry.stat().st_mtime_ns) for entry in before}, before)
 
     def test_manual_instruction_edit_is_validated(self):
         result = self.run_ingest()
         path = Path(result['episodes'][0]['path'])
-        data = inputs.read_yaml(path)
-        data['instruction'] = '取出货架商品'
-        write_yaml(path, data)
+        configuration_path = layout.owner(path) / 'task.yaml'
+        data = dict(instruction='取出货架商品')
+        write_yaml(configuration_path, data)
         self.assertEqual(inputs.read_episode(path).instruction, '取出货架商品')
         self.assertNotIn('timing', data)
         self.assertNotIn('task', data)
         data['instruction'] = ['invalid description']
-        write_yaml(path, data)
+        write_yaml(configuration_path, data)
         with self.assertRaisesRegex(ValueError, 'instruction'):
             inputs.read_episode(path)
 
@@ -167,11 +169,11 @@ class IngestTests(unittest.TestCase):
         for name in inputs.INTERNAL_DIRECTORIES:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, '内部目录'):
                 inputs.validate_episode_name(name)
-        self.assertFalse(list(self.f.session_path.parent.rglob('*.insv')))
+        self.assertFalse(list(self.f.batch_root.rglob('*.insv')))
 
     def test_ingest_ignores_internal_and_hidden_directories(self):
         for name in (*inputs.INTERNAL_DIRECTORIES, '.hidden'):
-            write_yaml(self.f.session_path.parent / name / 'episode.yaml', {})
+            write_yaml(self.f.batch_root / name / 'episode.yaml', {})
         result = self.run_ingest()
         self.assertEqual([item['name'] for item in result['episodes']], ['take_001'])
 

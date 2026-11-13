@@ -29,6 +29,8 @@ def require_calibration_source(kit: dict, requested_source: str) -> None:
         if binding.get('rear_calibration'):
             calibration_source.read_rear(registry.rear_path(binding['serial'], binding['rear_calibration']),
                                          serial=binding['serial'], expected_source=requested_source)
+        elif binding.get('rear_intrinsics_source') not in (None, requested_source):
+            raise ValueError('冻结批次的环境镜头来源与请求不同；请从 batch.yaml 重新选择')
 
 
 def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
@@ -75,13 +77,16 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
     factory_rear = None
     if scene.mode == 'dual' or scene.tag_layout is not None or serial in scene.rear_calibrations:
         rear_calibration_path = scene.rear_calibrations.get(device_record['serial'])
+        rear_source = device_binding.get('rear_intrinsics_source', expected_source)
         if rear_calibration_path is None:
+            if device_binding.get('rear_intrinsics_source') == 'measured':
+                raise ValueError('所选 rear measured 标定缺失；请登记环境镜头实测参数')
             factory_rear = rear_fallback.derive(recording_path, front_path=assets.camera_json,
                                                serial=serial, front_source=expected_source)
             measured = factory_rear.measurement
         else:
             measured, _ = calibration_source.read_rear(rear_calibration_path, serial=serial,
-                expected_source=expected_source, video=recording_path)
+                expected_source=rear_source, video=recording_path)
             asset_paths['rear'] = rear_calibration_path
         if measured['intrinsics_source'] == 'factory' and scene.mode == 'dual':
             from software.vision.capabilities import require_forward_kb4
@@ -93,13 +98,16 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
                             width_measurement, tag_distance_measurement, factory_rear)
 
 
-def snapshot_cameras(cameras: dict[str, CalibratedCamera], directory: Path) -> dict[str, CalibratedCamera]:
-    """每次运行只复制一次小型资产，计算与结果均引用这份独立副本。"""
+def snapshot_cameras(cameras: dict[str, CalibratedCamera], directory: Path,
+                     *, only: tuple[str, ...] | None = None) -> dict[str, CalibratedCamera]:
+    """每次运行只复制一次小型资产，计算与结果均引用这份独立副本；only 限定需要冻结的资产。"""
     snapshots = {}
     for arm, camera in cameras.items():
         expected_tag_hash = camera.asset_hashes.get('tag_distance')
         files = {}
         for name, source in camera.files.items():
+            if only is not None and name not in only:
+                continue
             target = directory / 'devices' / camera.serial / (name + source.suffix)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target)

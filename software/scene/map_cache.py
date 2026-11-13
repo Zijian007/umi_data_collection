@@ -7,14 +7,16 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Iterator
 import json
+import os
 import shutil
+import stat
 import time
 import uuid
 
 from software import provenance as artifact_identity
 from software.console import Console
 from software.scene.models import CalibratedCamera, PreparedRecording, Scene
-from software.storage import write_json
+from software.storage import mark_used, write_json
 
 
 console = Console('场景')
@@ -22,9 +24,17 @@ console = Console('场景')
 # 显式列出各阶段的实现依赖。CLI、查看器和任务编排不改变地图。
 # 新增算法依赖时应加入对应组；不以 Git 提交或文件时间代替内容哈希。
 COMMON_SOURCES = (
-    'software/config.py', 'software/parameters.py', 'software/provenance.py',
+    'software/config.py', 'software/settings.py', 'software/parameters.py', 'software/provenance.py',
     'software/environment.py', 'software/storage.py', 'software/scene/models.py',
     'software/scene/map_cache.py', 'software/vision/models.py',
+)
+# 录像准备只把 INSV 解码为 EuRoC 数据集和镜头视频；标定、ORB 和对齐参数
+# 在之后才使用，不能让它们的代码改动使同一原片重新解码。
+DECODE_SOURCES = (
+    'software/config.py', 'software/parameters.py', 'software/vision/models.py',
+    'software/camera/x3/extraction.py', 'software/camera/x3/frame.py',
+    'software/camera/x3/imu_reader.py', 'software/camera/x3/insv_reader.py',
+    'software/vision/recordings.py', 'software/vision/tools/make_lens_video.py',
 )
 PREPARATION_SOURCES = (
     'software/registry.py', 'software/camera/*.py', 'software/camera/x3/*.py',
@@ -44,7 +54,7 @@ PLACEMENT_SOURCES = (
     'software/scene/layout.py', 'software/scene/spatial/mapping.py',
     'software/scene/spatial/geometry.py', 'software/scene/spatial/fusion.py',
     'software/scene/spatial/poster_scale.py', 'software/vision/poster_pose.py',
-    'software/vision/tag_board.py', 'software/vision/tags.py',
+    'software/vision/tag_board.py', 'software/vision/tags.py', 'software/vision/decoding.py',
     'software/trajectory/algorithms/fusion_alignment.py',
     'software/trajectory/algorithms/fusion_alignment_solver.py',
     'software/trajectory/algorithms/inertial.py',
@@ -55,28 +65,32 @@ PLACEMENT_SOURCES = (
 
 def source_identity(stage: str) -> dict[str, str]:
     dependencies = {
-        'prepare': PREPARATION_SOURCES,
-        'visual': VISUAL_SOURCES,
-        'localize': (*PREPARATION_SOURCES, *VISUAL_SOURCES, 'software/scene/spatial/geometry.py',
-                     'software/scene/spatial/relocalization.py', 'software/scene/pipeline/reconstruction.py'),
-        'map': (*PREPARATION_SOURCES, *VISUAL_SOURCES, *PLACEMENT_SOURCES),
+        'prepare': DECODE_SOURCES,
+        'visual': (*COMMON_SOURCES, *VISUAL_SOURCES),
+        'localize': (*COMMON_SOURCES, *DECODE_SOURCES, *PREPARATION_SOURCES, *VISUAL_SOURCES,
+                     'software/scene/spatial/geometry.py', 'software/scene/spatial/relocalization.py',
+                     'software/scene/pipeline/reconstruction.py'),
+        'map': (*COMMON_SOURCES, *DECODE_SOURCES, *PREPARATION_SOURCES, *VISUAL_SOURCES, *PLACEMENT_SOURCES),
     }
     paths = set()
-    for pattern in (*COMMON_SOURCES, *dependencies[stage]):
+    for pattern in dependencies[stage]:
         matches = tuple(artifact_identity.ROOT.glob(pattern))
         if not matches:
             raise ValueError(f'建图代码依赖不存在：{pattern}')
         paths.update(matches)
-    return {str(path.relative_to(artifact_identity.ROOT)): artifact_identity.file_hash(path)
+    return {str(path.relative_to(artifact_identity.ROOT)): artifact_identity.source_hash(path)
             for path in sorted(paths)}
 
 
+# 地图只依赖镜头标定和遮手图；TCP、夹爪宽度和标签测距不参与建图，也不冻结进地图版本。
+MAP_CAMERA_ASSETS = ('front', 'front_manifest', 'rear', 'mask')
+
+
 def camera_identity(camera: CalibratedCamera) -> dict:
-    """地图只依赖镜头标定和遮手图；TCP、夹爪宽度和标签测距不参与建图。"""
     return dict(serial=camera.serial, intrinsics_source=camera.selected.intrinsics_source,
                 calibration_version=camera.selected.calibration_id,
                 assets={name: digest for name, digest in camera.asset_hashes.items()
-                        if name in ('front', 'front_manifest', 'rear', 'mask')})
+                        if name in MAP_CAMERA_ASSETS})
 
 
 def reuse_key(input_identity: dict) -> str:
@@ -98,19 +112,20 @@ def matches(previous: dict, current: dict) -> bool:
 
 
 class MapBuildCache:
-    def __init__(self, root: Path, engines: dict, *, force: bool = False):
+    def __init__(self, root: Path, engines: dict, *, force: bool = False, audit=None):
         self.root = root
         self.engines = engines
         self.force = force
+        self.audit = audit
         self.timings: list[dict] = []
 
     def preparation_inputs(self, video: Path, camera: CalibratedCamera, scene: Scene) -> dict:
-        return dict(recording_sha256=artifact_identity.file_hash(video), serial=camera.serial,
+        """建图和任务共用；原片内容已确定设备，标定只决定生成哪些镜头。"""
+        return dict(recording_sha256=artifact_identity.file_hash(video),
                     lenses=sorted(camera.measurements), video=asdict(scene.trajectory.values.video),
                     code=source_identity('prepare'),
                     engines={name: digest for name, digest in self.engines.items()
-                             if not name.startswith(('orb_', 'Thirdparty/'))
-                             and name != 'map_exporter' and 'gtsam' not in name})
+                             if name in ('ffmpeg', 'ffprobe') or '/numpy-' in name})
 
     def visual_inputs(self, recording: PreparedRecording, lens: str) -> dict:
         video = recording.lens_video(lens)
@@ -139,8 +154,13 @@ class MapBuildCache:
 
     @contextmanager
     def stage(self, stage: str, label: str, identity: dict, directory: Path,
-              *, roots: tuple[str, ...], refresh: bool = False) -> Iterator[bool]:
-        """只发布完整阶段；缓存命中复制到本次工作目录，避免写穿缓存。"""
+              *, roots: tuple[str, ...], refresh: bool = False, link: bool = False) -> Iterator[bool]:
+        """只发布完整阶段；缓存命中复制到本次工作目录，避免写穿缓存。
+
+        link=True 仅用于之后只读的产物（如解码视频）：同盘硬链接并设为只读，
+        省去整份复制；误写会直接报错，跨盘时回退为复制。
+        """
+        place = _link_read_only if link else _copy
         key = artifact_identity.canonical_hash(identity)
         cache_dir = self.root / stage / key
         with self.measure(stage, label) as timing:
@@ -158,12 +178,14 @@ class MapBuildCache:
                     console.write(f'{label}缓存无效，将重新计算：{error}', state='提醒')
                     assets = None
             if assets is not None:
+                mark_used(cache_dir)
                 for name in assets:
-                    target = directory / name
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(cache_dir / name, target)
+                    place(cache_dir / name, directory / name)
                 yield True
                 timing['status'] = 'cached'
+                if self.audit is not None:
+                    self.audit.record(stage=stage, key=key, path=str(cache_dir), status='reused',
+                                      reason='ready.json 输入身份与资产哈希校验通过')
                 return
 
             yield False
@@ -174,13 +196,29 @@ class MapBuildCache:
             staging = cache_dir.with_name(f'.{key}-{uuid.uuid4().hex}')
             try:
                 for name in assets:
-                    target = staging / name
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(directory / name, target)
+                    place(directory / name, staging / name)
                 write_json(staging / 'ready.json', dict(inputs=identity, assets=assets))
                 if cache_dir.exists():
                     shutil.rmtree(cache_dir)
                 staging.rename(cache_dir)
+                if self.audit is not None:
+                    self.audit.record(stage=stage, key=key, path=str(cache_dir), status='computed',
+                                      reason='未命中可用 ready.json，完成计算并发布缓存')
             finally:
                 if staging.exists():
                     shutil.rmtree(staging)
+
+
+def _copy(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+
+
+def _link_read_only(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copyfile(source, target)
+    mode = target.stat().st_mode
+    target.chmod(mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))

@@ -6,9 +6,9 @@
 |---|---|---|
 | `umi-scene run / build` | 路径、`--cores`、`--force`、`--dry-run`；run 另有 `--jobs`、`--skip-preflight`，build 另有 `--keep-work` | `trajectory.yaml`、`scene_parameters.yaml` 提供算法默认值；`scene.yaml` 保存场景模式、标签布局引用和长期参数覆盖；`batch.yaml` 选择 kit、手和地图；`kit.yaml` 固定设备版本与测量文件；`<任务>/task.yaml` 写指令、使用手和同步 |
 | `umi-calib run / verify` | 录像、输出路径、`--tag-size-mm` 实测板边长、CPU/线程、继续/重算、保留中间文件 | `calibration.yaml` 保存求解与验收参数；C 验证读取 `trajectory.yaml`；板布局和版本化测量是独立资产 |
-| `umi-view` | 结果根目录、`--host`、`--port` | 无算法 YAML；读取已有结果，不重新计算轨迹 |
+| `umi-view` | 结果根目录、`--host`、`--port` | `viewer.yaml` 管理服务、预览和缓存；读取已有结果，不重新计算轨迹 |
 
-`--config` 选择本次算法覆盖文件；`--intrinsics-source` 选择已有标定来源（标定 run 中选择求解来源）；`--map-version` 为场景 run 显式选图。来源和地图的长期选择可以写在 batch / kit 声明里。逐个子命令的完整选项见 `--help`。
+`--config` 选择本次算法覆盖文件；`--intrinsics-source` 选择已有标定来源（标定 run 中选择求解来源）；`--map-version` 为场景 run 显式选图。来源和地图的长期选择可以写在 batch / kit 声明里。逐个子命令的完整选项、默认值与互斥关系见[命令行参数参考](../docs/命令行参数.md)，也可用 `<入口> <子命令> --help` 查阅。
 
 独立诊断工具的参数仍由该次命令传入：`umi-scene detect-tags` 的检测采样/投影尺寸、`umi-calib preview-width / detect-width` 的 ROI/对比度/检测频率、`umi-scene export` 的导出格式/采样频率。它们只作用于本次诊断或导出，不改正式轨迹流程的 YAML。
 
@@ -22,6 +22,40 @@
 
 `--show-config` 输出 JSON，展示配置值、来源和执行选项，然后退出；不读取视频内容、不启动求解环境、不扫描查看器结果或监听端口。场景与标定入口可以同时使用 `--config`。它优先于 `--dry-run`；配置展示成功不代表录像、标定资产和地图已满足运行条件，输入检查继续使用 `--dry-run`。标定 run / verify 仍需填写目录/录像位置参数，但展示时不访问它们。run 的输入目录末级名称必须为 front / rear，由目录名选择镜头；两者都使用 run，详见[标定目录约定](../docs/标定.md#52-算标定)。
 
+## 运行与查看器默认值
+
+以下配置由 `software/settings.py` 读取。项目默认值只在 YAML 中定义；机器配置写到同目录的 `*.local.yaml`，不提交 Git。文件不存在就使用项目默认值；修改后重启程序生效。未知字段、错误类型、负数预算、重复键会在启动时报错。
+
+| 配置 | 主要参数与初始值 | 是否影响结果缓存 |
+|---|---|---|
+| [runtime.yaml](runtime.yaml) | 解码 4 线程、场景 OpenCV 4 线程、标定/宽度诊断 OpenCV 1 线程；标定默认预留 1 核、上限 24 worker，转 bag 上限 4 线程；双手并行每手至少 4 核；SLAM 超时 `floor(帧数/30) × 16 + 300` 秒，地图导出 180 秒 | 修改数值不使已完成的算法结果失效 |
+| [viewer.yaml](viewer.yaml) | `127.0.0.1:9092`；画面解码并发 2，预览并发 1、含运行中最多 2 个任务；画面内存缓存 64 张、地图缓存 4 份；预览 720 宽、1500 kbps、CRF 12、GOP 30；每图显示最多 50000 点 | 画质、尺寸、码率、GOP 只影响对应查看器派生缓存；线程、超时和缓存容量不改变内容身份 |
+| [tag_detection.yaml](tag_detection.yaml) | 夹爪双标签全区域搜索间隔 30、候选上限 96、补检候选上限 16、每批补检 32 帧 | 检测缓存和使用夹爪测量的最终任务结果均重新计算；不重建场景地图 |
+
+覆盖顺序为 **项目 YAML → 同名 `.local.yaml` → 已支持的环境变量 → CLI 显式值**。目前运行参数的环境覆盖为 `UMI_OPENCV_THREADS`，只覆盖场景 OpenCV；CLI 的 `--workers` 覆盖标定自动 worker 预算，但仍受 `--cores` 与当前 CPU affinity 限制。`--jobs` 控制同时处理的任务数；仅 `jobs=1` 且满足双手 CPU 预算时并行处理两手。查看器的 `--host` / `--port` 覆盖 YAML，`--port 0` 仍表示自动分配。
+
+例如，只调整当前机器：
+
+```yaml
+# config/runtime.local.yaml
+calibration_max_workers: 12
+decode_threads: 2
+```
+
+```yaml
+# config/viewer.local.yaml
+port: 9092
+preview_workers: 2
+preview_pending: 3  # 运行中 + 排队；不能小于 preview_workers
+map_max_points: 20000
+```
+
+`--show-config` 的 `operational`（场景/标定）或 `configuration`（查看器）列出全部生效值、每项来源和覆盖次序。场景/标定还显示实际可用 CPU 列表、自动/显式 worker 计算结果及双手并行资格；资格不代表输入一定包含两只手。启动终端打印精简资源摘要，JSON 结果仍单独输出到 stdout。
+
+配置在进程内冻结，派生 Python 子进程继承同一份快照；不会在每帧重新读取文件。`--config` 仍仅覆盖算法参数，不接收这三份操作配置。`UMI_VIEW_CACHE` 与 `XDG_CACHE_HOME` 保持原有缓存目录规则，查看器 `--show-config` 会给出实际缓存路径，以及旧地图转换所用的 `runtime.map_export_timeout_s` 和来源。降低地图显示点数只抽样浏览器响应，不改写已发布地图及其哈希；提高预算最多显示已发布的 50000 点。
+
+保留为代码常量的内容包括 X3 原片尺寸/镜头半幅/标定区域、实际标签字典与 ID、底层 ArUco 阈值组合、内部后台流水线的调度策略，以及页面轮询节奏。它们分别属于硬件约定、已验证检测实现或内部实现细节，暂不作为日常调参入口。诊断 ROI、对比度、采样频率和导出采样率继续由已有 CLI 控制；轨迹视频编码继续放在 `trajectory.yaml`。
+
 ## 算法参数归属
 
 标定和单段轨迹抽取共用 [software/config.py](../software/config.py) 加载配置。场景流程另由 `software/scene/management/inputs.py` 加载场景参数，并复用轨迹配置。数值默认值集中在下面的 YAML 中。
@@ -31,14 +65,14 @@
 | [calibration.yaml](calibration.yaml) | 标定算法、板检测、D 静止窗口、验收规则 | `umi-calib run / verify / recheck` |
 | [trajectory.yaml](trajectory.yaml) | 视频尺寸与编码、ORB、重建重试、IMU 融合、ZUPT、质量提醒 | `umi-scene`、内部逐段轨迹引擎及标定 C 段验证 |
 | [scene_parameters.yaml](scene_parameters.yaml) | 场景尺度/放置验收、固定坐标融合、原片配对、宽度处理与录制检查规则 | `umi-scene`；操作和覆盖方式见 [场景指南](../docs/场景处理.md) |
-| 相机内参、实测相机–IMU 参数与时间差 | `registry/` 中的版本化相机标定；含实测/工厂内参来源 | 按序列号及套件固定版本选择，通过验收后 `install` / `install-rear` |
+| 相机内参、实测相机–IMU 参数与时间差 | `registry/` 中的版本化相机标定；含实测/工厂内参来源 | 按序列号及套件的前后镜头来源选择当前参数，通过验收后统一执行 `install` |
 | TCP、宽度、遮手图 | 套件引用的测量文件；未自定义遮手图时用项目通用图 | 按 `kit.yaml` 选择，更新后重新运行 |
 | 输入/输出路径、CPU、并行数、保留中间文件 | 命令行请求 | 只影响执行方式，不写入算法配置 |
 | 原片规格、标定区域、像素变换与派生帧率规则 | `software/camera/x3/frame.py` | 相机图像规格；在结果中记录 |
 
-`config/scene_parameters.yaml` 保存算法默认参数；`scenes/<场景>/scene.yaml` 保存具体场景的地图模式和算法覆盖；建图原片位于各批次 `mapping/`，设备与地图快照保存在该批次 `.umi/manifest.yaml`。场景定义中的 `trajectory` 和 `parameters` 直接保存该场景的参数改动。
+`config/scene_parameters.yaml` 保存算法默认参数；`scenes/<场景>/scene.yaml` 保存具体场景的地图模式和算法覆盖；建图原片位于各批次 `mapping/`，设备与地图快照保存在该批次 `.pipeline/manifest.yaml`。场景定义中的 `trajectory` 和 `parameters` 直接保存该场景的参数改动。
 
-每个批次只有一个 `.umi/`：`maps/` 保存本批次的地图版本、当前指针和建图缓存，`tasks/<任务>/` 保存任务原片清单、状态、缓存和运行历史。不同批次不自动选择彼此的地图；显式指定 `map_version` 时冻结该版本到本批次。
+每个批次只有一个 `.pipeline/`：`maps/` 保存本批次的地图版本、当前指针和建图缓存，`tasks/<任务>/` 保存任务原片清单、状态、缓存和运行历史。不同批次不自动选择彼此的地图；显式指定 `map_version` 时冻结该版本到本批次。
 
 人工任务选项写在外层 `<任务>/task.yaml`，无需编辑隐藏清单：
 
@@ -52,7 +86,7 @@ expected_arms: [right]
 
 ## 第一次阅读从哪里开始
 
-三份 YAML 都按处理流程编号。编号和小节标题是注释，字段路径保持稳定：`trajectory.yaml` 的融合参数仍直接放在 `fusion` 下；`scene_parameters.yaml` 的参数仍平铺，没有额外的分组映射。
+三份算法 YAML 都按处理流程编号。编号和小节标题是注释，字段路径保持稳定：`trajectory.yaml` 的融合参数仍直接放在 `fusion` 下；`scene_parameters.yaml` 的参数仍平铺，没有额外的分组映射。
 
 | 当前要理解的流程 | 阅读顺序 |
 |---|---|
@@ -271,7 +305,7 @@ ORB 引擎要求 `Camera.fps` 为整数，因此自动使用四舍五入且至�
 
 新标定结果（v3）顶层使用 `calibration.json` 和 `manifest.json`。相机 JSON 是唯一最终测量，清单记录相机身份、镜头、板配置、来源和参数哈希。运行证据位于 `run/record.json`。历史 v2 包的 `calibration_r1440.json` 和 `bundle.json` 继续支持。SLAM 参数和融合脚本不再复制到每台设备中。旧 v1 包可以只读加载：核对原始 JSON、元数据、外参和注册表哈希，忽略其中的算法实现，运行项目中的共享算法；不会改写已有设备档案。
 
-共享场景与独立轨迹优先使用显式绑定的正式 rear 标定，可通过 `umi-calib run /path/to/rear --intrinsics-source measured|factory` 求解并用 `install-rear` 登记。未绑定 rear 而需要双镜头或海报时，尝试 X3 INSV 工厂 rear 内参/双镜头外参 + 本设备 front B 兜底，沿用 front 时差；结果标记 `NOT_EVALUATED`，不登记为正式 rear。显式绑定无效或工厂转换不合格时拒绝。front 来源仍由套件控制；正式 rear 须匹配该来源，兜底 rear 则独立记为 factory。来源属于标定版本选择，配置位置和优先级见[套件说明](../kits/README.md#同时保存实测与工厂来源)，不写入算法参数 YAML。
+共享场景在 kit 的 `intrinsics.front/rear` 分别选择 measured / factory，默认 front measured、rear factory。每个镜头、每种来源使用一份当前参数，安装后自动更新；已开始运行和历史结果使用自己的冻结参数。rear measured 需要已登记的独立标定；rear factory 优先使用已登记的工厂来源整包，缺少时以 X3 原片工厂 rear 内参/双镜头外参 + 本设备 front B 推导并沿用 front 时差，标记 `NOT_EVALUATED`。当前选择损坏或身份/来源错误时拒绝，不静默推导。两个镜头允许不同来源；完整参数包内的内参与 B 仍必须配套。配置位置见[套件说明](../kits/README.md#前后镜头独立选择来源)，不写入算法参数 YAML。
 
 Basalt/ORB/OpenCV/GTSAM 内部尚未暴露的参数，通过当前引擎内容/依赖身份管理。浮点稳定性保护、矩阵维度、Jacobian 自检容差、格式/数学约定、PNG 无损压缩和执行超时策略保留在代码中。录像契约还包含 0.05 fps 的模式识别容差、1 ms 规则帧网格判据、1.5 倍中位帧间隔的丢帧判据，以及 50 ms 的 IMU 覆盖容差；这些集中在 `camera/x3/frame.py`，写入提取清单和轨迹设置，修改会改变代码指纹。当前 ORB 包装器使用纯单目模式，IMU 噪声由融合配置控制；已移除容易造成误解的 ORB YAML IMU 噪声默认项。
 

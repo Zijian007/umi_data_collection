@@ -63,22 +63,21 @@ class CompactResultTests(unittest.TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
 
-    def test_output_policy_preserves_poses_and_map_while_history_remains_valid(self):
+    def test_output_policy_preserves_poses_and_map_and_replaces_previous_run(self):
         fixture = self.fixture
         declaration = inputs.read_yaml(fixture.scene_path)
-        parameter_path = fixture.scene_path.parent / 'result-parameters.yaml'
-        write_yaml(parameter_path, dict(export_auxiliary_trajectories=True))
-        declaration['parameters'] = parameter_path.name
+        declaration['parameters'] = dict(export_auxiliary_trajectories=True)
         write_yaml(fixture.scene_path, declaration)
         built = fixture.build_scene()
         workflow.run_episode(fixture.episode_path)
-        output = fixture.episode_path.parent / 'results'
+        output = fixture.task_root / 'results'
         original = output.resolve()
         trajectory = (output / 'left/trajectory.csv').read_bytes()
         expected_camera = np.loadtxt(output / 'left/details/traj_camera.txt')
         expected_imu = np.loadtxt(output / 'left/details/traj_imu.txt')
 
-        write_yaml(parameter_path, dict(export_auxiliary_trajectories=False))
+        declaration['parameters']['export_auxiliary_trajectories'] = False
+        write_yaml(fixture.scene_path, declaration)
         self.assertEqual(fixture.build_scene()['status'], 'skipped')
         workflow.run_episode(fixture.episode_path)
         metadata = json.loads((output / 'episode.json').read_text())
@@ -88,8 +87,7 @@ class CompactResultTests(unittest.TestCase):
         self.assertEqual((output / 'left/trajectory.csv').read_bytes(), trajectory)
         for filename in ('traj_camera.txt', 'traj_imu.txt'):
             self.assertFalse((output / 'left/details' / filename).exists())
-            self.assertTrue((original / 'left/details' / filename).is_file())
-        inputs.validate_assets(original, json.loads((original / 'episode.json').read_text())['assets'])
+        self.assertFalse(original.exists())  # 被取代的运行由自动清理删除
         inputs.validate_assets(output, metadata['assets'])
         catalog = RecordingCatalog(output)
         loaded = catalog.load(catalog.scan()['recordings'][0]['id'])
@@ -102,7 +100,7 @@ class CompactResultTests(unittest.TestCase):
         fixture = self.fixture
         fixture.build_scene()
         workflow.run_episode(fixture.episode_path)
-        output = fixture.episode_path.parent / 'results'
+        output = fixture.task_root / 'results'
         metadata = json.loads((output / 'episode.json').read_text())
         self.assertNotIn('frame_id', metadata)
         self.assertNotIn('session', metadata['scene'])

@@ -1,10 +1,10 @@
-"""Inline scene overrides have one source; historical schema 2 inputs stay read-only."""
-from dataclasses import asdict
+"""场景参数直接内联；旧 schema 和文件引用明确拒绝。"""
 from pathlib import Path
 import tempfile
 import unittest
 
 from software.scene.management import inputs
+from software.scene.pipeline import map_lifecycle
 from software.storage import write_yaml
 
 
@@ -42,19 +42,17 @@ class SceneConfigurationTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     inputs.read_scene(self.root)
 
-    def test_legacy_file_overrides_load_without_rewriting(self):
-        write_yaml(self.root / 'trajectory.yaml', dict(video=dict(size_px=960)))
-        write_yaml(self.root / 'parameters.yaml', dict(minimum_localization_fraction=.6))
-        write_yaml(self.path, dict(schema_version=2, trajectory_config='trajectory.yaml', parameters='parameters.yaml'))
-        before = {p: p.read_bytes() for p in self.root.iterdir()}
-        old = inputs.read_scene(self.root)
-        self.assertEqual({p: p.read_bytes() for p in self.root.iterdir()}, before)
-        write_yaml(self.path, dict(trajectory=dict(video=dict(size_px=960)),
-                                  parameters=dict(minimum_localization_fraction=.6)))
-        new = inputs.read_scene(self.root)
-        self.assertEqual(asdict(old.trajectory.values), asdict(new.trajectory.values))
-        self.assertEqual(old.parameters, new.parameters)
-        self.assertEqual(old.trajectory.computation_hash, new.trajectory.computation_hash)
+    def test_legacy_schema_is_rejected_without_rewriting(self):
+        write_yaml(self.path, dict(schema_version=2))
+        before = self.path.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'schema_version: 3'):
+            inputs.read_scene(self.root)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_build_requires_a_batch_instead_of_a_standalone_scene(self):
+        write_yaml(self.path, {})
+        with self.assertRaisesRegex(ValueError, '建图需要采集批次'):
+            map_lifecycle.build_scene(self.path)
 
     def test_inline_comments_order_do_not_change_effective_values(self):
         self.path.write_text('mode: shared_front\ntrajectory:\n  video:\n    size_px: 960\n')

@@ -59,12 +59,12 @@ class KitTests(unittest.TestCase):
         self.assertEqual(inputs.read_batch(left).kit['id'], 'left_rig')
         right = write_batch(self.scene_path, 'afternoon', kit='right_rig')
         self.assertNotEqual(left, right)
-        self.assertEqual(left, self.scene_path / 'morning/.umi/manifest.yaml')
-        self.assertEqual(right, self.scene_path / 'afternoon/.umi/manifest.yaml')
+        self.assertEqual(left, self.scene_path / 'morning/.pipeline/manifest.yaml')
+        self.assertEqual(right, self.scene_path / 'afternoon/.pipeline/manifest.yaml')
         self.assertEqual(inputs.read_batch(right).expected_arms, ('right',))
         data = inputs.read_yaml(right)
         data['scene'] = str(self.scene_path / 'scene.yaml')
-        misplaced = self.scene_path / 'nested/afternoon/manifest.yaml'
+        misplaced = self.scene_path / 'nested/afternoon/.pipeline/manifest.yaml'
         write_yaml(misplaced, data)
         with self.assertRaisesRegex(ValueError, '采集批次必须位于'):
             inputs.read_batch(misplaced)
@@ -87,7 +87,7 @@ class KitTests(unittest.TestCase):
         declaration = batch / 'batch.yaml'
         write_yaml(declaration, {'kit': 'rig'})
         before = declaration.read_bytes()
-        self.assertFalse((batch / '.umi').exists())
+        self.assertFalse((batch / '.pipeline').exists())
         resolved = inputs.read_batch(batches.save_record(batches.read_inputs(batch, require_mapping=False)))
         self.assertEqual(declaration.read_bytes(), before)
         data = inputs.read_yaml(resolved.path)
@@ -128,7 +128,7 @@ class KitTests(unittest.TestCase):
         session = inputs.read_batch(write_batch(self.scene_path, 'invalid', kit='rig'))
         from dataclasses import replace
         scene = replace(session.scene, devices=session.devices)
-        with patch.object(registry, 'read_insv_serial', return_value='CAMERA_A'), self.assertRaises(OSError):
+        with patch.object(registry, 'read_insv_serial', return_value='CAMERA_A'), self.assertRaises(registry.RegistryError):
             camera_assets.select_camera(Path('video.insv'), scene)
 
     def test_current_kit_identity_matches_its_directory(self):

@@ -1,24 +1,28 @@
 # 设备套件
 
-每个套件的 `kit.yaml` 指定左右相机序列号、相机标定版本和当前安装的夹爪文件，可跨场景复用。仅需手动维护，不需要安装或登记夹爪。
+每个套件的 `kit.yaml` 指定左右相机序列号、前后镜头的内参来源和当前安装的夹爪文件，可跨场景复用。仅需手动维护，不需要安装或登记夹爪。
 
 ```yaml
 arms:
   left:
     serial: LEFT_CAMERA_SERIAL
-    calibration: '002'
+    intrinsics:
+      front: measured
+      rear: factory
     gripper:
       tcp: left_tcp_camera.json
       width: left_width.json
   right:
     serial: RIGHT_CAMERA_SERIAL
-    calibration: '002'
+    intrinsics:
+      front: measured
+      rear: factory
     gripper:
       tcp: right_tcp_camera.json
       width: right_width.json
 ```
 
-只保留实际使用的手。相机序列号和标定版本必须已在 registry 中登记，版本号保留引号。夹爪文件路径相对 `kit.yaml`，需位于套件目录内：
+只保留实际使用的手。工作镜头参数必须已按相机序列号登记；kit 只选来源，不填写版本号。夹爪文件路径相对 `kit.yaml`，需位于套件目录内：
 
 | 字段 | 要求 |
 |---|---|
@@ -26,9 +30,8 @@ arms:
 | `gripper.width` | 可选；当前安装的像素距离与实际开口毫米数的实测对应关系 JSON |
 | `gripper.tag_distance` | 可选；ID 0/1 黑色外框边长 JSON，用于鱼眼三维标签中心间距 |
 | `gripper.mask` | 可选；自定义遮手 PNG，省略时使用通用遮手图 |
-| `rear_calibration` | 每手可选的正式 rear 标定版本。dual 或海报处理未绑定时尝试 X3 INSV 工厂参数 + 本设备 front B 兜底；显式绑定无效时拒绝。shared_front 不因此增加环境镜头地图定位 |
-| `calibrations` | 与单版本字段互斥；按 measured/factory 固定完整镜头版本，见下文 |
-| `intrinsics_source` | 可放在套件顶层或每手设备中；指定默认来源，CLI/批次可覆盖 |
+| `intrinsics.front` | 工作镜头来源：`measured`（默认）或 `factory`；选择该设备此来源的当前完整参数 |
+| `intrinsics.rear` | 环境镜头来源：`factory`（默认）或 `measured`；与 front 独立选择 |
 
 左右安装几何相同时，可以共同引用一个 `tcp_camera.json`；不同时分别填写。没有实测开口关系时省略 `width`，不要填写示例数值。TCP 格式与方向见[设备与坐标](../docs/设备与坐标.md#几何资产)，宽度格式与测量方法见[训练数据指南](../docs/训练数据.md#夹爪宽度标定与接入)。
 
@@ -44,51 +47,46 @@ kits/kit_001/
 └── right_width.json      # 有实测数据时创建
 ```
 
-批次在 `batch.yaml` 中声明 `kit: kit_001`。每次 `run` 读取当前套件，在开始计算前解析测量并复制到运行目录 `devices/<序列号>/`，结果记录实际文件的哈希。修改文件后重跑即可，历史运行保留自己的副本。配置变更适用于下一次运行，无需编辑 `.umi/manifest.yaml`。
+批次在 `batch.yaml` 中声明 `kit: kit_001`。每次 `run` 读取当前套件，在开始计算前解析测量并复制到运行目录 `devices/<序列号>/`，结果记录实际文件的哈希。修改文件后重跑即可，历史运行保留自己的副本。配置变更适用于下一次运行，无需编辑 `.pipeline/manifest.yaml`。
 
-`registry/` 仅保存相机档案和版本化标定。套件 ID 来自目录，不重复写入 YAML；套件与夹爪不再另设版本目录或默认指针。`.example.yaml` 不作为真实套件读取。
+`registry/` 管理相机档案及每个镜头、每种来源的当前参数，历史资产只供追溯。套件 ID 来自目录，不重复写入 YAML；套件与夹爪不再另设版本目录或默认指针。`.example.yaml` 不作为真实套件读取。
 
-## 同时保存实测与工厂来源
+## 前后镜头独立选择来源
 
-需要切换时，以 `calibrations` 替代单个 `calibration` 字段。例如（版本号必须换成实际安装命令输出的版本，不代表仓库已有这些测量）：
+`measured` 使用已登记的实测内参及其配套相机–IMU 外参和时差；`factory` 使用工厂内参来源。可以组合 `front: measured`、`rear: factory`，也可以各自选择已准备好的另一来源。省略 `intrinsics` 时默认 front measured、rear factory。
 
-```yaml
-arms:
-  right:
-    serial: CAMERA_SERIAL
-    calibrations:
-      measured:
-        front: '002'
-        rear: rear_MEASURED_HASH
-      factory:
-        front: '003'
-        rear: rear_FACTORY_HASH
-    gripper:
-      tcp: tcp_camera.json
-      width: right_width.json
+| 选择 | 参数如何取得 |
+|---|---|
+| `front: measured` | 当前工作镜头实测整包，需先标定并 `install` |
+| `front: factory` | 当前工作镜头工厂内参整包，仍须用该内参重新求解 B 并通过 C/D；需先以 factory 模式标定并 `install` |
+| `rear: measured` | 当前已独立验收的环境镜头实测参数，需 `install <rear结果目录或rear_calibration.json>`；缺少时报错 |
+| `rear: factory` | 优先使用当前已独立验收的工厂来源 rear；尚未登记时，使用原片工厂内参/双镜头几何与本设备 front B 推导 |
+
+rear 工厂推导沿用 front 时差，标记 `NOT_EVALUATED`；它不等于通过 rear A/B/C/D。当前选择存在但损坏、身份或来源不符时直接报错，不会改用推导。只有实际需要环境镜头时才执行原片推导；`shared_front` 不因此增加环境镜头地图定位。
+
+前后镜头都能选来源，不代表可以单独替换完整参数包中的内参：正式 factory 标定仍须使用与其配套的 B。详见[标定指南](../docs/标定.md#选择实测或工厂内参)。
+
+## 更新当前参数与历史结果
+
+通过统一的 `umi-calib install <结果目录>` 登记 front 或 rear 后，自动更新该相机、该镜头、该来源的当前选择。每个组合只有一份当前参数；更新一项不会改动另一镜头或另一来源。无需再编辑 kit 的版本号或执行版本激活命令。
+
+每次从 `batch.yaml` 发起 run 都重新解析当前参数，计算开始后固定本次选择。参数变化时重新核对地图与结果复用条件；需要时自动重建。历史地图和运行结果保留自己的参数副本、哈希与内部身份，已有记录不会被新安装改写。registry 只保留每个镜头、每种来源的当前安装；被替代的固定版本目录不再作为日常配置项或历史读取入口。
+
+旧 kit 的 `calibration` / `rear_calibration` / `calibrations` 写法仅在所指登记目录仍存在时兼容读取，便于迁移；新写法不能与这些字段混用。将旧 kit 改成 `intrinsics` 后，后续运行才跟随当前参数。项目内的 kit_001、kit_002 已迁移。
+
+## 临时覆盖与检查
+
+通常只在 kit 中分别选择来源。CLI 的 `--intrinsics-source` 可临时把两镜头统一为同一来源；它覆盖 batch.yaml 的同名选择，后者覆盖 kit。旧 kit 保留原来的固定版本核对规则，不会通过覆盖开关自动换成另一版本。
+
+```bash
+./umi-calib devices
+./umi-calib devices --kit kit_002
+./umi-calib devices --kit kit_002 --require-rear --json
+./umi-scene run scenes/test_shelf/20261109_002 --show-config
 ```
 
-每个来源的 `front` 必填，`rear` 在使用环境镜头时填写。`calibrations` 不能与旧的 `calibration/rear_calibration` 并列。旧格式继续固定原版本；加开关只核对来源，不会自动替换旧字段中的版本，双来源切换应使用上面的 `calibrations` 写法。
+`devices` 默认展示每个镜头、每种来源的当前参数，不展开历史版本。`--require-rear` 要求已独立验收的 rear，工厂推导不会使该检查通过；普通查询会标明“需原片推导、未独立验收”。JSON 保留实际参数身份供排障。检查只覆盖相机参数和选择，不代表夹爪安装资产或双镜头组合实测已验收。
 
-选择优先级为 CLI `--intrinsics-source` → `batch.yaml` 的 `intrinsics_source` → 套件顶层 `intrinsics_source` → 每手 `intrinsics_source`；多来源配置均未指定时选 measured。未安装对应来源或镜头版本时明确报错，不会借用另一来源。
+## 海报采集
 
-批次记录保存解析后的具体版本，每次从 `batch.yaml` 发起 `run` 仍会重新读取当前套件。切换来源会绑定匹配的独立地图/结果版本；旧、新批次记录归档在 `.umi/snapshots/`，已有成果保留运行时副本。地图来源、标定或引擎不匹配时需要重建，不能带着旧地图只换内参。
-
-
-## 海报采集的完整绑定
-
-先按[标定指南](../docs/标定.md#双镜头标定与海报接入)完成每台相机的 front/rear 验收与登记。下例版本仅为占位，必须替换成安装命令的实际输出：
-
-```yaml
-arms:
-  right:
-    serial: CAMERA_SERIAL
-    calibration: '002'
-    rear_calibration: rear_ACTUAL_HASH
-    gripper:
-      tcp: tcp_camera.json
-```
-
-front/rear 版本属于同一序列号，内参来源需匹配；多来源使用上面的 `calibrations` 格式。海报布局放在 `scene.yaml` 的 `tags.layout`，不写入 kit 或 registry。新安装 rear 不会自动修改此配置。用 `./umi-calib devices` 查看所有镜头版本，再用 `./umi-calib devices --kit kit_002 --require-rear` 检查所选套件的固定绑定；多来源可加 `--intrinsics-source measured|factory`，机器可读输出加 `--json`。检查只覆盖相机标定资产与绑定，不代表夹爪安装资产或双镜头组合实测已验收。
-
-共享单手回退继承同一套冻结配置；直接运行独立轨迹时则显式传入 `--rear-calibration` 和 `--tag-layout`。更换版本对新运行生效，历史结果仍保留旧资产副本。
+需要独立验收的环境镜头时，按[双镜头标定](../docs/标定.md#双镜头标定与海报接入)完成 rear 求解与登记，再将 `intrinsics.rear` 设为对应来源。海报布局写在 `scene.yaml` 的 `tags.layout`，不写入 kit 或 registry。共享单手回退继续使用本次冻结的相机参数与布局。

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from software import settings
+
 from pathlib import Path
 import re
 import shutil
@@ -11,6 +13,50 @@ from software.calibration.algorithms import board_pnp
 from software.calibration.models import IntrinsicsResult, CameraImuResult
 from software.calibration.pipeline import runtime
 from software.trajectory.calibration import assets
+
+
+SOLVER_MARKER = '=== UMI_SOLVER_START '
+
+
+def _latest_solver_section(text: str) -> str:
+    """Return only the latest Basalt invocation in an append-only log.
+
+    B preparation and repeated ``--resume`` runs share one log file. Parsing
+    the whole file can otherwise pair the newest reprojection value with an
+    image count from an older invocation.
+    """
+    return text.rsplit(SOLVER_MARKER, 1)[-1] if SOLVER_MARKER in text else text
+
+
+def _mark_solver_start(log: Path, name: str) -> None:
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open('a', encoding='utf-8') as stream:
+        stream.write(f'\n{SOLVER_MARKER}{name}===\n')
+        stream.flush()
+
+
+def _solver_progress(log: Path, role: str) -> None:
+    """Print a periodic heartbeat for a long-running Basalt optimisation."""
+    try:
+        text = _latest_solver_section(log.read_text(encoding='utf-8', errors='replace'))
+        iterations = text.count('Current error:')
+        if not iterations:
+            if 'Started initial camera pose computation' in text:
+                phase = '正在初始化相机姿态'
+            elif 'Started detecting corners' in text:
+                phase = '正在检测标定板角点'
+            else:
+                phase = '正在启动求解器'
+            runtime.console.write(f'{role} 参数求解仍在运行：{phase}', state='进度')
+            return
+        values = re.findall(r'mean reprojection ([0-9.eE+-]+)', text)
+        rejected = text.count('[REJECTED]')
+        detail = f'第 {iterations} 轮，已拒绝 {rejected} 次'
+        if values:
+            detail += f'，最近重投影均值 {float(values[-1]):.3f} px'
+        runtime.console.write(f'{role} 参数求解仍在运行：{detail}', state='进度')
+    except (OSError, ValueError):
+        return
 
 
 def write_board(path: Path, grid: dict) -> Path:
@@ -32,6 +78,7 @@ def last_reprojection(log: Path) -> dict:
       always >= the mean and recorded for information only.
     """
     text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
+    text = _latest_solver_section(text)
     reprojections = re.findall(r"num_points (\d+) .*?mean reprojection ([0-9.eE+-]+)", text)
     image_count = re.findall(r"Image size: (\d+)", text)
     rms = re.findall(r"RMS_REPROJ_EVIDENCE .*?eval=accepted .*?rms=([0-9.eE+-]+)", text)
@@ -49,7 +96,7 @@ def prepare_bag(dataset, execution, *, name, log_name, cancelled=None):
     bag.unlink(missing_ok=True)
     log = execution.paths.logs / log_name
     to_bag = [sys.executable, runtime.TOOLS / 'calib_folder_to_bag.py', '--euroc', dataset, '--out', bag,
-              '--workers', min(4, execution.workers)]
+              '--workers', min(settings.values('runtime')['calibration_bag_threads'], execution.workers)]
     role = 'A' if name == 'camera_intrinsics' else 'B'
     label = f'{role} 求解数据准备' + ('（后台，与 A 并行）' if cancelled is not None else '')
     timings = {}
@@ -78,8 +125,10 @@ def _run_solver(tool, dataset, grid, execution, *, name, cache_name, log_name,
     command = ['nice', '-n', '10', *execution.cpu_prefix, *runtime.basalt_command(tool),
                '--dataset-path', bag, '--dataset-type', 'bag', '--aprilgrid', board,
                '--result-path', output, '--cache-name', cache_name, *extra_args, '--no-gui']
+    _mark_solver_start(log, name)
     with runtime.timed(execution.timings, name + '.solve', label=f'{role} 参数求解'):
-        code = runtime.run_logged(command, log, append=True)
+        code = runtime.run_logged(command, log, append=True,
+                                  progress=lambda: _solver_progress(log, role))
         if code != 0 or not (output / 'calibration.json').is_file():
             raise RuntimeError(f'Basalt 求解失败（退出码 {code}），见 {log}')
     bag.unlink(missing_ok=True)

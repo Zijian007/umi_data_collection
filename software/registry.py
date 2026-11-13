@@ -1,4 +1,4 @@
-"""Camera registry: immutable measured calibrations; assembly geometry belongs to kits.
+"""Camera registry: current measured calibrations; assembly geometry belongs to kits.
 
 The trajectory engine looks up the serial in the recording's INSV trailer. Missing serial, missing record,
 retired device, or hash mismatch is a refusal -- never a silent fall-back to the lab sample.
@@ -54,10 +54,11 @@ def load_index() -> dict:
         if record.get('serial', serial) != serial:
             raise RegistryError(f'设备键名与序列号不一致：{serial}')
         record['serial'] = serial
-        variants = record.get('calibration_sources', {})
-        if not isinstance(variants, dict) or variants.keys()-{'measured', 'factory'}:
-            raise RegistryError('设备的 calibration_sources 必须为 measured/factory 版本映射')
-        for version in variants.values(): validate_id(version)
+        for field in ('calibration_sources', 'rear_calibration_sources'):
+            variants = record.get(field, {})
+            if not isinstance(variants, dict) or variants.keys()-{'measured', 'factory'}:
+                raise RegistryError(f'设备的 {field} 必须为 measured/factory 当前参数映射')
+            for version in variants.values(): validate_id(version)
     return idx
 
 
@@ -73,9 +74,11 @@ def save_index(idx: dict) -> None:
 
 
 def version_assets(directory: Path) -> dict:
-    """版本中的相机测量只读；每次选择都核对完整资产哈希。"""
+    """读取当前或兼容旧目录，并核对完整资产哈希。"""
     manifest = json.loads((directory / 'manifest.json').read_text())
-    if manifest.get('version') != directory.name:
+    # 新目录按镜头/来源固定，不再把递增编号写入目录清单。旧的数字目录
+    # 仍可只读解析，便于迁移已有批次和诊断历史结果。
+    if 'version' in manifest and manifest.get('version') != directory.name:
         raise RegistryError(f'版本目录与清单身份不一致：{directory}')
     if not isinstance(manifest.get('assets'), dict) or not manifest['assets']:
         raise RegistryError(f'资产清单为空：{directory}')
@@ -114,12 +117,108 @@ def store_version(parent: Path, version: str, files: dict[str, Path], **metadata
     return directory
 
 
+def _current_directory(parent: Path, lens: str, source: str) -> Path:
+    """返回一个镜头/内参来源唯一的当前资产目录。"""
+    if lens not in ('front', 'rear'):
+        raise RegistryError(f'镜头类型无效：{lens}')
+    from software.camera.calibration_source import validate
+    validate(source)
+    return parent / lens / source
+
+
+def _current_key(source: str) -> str:
+    """当前资产的逻辑键就是来源名，不再生成 001、002 等编号。"""
+    from software.camera.calibration_source import validate
+    return validate(source)
+
+
+def store_current(parent: Path, lens: str, source: str, files: dict[str, Path], **metadata) -> Path:
+    """原子发布一个镜头/来源的当前资产，并替换同来源旧资产。"""
+    source = _current_key(source)
+    directory = _current_directory(parent, lens, source)
+    wanted = {name: artifact_identity.file_hash(path) for name, path in files.items()}
+    parent.mkdir(parents=True, exist_ok=True)
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix='.install-', dir=directory.parent))
+    try:
+        for name, source_path in files.items():
+            target = temporary / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, target)
+        if any(artifact_identity.file_hash(temporary / name) != digest
+               for name, digest in wanted.items()):
+            raise RegistryError('安装期间源资产发生变化，拒绝发布')
+        write_json(temporary / 'manifest.json', dict(
+            kind=metadata.pop('kind', None), serial=metadata.pop('serial', None),
+            lens=lens, intrinsics_source=source, assets=wanted, **metadata))
+        backup = None
+        if directory.exists():
+            backup = Path(tempfile.mkdtemp(prefix='.previous-', dir=directory.parent))
+            backup.rmdir()
+            directory.rename(backup)
+        try:
+            temporary.rename(directory)
+        except Exception:
+            if backup is not None and not directory.exists():
+                backup.rename(directory)
+            raise
+        if backup is not None:
+            shutil.rmtree(backup)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    return directory
+
+
+def _asset_directory(serial: str, lens: str, identity: str) -> Path:
+    """Resolve a current source key, with read-only support for old IDs."""
+    identity = validate_id(identity)
+    if identity in ('measured', 'factory'):
+        return _current_directory(CAMERAS / validate_id(serial) / 'calibrations', lens, identity)
+    # Existing snapshots may still pin a numeric front directory or a rear hash.
+    return CAMERAS / validate_id(serial) / 'calibrations' / identity
+
+
+def _installed_source(directory: Path, kind: str) -> str | None:
+    """Read the source of an installed front/rear asset without selecting it."""
+    try:
+        if kind == 'umi_camera_calibration':
+            return traj_calib.describe(directory / 'bundle', 'registry').get('intrinsics_source')
+        raw = json.loads((directory / 'rear_calibration.json').read_text(encoding='utf-8'))
+        from software.camera.calibration_source import source
+        return source(raw)
+    except (OSError, KeyError, TypeError, ValueError, traj_calib.CalibrationError):
+        return None
+
+
+def _remove_previous_versions(parent: Path, keep: str, *, kind: str, serial: str, source: str) -> None:
+    """Keep one installed version per lens/source; leave other lens/source assets intact.
+
+    Front and rear assets share a camera directory for compatibility, so cleanup
+    must inspect the manifest kind instead of deleting every sibling directory.
+    """
+    if not parent.is_dir():
+        return
+    for directory in parent.iterdir():
+        if not directory.is_dir() or directory.name == keep:
+            continue
+        manifest_path = directory / 'manifest.json'
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            # Never remove an unrecognised or damaged directory automatically.
+            continue
+        if (manifest.get('kind') == kind and manifest.get('serial') == serial
+                and _installed_source(directory, kind) == source):
+            shutil.rmtree(directory)
+
+
 def bundle_sha256(bundle_dir: Path) -> str:
     return artifact_identity.file_hash(traj_calib.calibration_path(Path(bundle_dir)))
 
 
 def measurement_version(parent: Path, files: dict[str, Path], *, identity: dict, asset_prefix='') -> str:
-    """在档案写锁内调用：相同资产沿用编号，新资产递增为 001–999。"""
+    """兼容旧测试和迁移工具的编号扫描；当前 install 不再调用它。"""
     wanted = {name: artifact_identity.file_hash(path) for name, path in files.items() if name.startswith(asset_prefix)}
     numbers = []
     for directory in sorted(parent.iterdir()) if parent.exists() else []:
@@ -172,12 +271,15 @@ def _record_view(serial: str, device_record: dict, *, calibration: str | None = 
 
 
 def read_front_version(serial: str, version: str) -> dict:
-    """读取设备自身的 front 版本，独立于启用/停用或默认版本选择。"""
+    """读取设备自身的当前 front 资产，兼容读取旧固定目录。"""
     version = validate_id(version)
-    directory = CAMERAS / validate_id(serial) / 'calibrations' / version
-    version_manifest = version_assets(directory)
+    directory = _asset_directory(serial, 'front', version)
+    try:
+        version_manifest = version_assets(directory)
+    except OSError as error:
+        raise RegistryError(f'相机当前标定不存在或已被新安装替代：{directory}') from error
     if version_manifest.get('kind') != 'umi_camera_calibration' or version_manifest.get('serial') != serial:
-        raise RegistryError(f'相机标定版本身份不一致：{directory}')
+        raise RegistryError(f'相机当前标定身份不一致：{directory}')
     bundle = directory / 'bundle'
     calibration_description = traj_calib.describe(bundle, 'registry')
     metadata_name = 'manifest.json' if calibration_description['bundle_schema_version'] == 3 else 'bundle.json'
@@ -227,19 +329,57 @@ def register_rear(source: Path) -> dict:
     get(serial)
     from software.camera.calibration_source import read_rear
     try:
-        read_rear(source, serial=serial)
+        measurement, _ = read_rear(source, serial=serial)
     except ValueError as error:
         raise RegistryError(str(error)) from error
-    version = f"rear_{artifact_identity.file_hash(source)[:12]}"
+    key = _current_key(measurement['intrinsics_source'])
     with locked(ROOT, '.registry.lock'):
-        store_version(CAMERAS / serial / 'calibrations', version, {'rear_calibration.json': source},
+        store_current(CAMERAS / serial / 'calibrations', 'rear', key,
+                      {'rear_calibration.json': source},
                       kind='umi_rear_calibration', serial=serial)
-    return dict(serial=serial, version=version)
+        index = load_index()
+        record = index['devices'][serial]
+        rear_sources = dict(record.get('rear_calibration_sources', {}))
+        rear_sources[measurement['intrinsics_source']] = key
+        record['rear_calibration_sources'] = rear_sources
+        save_index(index)
+    return dict(serial=serial, version=key)
+
+
+def current_rear_version(serial: str, source: str) -> str | None:
+    """只读当前选择；缺少选择与选择损坏分开处理，后者不能自动兜底。"""
+    from software.camera.calibration_source import validate, read_rear
+    validate(source)
+    record = load_index()['devices'].get(validate_id(serial))
+    if record is None:
+        raise UnknownCameraError(f'相机 {serial} 尚未登记')
+    version = record.get('rear_calibration_sources', {}).get(source)
+    if version is not None:
+        read_rear(rear_path(serial, version), serial=serial, expected_source=source)
+    return version
+
+
+def current_camera(serial: str, *, front: str, rear: str) -> dict:
+    """将用户的两个来源选择解析为本次运行固定的参数身份。"""
+    camera = get(serial, intrinsics_source=front)
+    if camera['status'] != 'active' or camera['calibration_owner'] != serial:
+        raise RegistryError(f'新采集需要 {serial} 自身的已启用标定')
+    binding = dict(serial=serial, calibration=camera['calibration_version'],
+                   intrinsics_source=front, rear_intrinsics_source=rear)
+    rear_version = current_rear_version(serial, rear)
+    if rear_version is not None:
+        binding['rear_calibration'] = rear_version
+    elif rear == 'measured':
+        raise RegistryError(f'相机 {serial} 缺少当前 rear measured 标定；请标定并执行 install，或选择 rear: factory')
+    return binding
 
 
 def rear_path(serial: str, version: str) -> Path:
-    directory = CAMERAS / validate_id(serial) / 'calibrations' / validate_id(version)
-    metadata = version_assets(directory)
+    directory = _asset_directory(serial, 'rear', version)
+    try:
+        metadata = version_assets(directory)
+    except OSError as error:
+        raise RegistryError(f'环境镜头当前标定不存在或已被新安装替代：{directory}') from error
     if metadata.get('kind') != 'umi_rear_calibration' or metadata.get('serial') != serial:
         raise RegistryError('环境镜头标定版本身份不匹配')
     if 'rear_calibration.json' not in metadata['assets']:
@@ -288,21 +428,34 @@ def register(serial: str, bundle_dir: Path, *, status: str = "active",
     files = {'bundle/'+name: bundle_dir / name for name in names}
     with locked(ROOT, '.registry.lock'):
         parent = CAMERAS / serial / 'calibrations'
-        version = measurement_version(parent, files,
-            identity=dict(kind='umi_camera_calibration', serial=serial), asset_prefix='bundle/')
-        store_version(parent, version, files,
+        source = _current_key(description['intrinsics_source'])
+        store_current(parent, 'front', source, files,
                       kind='umi_camera_calibration', serial=serial, note=note)
         idx = load_index()
         previous = idx['devices'].get(serial, {})
-        variants = dict(previous.get('calibration_sources', {}))
-        if previous.get('calibration') and not variants:
-            old = _record_view(serial, previous, allow_retired=True)
-            if old.get('intrinsics_source') in ('measured', 'factory'):
-                variants[old['intrinsics_source']] = old['calibration_version']
-        variants[description['intrinsics_source']] = version
-        idx['devices'][serial] = dict(serial=serial, status=status, note=note, calibration=version)
+        variants = {}
+        previous_sources = previous.get('calibration_sources', {})
+        if previous_sources:
+            for source_name in ('measured', 'factory'):
+                old_identity = previous_sources.get(source_name)
+                if old_identity is None:
+                    continue
+                old_directory = _asset_directory(serial, 'front', old_identity)
+                if _installed_source(old_directory, 'umi_camera_calibration') == source_name:
+                    variants[source_name] = source_name
+        elif previous.get('calibration'):
+            old_identity = previous['calibration']
+            old_directory = _asset_directory(serial, 'front', old_identity)
+            old_source = _installed_source(old_directory, 'umi_camera_calibration')
+            if old_source in ('measured', 'factory'):
+                variants[old_source] = old_source
+        variants[source] = source
+        record = dict(previous, serial=serial, status=status, note=note, calibration=source)
         if len(variants) > 1:
-            idx['devices'][serial]['calibration_sources'] = variants
+            record['calibration_sources'] = variants
+        else:
+            record.pop('calibration_sources', None)
+        idx['devices'][serial] = record
         save_index(idx)
     return get(serial)
 

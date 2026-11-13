@@ -1,9 +1,0 @@
-# 用户输入示例：复制到真实批次并命名 batch.yaml，填写已存在的套件。
-kit: example_kit
-# 套件已配置对应来源的完整标定后，可选择 measured 或 factory；CLI 开关优先。
-# 不填时遵循套件选择，多来源套件未指定时使用 measured。
-# intrinsics_source: measured
-# 默认使用套件全部手；双手套件只采左手时增加：
-# arms: [left]
-# 默认从本批次 mapping/ 建图；复用地图时移除新建图原片并增加：
-# map_version: 已发布地图版本

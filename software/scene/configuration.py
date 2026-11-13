@@ -110,7 +110,7 @@ def effective_report(paths: list[Path], *, overrides: SceneOverrides | None = No
             declarations = [str(layout.manifest(directory, 'manifest.yaml'))]
         else:
             scene_path = directory/'scene.yaml'
-        scene = inputs.read_scene(scene_path, load_mapping=False, overrides=overrides)
+        scene = inputs.read_scene(scene_path, overrides=overrides)
         if frozen_mapping:
             scene = replace(scene, mode='shared_front' if len(frozen_mapping) == 1 else 'dual',
                             reference_arm=manifest.get('mapping_reference_arm', next(iter(frozen_mapping))))

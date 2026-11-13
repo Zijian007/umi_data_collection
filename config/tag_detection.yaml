@@ -1,0 +1,5 @@
+# 夹爪双标签检测；修改后检测缓存及相关最终结果重新计算。
+full_search_interval: 30
+candidate_limit: 96
+recovery_candidate_limit: 16
+recovery_batch_size: 32

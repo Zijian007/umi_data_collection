@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import json
 import shutil
-import tempfile
 
 from software import provenance as artifact_identity
 from software import registry
@@ -26,12 +24,12 @@ def activation_status(doc):
     if subject['lens'] != 'front' or not subject.get('parameter_sha256'):
         return dict(result, state='unavailable', message='未查询工作镜头默认标定')
     try:
-        selected = registry.get(subject['serial'])
+        selected = registry.get(subject['serial'], intrinsics_source=subject.get('intrinsics_source', 'measured'))
         if artifact_identity.file_hash(Path(selected['json'])) == subject['parameter_sha256']:
-            return dict(result, state='active', message='已设为该设备默认标定', version=selected['calibration_version'])
-        return dict(result, state='inactive', message='设备当前启用的是另一份标定')
+            return dict(result, state='active', message='本报告已设为该设备此参数来源的当前标定', version=selected['calibration_version'])
+        return dict(result, state='inactive', message='当前设备仍使用该来源的其他标定版本；本报告版本未启用')
     except registry.UnknownCameraError:
-        return dict(result, state='inactive', message='该相机尚未登记')
+        return dict(result, state='inactive', message='该相机尚未登记，因此本报告版本未启用')
     except (OSError, ValueError, KeyError, registry.RegistryError) as error:
         return dict(result, state='unavailable', message=f'无法确认：{error}')
 
@@ -76,16 +74,16 @@ def install_bundle(output: Path, force: bool, camera_serial: str | None = None) 
     except (OSError, ValueError, KeyError, RuntimeError, trajectory_calibration.CalibrationError) as error:
         runtime.console.write(f'不能安装标定：{error}', state='失败')
         return 2
-    runtime.console.write(f"已启用标定：相机 {device['serial']}；版本 {device['calibration_version']}", state='完成')
+    runtime.console.write(f"已更新当前标定：相机 {device['serial']}；front / {device['intrinsics_source']}", state='完成')
     return 0
 
 
-def install_rear(measurement: Path) -> int:
+def _install_rear_asset(measurement: Path, *, force: bool = False, camera_serial: str | None = None) -> int:
     measurement = Path(measurement).expanduser().resolve()
     output = measurement.parent
     try:
         with locked(output.parent, name=f'.{output.name}.calibration.lock'):
-            doc = _installable(output, 'rear')
+            doc = _installable(output, 'rear', force=force, camera_serial=camera_serial)
             raw = json.loads(measurement.read_text())
             expected = json.loads(result_io.validate_subject(output, doc).read_text())
             metadata = raw.pop('validation')
@@ -103,8 +101,21 @@ def install_rear(measurement: Path) -> int:
     except (OSError, ValueError, KeyError, RuntimeError, trajectory_calibration.CalibrationError) as error:
         runtime.console.write(str(error), state='失败')
         return 2
-    runtime.console.write(f"已登记环境镜头标定：相机 {result['serial']}；版本 {result['version']}", state='完成')
+    runtime.console.write(f"已更新当前标定：相机 {result['serial']}；rear", state='完成')
     return 0
+
+
+def install(asset: Path, *, force: bool = False, camera_serial: str | None = None) -> int:
+    """Install either lens from a result directory or its rear measurement file.
+
+    A rear result directory is accepted directly; the dispatcher selects its
+    ``rear_calibration.json`` so front and rear have the same public command.
+    """
+    asset = Path(asset).expanduser().resolve()
+    measurement = asset if asset.is_file() else asset / 'rear_calibration.json'
+    if measurement.is_file():
+        return _install_rear_asset(measurement, force=force, camera_serial=camera_serial)
+    return install_bundle(asset, force=force, camera_serial=camera_serial)
 
 
 def list_devices(*, kit: str | None = None, json_output: bool = False,
@@ -134,52 +145,3 @@ def retire(camera_serial: str) -> int:
         return 2
     runtime.console.write(f"已停用相机 {camera_serial}", state="完成")
     return 0
-
-
-def upgrade_device(serial: str, *, dry_run: bool = False) -> dict:
-    serial = registry.validate_id(serial)
-    selected = registry.get(serial, allow_retired=True)
-    if selected.get('calibration_owner', serial) != serial:
-        raise ValueError('样例借用设备不能升级为实测标定，请先完成设备标定')
-    source = Path(selected['dir'])
-    old_version = selected['calibration_version']
-    if selected['bundle_schema_version'] >= 2:
-        return dict(status='current', serial=serial, version=old_version, activated=False)
-    parent = source.parent.parent
-    with nullcontext() if dry_run else locked(registry.ROOT, '.registry.lock'):
-        # 原版本必须仍然存在且校验通过；不依赖期间可能改变的当前默认指针。
-        registry.get(serial, calibration=old_version, allow_retired=True)
-        with tempfile.TemporaryDirectory(prefix='umi-upgrade-') as temporary_bundle:
-            bundle = Path(temporary_bundle)/'bundle'
-            trajectory_calibration.make_bundle(Path(selected['json']), bundle, note=dict(upgraded_from=old_version))
-            if registry.bundle_sha256(bundle) != selected['bundle_sha256']:
-                raise ValueError('升级期间源测量发生变化，拒绝发布')
-            files = {'bundle/'+p.name: p for p in bundle.iterdir() if p.is_file()}
-            version = registry.measurement_version(parent, files,
-                identity=dict(kind='umi_camera_calibration', serial=serial), asset_prefix='bundle/')
-            plan = dict(status='planned' if dry_run else 'stored', serial=serial, source_version=old_version,
-                        version=version, directory=str(parent / version), activated=False)
-            if dry_run:
-                return plan
-            report = source.parent/'report.txt'
-            if report.is_file():
-                files['report.txt'] = report
-            registry.store_version(parent, version, files, kind='umi_camera_calibration', serial=serial,
-                                   note='measurement bundle v2; upgraded from '+old_version)
-    return plan
-
-
-def activate_calibration(serial: str, version: str) -> dict:
-    """显式变更设备默认值；已有套件与批次的测量绑定保持不变。"""
-    serial, version = registry.validate_id(serial), registry.validate_id(version)
-    with locked(registry.ROOT, '.registry.lock'):
-        selected = registry.get(serial, calibration=version)
-        if selected.get('calibration_owner', serial) != serial:
-            raise ValueError('不能把样例借用标定作为实测设备版本启用')
-        index = registry.load_index()
-        previous = index['devices'][serial]['calibration']
-        index['devices'][serial]['calibration'] = version
-        if 'calibration_sources' in index['devices'][serial]:
-            index['devices'][serial]['calibration_sources'][selected['intrinsics_source']] = version
-        registry.save_index(index)
-    return dict(status='activated', serial=serial, version=version, previous=previous)

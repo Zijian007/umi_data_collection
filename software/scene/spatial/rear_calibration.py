@@ -25,7 +25,13 @@ from software.trajectory.calibration import assets
 def generate_trajectory(video, execution, *, trajectory_configuration, calibration_json, bundle, tag, front, scene):
     scene = replace(scene, trajectory=trajectory_configuration)
     parameters = assets.read_basalt(calibration_json)
-    camera = replace(front, measurements=dict(rear=parameters), files=dict(front.files, rear=calibration_json))
+    # The trajectory runtime always requires a front visual configuration for
+    # masks/settings, even when this independent validation uses only rear for
+    # SLAM and fusion. Keep the registered front measurement alongside the
+    # candidate rear measurement; dropping it makes visual_settings() reject
+    # the run before C can be evaluated.
+    camera = replace(front, measurements=dict(front.measurements, rear=parameters),
+                     files=dict(front.files, rear=calibration_json))
     paths = execution.paths
     prepared = recordings.prepare_recording(video, camera, scene, paths.work/'C_trajectory', cores=execution.cores or '')
     atlas = slam.build(prepared, 'rear', paths.work/'C_map')

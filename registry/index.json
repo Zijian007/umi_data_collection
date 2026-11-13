@@ -4,11 +4,17 @@
   "devices": {
     "IAQEB26097M4CP": {
       "status": "active",
-      "calibration": "002"
+      "calibration": "measured",
+      "rear_calibration_sources": {
+        "measured": "measured"
+      }
     },
     "IAQEB2609JPAR3": {
       "status": "active",
-      "calibration": "002"
+      "calibration": "measured",
+      "rear_calibration_sources": {
+        "measured": "measured"
+      }
     }
   }
 }

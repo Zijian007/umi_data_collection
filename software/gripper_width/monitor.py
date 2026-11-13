@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from software import settings
+
 from contextlib import ExitStack
 from fractions import Fraction
 from pathlib import Path
@@ -48,7 +50,7 @@ def run(video: Path, roi: tuple[int, int, int, int], *, hz: float = 30.,
         if video_output.exists():
             raise FileExistsError(f'输出已存在，请选择新 MP4：{video_output}')
     previous_threads = cv2.getNumThreads()
-    cv2.setNumThreads(1)
+    cv2.setNumThreads(settings.values('runtime')['calibration_opencv_threads'])
     started = time.perf_counter()
     try:
         with av.open(str(video)) as source:
@@ -57,7 +59,7 @@ def run(video: Path, roi: tuple[int, int, int, int], *, hz: float = 30.,
             stream = source.streams.video[0]
             if (stream.width, stream.height) != (SRC_W, SRC_H):
                 raise ValueError('宽度检测需要 X3 原始 3840×1920 INSV')
-            stream.codec_context.thread_count = 4
+            stream.codec_context.thread_count = settings.values('runtime')['decode_threads']
             stream.thread_type = 'AUTO'
             with ExitStack() as outputs:
                 destination = sys.stdout

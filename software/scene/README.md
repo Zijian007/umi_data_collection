@@ -2,7 +2,7 @@
 
 用户入口为 `umi-scene`。`run <批次>` 先由 `management/processing.py` 读取 batch.yaml，自动保存设备快照和登记原片，再调用 workflow 的地图与任务流水线。`export --format training` 调用 software.dataset。标定统一由 umi-calib 发起，查看由 umi-view 提供。
 
-从 `cli.py` 找命令入口，再读 `pipeline/map_lifecycle.py` 的 `build_scene()` 或 `workflow.py` 的 `run_episode()`。用户操作见 [场景指南](../../docs/场景处理.md)。
+从 `cli.py` 找命令入口，再读 `pipeline/map_lifecycle.py` 的 `build_scene()` 或 `workflow.py` 的 `run_episode()`。用户操作见[场景指南](../../docs/场景处理.md)，完整选项见[命令行参数](../../docs/命令行参数.md#umi-scene)。
 
 模块通过真实目录直接导入；`__init__.py` 仅说明包职责，不注册历史别名或预先加载全部子模块。
 
@@ -40,7 +40,7 @@ software/scene/
     └── results.py             轨迹、双手表、算法报告
 ```
 
-`inputs.py` 负责清单读取与参数校验，`camera_assets.py` 选择并冻结设备测量；`models.py` 保存阶段数据，CalibratedCamera 按需计算并缓存小型资产哈希。`workflow.py` 和 `episodes.py` 直接使用它；验收模块不导入 workflow。公共原子文件和锁由 `software/storage.py` 提供，设备版本化标定资产由 `software/registry.py` 管理。
+`inputs.py` 负责清单读取与参数校验，`camera_assets.py` 选择并冻结设备测量；`models.py` 保存阶段数据，CalibratedCamera 按需计算并缓存小型资产哈希。`workflow.py` 和 `episodes.py` 直接使用它；验收模块不导入 workflow。公共原子文件和锁由 `software/storage.py` 提供，设备按镜头和参数来源保存的当前标定资产由 `software/registry.py` 管理。
 
 ## 采集管理
 
@@ -49,7 +49,7 @@ software/scene/
 手写 batch.yaml → batches.read_inputs()   解析批次、套件与建图来源
     batches.make_record() / save_record()  构造快照、检查并发修改、按需写入
     inputs.read_scene() / read_kit()
-    registry.pin() / version_assets()     读取全局版本化标定资产
+    registry.pin() / version_assets()     读取全局当前标定资产
 
 run → processing.prepare_batch() → ingest.register_recordings()
                                          自动配对、登记与补片；预览共用规划
@@ -58,17 +58,17 @@ run → processing.prepare_batch() → ingest.register_recordings()
     ingest._write_episode()               有变化才更新清单和任务状态
 ```
 
-各批次独立持有 `.umi/maps/` 及当前地图指针，任务内部数据集中在同一批次 `.umi/tasks/<任务>/`。目录层次为 `kits/<套件>/kit.yaml` 与 `scenes/<场景>/<批次>/.umi/manifest.yaml`，任务位于批次目录下。输入读取校验目录与清单身份一致；查看器从批次清单读取套件身份。
+各批次独立持有 `.pipeline/maps/` 及当前地图指针，任务内部数据集中在同一批次 `.pipeline/tasks/<任务>/`。目录层次为 `kits/<套件>/kit.yaml` 与 `scenes/<场景>/<批次>/.pipeline/manifest.yaml`，任务位于批次目录下。输入读取校验目录与清单身份一致；查看器从批次清单读取套件身份。
 
-每个套件只有一个 `kits/<套件>/kit.yaml`；`inputs.read_kit()` 读取当前配置，`validate_kit()` 校验当前配置与批次快照的共同结构。处理批次时核对实际测量并把配置保存到 `.umi/manifest.yaml`（schema 5；兼容读取历史 schema 4），run 每次读取当前配置，记录不反向覆盖 kit.yaml。套件没有独立版本目录或指针文件，相机标定与地图保留固定版本。夹爪配置包含必填的 gripper.tcp、可选的 gripper.width、gripper.tag_distance 和 gripper.mask，路径相对 kit.yaml；输入入口统一解析测量，计算前复制到运行目录 devices/<序列号>/，后续直接使用解析值与副本。
+每个套件只有一个 `kits/<套件>/kit.yaml`；`inputs.read_kit()` 读取当前配置，`validate_kit()` 校验当前配置与批次快照的共同结构。处理批次时核对实际测量并把配置保存到 `.pipeline/manifest.yaml`（schema 5；兼容读取历史 schema 4），run 每次读取当前配置，记录不反向覆盖 kit.yaml。套件没有独立版本目录或指针文件，相机按前后镜头来源选择当前参数，内部历史身份与地图版本保留用于追溯。夹爪配置包含必填的 gripper.tcp、可选的 gripper.width、gripper.tag_distance 和 gripper.mask，路径相对 kit.yaml；输入入口统一解析测量，计算前复制到运行目录 devices/<序列号>/，后续直接使用解析值与副本。
 
 场景名称和当前套件 ID 从目录推导，上级场景和批次清单由固定层级确定。生成清单省略空描述、默认模式、空覆盖和未绑定地图；当前套件省略 ID，批次快照仍保存 ID 和标定资产版本。批次快照不复制套件描述。
 
-新任务原片清单 schema 5 仅保存原片身份与引用，集中在批次 `.umi/tasks/<任务>/episode.yaml`。人工选项 instruction、expected_arms、synchronization 位于外层任务 `task.yaml`；读取历史清单时合并这些选项，重新登记时提取到 task.yaml。双手默认零偏移但未经确认；批次默认使用套件全部手，任务默认继承批次。缺片不会隐式降为单手。
+新任务原片清单 schema 5 仅保存原片身份与引用，集中在批次 `.pipeline/tasks/<任务>/episode.yaml`。人工选项 instruction、expected_arms、synchronization 位于外层任务 `task.yaml`，episode.yaml 中不再接受这些字段。双手默认零偏移但未经确认；批次默认使用套件全部手，任务默认继承批次。缺片不会隐式降为单手。
 
 指令进入结果 episode.json 和导出清单；修改指令或同步按有效任务选项的规范化哈希失效（仅修改注释不失效），需重新 run 和验收。训练格式由独立 [dataset 模块](../dataset/README.md) 负责，scene 不承担训练采样。
 
-`<批次>/.umi/tasks/<任务>/state.json` 只保存 attempt/review，身份与完整性从清单读取；attempt 只保存运行引用和输入哈希，错误原因及预检报告路径从运行目录读取，不重复落盘。录制检查在算法执行前落盘，算法失败仍有原始检查证据。
+`<批次>/.pipeline/tasks/<任务>/state.json` 只保存 attempt/review，身份与完整性从清单读取；attempt 只保存运行引用和输入哈希，错误原因及预检报告路径从运行目录读取，不重复落盘。录制检查在算法执行前落盘，算法失败仍有原始检查证据。
 
 ## 算法执行
 
@@ -82,7 +82,8 @@ build → map_lifecycle.build_scene()
         geometry.metric_alignment()       复用轨迹坏段筛选，共同尺度/重力与可观测性验收
         geometry.place_front()            工作镜头地图放入共享场景
     mapping.freeze_maps()                 地图资产冻结
-    storage.write_json(current.json)      全部成功后发布地图
+    cleanup.prune_cache()                 建图成功后删除本次未用到的建图缓存；
+                                          绑定由 build_scene 写入批次 manifest.yaml
 
 run → workflow.run_episode()
     inputs.read_episode()                 批次、录像、预期使用手
@@ -90,7 +91,7 @@ run → workflow.run_episode()
     map_lifecycle.bind_map()                   固定本批次地图
     camera_assets.snapshot_cameras()             保存所选相机、TCP、宽度与遮手图副本
     reconstruction.prepare_episode_recordings() 准备各手录像、检查时间重叠
-        reconstruction.prepare_cached()
+        reconstruction.prepare_cached()   与建图共用 MapBuildCache 的录像准备缓存
             recordings.prepare_recording()
     每只手独立执行：
         reconstruction.reconstruct_arm_in_scene()
@@ -106,9 +107,12 @@ run → workflow.run_episode()
     results.write_episode()               报告、资产哈希与任务元数据
     storage.publish_link(results)         全部成功后更新结果入口
     episodes.record_attempt()             更新状态与验收有效性
+    cleanup.after_task()                  删除被取代的运行和本次未用到的任务缓存
 ```
 
-`run_episodes()` 只负责任务并发、逐任务失败隔离与汇总。地图绑定在批次锁内直接读取和固定，不递归；只读预检走同一输入准备路径，不落盘。
+`run_episodes()` 调度任务并汇总结果，每次调用按批次持有独立 `BatchMap`。同批首次任务在锁内构建/校验并固定地图，后续任务复用同一绑定；共同建图失败只执行一次。每个任务仍核对自身标定与地图匹配，复用前检查批次配置、建图原片及地图资产的文件身份，变化即拒绝继续；发布前复核原片与地图资产，已开始的任务仍使用冻结配置，不因外部配置编辑而中断。不同批次的地图准备互不阻塞，只读预检不落盘。
+
+`--jobs 1` 且双手可用 CPU 至少 8 个时，按手拆分子进程的 CPU 集合，并行定位、融合、检测和结果写入；核心不足、单手或 `--jobs > 1` 时按手串行。任务级发布等待所有手成功；任一手失败时等其他线程退出后保存失败现场，不替换旧成功入口。
 
 任务融合因视觉定位失败而保留失败现场时，若存在连续无视觉区间，运行目录会写入 `<arm>/no_visual/gap_*.mp4` 和 `<arm>/no_visual/manifest.json`。片段默认包含前后各 0.5 秒上下文；原始视频、视觉定位结果和 IMU 不会被修改。
 
@@ -128,7 +132,7 @@ run → workflow.run_episode()
 
 场景录像准备直接构造 `vision.models.VisualContext`，包含已解析参数、帧数与 CPU 设置；不构造 `TrajectoryRequest`。共用的视觉设置为 `VisualSettings`，内部逐段轨迹引擎的融合设置由 `ReconstructionSettings` 扩展；场景融合直接接收已解析参数，不生成单段融合脚本的配置文件。
 
-任务准备和定位数据保存在 `<批次>/.umi/tasks/<任务>/cache/`；`run` 不提供 `--keep-work`。建图、环境镜头标定仍可保留求解中间文件。进度写 stderr，结构化 JSON 写 stdout。
+任务准备和定位数据保存在 `<批次>/.pipeline/tasks/<任务>/cache/`；`run` 不提供 `--keep-work`。建图、环境镜头标定仍可保留求解中间文件。进度写 stderr，结构化 JSON 写 stdout。
 
 地图清单的建图定义只存于 `inputs.definition`，读取旧清单也使用此字段。地图成功导出后移除原始展示 JSON 和空日志，保留有内容的日志及失败现场；已发布版本不因整理而改写。
 
@@ -174,7 +178,9 @@ run → workflow.run_episode()
 
 宽度模块复用 main 的检测器和毫米映射；原片像素检测只按原片和检测器缓存，换算、处理策略与固定时间偏移在缓存后应用。宽度资产不进入相机几何身份，另在 episode_inputs.gripper_width 中记录内容哈希与检测代码身份；episode.json 统一保留规范化测量快照和报告，不重复写各手 JSON；宽度数值与 TCP 统一保存在 trajectory.csv，逐帧诊断由 gripper_width_diagnostics 控制。参考 [宽度模块](../gripper_width/README.md)。
 
-`gripper.tag_distance` 启用独立的标签中心三维间距。逐帧角点与宽度检测共享，KB4 内参和各标签实测边长用于位姿解算；结果写入同一 CSV 的 `tag_distance_*` 三列，报告汇入 `episode.json`。尺寸资产不进入地图/相机几何身份，单独进入任务输入指纹；修改边长或质量门限重用角点，重算三维值。该测量不依赖开口锚点，不生成归一化开合量，缺失不插值填充。
+`gripper.tag_distance` 启用独立的标签中心三维间距。与宽度共用基础检测器，但按输出时间点独立采样、缓存角点，KB4 内参和各标签实测边长用于位姿解算；结果写入同一 CSV 的 `tag_distance_*` 三列，报告汇入 `episode.json`。尺寸资产不进入地图/相机几何身份，单独进入任务输入指纹；修改边长或质量门限重用角点，重算三维值。该测量不依赖开口锚点，不生成归一化开合量，缺失不插值填充。
+
+`pipeline.measurements.prepare_detections()` 在各手重建前准备检测缓存。宽度、中心距与海报同时配置至少两类时，共用一次原片顺序解码；融合和测量阶段读取各自缓存。已命中的检测器不再扫描，中心距补检仍按需执行。仅配置一类时沿用原入口。
 
 ## 单手独立回退
 
@@ -190,9 +196,9 @@ KIWI 方法来源和许可证见 [NOTICE.md](NOTICE.md)，运行时不依赖本�
 
 ## 原片位置
 
-建图原片位于 `scenes/<场景>/<批次>/mapping/`，任务原片直接位于 `scenes/<场景>/<批次>/<任务>/left/`、`right/`。`inputs.task_video_sources()` 与 `batch_task_directories()` 统一发现任务原片目录，`batch_video_sources()` 再加入批次 `pending/`；不递归扫描任务的 `results/` 和 `.umi/`。配对依据序列号，预分组任务的左右手共用同一任务身份。
+建图原片位于 `scenes/<场景>/<批次>/mapping/`，任务原片直接位于 `scenes/<场景>/<批次>/<任务>/left/`、`right/`。`inputs.task_video_sources()` 与 `batch_task_directories()` 统一发现任务原片目录，`batch_video_sources()` 再加入批次 `pending/`；不递归扫描任务的 `results/` 和 `.pipeline/`。配对依据序列号，预分组任务的左右手共用同一任务身份。
 
-`import_video()` 直接引用本任务内已有原片，外部文件复制或显式硬链接到 `<任务>/<手>/`；没有全局场景原片根目录。旧 `<任务>/videos/` 作为兼容输入继续原地读取，已有清单不因布局变化改写，新导入或补齐的原片采用扁平布局。两种布局同一侧出现多个不同原片仍按歧义处理。向导和批次创建允许先准备左右手目录再登记清单。
+`import_video()` 直接引用本任务内已有原片，外部文件复制或显式硬链接到 `<任务>/<手>/`；没有全局场景原片根目录。旧 `<任务>/videos/` 输入已退役，旧目录或混合布局明确拒绝。同一侧出现多个不同原片仍按歧义处理。向导和批次创建允许先准备左右手目录再登记清单。
 
 `plan_tasks()` 保留已明确分组的 take；未分组原片通过时间与时长规则配对。`pending/` 仅暂存无确定任务归属的原片，任务清单写入成功后才删除已归位的 pending 副本。预览使用同一规划逻辑，不写文件。
 
@@ -200,19 +206,27 @@ KIWI 方法来源和许可证见 [NOTICE.md](NOTICE.md)，运行时不依赖本�
 
 `batches.read_inputs()` 每次读取当前 batch.yaml、kit.yaml 与 mapping/，返回具有明确字段的 `BatchInputs`；`save_record()` 更新最新解析记录，不让旧快照覆盖配置。单段 mapping 在 schema 5 中直接保存录像引用，dual 保留左右两段；read_batch 兼容旧 schema 4，算法内部展开参考槽位。run <任务> 也先刷新所属批次。
 
-`build_scene(<批次>)` 校验完整建图输入身份后复用或构建地图；map 字段仅是复用候选。成功结果保存当时的 kit 和完整输入身份；失败 error.json 保存 batch 与 inputs。计算期间 batch/kit 变化会拒绝绑定或发布，历史结果不改写。旧的无 batch.yaml 清单仍可作为显式历史输入读取；日常配置驱动流程以 batch.yaml 和 kit.yaml 为准。
+`build_scene(<批次>)` 校验完整建图输入身份后复用或构建地图；map 字段仅是复用候选。成功结果保存当时的 kit 和完整输入身份；失败 error.json 保存 batch 与 inputs。计算期间 batch/kit 变化会拒绝绑定或发布，历史结果不改写。正式流程以 batch.yaml 和 kit.yaml 为准，不再读取旧位置的批次清单。
 
 环境镜头 `umi-calib run <rear目录>` 的 A/B/D、恢复、验收和记录均复用 `calibration/workflow.py`。scene 只负责纯视觉建图、米制对齐和 IMU 融合，返回视频时间上的相机位置；板参考时间匹配和误差比较由标定模块统一计算。通过后生成的 `rear_calibration.json` 保持已有登记/消费接口，并绑定本次运行证据。
 
-`build/run --intrinsics-source measured|factory` 先在 `batches.read_inputs()` 中覆盖批次选择，再由 `inputs.validate_kit()` 将来源配置解析成具体工作/环境镜头版本。旧单版本配置保留绑定并检查来源。`inputs.select_camera()` 检查标定身份；factory 还核对 B 输入内参哈希、原片工厂射线一致性及真实引擎的前向 KB4 能力。来源、标定和引擎纳入复用身份，固定地图也须匹配；来源切换归档 `.umi/snapshots/` 并清除不匹配的地图绑定。配置格式与优先级见[套件说明](../../kits/README.md#同时保存实测与工厂来源)。
+`build/run --intrinsics-source measured|factory` 先在 `batches.read_inputs()` 中覆盖批次选择，再由 `inputs.validate_kit()` 将来源配置解析成具体工作/环境镜头版本。旧单版本配置保留绑定并检查来源。`inputs.select_camera()` 检查标定身份；factory 还核对 B 输入内参哈希、原片工厂射线一致性及真实引擎的前向 KB4 能力。来源、标定和引擎纳入复用身份，固定地图也须匹配；来源切换更新当前批次记录并清除不匹配的地图绑定；地图和任务成果保留各自输入与设备副本，不另存批次快照归档。配置格式与优先级见[套件说明](../../kits/README.md#同时保存实测与工厂来源)。
 
 ## 场景配置的唯一来源
 
-新 scene.yaml 默认 schema 3，可省略版本字段，只保存 mode、reference_arm、description、trajectory 和 parameters。两组参数以内联映射覆盖默认值，设备归 kit.yaml，建图录像归批次 mapping/。schema 2 仅用于读取历史配置，不再有 init 或 build --mapping 写入入口。
+新 scene.yaml 默认 schema 3，可省略版本字段，只保存 mode、reference_arm、description、trajectory 和 parameters。两组参数以内联映射覆盖默认值，设备归 kit.yaml，建图录像归批次 mapping/。scene schema 2 和场景级独立建图入口已退役。
 
-kit.yaml 和 batch.yaml 只通过手动创建和修改；原片按 take 分组或放入 pending，run 自动登记、补片和处理。run 与 build 共用 batches.read_inputs/make_record/save_record 解析当前配置与生成内部快照。ingest.register_recordings() 只接收已解析的批次对象，不再接受旧命令的外部输入目录、手选择或硬链接选项；预览和实际运行在同一条路径规划任务，仅实际运行写入文件。build 仅接受批次。已有 manifest.yaml、episode.yaml、episode.json 的字段和版本协议保持可读，Session/Episode 是这些历史记录的内部类型，不再作为用户命令名称。
+kit.yaml 和 batch.yaml 只通过手动创建和修改；原片按 take 分组或放入 pending，run 自动登记、补片和处理。run 与 build 共用 batches.read_inputs/make_record/save_record 解析当前配置与生成内部快照。ingest.register_recordings() 只接收已解析的批次对象，不再接受旧命令的外部输入目录、手选择或硬链接选项；预览和实际运行在同一条路径规划任务，仅实际运行写入文件。build 仅接受批次。manifest.yaml、episode.yaml 仅从批次 .pipeline/ 当前布局读取；批次和任务清单仍支持 schema 4/5，人工选项统一从 task.yaml 读取。已有 episode.json 结果协议保持可读。Session/Episode 是内部类型，不再作为用户命令名称。
 
 
 环境海报实验入口：`scene.yaml` 的 `tags.layout` 声明刚性布局，默认只诊断；`parameters.tag_fusion_enabled: true` 将环境镜头角点加入固定地图与 IMU 图。实现位于 `spatial/poster.py`，初值与投影位于 `vision/poster_pose.py`。每段录像重新估计一个海报位姿；布局随结果冻结，地图尺度保持固定。使用方法与当前验证边界见[重构计划](../../docs/dev/环境标签与自适应融合重构计划.md#当前代码的使用与边界2026-11-11)。
 
 建图阶段另用 `tag_mapping_enabled` 开启海报尺度诊断、`tag_mapping_scale_enabled` 显式应用修正；二者默认关闭。`spatial/poster_scale.py` 保持视觉地图形状并处理米制镜头杆臂，合并后由 `geometry.metric_alignment(fixed_scale=...)` 精确固定尺度重做惯性验收。地图目录保留冻结布局及角点，任务不复用建图海报位姿。
+
+## 当前镜头来源与历史绑定
+
+`kit.yaml` 用 `intrinsics.front/rear` 选择 measured/factory，默认分别为 measured/factory。`registry.current_camera()` 将它解析为本次固定的 front/rear 资产身份；`validate_kit()` 读取批次快照时不再查询当前选择。front/rear 使用独立来源字段，允许混用；同一设备参与建图和任务时仍要求实际参数一致，不同设备可选择不同来源。`register_rear()` 在档案锁内发布当前资产并更新该来源的当前选择；front 安装保留 rear 的选择。
+
+后续 run 从 kit 重新解析，变化清除不匹配的地图绑定；已开始任务和已有成果继续使用冻结参数。设备查询默认只检查当前选择，历史结果校验自己的参数副本。旧版本 kit 只在所指资产仍登记时兼容读取；新增配置无需版本号。
+
+运行预算统一在 `config/runtime.yaml`，机器覆盖用 `config/runtime.local.yaml`；夹爪检测预算在 `config/tag_detection.yaml`。`--show-config` 同时展示配置来源与实际 CPU/线程预算，启动终端输出精简摘要。覆盖顺序与缓存规则见 [配置说明](../../config/README.md#运行与查看器默认值)。

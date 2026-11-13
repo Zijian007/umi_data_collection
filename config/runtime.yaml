@@ -1,0 +1,11 @@
+# 执行预算；不作为数值结果缓存的输入。机器覆盖请写 runtime.local.yaml。
+decode_threads: 4
+opencv_threads: 4
+calibration_opencv_threads: 1  # 标定/诊断已在帧间并行，避免嵌套线程
+calibration_max_workers: 24
+calibration_reserved_cpus: 1
+calibration_bag_threads: 4
+arm_min_cpus: 4
+slam_timeout_base_s: 300
+slam_timeout_per_30_frames_s: 16
+map_export_timeout_s: 180

@@ -73,3 +73,11 @@ def publish_link(source: Path, target: Path) -> None:
         raise ValueError(f'发布目标不是本工具的版本指针，请先移走：{target}')
     temporary.symlink_to(os.path.relpath(source, target.parent), target_is_directory=True)
     temporary.replace(target)
+
+
+def mark_used(directory: Path) -> None:
+    """命中缓存条目时刷新目录时间；成功处理后据此删除本次未用到的条目。"""
+    try:
+        os.utime(directory)
+    except FileNotFoundError:
+        pass

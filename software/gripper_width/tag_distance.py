@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from software import settings
+
 from dataclasses import asdict
 from contextlib import closing
 from fractions import Fraction
@@ -17,19 +19,19 @@ from software.gripper_width import detection
 from software.gripper_width.tag_geometry import TagPoseEstimator
 from software.gripper_width.tag_models import TagDistanceRequest, TagDistanceResult, TagDistanceSeries, missing_runs
 from software.gripper_width.sampled_detection import (
-    DetectionProgress, ProgressCallback, RECOVERY_BATCH_SIZE, SampledDetectionCache, recovery_order)
-from software.storage import atomic_file, write_json
+    DetectionProgress, ProgressCallback, SampledDetectionCache, recovery_order)
+from software.storage import atomic_file, mark_used, write_json
 
 
 def identity() -> dict:
     import cv2
 
     package = Path(__file__).parent
-    geometry_sources = {name: artifact_identity.file_hash(package / name)
+    geometry_sources = {name: artifact_identity.source_hash(package / name)
                         for name in ('tag_distance.py', 'tag_geometry.py', 'tag_models.py', 'calibration.py')}
     return dict(opencv=cv2.__version__, geometry_sha256=artifact_identity.canonical_hash(geometry_sources),
-                detector=detection.identity(), sampling_sha256=artifact_identity.file_hash(package / 'sampled_detection.py'),
-                frame_sha256=artifact_identity.file_hash(package.parent / 'camera/x3/frame.py'))
+                detector=detection.identity(), sampling_sha256=artifact_identity.source_hash(package / 'sampled_detection.py'),
+                frame_sha256=artifact_identity.source_hash(package.parent / 'camera/x3/frame.py'))
 
 
 class TagDistanceAcceptanceError(ValueError):
@@ -78,14 +80,14 @@ def _recovery_batch(valid: np.ndarray, detections: SampledDetectionCache, limit:
         return available
     gaps = [(begin, end) for begin, end in missing_runs(valid) if end - begin > limit]
     if not gaps:
-        return recovery_order(available, detections.quick_corners)[:RECOVERY_BATCH_SIZE]
+        return recovery_order(available, detections.quick_corners)[:settings.values('tag_detection')['recovery_batch_size']]
     begin, end = max(gaps, key=lambda interval: interval[1] - interval[0])
     candidates = available[(available >= begin) & (available < end)]
     if not len(candidates):
         return candidates
     centre = int(candidates[np.argmin(np.abs(candidates - (begin + end) // 2))])
     # 先修复长缺口中间的一小段；若连续 limit+1 帧完成补检仍无效，其他帧无法桥接它。
-    window_size = min(RECOVERY_BATCH_SIZE, limit + 1, int(end - begin))
+    window_size = min(settings.values('tag_detection')['recovery_batch_size'], limit + 1, int(end - begin))
     left = max(int(begin), min(centre - window_size // 2, int(end) - window_size))
     return candidates[(candidates >= left) & (candidates < left + window_size)]
 
@@ -114,6 +116,7 @@ def process(request: TagDistanceRequest, cache: Path, *,
         completion_record = json.loads(completion_path.read_text())
         if completion_record['inputs'] != fingerprint or artifact_identity.file_hash(measurements_path) != completion_record['sha256']:
             raise ValueError('标签三维间距缓存身份或哈希变化')
+        mark_used(completion_path.parent)
         with np.load(measurements_path, allow_pickle=False) as measurements:
             distances_mm, sources = measurements['distance_mm'], measurements['source']
     else:

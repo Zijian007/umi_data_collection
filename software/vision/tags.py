@@ -14,7 +14,8 @@ import numpy as np
 from software import provenance
 from software.camera.timing import video_to_imu_seconds
 from software.camera.x3.frame import CROP, FPS_SRC, FPS_TOLERANCE, SRC_H, SRC_W
-from software.storage import atomic_file, write_json
+from software.storage import atomic_file, mark_used, write_json
+from software.vision.decoding import VideoDecode
 
 if TYPE_CHECKING:
     from software.vision.tag_board import TagBoardLayout
@@ -128,54 +129,66 @@ class PosterDetector:
         return sorted(found, key=lambda item: item[0]), len(repeated), unknown
 
 
-def detect(video: Path, settings: DetectionSettings, *, progress: Callable[[str], None] | None = None) -> TagObservations:
-    """顺序解码真实 PTS，按源帧号抽样；不读取 IMU，不插值或沿用角点。"""
-    import av
+class PosterDetection:
+    """按源帧号采样环境半幅；完整源时间轴仍逐帧校验。"""
 
-    detector = PosterDetector(settings)
-    frames, times, samples, ids, corners, duplicates, unknowns = [], [], [], [], [], [], []
-    previous_time, updated = None, time.monotonic()
-    with av.open(str(video)) as container:
-        if len(container.streams.video) != 1:
+    def __init__(self, settings: DetectionSettings, progress: Callable[[str], None] | None = None):
+        self.settings, self.progress = settings, progress
+        self.detector = PosterDetector(settings)
+        self.frames, self.times, self.samples, self.ids, self.corners = [], [], [], [], []
+        self.duplicates, self.unknowns = [], []
+        self.previous_time, self.updated = None, time.monotonic()
+
+    def validate(self, streams) -> None:
+        if len(streams) != 1:
             raise ValueError('环境标签检测需要单路 X3 4K60 原片')
-        stream = container.streams.video[0]
+        stream = streams[0]
         if (stream.codec_context.width, stream.codec_context.height) != (SRC_W, SRC_H):
             raise ValueError('环境标签检测需要 X3 原始 3840×1920 双镜头画面')
         if stream.average_rate is None or abs(float(stream.average_rate) - FPS_SRC) > FPS_TOLERANCE:
             raise ValueError('环境标签检测需要 X3 4K60 录制模式')
-        stream.codec_context.thread_count = 4
-        for source_index, frame in enumerate(container.decode(stream)):
-            if frame.pts is None or frame.time_base is None:
-                raise ValueError('环境标签原片缺少帧时间戳')
-            timestamp = float(frame.pts * frame.time_base)
-            if not np.isfinite(timestamp) or previous_time is not None and timestamp <= previous_time:
-                raise ValueError('环境标签原片时间戳非递增或无效')
-            previous_time = timestamp
-            if source_index % settings.frame_step:
-                continue
-            gray = np.ascontiguousarray(frame.to_ndarray(format='gray')[:, :SRC_H])
-            found, duplicate, unknown = detector.detect(gray)
-            sample_index = len(times)
-            frames.append(source_index)
-            times.append(timestamp)
-            duplicates.append(duplicate)
-            unknowns.append(unknown)
-            for tag_id, points in found:
-                samples.append(sample_index)
-                ids.append(tag_id)
-                corners.append(points)
-            if progress is not None and time.monotonic() - updated >= 3:
-                progress(f'环境标签：已采样 {len(times)} 帧，原片 {timestamp:.2f} s，唯一 ID 观测 {len(ids)} 次')
-                updated = time.monotonic()
-    points = np.asarray(corners, float).reshape(-1, 4, 2)
-    sides = np.linalg.norm(points - np.roll(points, -1, axis=1), axis=2).min(axis=1)
-    margin = (SRC_H - CROP) / 2
-    inside = ((points >= margin) & (points < margin + CROP)).all(axis=(1, 2))
-    result = TagObservations(np.asarray(frames, int), np.asarray(times, float), np.asarray(samples, int),
-        np.asarray(ids, int), points, sides, inside, inside & (sides >= settings.minimum_side_px),
-        np.asarray(duplicates, int), np.asarray(unknowns, int))
-    result.validate()
-    return result
+
+    def consume(self, source_index: int, frame) -> None:
+        if frame.pts is None or frame.time_base is None:
+            raise ValueError('环境标签原片缺少帧时间戳')
+        timestamp = float(frame.pts * frame.time_base)
+        if not np.isfinite(timestamp) or self.previous_time is not None and timestamp <= self.previous_time:
+            raise ValueError('环境标签原片时间戳非递增或无效')
+        self.previous_time = timestamp
+        if source_index % self.settings.frame_step:
+            return
+        gray = np.ascontiguousarray(frame.to_ndarray(format='gray')[:, :SRC_H])
+        found, duplicate, unknown = self.detector.detect(gray)
+        sample_index = len(self.times)
+        self.frames.append(source_index)
+        self.times.append(timestamp)
+        self.duplicates.append(duplicate)
+        self.unknowns.append(unknown)
+        for tag_id, points in found:
+            self.samples.append(sample_index)
+            self.ids.append(tag_id)
+            self.corners.append(points)
+        if self.progress is not None and time.monotonic() - self.updated >= 3:
+            self.progress(f'环境标签：已采样 {len(self.times)} 帧，原片 {timestamp:.2f} s，唯一 ID 观测 {len(self.ids)} 次')
+            self.updated = time.monotonic()
+
+    def finish(self) -> TagObservations:
+        points = np.asarray(self.corners, float).reshape(-1, 4, 2)
+        sides = np.linalg.norm(points - np.roll(points, -1, axis=1), axis=2).min(axis=1)
+        margin = (SRC_H - CROP) / 2
+        inside = ((points >= margin) & (points < margin + CROP)).all(axis=(1, 2))
+        result = TagObservations(np.asarray(self.frames, int), np.asarray(self.times, float), np.asarray(self.samples, int),
+            np.asarray(self.ids, int), points, sides, inside, inside & (sides >= self.settings.minimum_side_px),
+            np.asarray(self.duplicates, int), np.asarray(self.unknowns, int))
+        result.validate()
+        return result
+
+
+def detect(video: Path, settings: DetectionSettings, *, progress: Callable[[str], None] | None = None) -> TagObservations:
+    """顺序解码真实 PTS，按源帧号抽样；不读取 IMU，不插值或沿用角点。"""
+    decoder = VideoDecode(video)
+    decoder.add(PosterDetection(settings, progress))
+    return decoder.run()[0]
 
 
 def _visibility(observations: TagObservations, sample_indices: np.ndarray, frame_step: int) -> dict:
@@ -219,8 +232,9 @@ def report(observations: TagObservations, settings: DetectionSettings) -> dict:
 
 
 def cached(video: Path, output: Path, settings: DetectionSettings, *, force: bool = False,
-           progress: Callable[[str], None] | None = None, layout: TagBoardLayout | None = None) -> dict:
-    """角点缓存绑定原片、检测参数与实现；报告不写入已有轨迹结果。"""
+           progress: Callable[[str], None] | None = None, layout: TagBoardLayout | None = None,
+           decoder: VideoDecode | None = None) -> dict | None:
+    """角点缓存独立绑定检测身份；decoder 将缺失检测推迟到共享解码。"""
     import av
 
     video, output = video.expanduser().resolve(), output.expanduser().resolve()
@@ -231,10 +245,11 @@ def cached(video: Path, output: Path, settings: DetectionSettings, *, force: boo
     if layout is not None and (settings.dictionary != layout.dictionary or settings.border_bits != layout.border_bits
                                or not set(settings.ids).issubset(layout.ids)):
         raise ValueError('检测字典、黑边或 ID 与海报布局不一致')
-    source_files = (Path(__file__), provenance.ROOT / 'software/camera/x3/frame.py',
+    source_files = (Path(__file__), Path(__file__).with_name('decoding.py'),
+                    provenance.ROOT / 'software/camera/x3/frame.py',
                     provenance.ROOT / 'software/camera/timing.py')
     identity = dict(schema_version=1, recording_sha256=provenance.file_hash(video), settings=asdict(settings),
-        implementation={str(p.relative_to(provenance.ROOT)): provenance.file_hash(p) for p in source_files},
+        implementation={str(p.relative_to(provenance.ROOT)): provenance.source_hash(p) for p in source_files},
         dependencies=dict(opencv=cv2.__version__, av=av.__version__, numpy=np.__version__))
     key = provenance.canonical_hash(identity)
     cache_file, manifest_file = output / 'observations.npz', output / 'detection.json'
@@ -248,21 +263,29 @@ def cached(video: Path, output: Path, settings: DetectionSettings, *, force: boo
                 observations.validate()
         except (ValueError, KeyError, OSError, TypeError):
             observations = None
-    reused = observations is not None
-    if observations is None:
-        observations = detect(video, settings, progress=progress)
-        if provenance.file_hash(video) != identity['recording_sha256']:
-            raise ValueError('原片在标签检测期间发生变化，未保存检测结果')
-        with atomic_file(cache_file) as temporary, temporary.open('wb') as stream:
-            np.savez_compressed(stream, **{name: getattr(observations, name) for name in TagObservations.__dataclass_fields__})
-        write_json(manifest_file, dict(identity=identity, identity_hash=key,
-                                      observations_sha256=provenance.file_hash(cache_file)))
-    result = dict(report(observations, settings), identity_hash=key, recording=str(video),
-                  settings=asdict(settings), cache_reused=reused, observations_file=str(cache_file))
-    if layout is not None:
-        result['board_layout'] = layout.record()
-        result['geometry_status'] = 'layout_known_pose_not_estimated'
-        # 角点缓存与物理布局分开：更正打印尺寸复用像素，但报告携带当前布局身份。
-        result['report_identity_hash'] = provenance.canonical_hash(dict(detection=key, layout=layout.asset_hash))
-    write_json(output / 'report.json', result)
-    return result
+        if observations is not None:
+            mark_used(output)
+    def publish(observations: TagObservations, reused: bool) -> dict:
+        if not reused:
+            if provenance.file_hash(video) != identity['recording_sha256']:
+                raise ValueError('原片在标签检测期间发生变化，未保存检测结果')
+            with atomic_file(cache_file) as temporary, temporary.open('wb') as stream:
+                np.savez_compressed(stream, **{name: getattr(observations, name) for name in TagObservations.__dataclass_fields__})
+            write_json(manifest_file, dict(identity=identity, identity_hash=key,
+                                          observations_sha256=provenance.file_hash(cache_file)))
+        result = dict(report(observations, settings), identity_hash=key, recording=str(video),
+                      settings=asdict(settings), cache_reused=reused, observations_file=str(cache_file))
+        if layout is not None:
+            result['board_layout'] = layout.record()
+            result['geometry_status'] = 'layout_known_pose_not_estimated'
+            # 角点缓存与物理布局分开：更正打印尺寸复用像素，但报告携带当前布局身份。
+            result['report_identity_hash'] = provenance.canonical_hash(dict(detection=key, layout=layout.asset_hash))
+        write_json(output / 'report.json', result)
+        return result
+
+    if observations is not None:
+        return publish(observations, True)
+    if decoder is not None:
+        decoder.add(PosterDetection(settings, progress), lambda found: publish(found, False))
+        return None
+    return publish(detect(video, settings, progress=progress), False)

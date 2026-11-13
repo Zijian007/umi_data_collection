@@ -12,6 +12,10 @@ from software.camera.x3.factory import Kb4Model
 class PosterGeometryError(ValueError):
     """海报证据不符合单个静止平面；不得按场景定位不足自动降级。"""
 
+    def __init__(self, message, *, metrics=None):
+        super().__init__(message)
+        self.metrics = metrics
+
 
 def camera_model(measured):
     if measured['camera_type'] != 'kb4' or list(measured['resolution']) != [1440, 1440]:
@@ -50,13 +54,64 @@ def project_observations(board, cameras, points, model):
     return pixels, camera_points
 
 
-def estimate_board(cameras, points, pixels, model, maximum_rms):
-    """多帧固定轨迹上的共同海报初值；逐帧平面双解只用作候选。"""
+def _frame_groups(cameras, frame_ids=None):
+    """Return observation groups in temporal order."""
+    cameras = np.asarray(cameras)
+    if frame_ids is not None:
+        frame_ids = np.asarray(frame_ids)
+        if frame_ids.shape != (len(cameras),):
+            raise ValueError('海报观测帧索引维度无效')
+        return [np.flatnonzero(frame_ids == frame_id) for frame_id in np.unique(frame_ids)]
+    groups = []
+    start = 0
+    for index in range(1, len(cameras) + 1):
+        if index == len(cameras) or not np.allclose(cameras[index], cameras[start], rtol=0., atol=1e-12):
+            groups.append(np.arange(start, index, dtype=int))
+            start = index
+    return groups
+
+
+def residual_metrics(prediction, pixels, frame_ids=None, tag_ids=None):
+    """Summarize corner residuals while retaining sparse-frame diagnostics."""
+    errors = np.linalg.norm(np.asarray(prediction) - np.asarray(pixels), axis=2)
+    metrics = dict(rms_px=float(np.sqrt(np.mean(errors**2))),
+                   median_px=float(np.median(errors)),
+                   p95_px=float(np.percentile(errors, 95)))
+    if frame_ids is not None:
+        frame_ids = np.asarray(frame_ids)
+        if frame_ids.shape != (len(errors),):
+            raise ValueError('海报观测帧索引维度无效')
+        metrics['frame_rms_px'] = [
+            dict(frame=int(frame), observations=int(np.sum(frame_ids == frame)),
+                 rms_px=float(np.sqrt(np.mean(errors[frame_ids == frame] ** 2))))
+            for frame in np.unique(frame_ids)
+        ]
+    if tag_ids is not None:
+        tag_ids = np.asarray(tag_ids)
+        if tag_ids.shape != (len(errors),):
+            raise ValueError('海报观测 ID 维度无效')
+        metrics['id_rms_px'] = {
+            str(int(tag_id)): dict(observations=int(np.sum(tag_ids == tag_id)),
+                                   rms_px=float(np.sqrt(np.mean(errors[tag_ids == tag_id] ** 2))))
+            for tag_id in np.unique(tag_ids)
+        }
+    return metrics
+
+
+def estimate_board(cameras, points, pixels, model, maximum_rms, frame_ids=None, tag_ids=None,
+                   return_metrics=False):
+    """多帧固定轨迹上的共同海报初值；按唯一观测时刻选平面双解候选。"""
+    cameras = np.asarray(cameras)
+    points = np.asarray(points)
+    pixels = np.asarray(pixels)
+    if len(cameras) == 0 or len(points) != len(cameras) or len(pixels) != len(cameras):
+        raise ValueError('海报观测数量不一致或为空')
+    groups = _frame_groups(cameras, frame_ids)
     candidates = []
-    # 每个输入是一次 ID 观测；选择分散时刻，并联合该帧所有 ID。
-    frame_indices = np.unique(np.linspace(0, len(points)-1, min(3, len(points))).astype(int))
-    for index in frame_indices:
-        same_frame = np.all(cameras == cameras[index], axis=(1, 2))
+    # 每个输入是一次 ID 观测；选择分散的唯一时刻，并联合该时刻所有 ID。
+    group_indices = np.unique(np.linspace(0, len(groups)-1, min(3, len(groups))).astype(int))
+    for group_index in group_indices:
+        same_frame = groups[group_index]
         object_points = np.ascontiguousarray(points[same_frame].reshape(-1, 3))
         rays = model.unproject(pixels[same_frame].reshape(-1, 2))
         if not np.isfinite(rays).all() or np.any(rays[:, 2] < np.cos(np.deg2rad(85))):
@@ -72,7 +127,7 @@ def estimate_board(cameras, points, pixels, model, maximum_rms):
                 camera_board[:3, :3] = cv2.Rodrigues(rvec)[0]
                 camera_board[:3, 3] = tvec.ravel()
                 if np.all(transform(camera_board, object_points)[:, 2] > 0):
-                    candidates.append(cameras[index] @ camera_board)
+                    candidates.append(cameras[same_frame[0]] @ camera_board)
     if not candidates:
         raise PosterGeometryError('海报无有效正深度 PnP 初值（需要前向视野内角点）')
 
@@ -106,6 +161,12 @@ def estimate_board(cameras, points, pixels, model, maximum_rms):
         angle = Rotation.from_matrix(pose[:3, :3].T @ other[:3, :3]).magnitude()
         if other_rms <= rms+.1 and (angle > np.deg2rad(5) or np.linalg.norm(pose[:3, 3]-other[:3, 3]) > .05):
             raise PosterGeometryError('海报平面位姿存在无法区分的多解')
+    prediction, _ = project_observations(pose, cameras, points, model)
+    metrics = residual_metrics(prediction, pixels, frame_ids=frame_ids, tag_ids=tag_ids)
     if rms > maximum_rms:
-        raise PosterGeometryError(f'海报与固定地图轨迹不一致：角点 RMS {rms:.2f} px；检查海报移动、尺寸及标定')
-    return pose, rms
+        raise PosterGeometryError(
+            f'海报与固定地图轨迹不一致：角点 RMS {rms:.2f} px，'
+            f'median {metrics["median_px"]:.2f} px，P95 {metrics["p95_px"]:.2f} px；'
+            '检查海报移动、尺寸及标定',
+            metrics=metrics)
+    return (pose, rms, metrics) if return_metrics else (pose, rms)

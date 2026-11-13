@@ -54,6 +54,17 @@ class SolverLogTests(unittest.TestCase):
             converged=0, images=None, num_points=None, mean_reprojection_px=None, rms_reprojection_px=None,
             corners_per_frame=None))
 
+    def test_append_only_log_uses_the_latest_solver_invocation(self):
+        old = BASALT_LOG.replace('Image size: 2836', 'Image size: 10').replace('num_points 385850', 'num_points 100')
+        current = BASALT_LOG.replace('Image size: 2836', 'Image size: 20').replace('num_points 385850', 'num_points 200')
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'camera_imu.log'
+            log.write_text(old + '\n=== UMI_SOLVER_START camera_imu===\n' + current)
+            metrics = basalt.last_reprojection(log)
+        self.assertEqual(metrics['images'], 20)
+        self.assertEqual(metrics['num_points'], 200)
+        self.assertEqual(metrics['corners_per_frame'], 10.0)
+
     def test_rms_is_informational_and_mean_drives_the_threshold(self):
         parameters = config.load('calibration').values.checks
         metrics = dict(corners_per_frame=100., mean_reprojection_px=0.9, rms_reprojection_px=5.0)

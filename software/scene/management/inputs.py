@@ -15,6 +15,7 @@ from software.scene import layout
 from software.scene.configuration import SceneOverrides, apply_overrides
 from software.scene.management import camera_assets
 from software.scene.models import ARMS, Episode, Scene, SceneParameters, Session
+from software.scene.pipeline import map_epochs
 from software.scene.result_io import scene_map_identity
 from software.storage import read_yaml  # noqa: F401  其他模块经 inputs.read_yaml 使用
 
@@ -56,8 +57,8 @@ def validate_batch_name(value: str) -> str:
 
 
 def task_video_sources(task: Path) -> list[Path]:
-    """原片直接放在任务的左右手目录；旧 videos/ 仍可原地读取。"""
-    roots = [task / arm for arm in ARMS] + [task / 'videos']
+    """原片直接放在任务的左右手目录。"""
+    roots = [task / arm for arm in ARMS]
     return [path for path in roots if path.is_dir()]
 
 
@@ -65,7 +66,7 @@ def batch_task_directories(batch: Path) -> list[Path]:
     if not batch.is_dir():
         return []
     candidates = {task.name for task in batch.iterdir() if task.is_dir()}
-    records = batch / '.umi/tasks'
+    records = batch / layout.INTERNAL / 'tasks'
     if records.is_dir():
         candidates.update(task.name for task in records.iterdir() if task.is_dir())
     tasks = []
@@ -182,7 +183,7 @@ def read_devices(bindings: dict) -> dict[str, dict]:
     devices = {}
     for serial, binding in bindings.items():
         registry.validate_id(serial)
-        require_keys(binding, {'calibration', 'gripper', 'rear_calibration', 'intrinsics_source'}, {'calibration'}, '设备配置')
+        require_keys(binding, {'calibration', 'gripper', 'rear_calibration', 'intrinsics_source', 'rear_intrinsics_source'}, {'calibration'}, '设备配置')
         devices[serial] = {field: registry.validate_id(value) for field, value in binding.items() if field != 'gripper'}
         if 'gripper' in binding:
             devices[serial]['gripper'] = gripper_paths(binding['gripper'])
@@ -192,65 +193,33 @@ def read_devices(bindings: dict) -> dict[str, dict]:
 def scene_definition(scene_document: dict, name: str) -> dict:
     """在内存中补齐场景默认值，目录是场景身份的来源。"""
     version = scene_document.get('schema_version', 3)
-    if type(version) is not int or version not in (2, 3):
-        raise ValueError('场景配置需要 schema_version: 3；历史 schema 2 仍可读取')
-    if version == 3:
-        require_keys(scene_document, {'schema_version', 'mode', 'reference_arm', 'description', 'trajectory', 'parameters', 'tags'}, set(), 'scene')
-        normalized = dict(schema_version=3, name=validate_name(name), mode='shared_front', reference_arm='left',
-                          description='', trajectory={}, parameters={}, mapping={}, devices={})
-        normalized.update(scene_document)
-        for key in ('trajectory', 'parameters'):
-            if not isinstance(normalized[key], dict):
-                raise ValueError(f'scene.{key} 必须直接填写参数映射，不再引用覆盖文件')
-        if not isinstance(normalized['description'], str):
-            raise ValueError('场景 description 必须为字符串')
-        return normalized
-    # Read historical standalone-map definitions without creating new copies of them.
-    require_keys(scene_document, {'schema_version', 'name', 'mode', 'reference_arm', 'mapping', 'devices',
-                        'trajectory_config', 'parameters', 'description', 'tags'},
-                 {'schema_version'}, 'scene')
-    if type(scene_document['schema_version']) is not int or scene_document['schema_version'] != 2:
-        raise ValueError('场景清单需要 schema_version: 2')
-    if scene_document.get('name', name) != name:
-        raise ValueError('场景目录与配置名称不一致')
-    normalized = dict(schema_version=2, name=validate_name(name), mode='shared_front', mapping={}, devices={},
-                      description='', trajectory_config=None, parameters=None)
+    if type(version) is not int or version != 3:
+        raise ValueError('场景配置需要 schema_version: 3')
+    require_keys(scene_document, {'schema_version', 'mode', 'reference_arm', 'description', 'trajectory', 'parameters', 'tags'}, set(), 'scene')
+    normalized = dict(schema_version=3, name=validate_name(name), mode='shared_front', reference_arm='left',
+                      description='', trajectory={}, parameters={})
     normalized.update(scene_document)
-    if not isinstance(normalized['mapping'], dict) or not isinstance(normalized['devices'], dict):
-        raise ValueError('场景 mapping 和 devices 必须为映射')
-    reference = next((arm for arm in ARMS if arm in normalized['mapping']), 'left')
-    normalized.setdefault('reference_arm', reference)
+    for key in ('trajectory', 'parameters'):
+        if not isinstance(normalized[key], dict):
+            raise ValueError(f'scene.{key} 必须直接填写参数映射，不再引用覆盖文件')
     if not isinstance(normalized['description'], str):
         raise ValueError('场景 description 必须为字符串')
     return normalized
 
 
-def read_scene(path: Path, *, verify_mapping: bool = False, load_mapping: bool = True, overrides: SceneOverrides | None = None) -> Scene:
+def read_scene(path: Path, *, overrides: SceneOverrides | None = None) -> Scene:
     path = path.expanduser().resolve()
     if path.is_dir():
         path /= 'scene.yaml'
     if not path.parent.is_dir():
         raise ValueError(f'场景目录不存在：{path.parent}')
     scene_document = scene_definition(read_yaml(path) if path.is_file() else {}, path.parent.name)
-    if not load_mapping:
-        scene_document.update(mapping={}, devices={})
     if scene_document['mode'] not in ('shared_front', 'dual'):
         raise ValueError('场景 mode 必须为 shared_front 或 dual')
-    recording_paths, serials = read_recordings(path.parent, scene_document['mapping'], verify=verify_mapping) if scene_document.get('mapping') else ({}, {})
-    if recording_paths and scene_document['mode'] == 'dual' and set(recording_paths) != set(ARMS):
-        raise ValueError('dual 场景需要左右手两段建图录像；单相机验证可使用 shared_front')
-    if scene_document['reference_arm'] not in ARMS or (recording_paths and scene_document['reference_arm'] not in recording_paths):
-        raise ValueError('reference_arm 必须指向一段建图录像')
-    device_bindings = read_devices(scene_document['devices']) if scene_document['devices'] else {}
-    if set(serials.values()) - device_bindings.keys():
-        raise ValueError('建图录像设备未登记到场景 devices')
-    if scene_document['schema_version'] == 2:
-        optional = lambda name: resolve_path(path.parent, scene_document[name]) if scene_document.get(name) else None
-        trajectory_config = config.load('trajectory', optional('trajectory_config'))
-        parameters = load_scene_parameters(optional('parameters'))
-    else:
-        trajectory_config = config.load('trajectory', inline=scene_document['trajectory'])
-        parameters = load_scene_parameters(overrides=scene_document['parameters'])
+    if scene_document['reference_arm'] not in ARMS:
+        raise ValueError('reference_arm 必须为 left 或 right')
+    trajectory_config = config.load('trajectory', inline=scene_document['trajectory'])
+    parameters = load_scene_parameters(overrides=scene_document['parameters'])
     trajectory_config, parameters = apply_overrides(trajectory_config, parameters, overrides)
     tag_layout = None
     if 'tags' in scene_document:
@@ -260,8 +229,8 @@ def read_scene(path: Path, *, verify_mapping: bool = False, load_mapping: bool =
         load(tag_layout)  # 在创建运行目录或清理旧结果之前验证几何资产。
     if (parameters.tag_fusion_enabled or parameters.tag_mapping_enabled) and tag_layout is None:
         raise ValueError('启用海报融合或建图诊断需要 scene.yaml 的 tags.layout')
-    return Scene(path, validate_name(scene_document['name']), scene_document['mode'], scene_document['reference_arm'], recording_paths,
-                 camera_assets.rear_files(device_bindings), trajectory_config, parameters, device_bindings, serials, tag_layout, overrides)
+    return Scene(path, validate_name(scene_document['name']), scene_document['mode'], scene_document['reference_arm'], {},
+                 {}, trajectory_config, parameters, {}, {}, tag_layout, overrides)
 
 
 def read_arms(value: list | tuple, available=ARMS) -> tuple[str, ...]:
@@ -271,7 +240,7 @@ def read_arms(value: list | tuple, available=ARMS) -> tuple[str, ...]:
 
 
 def validate_kit(declaration: dict, *, name: str | None = None, intrinsics_source: str | None = None) -> dict:
-    """解析套件/快照，按来源固定完整版本；安装资产在选择相机时读取。
+    """套件按镜头来源解析当前参数；已固定的历史记录保留原绑定。
 
     来源优先级：调用方的 CLI/批次选择、套件、每手配置；多来源未指定时选 measured。
     旧单版本配置保留原绑定，显式来源仍在 select_camera 中核对，不能自动替换版本。
@@ -293,11 +262,21 @@ def validate_kit(declaration: dict, *, name: str | None = None, intrinsics_sourc
         calibration_source.validate(source)
     resolved = {}
     for arm, binding in arms.items():
-        require_keys(binding, {'serial', 'calibration', 'calibrations', 'gripper', 'rear_calibration', 'intrinsics_source'},
+        require_keys(binding, {'serial', 'calibration', 'calibrations', 'gripper', 'rear_calibration', 'intrinsics_source', 'rear_intrinsics_source', 'intrinsics'},
                      {'serial', 'gripper'}, '套件设备')
         selected = source or binding.get('intrinsics_source')
         profiles = binding.get('calibrations')
-        if profiles is not None:
+        if 'intrinsics' in binding or not ({'calibration', 'calibrations'} & binding.keys()):
+            if name is None:
+                raise ValueError('资产快照必须包含已解析的标定身份，不能重新选择当前参数')
+            if {'calibration', 'calibrations', 'rear_calibration', 'rear_intrinsics_source', 'intrinsics_source'} & binding.keys():
+                raise ValueError('intrinsics 不能与旧标定版本或来源字段混用')
+            lenses = binding.get('intrinsics', {})
+            require_keys(lenses, {'front', 'rear'}, set(), 'intrinsics')
+            for value in lenses.values(): calibration_source.validate(value)
+            camera = registry.current_camera(registry.validate_id(binding['serial']),
+                front=source or lenses.get('front', 'measured'), rear=source or lenses.get('rear', 'factory'))
+        elif profiles is not None:
             if 'calibration' in binding or 'rear_calibration' in binding:
                 raise ValueError('calibrations 与旧的 calibration/rear_calibration 不能混用')
             if not isinstance(profiles, dict) or not profiles or profiles.keys()-set(calibration_source.SOURCES):
@@ -342,14 +321,6 @@ def mapping_records(source: dict) -> dict:
     return {'left': source} if 'path' in source else source
 
 
-def write_batch_snapshot(path: Path, record: dict) -> None:
-    # Keep a retrievable copy when the selected source or map changes.
-    from software.storage import write_yaml
-    archive = layout.metadata(layout.owner(path), 'snapshots') / (artifact_identity.canonical_hash(record)+'.yaml')
-    if not archive.exists(): write_yaml(archive, record)
-    write_yaml(path, record)
-
-
 def read_batch(path: Path, *, verify_mapping=False, overrides: SceneOverrides | None = None) -> Session:
     path = layout.manifest(path, 'manifest.yaml')
     return batch_from_record(path, read_yaml(path), verify_mapping=verify_mapping, overrides=overrides)
@@ -367,14 +338,14 @@ def batch_from_record(path: Path, manifest_record: dict, *, verify_mapping=False
         raise ValueError('采集批次不能嵌套在另一个批次内')
     if 'scene' in manifest_record and resolve_path(root, manifest_record['scene']) != scene_path:
         raise ValueError('采集批次必须位于所属场景目录下')
-    scene = replace(read_scene(scene_path, load_mapping=False, overrides=overrides), batch_root=root)
+    scene = replace(read_scene(scene_path, overrides=overrides), batch_root=root)
     kit = validate_kit(manifest_record['kit'])
     source = mapping_records(manifest_record.get('mapping', {}))
     if source:
         read_arms(list(source))
         refs, devices = {}, {}
         for arm, item in source.items():
-            require_keys(item, {'serial', 'path', 'sha256', 'calibration', 'gripper', 'rear_calibration', 'intrinsics_source'},
+            require_keys(item, {'serial', 'path', 'sha256', 'calibration', 'gripper', 'rear_calibration', 'intrinsics_source', 'rear_intrinsics_source'},
                          {'serial', 'path', 'sha256'}, '批次建图录像')
             refs[arm] = {key: item[key] for key in ('serial', 'path', 'sha256')}
             binding = {key: value for key, value in item.items() if key not in ('serial', 'path', 'sha256')}
@@ -410,7 +381,20 @@ def read_synchronization(synchronization_record: dict | None, arms: tuple[str, .
     """任务视频时钟：t_episode = t_video + offset；首只手为零偏移参考。"""
     if synchronization_record is None:
         synchronization_record = dict(offsets_s={arm: 0. for arm in arms}, confirmed=False, note='')
-    require_keys(synchronization_record, {'offsets_s', 'confirmed', 'note'}, {'offsets_s', 'confirmed'}, 'synchronization')
+    # ``audio_auto`` is a request for the offline sync stage.  It deliberately
+    # carries placeholder offsets until that stage has applied the camera-mode
+    # A/V correction; zero here must never be interpreted as a confirmed sync.
+    mode = synchronization_record.get('mode')
+    allowed = {'offsets_s', 'confirmed', 'note', 'mode'}
+    required = {'confirmed'} if mode == 'audio_auto' else {'offsets_s', 'confirmed'}
+    require_keys(synchronization_record, allowed, required, 'synchronization')
+    if mode is not None and mode not in ('audio_auto', 'manual', 'assumed_simultaneous'):
+        raise ValueError('synchronization.mode 必须是 audio_auto、manual 或 assumed_simultaneous')
+    if mode == 'audio_auto' and len(arms) != 2:
+        raise ValueError('audio_auto 需要左右两路录像')
+    if mode == 'audio_auto' and 'offsets_s' not in synchronization_record:
+        synchronization_record = dict(synchronization_record,
+                                      offsets_s={arm: 0. for arm in arms})
     offsets = synchronization_record['offsets_s']
     if not isinstance(offsets, dict) or set(offsets) != set(arms):
         raise ValueError('synchronization.offsets_s 必须包含全部预期使用手')
@@ -418,14 +402,19 @@ def read_synchronization(synchronization_record: dict | None, arms: tuple[str, .
         raise ValueError('同步偏移必须为有限秒数')
     if offsets[arms[0]] != 0:
         raise ValueError(f'参考手 {arms[0]} 的同步偏移必须为零')
+    if mode == 'audio_auto' and any(float(value) != 0. for value in offsets.values()):
+        raise ValueError('audio_auto 不接受手工 offsets_s；原始音频偏移须经过 A/V 修正后才能使用')
     confirmed, note = synchronization_record['confirmed'], synchronization_record.get('note', '')
     if type(confirmed) is not bool or not isinstance(note, str):
         raise ValueError('同步 confirmed 必须为布尔值，note 必须为文本')
     if len(arms) == 1:
         return dict(method='single_camera', offsets_s={arms[0]: 0.}, confirmed=True, note=note)
+    if mode == 'audio_auto':
+        return dict(method='audio_auto', mode='audio_auto', offsets_s={arm: float(offsets[arm]) for arm in arms},
+                    confirmed=False, note=note)
     if confirmed and not note.strip():
         raise ValueError('确认双手同步时需要填写 note，说明核验依据')
-    method = 'manual' if confirmed or any(offsets.values()) else 'assumed_simultaneous'
+    method = 'manual' if mode == 'manual' or confirmed or any(offsets.values()) else 'assumed_simultaneous'
     return dict(method=method, offsets_s={arm: float(offsets[arm]) for arm in arms}, confirmed=confirmed, note=note)
 
 
@@ -433,13 +422,15 @@ def read_episode(path: Path, *, verify: bool = True, overrides: SceneOverrides |
     path = layout.manifest(path, 'episode.yaml')
     root = layout.owner(path)
     episode_document = read_yaml(path)
-    require_keys(episode_document, {'schema_version', 'session', 'recordings', 'expected_arms', 'instruction', 'synchronization'},
+    require_keys(episode_document, {'schema_version', 'session', 'recordings'},
                  {'schema_version', 'recordings'}, 'episode')
     if type(episode_document['schema_version']) is not int or episode_document['schema_version'] not in (4, 5):
         raise ValueError('任务清单需要 schema_version: 4 或 5')
-    if episode_document['schema_version'] == 4 and 'synchronization' in episode_document:
-        raise ValueError('配置同步请将任务 schema_version 更新为 5')
-    episode_document = dict(episode_document, **layout.task_configuration(root))
+    task_configuration = layout.task_configuration(root)
+    episode_document = dict(episode_document, **task_configuration)
+    map_version = task_configuration.get('map_version')
+    if map_version is not None:
+        registry.validate_id(map_version)
     session_path = layout.manifest(root.parent, 'manifest.yaml')
     if 'session' in episode_document and layout.manifest(resolve_path(root, episode_document['session']), 'manifest.yaml') != session_path:
         raise ValueError('任务必须直接位于所属采集批次目录下')
@@ -447,6 +438,19 @@ def read_episode(path: Path, *, verify: bool = True, overrides: SceneOverrides |
     if root.parent != session.root:
         raise ValueError('任务必须直接位于采集批次的 <任务>/ 目录')
     validate_episode_name(root.name)
+    map_selection = None
+    epoch_plan_path = layout.metadata(session.root, 'map_epochs.yaml')
+    if epoch_plan_path.is_file():
+        plan = map_epochs.read_plan(epoch_plan_path)
+        if root.name in plan.tasks:
+            map_selection = plan.select(root.name, override=map_version)
+            if map_version is None:
+                map_version = map_selection['map_version']
+    if map_selection is None and map_version is not None:
+        map_selection = dict(task=root.name, map_version=map_version,
+                             selection='explicit_task', reason='task_map_version')
+    if map_version is not None:
+        registry.validate_id(map_version)
     expected = read_arms(episode_document.get('expected_arms', session.expected_arms), session.expected_arms)
     recording_paths, serials = read_recordings(root, episode_document['recordings'], verify=verify)
     if set(serials.keys()) - set(expected):
@@ -457,7 +461,7 @@ def read_episode(path: Path, *, verify: bool = True, overrides: SceneOverrides |
         raise ValueError('instruction 必须为操作描述字符串')
     synchronization = read_synchronization(episode_document.get('synchronization'), expected)
     return Episode(path, session, recording_paths, serials, expected, episode_document['recordings'],
-                   episode_document.get('instruction', ''), synchronization)
+                   episode_document.get('instruction', ''), synchronization, map_version, map_selection)
 
 
 def recording_identity(path: Path) -> dict:
@@ -504,6 +508,7 @@ def episode_inputs(episode, cameras, map_manifest) -> dict:
     distances = {arm: dict(sha256=camera.asset_hashes['tag_distance'])
                  for arm, camera in cameras.items() if 'tag_distance' in camera.files}
     current_configuration = configuration_identity(episode.session.root)
+    epoch_plan = layout.metadata(episode.session.root, 'map_epochs.yaml')
     source_hashes = algorithm_identity()
     trajectory_hashes = artifact_identity.code_identity('trajectory')
     if any(source_hashes[name] != trajectory_hashes[name] for name in source_hashes.keys() & trajectory_hashes.keys()):
@@ -512,6 +517,7 @@ def episode_inputs(episode, cameras, map_manifest) -> dict:
     return dict(configuration=current_configuration, map_mode=map_manifest['mode'],
         scene_map_sha256=scene_map_identity(map_manifest), scene_assets=map_manifest['assets'],
         session_manifest_sha256=artifact_identity.file_hash(episode.session.path),
+        map_epoch_plan_sha256=artifact_identity.file_hash(epoch_plan) if epoch_plan.is_file() else None,
         episode_manifest_sha256=artifact_identity.file_hash(episode.path),
         task_configuration_sha256=layout.task_configuration_hash(episode.root),
         scene_manifest_sha256=artifact_identity.canonical_hash(scene_definition(

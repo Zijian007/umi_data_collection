@@ -38,10 +38,8 @@ class DatasetTests(unittest.TestCase):
         self.f = fixtures.SceneWorkflowTests()
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
-        data = inputs.read_yaml(self.f.episode_path)
-        data.update(schema_version=5, instruction='双手把盒子放入托盘', synchronization=dict(
-            offsets_s=dict(left=0., right=-.12), confirmed=True, note='共同事件，首尾已核验'))
-        write_yaml(self.f.episode_path, data)
+        write_yaml(self.f.task_root / 'task.yaml', dict(instruction='双手把盒子放入托盘', synchronization=dict(
+            offsets_s=dict(left=0., right=-.12), confirmed=True, note='共同事件，首尾已核验')))
         for recording in self.f.prepared_recordings.values():
             encode_video(recording.lens_video('front').path, len(recording.video_times_s))
         self.f.build_scene()
@@ -61,7 +59,7 @@ class DatasetTests(unittest.TestCase):
     def test_portable_package_uses_video_indices_and_flags_missing_gripper(self):
         before = self.f.episode_path.read_bytes()
         with redirect_stdout(io.StringIO()) as out:
-            code = cli.main(['export', '--format', 'training', str(self.f.session_path.parent), '--out', str(self.output), '--fps', '20'])
+            code = cli.main(['export', '--format', 'training', str(self.f.batch_root), '--out', str(self.output), '--fps', '20'])
         self.assertEqual(code, 0)
         self.assertFalse(json.loads(out.getvalue())['training_ready'])
         manifest = json.loads((self.output / 'manifest.json').read_text())
@@ -104,15 +102,15 @@ class DatasetTests(unittest.TestCase):
     def test_invalid_annotations_and_review_block_export(self):
         for change, message in ((dict(instruction='  '), 'instruction'),
                                 (dict(synchronization=dict(offsets_s=dict(left=0., right=0.), confirmed=False)), 'synchronization')):
-            original = inputs.read_yaml(self.f.episode_path)
+            original = inputs.read_yaml(self.f.task_root / 'task.yaml')
             data = dict(original, **change)
-            write_yaml(self.f.episode_path, data)
+            write_yaml(self.f.task_root / 'task.yaml', data)
             workflow.run_episode(self.f.episode_path)
             episodes.review(self.f.episode_path, accept=True, reviewer='test')
             with self.assertRaisesRegex(ValueError, message):
                 build([self.f.episode_path], self.output)
             self.assertFalse(self.output.exists())
-            write_yaml(self.f.episode_path, original)
+            write_yaml(self.f.task_root / 'task.yaml', original)
         workflow.run_episode(self.f.episode_path)
         with self.assertRaisesRegex(ValueError, '人工接收'):
             build([self.f.episode_path], self.output)
@@ -130,10 +128,11 @@ class DatasetTests(unittest.TestCase):
 
     def test_single_arm_keeps_its_identity_and_needs_no_intercamera_confirmation(self):
         data = inputs.read_yaml(self.f.episode_path)
-        data['expected_arms'] = ['right']
         data['recordings'].pop('left')
-        data['synchronization'] = dict(offsets_s=dict(right=0.), confirmed=False)
         write_yaml(self.f.episode_path, data)
+        configuration = inputs.read_yaml(self.f.task_root / 'task.yaml')
+        configuration.update(expected_arms=['right'], synchronization=dict(offsets_s=dict(right=0.), confirmed=False))
+        write_yaml(self.f.task_root / 'task.yaml', configuration)
         workflow.run_episode(self.f.episode_path)
         episodes.review(self.f.episode_path, accept=True, reviewer='test')
         build([self.f.episode_path], self.output, fps=20.)

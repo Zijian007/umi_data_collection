@@ -5,7 +5,8 @@
 #   ./umi-view --help
 #   ./umi-view --show-config
 # 启动选项只在命令行设置，不读取算法 YAML；统一说明见 config/README.md。
-# 详细操作见 docs/结果查看与验收.md；参数由 software/viewer/server.py 解析。
+# 完整参数见 docs/命令行参数.md；操作见 docs/结果查看与验收.md。
+# 参数由 software/viewer/server.py 解析。
 # UMI_VIEW_PYTHON 覆盖解释器；UMI_DEPS 覆盖依赖目录。
 set -euo pipefail
 

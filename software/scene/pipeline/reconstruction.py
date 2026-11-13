@@ -16,32 +16,21 @@ from software.camera.timing import video_to_imu_seconds
 from software.scene import layout
 from software.scene.management import camera_assets
 from software.scene.management import inputs
-from software.scene.map_cache import source_identity
+from software.scene.map_cache import MapBuildCache, source_identity
 from software.scene.models import FusedTrajectory, CalibratedCamera, Episode, PreparedRecording
 from software.scene.pipeline import diagnostics, recordings
 from software.scene.spatial import fusion, slam
 from software.scene.spatial.geometry import VisualObservations
-from software.storage import write_json
+from software.storage import mark_used, write_json
 
 
-def prepare_cached(episode, arm, camera, scene, cores):
-    key = artifact_identity.canonical_hash(dict(recording=episode.recording_refs[arm]['sha256'], camera=camera_assets.camera_identity(camera),
-        video=asdict(scene.trajectory.values.video), orb=asdict(scene.trajectory.values.orb),
-        code=source_identity('prepare')))[:20]
-    cache_dir = layout.metadata(episode.root, 'cache/prepare') / key
-    cache_manifest_path = cache_dir / 'ready.json'
-    if cache_manifest_path.exists():
-        inputs.validate_assets(cache_dir, json.loads(cache_manifest_path.read_text())['assets'])
-    prepared_recording = recordings.prepare_recording(episode.recordings[arm], camera, scene, cache_dir, cores=cores, reuse=cache_manifest_path.exists())
-    if not cache_manifest_path.exists():
-        # 只缓存可重建的时间戳/IMU/镜头视频；本次参数和设置由 prepare 重新生成。
-        assets = inputs.artifact_hashes(cache_dir, ('debug/dataset', 'debug/lens_videos'))
-        if assets:
-            write_json(cache_manifest_path, dict(assets=assets))
-    return prepared_recording
+def prepare_cached(episode, arm, camera, scene, cores, *, work_dir: Path, cache_audit=None):
+    """与建图共用阶段缓存；本次设置和日志写在运行工作目录，缓存只存解码产物。"""
+    cache = MapBuildCache(layout.metadata(episode.root, 'cache'), artifact_identity.engine_identity('trajectory'), audit=cache_audit)
+    return recordings.prepare_recording(episode.recordings[arm], camera, scene, work_dir / arm, cores=cores, cache=cache)
 
 
-def localize_cached(episode, arm, recording, lens, map_archive, map_index, map_manifest, *, diagnostic_path=None):
+def localize_cached(episode, arm, recording, lens, map_archive, map_index, map_manifest, *, diagnostic_path=None, cache_audit=None):
     from software.scene.spatial import relocalization
     metric_scale = map_manifest['maps'][episode.scene.role(arm, lens)]['placement']['scale']
     key = artifact_identity.canonical_hash(dict(recording=episode.recording_refs[arm]['sha256'], lens=lens,
@@ -53,10 +42,16 @@ def localize_cached(episode, arm, recording, lens, map_archive, map_index, map_m
     cache_manifest_path = cache_dir / 'ready.json'
     if cache_manifest_path.exists():
         inputs.validate_assets(cache_dir, json.loads(cache_manifest_path.read_text())['assets'])
+        mark_used(cache_dir)
         with np.load(cache_dir / 'observations.npz') as cached_observations:
             visual_observations = VisualObservations(cached_observations['times'], cached_observations['poses'], cached_observations['indices'], 'visual_map')
+        if cache_audit is not None:
+            cache_audit.record(stage='localize', key=key, path=str(cache_dir), status='reused',
+                               reason='ready.json 资产哈希校验通过')
     else:
-        attempt_dir = cache_dir / uuid.uuid4().hex
+        # 定位引擎的工作目录放在条目外，缓存条目只含 ready.json 列出的文件。失败时保留
+        # 供错误信息中的日志路径排查；以点开头，下次成功处理后由自动清理删除。
+        attempt_dir = cache_dir.with_name(f'.{key}-{uuid.uuid4().hex}')
         visual_observations = slam.localize_with_recovery(recording, lens, map_archive, map_index, attempt_dir,
                                                          metric_scale, episode.scene.parameters)
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -64,15 +59,22 @@ def localize_cached(episode, arm, recording, lens, map_archive, map_index, map_m
         shutil.copyfile(attempt_dir / 'recovery.json', cache_dir / 'recovery.json')
         write_json(cache_manifest_path, dict(assets={name: artifact_identity.file_hash(cache_dir / name)
                                                     for name in ('observations.npz', 'recovery.json')}))
+        shutil.rmtree(attempt_dir)
+        if cache_audit is not None:
+            cache_audit.record(stage='localize', key=key, path=str(cache_dir), status='computed',
+                               reason='未命中定位缓存，完成定位并发布缓存')
     if diagnostic_path is not None:
         write_json(diagnostic_path, json.loads((cache_dir / 'recovery.json').read_text()))
     return visual_observations
 
 
 def prepare_episode_recordings(episode: Episode, cameras: dict[str, CalibratedCamera],
-                               video_offsets_s: dict[str, float], *, cores: str = '') -> dict[str, PreparedRecording]:
+                               video_offsets_s: dict[str, float], *, work_dir: Path, cores: str = '',
+                               arm_cores: dict[str, str] | None = None, cache_audit=None) -> dict[str, PreparedRecording]:
     """准备各手录像并检查共同时间区间；不估计跨相机时间偏移。"""
-    prepared = {arm: prepare_cached(episode, arm, cameras[arm], episode.scene, cores)
+    prepared = {arm: prepare_cached(episode, arm, cameras[arm], episode.scene,
+                                   arm_cores[arm] if arm_cores else cores, work_dir=work_dir,
+                                   cache_audit=cache_audit)
                 for arm in episode.recordings}
     start = max(recording.video_times_s[0] + video_offsets_s[arm] for arm, recording in prepared.items())
     end = min(recording.video_times_s[-1] + video_offsets_s[arm] for arm, recording in prepared.items())
@@ -83,7 +85,7 @@ def prepare_episode_recordings(episode: Episode, cameras: dict[str, CalibratedCa
 
 def reconstruct_arm_in_scene(episode: Episode, arm: str, recording: PreparedRecording,
                              map_dir: Path, map_manifest: dict,
-                             *, diagnostic_dir: Path | None = None) -> FusedTrajectory:
+                             *, diagnostic_dir: Path | None = None, cache_audit=None) -> FusedTrajectory:
     """在已固定的场景系内求单手 T_reference_imu；不重新建图或重置原点。
 
     每个镜头先定位于自己的视觉地图，再用建图时冻结的尺度和刚体变换
@@ -96,7 +98,8 @@ def reconstruct_arm_in_scene(episode: Episode, arm: str, recording: PreparedReco
     for lens in scene.localization_lenses(arm):
         item = map_manifest['maps'][scene.role(arm, lens)]
         visual = localize_cached(episode, arm, recording, lens, map_dir / item['archive'], item['index'], map_manifest,
-                                 diagnostic_path=diagnostic_dir / f'localization_{lens}.json' if diagnostic_dir else None)
+                                 diagnostic_path=diagnostic_dir / f'localization_{lens}.json' if diagnostic_dir else None,
+                                 cache_audit=cache_audit)
         observations[lens] = visual.placed(item['placement'], reference_frame='scene')
     T_cam_imu = {lens: np.linalg.inv(imu_from_camera(measured)) for lens, measured in camera.measurements.items()}
     imu_times = video_to_imu_seconds(recording.video_times_s, camera.measurements['front']['cam_time_offset_ns'])

@@ -974,3 +974,114 @@ map_root 随批次解析，建图复用仅查询当前批次；显式 map_versio
 清理可重建的旧全局地图缓存 **1,172,208,997 字节（约 1.09 GiB）**；保留任务阶段缓存、历史地图、成功结果和中断诊断。之后需要重建地图时按批次重新生成缓存。
 
 日志：/tmp/umi-batch-final-focused.log、/tmp/umi-batch-final-all.log；迁移保全快照 /tmp/umi-batch-storage-before.json；验证报告 /tmp/umi-batch-storage-verified.json；实际只读入口检查 /tmp/umi-batch-storage-status.json、/tmp/umi-batch-storage-config.json。
+
+
+## 2026-11-12：退役旧场景布局与 schema 2 输入
+
+将共享场景主夹具与复用它的流程测试改为批次 `.umi/manifest.yaml`、`.umi/tasks/<任务>/episode.yaml` 和外层 `task.yaml`；夹具显式区分原片目录与内部清单目录。建图原片及测量固定在批次 mapping 和 kit，场景参数改用 schema 3 内联配置，双手同步、指令、使用手的回归继续覆盖处理、复用、验收和训练导出。
+
+删除旧清单位置、外层 manifest.yaml 批次识别、旧状态与运行目录回退、episode.yaml 人工字段合并与重新登记时的提取。人工字段出现在 episode.yaml 时明确拒绝；新批次也拒绝旧 videos/ 及混合目录，原片发现只遍历 left/right。场景 schema 2 与不经批次的 build_scene 入口退役；独立引擎结果、历史 episode.json、设备不可变标定包及当前布局下的批次/任务 schema 4 协议继续读取。移除工厂内参流程测试中未使用的 source 构造和未使用包装函数。操作指南及清理遗留事项同步更新。
+
+验证：清理前 `./test.sh --all` 的 769 项 Python 测试、查看器前端及 CLI 自检通过。迁移后补充旧清单、状态、运行路径、人工字段与场景建图入口拒绝回归；最后一轮相关测试 55 项通过（15.129 秒）。
+
+真实运行 `./umi-scene run scenes/test_shelf/20261109_002 --json`，使用批次当前配置完成新地图建图、原片定位、融合、标签中心距测量和结果发布，状态 ok；地图版本 `20261112_161509-296e7735`，任务区间 0～11.044366667 秒。重复运行状态 skipped 并复用同一地图；发布结果的 9 项资产校验通过，查看器成功加载 332 帧。结果未人工验收，运行成功不代表已完成独立精度评估；历史地图与运行记录保留。
+
+日志：`/tmp/umi-cleanup-baseline.log`、`/tmp/umi-cleanup-last-focused.log`、`/tmp/umi-cleanup-final-all.log`、`/tmp/umi-cleanup-real.log`、`/tmp/umi-cleanup-real-reuse.log`。
+
+最终验证：`./test.sh --all` 全部通过，Python **774 项（165.945 秒）**、查看器前端测试、标定与场景 CLI 自检和 KB4 C++ 数值回归均通过；`git diff --check` 通过。
+
+
+## 2026-11-12：合并任务原片的三类检测解码
+
+新增 `vision.decoding.VideoDecode`，一次顺序解码向像素宽度、采样标签中心距与环境海报检测器交付原始帧。场景同一只手配置至少两类检测时，在重建前填充各自缓存，后续融合和测量复用；单类检测保留原入口。命中的检测器不参与扫描，全命中不打开原片。各消费者完成校验后才开始保存缓存，解码或检测完整性校验失败不会发布本轮检测缓存。
+
+保留各自 ROI、逐源帧/最近 PTS/源帧号采样、独立检测状态和缓存身份。中心距最近 PTS 等距取前帧，范围外及超出半帧容差仍缺失；有界补检的关键帧定位、优先级和质量门限不变。ffmpeg 镜头视频生成和按需补检仍分别解码，本次仅合并三类检测的首次扫描。
+
+真实原片 `scenes/test_shelf/20261109_002/take_001/left/VID_20261110_181810_00_049.insv`：664 个源帧、332 个查询时刻。修改前独立检测耗时：宽度 40.518 秒、中心距快速扫描 17.924 秒、海报 24.911 秒，合计 **83.353 秒**；合并后 **51.771 秒**，仅打开解码器一次，减少约 **37.9%**。三份压缩 `.npz` 与修改前逐字节一致，数组类型、形状与原始字节亦一致。这是本机单段录像、三类检测首次执行的对比，不代表整条重建流程的加速比例。
+
+新增 7 项回归覆盖共享/独立输出一致、全缓存命中、海报参数或查询时间变化时的独立失效、最近 PTS 边界、解码/完整性校验失败不发布，以及场景准备后消费者无须再次解码。已有相关 104 项回归通过。首轮全量仅新增 PTS 测试失败：Matroska 将时间戳取整到毫秒，使 17 ms 间隔中点超出既有半帧容差；将测试中点改为 16 ms 间隔后通过，未修改生产选帧容差。
+
+对比脚本、原实现副本与结果：`/tmp/umi-shared-decode/{baseline,before,after}`、`baseline_run.py`、`compare_run.py`；对比报告 `after/comparison.json`。测试日志：`focused.log`、`shared-tests-final.log`、`all.log`（首轮夹具失败）、`all-final.log`。以上临时路径均位于 `/tmp/umi-shared-decode/`。
+
+真实场景 `./umi-scene run scenes/test_shelf/20261109_002 --json` 成功，发布地图 `20261112_163931-09b580cd` 和运行 `15dfa2840760458a9def7216806836b8`；重复运行返回 skipped。该批次仅配置中心距，本次实跑验证单类检测入口与完整流程；三类共享路径由上述真实原片对比和场景缓存集成测试验证。新结果 9 项资产校验通过，查看器加载 332 帧及对应地图，中心距有效 257/332 帧（77.4%）、最长连续缺失 15 帧。日志与校验报告：`scene-real.log`、`scene-reuse.log`、`scene-validation.json`，均位于 `/tmp/umi-shared-decode/`。
+
+最终验证：`./test.sh --all` 全部通过，Python **781 项（167.186 秒）**、查看器前端测试、标定与场景 CLI 自检及 KB4 C++ 数值回归通过；`git diff --check` 通过。
+
+
+## 2026-11-12：清理清单收尾与批次、双手调度优化
+
+按用户“继续，都做干净”的要求完成剩余代码项；用户明确选择批次发现原片问题时整批停止。`processing.run()` 对入库错误、待配对/待补齐和忽略原片立即结束该批次的处理规划；显式任务入口沿用相同规则，其他批次仍可处理。已登记清单和旧成果保留供修正后续跑。
+
+`run_episodes()` 为每批创建独立 `BatchMap`，首次合格任务在锁内构建/校验地图并缓存绑定或失败，后续任务复用，不反复构建、读取地图资产。每个任务仍选择自身标定并与地图核对；复用前检查固定地图、批次/场景/套件配置、建图原片的文件系统身份；发布前核对地图和建图原片，地图引擎变化也拒绝。已开始任务继续使用冻结配置，外部配置修改只阻止后续任务复用。地图构建收到原先遗漏的 `cores` 参数。不同批次锁互不依赖，缓存只存在于本次运行。
+
+`--jobs 1` 且双手可用 CPU 至少 8 个时拆分子进程核心集合，并行定位、融合、测量和各手结果写入；单手、核心不足或多任务并发时串行。单手独立回退语义保留。主线程等待所有工作线程退出，双手全部成功才合并并发布；失败时先等待再归档现场，旧成功入口不变。数值夹具验证串行与并行的两手 trajectory.csv 和 bimanual.csv 逐字节一致，并用同步屏障验证确有执行重叠；不据此宣称真实双手耗时改善。
+
+`source_hash()` 对 Python 无位置信息的 AST 求版本化 SHA256，去掉模块/类/函数文档字符串并忽略注释及排版，覆盖完整算法、地图阶段、宽度/中心距/海报及标定准备/板检测的缓存身份。按源码字节缓存 AST 解析，源码变化即时生效。资产仍用原始字节 SHA256；算法不得依赖源码行号或文档字符串作数值输入。旧指纹首次重新计算，不删除旧地图或结果。
+
+删除批次快照归档写入及无用包装函数；批次只维护当前 manifest，已有成果中的输入和设备副本继续完整保存。确认全仓无归档读取者后，将 scenes 下 26 份旧 snapshots（20,968 字节）移至 `/tmp/umi-clean-final-snapshots/`，保留 inventory.json 并逐文件验证哈希。真实原片、历史地图与运行资产没有删除。rear 工厂推导读取 front 字节一次，同时解析和计算身份，成果导出核对已验收的资产哈希及结果清单哈希；安装/冻结后的副本完整性校验仍保留。
+
+现行用户指南、模块文档、维护说明和清理清单同步更新。训练开合通道缺少实物宽度标定已移至当前待办，中心距不冒充开口；独立结果读取、历史标定包及仍有引用的夹具/PDF 保留并说明用途。
+
+验证期间发现并处理两类测试假设：原测距失败夹具按“第二次调用”指定右手，改为按原片身份定位，允许并发执行顺序变化；新增第二任务夹具补齐外层任务目录。首轮全量 791 项中已有“运行中修改配置仍使用冻结副本”回归暴露新批次检查过严，修正为只在后续绑定前检查外部配置，当前任务发布时仍核对原片与固定地图。针对冻结配置、并行调度、成果导出和标定检测的 33 项回归通过。审查补齐 `vision/decoding.py` 在建图缓存中的依赖，防止海报解码改动后复用旧地图。
+
+首轮修正后的完整检查通过：`./test.sh --all` Python 792 项（172.364 秒）、查看器前端、标定/场景 CLI 自检及 KB4 C++ 数值回归全部通过，日志 `/tmp/umi-clean-complete-all.log`。最后补充建图解码依赖后再次执行完整检查及真实批次回归，最终记录见下。
+
+最终收尾验证：补齐建图解码依赖后，`./test.sh --all` Python **792 项（171.789 秒）**、查看器前端、标定与场景 CLI 自检及 KB4 C++ 数值回归通过；`git diff --check` 通过。真实 `test_shelf/20261109_002` 重新运行成功，地图 `20261112_185204-1060af12`、运行目录 `e360cd2de9f846c2a6d0b4ea21c2cec8`，重复运行返回 `skipped`。结果 9 项资产校验通过，查看器加载 332 帧并成功加载地图；`/tmp/umi-clean-verified-validation.json`。无 `.umi/snapshots/` 目录。
+
+
+## 2026-11-12：补齐三个入口的命令行参数参考
+
+新增 `docs/命令行参数.md`，覆盖查看器与场景/标定的全部 21 个子命令，列明位置参数、必填项、默认值、取值范围、互斥关系、输出位置和启动环境变量。统一说明配置预览与输入检查、各命令的 force 行为、训练导出的参数作用域、标定来源和资源预算。根 README、文档导航、操作指南、配置说明、模块 README、启动脚本注释和顶层帮助均链接到该参考页。
+
+按实际实现修正帮助文本：批次内部清单路径和 scene.yaml 输入、双手并行的 CPU 条件、skip-preflight 保留批次入库检查、训练格式与 with-video 冲突、宽度诊断拒绝覆盖和数值范围、标定 workers 默认预算、resume/force 互斥。设备升级 dry-run 实际会使用临时目录，改为明确不写设备档案。此次修改集中在帮助与文档。
+
+验证：实际调用三个启动脚本的顶层及全部子命令 `--help`，共 **24 条命令**退出码为 0；对照 argparse 确认所有公开选项有帮助并出现在各程序参考章节，核对 **21 处**相关本地链接与章节锚点。`./test.sh --unit test_effective_configuration test_mapping_cli test_calibration_directory test_calibration_execution test_calibration_inventory test_calibration_workflow` 的 **79 项测试通过（4.392 秒）**；`./test.sh --checks` 标定/场景 CLI 自检和 KB4 C++ 回归通过，启动脚本 Shell 语法与 `git diff --check` 通过。本轮未重新执行真实标定或轨迹重建。
+
+检查脚本与记录：`/tmp/umi-cli-reference-audit.py`、`/tmp/umi-cli-reference-audit.json`、`/tmp/umi-cli-reference-help.log`、`/tmp/umi-cli-reference-tests.log`、`/tmp/umi-cli-reference-checks.log`。
+
+
+## 2026-11-12：按镜头选择当前参数，简化套件标定配置
+
+套件新增 `intrinsics.front/rear: measured|factory`，默认 front measured、rear factory；用户不再填写标定版本号。读取当前套件时解析为固定参数身份，读取批次/结果快照时保留已冻结的身份，不重新查询当前选择。旧的固定版本套件仍可读取供项目迁移，新旧字段不能混用。
+
+工作镜头按来源维护当前完整参数；环境镜头安装在 registry 锁内发布资产并更新该来源的当前选择。安装一类参数保留另一镜头和来源的选择；工作镜头安装状态也按来源检查，安装 factory 不把仍有效的 measured 报成未启用。前后镜头可以选择不同来源；同一相机的建图与任务仍核对来源、参数哈希和完整身份，不要求不同相机使用同一来源。显式固定地图也提前核对已登记 rear 的参数哈希。
+
+rear measured 缺少当前参数时拒绝；rear factory 优先使用当前已独立验收的整包，未登记时使用既有原片工厂几何与 front B 推导，继续标明 NOT_EVALUATED。当前参数损坏或身份/来源错误不允许退回推导。设备查询默认只显示每个镜头、每种来源的一份当前参数；历史资产在按旧绑定读取时继续校验，未删除原片、旧测量或历史结果。手动 upgrade-device / activate-calibration 命令及无调用的实现已移除；安装自动更新当前选择。
+
+迁移 kit_001、kit_002 为 front measured / rear factory。6 个 test_shelf 批次移除重复的统一 measured 声明，由 kit 指定各镜头来源；迁移前声明备份在 `/tmp/umi-current-calibration-batches-before.json`。首次真实检查发现旧批次的统一 measured 会覆盖新的 rear factory，补齐批次迁移后实跑成功。kit、场景、标定、命令行、配置和开发文档均同步更新。
+
+新增 13 项回归覆盖当前参数自动更新、安装期间配置变化拒绝、历史批次冻结、每镜头/来源单一当前选择、损坏当前参数不兜底、历史损坏不影响当前查询、混合镜头来源、rear 独立验收边界、各来源安装状态、地图参数匹配和已退役命令。旧手动升级/激活专用测试随入口退役；相关 99 项回归通过。最终 `./test.sh --all` **804 项 Python 测试通过（177.628 秒）**，查看器前端、标定/场景 CLI 自检和 KB4 C++ 回归通过。全部 **22 条**顶层/子命令帮助和相关参数文档链接检查通过；`git diff --check` 通过。
+
+真实 `test_shelf/20261109_002` 成功发布地图 `20261112_200536-ace281be`；重复运行返回 skipped。结果 9 项资产哈希通过，查看器加载 332 帧与地图。本轮未执行新相机实物标定，当前设备仍无独立 rear 验收参数。日志 `/tmp/umi-current-calibration-all.log`、`/tmp/umi-current-lens-tests.log`、`/tmp/umi-current-calibration-real.log`、`/tmp/umi-current-calibration-reuse.log`；参数与结果核对 `/tmp/umi-current-calibration-inventory.json`、`/tmp/umi-current-calibration-config.json`、`/tmp/umi-current-calibration-validation.json`。
+
+
+## 2026-11-12：运行、查看器和夹爪检测默认值集中化
+
+- 新增 `config/runtime.yaml`、`viewer.yaml`、`tag_detection.yaml`，由 `software/settings.py` 严格校验与进程内冻结。可选同名 `.local.yaml` 已忽略；优先级为项目默认 → 本机覆盖 → 既有环境变量 → CLI。算法 `--config` 含义保持不变。
+- 运行配置接入共享/采样解码、场景 OpenCV、标定 worker/预留核/bag 线程、双手并行阈值、SLAM 和地图导出超时。`--show-config` 补充逐项来源、CPU affinity 与实际线程预算。场景/标定主流程输出精简资源摘要；宽度诊断保持原有 CSV/stdout 与 JSON/stderr 契约。
+- 查看器端口默认 9092；预览/画面编码、并发、排队、内存缓存与超时集中配置，资源延迟创建且并发首次请求只创建一组工作资源。画质/尺寸影响对应缓存身份，线程/超时不影响；画面 URL 同时包含画质身份。地图显示预算仅抽样响应，不改写已发布资产。
+- 夹爪搜索间隔、候选数和补检批量进入原始检测与最终任务结果身份；运行预算不进入数值缓存身份。X3 图像约定、标签字典、低层 ArUco 阈值及内部流水线策略仍由代码管理。
+- 全量 `./test.sh --all`：814 项 Python 测试（176.358 秒）、前端测试、CLI 环境检查、KB4 C++ 回归全部通过；日志 `/tmp/umi-settings-all.log`。新增 10 项配置/冻结/资源/缓存边界测试。最后的查看器配置展示补充另经相关模块复验，日志 `/tmp/umi-settings-final-focused.log`。
+- 22 个 CLI 帮助入口及参数文档/链接审计通过，记录 `/tmp/umi-cli-reference-audit.json`。
+- 真实批次 `scenes/test_shelf/20261109_002` 处理成功，地图 `20261112_205556-d6f6b37f`，任务运行 `b06319dbe0934ee2b84da35b31fd3ece`。9 项发布资产哈希通过，查看器读取 332 帧；地图 5259 点，显示预算降为 1000 时返回 877 点，发布地图哈希保持不变。JPEG 首帧和 WebM 预览有效，重复预览未改写缓存。
+- 默认重复运行与将解码/OpenCV 线程改为 2、SLAM 基础超时改为 600 秒后的运行均为 `skipped`，结果指针不变。验证记录 `/tmp/umi-settings-validation.json`，处理和复用日志 `/tmp/umi-settings-real.log`、`/tmp/umi-settings-reuse.log`、`/tmp/umi-settings-runtime-reuse.log`。
+
+## 2026-11-13：批次 .umi 去冗余与自动清理
+
+- 录像准备缓存键只含原片、视频参数、镜头列表、解码代码（`map_cache.DECODE_SOURCES`）和 ffmpeg/ffprobe/numpy；去掉 `registry.py`、标定代码、相机身份与 ORB 参数。此前改这些文件会让同一原片重新解码，`20261109_008` 中建图与任务预处理各有一组逐字节相同的副本（约 360 MB）。任务预处理改用与建图相同的 `MapBuildCache.stage`，键统一为完整 SHA256；只读产物以硬链接放入运行期 `work/` 并设为只读，结束即删，结果 `front.mp4` 与缓存共享 inode。建图、视觉、定位阶段的代码依赖集合保持不变。
+- 新增 `scene/management/cleanup.py`：任务结束后只保留 results / local_results 指向的运行、最近一次尝试和验收运行；成功计算后删除本次未命中的缓存条目（命中时 `storage.mark_used` 刷新目录时间）；建图成功后同样清理建图缓存；批次处理结束后删除未被 manifest.yaml 或保留运行引用的地图版本，最新一次建图保留。新增 `umi-scene clean [--cache] [--dry-run]` 对已有数据执行同一规则。被取代的历史运行不再保留，相关测试改为断言其被删除。
+- 删除 `maps/current.json`：当前地图只记录在批次 `manifest.yaml` 的 `map`；`_build_scene` 按新到旧扫描已有版本复用，绑定仍由 `build_scene` / `bind_map` 写入清单。`inspect` 改为接受批次目录（此前传场景或批次目录均无法读取）。
+- 真实批次 `20261109_008`：首次运行因建图代码指纹变化重建地图（`20261113_160741-f27b5ae9`），`.umi` 由 919 MB 降至 461 MB，各缓存与运行目录各剩一项；再次运行 2 秒全部复用、目录不变；`--force` 重算 11 秒，录像准备命中缓存、缓存条目保持不变、仅删除被取代的运行。
+
+## 2026-11-13：批次内部目录 .umi/ 更名为 .pipeline/
+
+- 原名看不出职责，且与 `results` 的关系不清。新名表示“生产过程的内部记录”，与作为交付入口的 `take_*/results` 对应：`results` 是唯一需要查看的结果，`.pipeline/` 由程序维护。上一条记录中的 `.umi` 即本目录。
+- 名称只在 `layout.INTERNAL` 定义；查看器、批次发现、地图导入等原先写死 `'.umi'` 的路径改为引用该常量。测试、用户文档与 `.gitignore` 同步更新；历史记录保持原文。
+- 现有 8 个批次用一次性脚本迁移（未入库）：持锁改名，改写 `state.json` 的 `attempt.run` / `review.run` 与 `results` 软链接，`import.json` 路径同步。运行产物中的绝对路径只作追溯且计入资产哈希，未改写。迁移前后任务状态一致，5 份结果资产哈希与查看器读取通过。改名改变了建图代码指纹，`20261109_008` 重跑生成新版本 `20261113_162624-b4b6434e`，各阶段均命中缓存，耗时 52 秒。
+
+## 2026-11-13：.pipeline 内两处残留
+
+- 地图版本 `devices/` 只冻结建图依赖的 `front`、`front_manifest`、`rear`、`mask`（`map_cache.MAP_CAMERA_ASSETS`，与地图相机身份共用）；TCP、宽度和标签测距不再复制进地图。任务运行仍冻结全部资产。
+- 任务定位缓存的引擎工作目录移出条目（`.<键>-<uuid>`），成功后删除；失败时保留供错误信息中的日志排查，下次成功处理由自动清理删除。缓存条目只含 `ready.json` 列出的文件。
+- 修正自动清理选择“最新一次建图”的规则：版本名为秒级时间加随机后缀，同秒版本此前可能按后缀误判，现按时间前缀再按目录修改时间排序。
+- 全量 830 项测试无新增失败；`20261109_008` 实跑通过，地图 `20261113_163707-c4f953d6` 的设备目录与定位缓存条目符合上述结构。

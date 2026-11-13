@@ -27,7 +27,7 @@ class MapRetryTests(unittest.TestCase):
     def test_identical_rejection_stops_after_two_attempts_and_preserves_published_map(self):
         fixture = self.fixture
         fixture.build_scene()
-        pointer = fixture.scene.map_root / 'current.json'
+        pointer = fixture.session_path  # 当前地图只绑定在批次清单
         previous = pointer.read_bytes()
         with patch.object(slam, 'build', side_effect=fixture.build) as build, \
                 patch.object(mapping, 'metric_alignment', side_effect=ValueError('固定尺度不一致')):

@@ -51,6 +51,7 @@ class RearCalibrationTests(unittest.TestCase):
                     board_pose_fraction=1., board_distance_m=[.2, .5])
 
     def prepare(self, video, camera, *args, **kwargs):
+        self.assertEqual(set(camera.measurements), {'front', 'rear'})
         self.assertAlmostEqual(args[0].trajectory.values.orb.initial_tag_size_m, self.inputs.grid['tagSize'])
         self.assertFalse(args[0].parameters.tag_fusion_enabled)
         self.assertFalse(args[0].parameters.tag_mapping_enabled)
@@ -119,15 +120,15 @@ class RearCalibrationTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot['values']['orb']['initial_tag_size_m'], .0357)
 
     def test_rear_auto_install_uses_rear_measurement_after_acceptance(self):
-        with patch.object(workflow.devices, 'install_rear', return_value=0) as install_rear, \
+        with patch.object(workflow.devices, 'install', return_value=0) as install, \
              patch.object(workflow.devices, 'install_bundle') as install_front:
             result, output = self.run_rear(1., install=True)
         self.assertEqual(result['exit_code'], 0)
-        install_rear.assert_called_once_with(output/'rear_calibration.json')
+        install.assert_called_once_with(output, force=False, camera_serial=self.front.serial)
         install_front.assert_not_called()
 
     def test_failed_rear_validation_does_not_install(self):
-        with patch.object(workflow.devices, 'install_rear') as install:
+        with patch.object(workflow.devices, 'install') as install:
             result, _ = self.run_rear(1.5, install=True)
         self.assertEqual(result['exit_code'], 1)
         install.assert_not_called()

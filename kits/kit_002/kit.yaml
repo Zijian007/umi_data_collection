@@ -2,7 +2,9 @@
 arms:
   right:
     serial: IAQEB26097M4CP
-    calibration: '002'
+    intrinsics:
+      front: measured
+      rear: factory
     gripper:
       tcp: tcp_camera.json
       tag_distance: tag_distance.json

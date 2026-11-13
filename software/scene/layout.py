@@ -1,4 +1,4 @@
-"""场景磁盘布局；用户输入留在外层，自动元数据统一位于 .umi。"""
+"""场景磁盘布局；用户输入留在外层，程序维护的地图、运行、缓存和状态统一位于 .pipeline。"""
 
 from pathlib import Path
 import json
@@ -8,24 +8,25 @@ from software import provenance
 from software.storage import locked as storage_lock, read_yaml
 
 
-INTERNAL = '.umi'
-TASK_FIELDS = {'instruction', 'expected_arms', 'synchronization'}
+INTERNAL = '.pipeline'
+TASK_FIELDS = {'instruction', 'expected_arms', 'synchronization', 'map_version'}
 
 
 def owner(path: Path) -> Path:
-    """从集中存储的清单还原原片目录；旧位置仅用于迁移和只读预览。"""
-    for parent in path.parents:
-        if parent.name == INTERNAL:
-            relative = path.relative_to(parent).parts
-            if len(relative) >= 3 and relative[0] == 'tasks':
-                return parent.parent / relative[1]
-            break
-    return path.parent.parent if path.parent.name == INTERNAL else path.parent
+    """从当前布局的配置或集中存储清单还原原片目录。"""
+    parent = path.parent
+    if parent.parent.name == 'tasks' and parent.parent.parent.name == INTERNAL:
+        return parent.parent.parent.parent / parent.name
+    if parent.name == INTERNAL and path.name != 'episode.yaml':
+        return parent.parent
+    if path.name in {'batch.yaml', 'scene.yaml', 'task.yaml'}:
+        return parent
+    raise ValueError(f'不支持旧清单位置，请使用批次 {INTERNAL}/ 下的清单：{path}')
 
 
 def is_batch(root: Path) -> bool:
     return any(path.is_file() for path in (
-        root / 'batch.yaml', root / 'manifest.yaml', root / INTERNAL / 'manifest.yaml',
+        root / 'batch.yaml', root / INTERNAL / 'manifest.yaml',
     ))
 
 
@@ -42,12 +43,10 @@ def metadata(root: Path, name: str) -> Path:
 
 
 def manifest(path: Path, name: str) -> Path:
-    """目录或清单入口；已有旧清单可只读加载，不创建任何文件。"""
+    """目录或当前清单入口，不创建文件，也不回退旧位置。"""
     path = path.expanduser().resolve()
     root = owner(path) if path.name == name else (path.parent if path.name == INTERNAL else path)
-    current = metadata(root, name)
-    return next((candidate for candidate in (current, root / INTERNAL / name, root / name)
-                 if candidate.is_file()), current)
+    return metadata(root, name)
 
 
 def maps(root: Path) -> Path:
@@ -59,17 +58,14 @@ def locked(root: Path, *, blocking: bool = False):
 
 
 def task_configuration(root: Path) -> dict:
-    """旧清单中的人工选项只读合并；迁移后仅保存在外层 task.yaml。"""
-    capture_path = manifest(root, 'episode.yaml')
-    capture = read_yaml(capture_path) if capture_path.is_file() else {}
-    configuration = {key: value for key, value in capture.items() if key in TASK_FIELDS}
+    """人工选项只从任务目录的 task.yaml 读取。"""
     path = root / 'task.yaml'
     if path.is_file():
         declaration = read_yaml(path)
         if declaration.keys() - TASK_FIELDS:
-            raise ValueError('task.yaml 只允许 instruction、expected_arms 和 synchronization')
-        configuration.update(declaration)
-    return configuration
+            raise ValueError('task.yaml 只允许 instruction、expected_arms、synchronization 和 map_version')
+        return declaration
+    return {}
 
 
 def task_configuration_hash(root: Path) -> str:
@@ -88,8 +84,7 @@ def read_state(root: Path) -> dict:
         attempt.setdefault('reason', '')
     if attempt.get('run'):
         run = (root / attempt['run']).resolve()
-        allowed = (metadata(root, 'runs'), root / INTERNAL / 'runs', root / 'runs')
-        if not any(run.is_relative_to(directory.resolve()) for directory in allowed):
+        if not run.is_relative_to(metadata(root, 'runs').resolve()):
             raise ValueError('任务运行记录超出所属目录')
         error = run / 'error.json'
         if error.is_file():

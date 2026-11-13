@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from software import settings
+
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import json
@@ -34,18 +36,12 @@ def _write_png(path: Path, g: np.ndarray) -> None:
 
 
 def n_workers(requested: int | None = None) -> int:
-    try:
-        n = len(os.sched_getaffinity(0))
-    except AttributeError:
-        n = os.cpu_count() or 2
-    if requested is not None and (type(requested) is not int or requested < 1):
-        raise ValueError('--workers 必须为正整数')
-    return max(1, min(requested, n)) if requested is not None else max(1, min(24, n - 1))
+    return settings.calibration_workers(requested)
 
 
 def preparation_identity(insv: Path, with_images: bool, lens: str) -> str:
     return artifact_identity.canonical_hash(dict(path=str(insv.resolve()), sha256=artifact_identity.file_hash(insv),
-        images=with_images, lens=lens, code={str(path): artifact_identity.file_hash(path) for path in (
+        images=with_images, lens=lens, code={str(path): artifact_identity.source_hash(path) for path in (
             Path(__file__), *sorted(Path(extraction.__file__).parent.glob('*.py')))}))
 
 

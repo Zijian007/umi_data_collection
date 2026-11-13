@@ -174,9 +174,6 @@ def _write_episode(path: Path, recording_refs: dict) -> None:
     """保存自动登记结果；相同内容不改清单和验收，补片保留任务描述。"""
     previous_record = inputs.read_yaml(path) if path.exists() else {}
     task_record = dict(schema_version=previous_record.get('schema_version', 5), recordings=recording_refs)
-    configuration = layout.task_configuration(layout.owner(path))
-    if previous_record.keys() & layout.TASK_FIELDS:
-        write_yaml(layout.owner(path) / 'task.yaml', configuration)
     if task_record != previous_record:
         write_yaml(path, task_record)
         invalidate_task_state(path)

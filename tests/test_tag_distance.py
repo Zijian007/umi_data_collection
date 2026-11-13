@@ -230,7 +230,7 @@ class DistanceWorkflowTests(unittest.TestCase):
             workflow.run_episode(f.episode_path)
             self.assertEqual(process.call_count,2)
             self.assertEqual(workflow.run_episode(f.episode_path)['status'],'skipped')
-        output=f.episode_path.parent/'results'
+        output=f.task_root/'results'
         data=json.loads((output/'episode.json').read_text())
         self.assertEqual(set(data['tag_distance']),{'left','right'})
         self.assertNotIn('gripper_width',data)

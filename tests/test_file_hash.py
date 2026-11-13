@@ -43,6 +43,29 @@ class FileHashTests(unittest.TestCase):
 
 
 class CodeIdentityScopeTests(unittest.TestCase):
+    def test_source_hash_ignores_comments_formatting_and_docstrings(self):
+        first = b'"""module"""\nclass A:\n    """class"""\n    def f(self, x=2):\n        """function"""\n        return x + 1\n'
+        second = b'# comment\nclass A:\n\n    def f(self,x = 2):\n        return (x+1) # comment\n'
+        self.assertEqual(provenance._python_hash(first), provenance._python_hash(second))
+        self.assertEqual(provenance._python_hash(b'def f():\n "doc"\n'),
+                         provenance._python_hash(b'def f():\n pass\n'))
+        self.assertNotEqual(provenance._python_hash(first), provenance._python_hash(second.replace(b'x+1', b'x+2')))
+        self.assertNotEqual(provenance._python_hash(b'x="one"'), provenance._python_hash(b'x="two"'))
+
+    def test_source_hash_reads_current_bytes_and_keeps_asset_hashes_exact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'algorithm.py'
+            path.write_text('value = 1\n')
+            original = provenance.source_hash(path)
+            path.write_text('# comment\nvalue=1\n')
+            self.assertEqual(provenance.source_hash(path), original)
+            path.write_text('value=2\n')
+            self.assertNotEqual(provenance.source_hash(path), original)
+            asset = path.with_suffix('.yaml')
+            asset.write_text('value: 1\n')
+            self.assertEqual(provenance.source_hash(asset), provenance.file_hash(asset))
+            self.assertNotEqual(provenance.file_hash(path), provenance.source_hash(path))
+
     def test_presentation_and_orchestration_files_do_not_invalidate_results(self):
         from software.scene.management import inputs
         trajectory = provenance.code_identity('trajectory')

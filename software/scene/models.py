@@ -168,6 +168,8 @@ class Episode:
     recording_refs: dict
     instruction: str
     synchronization: dict
+    map_version: str | None = None
+    map_selection: dict | None = None
 
     @property
     def root(self) -> Path:

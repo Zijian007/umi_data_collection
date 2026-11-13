@@ -25,7 +25,7 @@ class SharedMapTests(unittest.TestCase):
         self.directory = self.scene / 'tasks/take/left'
         self.directory.mkdir(parents=True)
         (self.scene / 'scene.yaml').write_text('name: lab\n')
-        self.path = self.scene / '.umi/maps/versions/abcdef-12345678/map.json'
+        self.path = self.scene / '.pipeline/maps/versions/abcdef-12345678/map.json'
         self.path.parent.mkdir(parents=True)
         self.data = dict(kind='umi_map_view', schema_version=1, maps=[])
         self.path.write_text(json.dumps(self.data))
@@ -53,7 +53,7 @@ class SharedMapTests(unittest.TestCase):
             maps.load(self.directory, self.summary)
 
     def test_shared_map_outside_current_scene_is_rejected(self):
-        self.summary['map']['path'] = os.path.relpath(self.root / 'other/.umi/maps/versions/abcdef-12345678/map.json', self.directory)
+        self.summary['map']['path'] = os.path.relpath(self.root / 'other/.pipeline/maps/versions/abcdef-12345678/map.json', self.directory)
         with self.assertRaisesRegex(ValueError, '越界'):
             maps.load(self.directory, self.summary)
 

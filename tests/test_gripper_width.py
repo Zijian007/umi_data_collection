@@ -243,7 +243,7 @@ class WidthWorkflowTests(unittest.TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.f = self.fixture.f
-        self.before = {arm: list(pose_rows(self.f.episode_path.parent/'results'/arm/'trajectory.csv')) for arm in ('left', 'right')}
+        self.before = {arm: list(pose_rows(self.f.task_root/'results'/arm/'trajectory.csv')) for arm in ('left', 'right')}
         for video, camera in list(self.f.cameras.items()):
             path = camera.files['front'].parent / 'width.json'
             write_json(path, measurement())
@@ -264,7 +264,7 @@ class WidthWorkflowTests(unittest.TestCase):
     def run_and_accept(self):
         workflow.run_episode(self.f.episode_path)
         episodes.review(self.f.episode_path, accept=True, reviewer='test')
-        output = self.f.episode_path.parent / 'results'
+        output = self.f.task_root / 'results'
         for arm in ('left', 'right'):
             self.assertEqual(list(pose_rows(output/arm/'trajectory.csv')), self.before[arm])
             self.assertFalse((output/arm/'traj_tcp.txt').exists())
@@ -281,7 +281,7 @@ class WidthWorkflowTests(unittest.TestCase):
             gripper_width_closed_threshold_mm=25., gripper_width_diagnostics=True)))
         workflow.run_episode(self.f.episode_path)
         self.assertEqual(self.detect.call_count, 2)
-        output = self.f.episode_path.parent / 'results'
+        output = self.f.task_root / 'results'
         manifest = json.loads((output / 'episode.json').read_text())
         self.assertEqual(manifest['gripper_width']['left']['closed_fraction'], 1.)
         self.assertEqual(manifest['inputs']['parameters']['gripper_width_closed_threshold_mm'], 25.)
@@ -341,7 +341,7 @@ class WidthWorkflowTests(unittest.TestCase):
             np.testing.assert_array_equal(restored[name], expected[name])
         self.assertEqual(readiness['training_ready'], expected_readiness['training_ready'])
 
-    def test_width_source_edit_invalidates_result_and_preserves_historical_measurement(self):
+    def test_width_source_edit_invalidates_result_and_replaces_measurement(self):
         previous = self.run_and_accept().resolve()
         previous_manifest = (previous / 'episode.json').read_bytes()
         original = json.loads(previous_manifest)
@@ -352,12 +352,12 @@ class WidthWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '输入或算法配置'):
             episodes.accepted_run(inputs.read_episode(self.f.episode_path))
         workflow.run_episode(self.f.episode_path)
-        current = json.loads((self.f.episode_path.parent / 'results/episode.json').read_text())
+        current = json.loads((self.f.task_root / 'results/episode.json').read_text())
         self.assertNotEqual(current['inputs']['gripper_width']['left']['sha256'],
                             original['inputs']['gripper_width']['left']['sha256'])
         self.assertEqual(current['gripper_width']['left']['calibration'], calibration.read(camera.files['width']))
         self.assertEqual(original['gripper_width']['left']['calibration']['anchors'], measurement()['mapping']['anchors'])
-        self.assertEqual((previous / 'episode.json').read_bytes(), previous_manifest)
+        self.assertFalse(previous.exists())  # 被取代的运行由自动清理删除；新结果自带新测量
 
     def test_long_detection_gaps_remain_nan_and_block_training_readiness(self):
         self.gap = True
@@ -377,7 +377,7 @@ class WidthWorkflowTests(unittest.TestCase):
             load_episode(self.fixture.output, entry['path'], require_training_ready=True)
 
     def test_second_hand_width_failure_does_not_replace_previous_success(self):
-        previous = (self.f.episode_path.parent/'results').resolve()
+        previous = (self.f.task_root/'results').resolve()
         successful = self.detect.side_effect
         def detect(video):
             if video == self.f.recording_paths['right']:
@@ -386,5 +386,5 @@ class WidthWorkflowTests(unittest.TestCase):
         self.detect.side_effect = detect
         with self.assertRaisesRegex(ValueError, 'right width'):
             workflow.run_episode(self.f.episode_path)
-        self.assertEqual((self.f.episode_path.parent/'results').resolve(), previous)
-        self.assertEqual(layout.read_state(self.f.episode_path.parent)['attempt']['status'], 'failed')
+        self.assertEqual((self.f.task_root/'results').resolve(), previous)
+        self.assertEqual(layout.read_state(self.f.task_root)['attempt']['status'], 'failed')

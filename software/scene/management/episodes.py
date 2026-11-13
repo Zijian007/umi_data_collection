@@ -57,8 +57,7 @@ def invalidate_task_state(path: Path) -> None:
     """清单变化使处理和验收失效；身份和使用手始终从清单读取。"""
     inputs.read_episode(path, verify=False)
     root = layout.owner(path)
-    for state in (root / 'state.json', layout.metadata(root, 'state.json')):
-        state.unlink(missing_ok=True)
+    layout.metadata(root, 'state.json').unlink(missing_ok=True)
 
 
 def record_attempt(episode, status: str, target: Path | None, *, reason='') -> None:
@@ -182,12 +181,13 @@ def export(paths: list[Path], export_dir: Path, *, with_video=False) -> dict:
             if with_video:
                 files += [f'{arm}/front.mp4' for arm in run_manifest['arms']]
             exported_file_hashes = {}
+            expected_hashes = dict(run_manifest['assets'], **{'episode.json': review_record['result_sha256']})
             for name in files:
                 export_path = episode_dir / name
                 export_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(run_dir / name, export_path)
                 exported_file_hashes[name] = artifact_identity.file_hash(export_path)
-                if exported_file_hashes[name] != artifact_identity.file_hash(run_dir / name):
+                if exported_file_hashes[name] != expected_hashes[name]:
                     raise ValueError('导出期间源结果发生变化')
             exported_episodes.append(dict(path=str(episode_relative_path), scene=run_manifest['scene'], frame_id=scene_reference(run_manifest)['frame_id'],
                 kit=episode.session.kit, arms=run_manifest['arms'], instruction=episode.instruction,

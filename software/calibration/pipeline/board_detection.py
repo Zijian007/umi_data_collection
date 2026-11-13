@@ -46,8 +46,8 @@ def detect_cached(euroc: Path | Callable[[], Path], make_detector, *, cache: Pat
                   step: int, workers: int, up: float, cancelled=None) -> dict:
     """Reuse raw corners independently of calibration; a dataset callable runs only on a cache miss."""
     key = artifact_identity.canonical_hash(dict(source=source_identity, step=step, upscale=up, opencv=cv2.__version__,
-        code=artifact_identity.file_hash(Path(__file__)), preprocessing=artifact_identity.file_hash(Path(aprilgrid_detect.__file__)),
-        detector=artifact_identity.file_hash(Path(inspect.getfile(make_detector)))))
+        code=artifact_identity.source_hash(Path(__file__)), preprocessing=artifact_identity.source_hash(Path(aprilgrid_detect.__file__)),
+        detector=artifact_identity.source_hash(Path(inspect.getfile(make_detector)))))
     try:
         with np.load(cache, allow_pickle=False) as saved:
             if str(saved['identity'].item()) == key:

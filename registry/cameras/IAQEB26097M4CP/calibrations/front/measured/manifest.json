@@ -1,0 +1,11 @@
+{
+  "kind": "umi_camera_calibration",
+  "serial": "IAQEB26097M4CP",
+  "lens": "front",
+  "intrinsics_source": "measured",
+  "assets": {
+    "bundle/calibration.json": "ea73bd404e892eecd2e20ac153ba2eeb59468362fa15716e376427f0cd124728",
+    "bundle/manifest.json": "99a2a0f57b283da513d5fc8987269bb11eaf3e84c3a821219e1c437e53babb48"
+  },
+  "note": "umi-calib install from /home/zijianwang/umi_data_collection/recordings/calibration/IAQEB26097M4CP/20261113/front/calibration_result"
+}

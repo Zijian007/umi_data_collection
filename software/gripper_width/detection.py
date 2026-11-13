@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from software import settings
+
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,10 +14,10 @@ import numpy as np
 from software import provenance as artifact_identity
 from software.camera.x3.frame import SRC_H, SRC_W
 from software.gripper_width import DEFAULT_TAG_ROI
-from software.storage import atomic_file, write_json
+from software.storage import atomic_file, mark_used, write_json
+from software.vision.decoding import VideoDecode
 
 
-FULL_SEARCH_INTERVAL = 30
 
 
 def validate_roi(roi, shape: tuple[int, int] = (SRC_H, SRC_H)) -> tuple[int, int, int, int]:
@@ -66,8 +68,9 @@ class FrameDetection:
 def identity() -> dict:
     import cv2
 
-    return dict(opencv=cv2.__version__, detector_sha256=artifact_identity.file_hash(Path(__file__)),
-                frame_processing_sha256=artifact_identity.file_hash(Path(__file__).with_name('frame_processing.py')),
+    return dict(settings=dict(settings.values('tag_detection')), opencv=cv2.__version__, detector_sha256=artifact_identity.source_hash(Path(__file__)),
+                frame_processing_sha256=artifact_identity.source_hash(Path(__file__).with_name('frame_processing.py')),
+                decoding_sha256=artifact_identity.source_hash(Path(__file__).parents[1] / 'vision/decoding.py'),
                 source_size=[SRC_W, SRC_H], lens_half='right', default_roi_px=list(DEFAULT_TAG_ROI))
 
 
@@ -75,7 +78,7 @@ class MarkerDetector:
     """自动收敛到标签活动区域，逐帧解码并定期全图重定位。"""
 
     def __init__(self, roi: tuple[int, int, int, int] | None = None, *, fast: bool = False,
-                 contrast: float = 1., candidate_limit: int = 96) -> None:
+                 contrast: float = 1., candidate_limit: int | None = None) -> None:
         import cv2
 
         if not np.isfinite(contrast) or contrast < 1:
@@ -102,7 +105,8 @@ class MarkerDetector:
         self._fixed_roi = tuple(roi) if roi is not None else None
         self._fast = fast
         self._contrast = contrast
-        self._candidate_limit = candidate_limit
+        self._candidate_limit = candidate_limit if candidate_limit is not None else settings.values('tag_detection')['candidate_limit']
+        self._full_search_interval = settings.values('tag_detection')['full_search_interval']
 
     def detect(self, gray: np.ndarray) -> FrameDetection:
         if self._frame_shape != gray.shape:
@@ -110,7 +114,7 @@ class MarkerDetector:
             self._frames_seen = 0
             self._frame_shape = gray.shape
         search_full_frame = self._search_bounds is None or (self._fixed_roi is None
-                                                           and self._frames_seen % FULL_SEARCH_INTERVAL == 0)
+                                                           and self._frames_seen % self._full_search_interval == 0)
         self._frames_seen += 1
         if search_full_frame:
             detected = self._detect_region(gray)
@@ -271,37 +275,49 @@ def _candidate_regions(rejected: Iterable[np.ndarray], *, limit: int = 96) -> li
     return selected
 
 
-def detect(video: Path, *, roi: tuple[int, int, int, int] = DEFAULT_TAG_ROI) -> DetectionSeries:
-    import av
-    from software.gripper_width.frame_processing import detect_frame
+class WidthDetection:
+    """逐个源帧检测，保持宽度检测器的独立状态和原始时间轴。"""
 
-    left, top, right, bottom = validate_roi(roi)
-    detector = CascadeMarkerDetector((0, 0, right - left, bottom - top))
-    converter = av.video.reformatter.VideoReformatter()
-    times_s, distances_px, corners_px = [], [], []
-    with av.open(str(video)) as container:
-        stream = container.streams.video[0]
+    def __init__(self, roi: tuple[int, int, int, int] = DEFAULT_TAG_ROI):
+        import av
+
+        left, top, right, bottom = validate_roi(roi)
+        self.roi = roi
+        self.detector = CascadeMarkerDetector((0, 0, right - left, bottom - top))
+        self.converter = av.video.reformatter.VideoReformatter()
+        self.times_s, self.distances_px, self.corners_px = [], [], []
+
+    def validate(self, streams) -> None:
+        stream = streams[0]
         if (stream.codec_context.width, stream.codec_context.height) != (SRC_W, SRC_H):
             raise ValueError('夹爪宽度估计需要 X3 原始 3840×1920 工作镜头画面')
-        for frame in container.decode(stream):
-            if frame.pts is None or frame.time_base is None:
-                raise ValueError('宽度检测原片缺少帧时间戳')
-            detected = detect_frame(frame, detector, roi, converter)
-            times_s.append(float(frame.pts * frame.time_base))
-            distances_px.append(detected.distance_px)
-            corners = np.full((2, 4, 2), np.nan, dtype=np.float32)
-            if detected.ids is not None:
-                for polygon, tag in zip(detected.corners, detected.ids.flatten()):
-                    if tag in detected.centres:
-                        corners[int(tag)] = polygon[0]
-            corners_px.append(corners)
-    timestamps = np.asarray(times_s)
-    if len(timestamps) < 2 or not np.isfinite(timestamps).all() or not np.all(np.diff(timestamps) > 0):
-        raise ValueError('宽度检测视频时间无效或非递增')
-    return DetectionSeries(timestamps, np.asarray(distances_px), np.asarray(corners_px))
+
+    def consume(self, index: int, frame) -> None:
+        from software.gripper_width.frame_processing import detect_frame
+
+        if frame.pts is None or frame.time_base is None:
+            raise ValueError('宽度检测原片缺少帧时间戳')
+        detected = detect_frame(frame, self.detector, self.roi, self.converter)
+        self.times_s.append(float(frame.pts * frame.time_base))
+        self.distances_px.append(detected.distance_px)
+        self.corners_px.append(detected.target_corners())
+
+    def finish(self) -> DetectionSeries:
+        timestamps = np.asarray(self.times_s)
+        if len(timestamps) < 2 or not np.isfinite(timestamps).all() or not np.all(np.diff(timestamps) > 0):
+            raise ValueError('宽度检测视频时间无效或非递增')
+        return DetectionSeries(timestamps, np.asarray(self.distances_px), np.asarray(self.corners_px))
 
 
-def cached(video: Path, cache: Path, recording_sha256: str) -> DetectionSeries:
+def detect(video: Path, *, roi: tuple[int, int, int, int] = DEFAULT_TAG_ROI) -> DetectionSeries:
+    decoder = VideoDecode(video)
+    decoder.add(WidthDetection(roi))
+    return decoder.run()[0]
+
+
+def cached(video: Path, cache: Path, recording_sha256: str, *,
+           decoder: VideoDecode | None = None) -> DetectionSeries | None:
+    """读取或保存独立缓存；传入 decoder 时将缺失检测推迟到其 run()。"""
     fingerprint = dict(recording_sha256=recording_sha256, detector=identity())
     directory = cache / artifact_identity.canonical_hash(fingerprint)[:20]
     marker = directory / 'ready.json'
@@ -310,12 +326,19 @@ def cached(video: Path, cache: Path, recording_sha256: str) -> DetectionSeries:
         saved = json.loads(marker.read_text())
         if saved['inputs'] != fingerprint or artifact_identity.file_hash(array_path) != saved['sha256']:
             raise ValueError('夹爪原始检测缓存身份或哈希变化')
+        mark_used(directory)
         with np.load(array_path, allow_pickle=False) as arrays:
             return DetectionSeries(arrays['times_s'], arrays['distance_px'], arrays['corners_px'])
+    def save(detected: DetectionSeries) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        with atomic_file(array_path) as temporary, temporary.open('wb') as stream:
+            np.savez_compressed(stream, times_s=detected.times_s, distance_px=detected.distance_px,
+                                corners_px=detected.corners_px)
+        write_json(marker, dict(inputs=fingerprint, sha256=artifact_identity.file_hash(array_path)))
+
+    if decoder is not None:
+        decoder.add(WidthDetection(), save)
+        return None
     detected = detect(video)
-    directory.mkdir(parents=True, exist_ok=True)
-    with atomic_file(array_path) as temporary, temporary.open('wb') as stream:
-        np.savez_compressed(stream, times_s=detected.times_s, distance_px=detected.distance_px,
-                            corners_px=detected.corners_px)
-    write_json(marker, dict(inputs=fingerprint, sha256=artifact_identity.file_hash(array_path)))
+    save(detected)
     return detected

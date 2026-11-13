@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
 import hashlib
 import json
@@ -18,6 +17,7 @@ from software.environment import python_executable
 from software.scene import layout
 from software.trajectory.reporting import map_data
 from software.trajectory.reporting.results import result_path
+from software import settings
 from software.viewer import cache
 
 
@@ -61,7 +61,7 @@ def validate(atlas_record: dict) -> dict:
     return atlas_record
 
 
-@lru_cache(maxsize=4)
+@cache.bounded('map_cache_entries')
 def _convert(directory: Path, identity: tuple) -> dict:
     target = cache.path('maps', identity, '.json')
     with cache.locked(target):
@@ -88,7 +88,8 @@ def _export(directory: Path) -> dict:
         target = Path(temporary_atlas) / 'map.json'
         try:
             process = subprocess.run([python, '-m', 'software.trajectory.reporting.map_data', str(directory), '--output', str(target)],
-                cwd=map_data.ROOT, capture_output=True, text=True, timeout=240)
+                cwd=map_data.ROOT, capture_output=True, text=True, timeout=settings.values('viewer')['map_timeout_s'],
+                env=settings.child_environment(kinds=('runtime', 'viewer')))
         except subprocess.TimeoutExpired as error:
             raise ValueError('地图读取超时；轨迹和视频仍可正常查看') from error
         if process.returncode:
@@ -96,7 +97,17 @@ def _export(directory: Path) -> dict:
         return validate(json.loads(target.read_text(encoding='utf-8')))
 
 
+def limit_points(document: dict) -> dict:
+    budget = settings.values('viewer')['map_max_points']
+    return dict(document, maps=[dict(item, points=item['points'][::max(1, (len(item['points']) + budget - 1) // budget)])
+                               for item in document['maps']])
+
+
 def load(directory: Path, summary: dict) -> dict:
+    return limit_points(_load(directory, summary))
+
+
+def _load(directory: Path, summary: dict) -> dict:
     if summary.get('mode') == 'local':
         return dict(kind='umi_map_view', schema_version=1, maps=[],
                     note='独立回退轨迹使用局部坐标，不叠加共享场景地图。')
@@ -137,7 +148,7 @@ def load_shared(directory: Path, summary: dict) -> dict:
         raise ValueError('场景地图引用路径无效')
     map_owner = path.parents[4]
     scene_root = map_owner.parent if layout.is_batch(map_owner) else map_owner
-    expected = map_owner / '.umi/maps/versions' / scene['version'] / 'map.json'
+    expected = map_owner / layout.INTERNAL / 'maps/versions' / scene['version'] / 'map.json'
     if (path != expected or not directory.resolve().is_relative_to(map_owner.resolve())
             or not path.resolve().is_relative_to(map_owner.resolve())
             or scene_root.name != scene.get('name')):

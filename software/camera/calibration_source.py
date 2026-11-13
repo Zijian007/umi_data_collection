@@ -35,7 +35,7 @@ def source(metadata: dict) -> str:
 
 def require(camera: dict, expected: str | None, *, label: str = '标定') -> None:
     if expected is not None and camera.get('intrinsics_source', 'measured') != validate(expected):
-        raise ValueError(f'{label}的内参来源与请求的 {expected} 不一致；请选择对应的完整标定版本')
+        raise ValueError(f'{label}的内参来源与请求的 {expected} 不一致；请选择对应的完整标定参数')
 
 
 def validate_factory(metadata: dict, camera: dict, *, serial: str, lens: str) -> None:

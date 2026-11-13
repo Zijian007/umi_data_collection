@@ -26,7 +26,7 @@ class CurrentConfigurationTests(unittest.TestCase):
 
     def test_single_mapping_has_no_left_label_and_roundtrips_old_and_new_records(self):
         processing.prepare_batch(self.batch)
-        path = self.batch / '.umi/manifest.yaml'
+        path = self.batch / '.pipeline/manifest.yaml'
         data = inputs.read_yaml(path)
         self.assertEqual(data['schema_version'], 5)
         self.assertEqual(set(data['mapping']), {'serial', 'path', 'sha256'})
@@ -40,14 +40,13 @@ class CurrentConfigurationTests(unittest.TestCase):
         self.assertEqual(processing.run([self.batch])[0]['status'], 'ok')
         old_session = inputs.read_batch(self.batch)
         output = (self.batch / 'take_001/results').resolve()
-        history = (output / 'episode.json').read_bytes()
         self.update_calibration()
         self.assertEqual(processing.run([self.batch])[0]['status'], 'ok')
         current = inputs.read_batch(self.batch)
         self.assertEqual(current.kit['arms']['left']['calibration'], 'updated')
         self.assertNotEqual(current.map_version, old_session.map_version)
-        self.assertEqual((output / 'episode.json').read_bytes(), history)
         self.assertNotEqual((self.batch / 'take_001/results').resolve(), output)
+        self.assertFalse(output.exists())  # 被取代的运行由自动清理删除
         self.assertEqual(processing.run([self.batch])[0]['status'], 'skipped')
 
     def test_mapping_replacement_is_discovered_without_new_batch(self):
@@ -104,7 +103,7 @@ class CurrentConfigurationTests(unittest.TestCase):
         self.assertEqual((current / 'devices/SERIAL_left/tcp.json').read_bytes(), original_geometry)
         self.assertNotEqual(source.read_bytes(), original_geometry)
         self.assertEqual((current / 'left/trajectory.csv').read_bytes(), original_trajectory)
-        self.assertTrue((previous / 'episode.json').is_file())
+        self.assertFalse(previous.exists())  # 被取代的运行由自动清理删除
 
     def test_width_policy_changes_do_not_rebuild_the_map(self):
         self.assertEqual(processing.run([self.batch])[0]['status'], 'ok')

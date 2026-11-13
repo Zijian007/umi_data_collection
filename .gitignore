@@ -12,6 +12,7 @@ calibration_result/
 umi_calib_rear_out/
 .*.calibration.lock
 .pytest_cache/
+config/*.local.yaml
 datasets/*
 !datasets/README.md
 exports/*
@@ -25,7 +26,7 @@ scenes/**/local_results
 scenes/**/archive/
 scenes/**/cache/
 scenes/**/imports/
-scenes/**/.umi/
+scenes/**/.pipeline/
 # umi-calib preview-width / detect-width 默认写在原片旁的叠加视频
 *_width_detect.mp4
 *_width_preview.mp4

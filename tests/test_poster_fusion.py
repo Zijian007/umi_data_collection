@@ -89,6 +89,20 @@ class PosterGeometryTests(unittest.TestCase):
         np.testing.assert_allclose(actual, expected, atol=1e-7)
         self.assertLess(rms, 1e-7)
 
+    def test_seed_reports_sparse_frame_and_id_residuals(self):
+        data = fixture()
+        detections, board, measured, truth, _ = data[7:]
+        cameras = resample_pose_series(data[1], truth, detections.imu_times_s(measured['cam_time_offset_ns'])) @ np.linalg.inv(data[4]['rear'])
+        points = np.array([board.corners_m[i] for i in detections.tag_ids])
+        actual, rms, metrics = poster_pose.estimate_board(
+            cameras, points, detections.corners_px, poster_pose.camera_model(measured), 5.,
+            frame_ids=detections.sample_indices, tag_ids=detections.tag_ids, return_metrics=True)
+        self.assertEqual(len(metrics['frame_rms_px']), len(np.unique(detections.sample_indices)))
+        self.assertEqual(set(metrics['id_rms_px']), {str(i) for i in np.unique(detections.tag_ids)})
+        self.assertAlmostEqual(metrics['rms_px'], rms)
+        self.assertLess(metrics['median_px'], 1e-7)
+        self.assertLess(metrics['p95_px'], 1e-7)
+
 
 class PosterFusionTests(unittest.TestCase):
     def test_joint_fusion_improves_relative_motion_and_uses_exact_rear_times(self):
@@ -131,6 +145,8 @@ class PosterFusionTests(unittest.TestCase):
         data[6] = replace(data[6], tag_fusion_enabled=False)
         diagnostic = poster.refine(*data)
         self.assertEqual(diagnostic.evidence['environment_poster']['status'], 'rejected_diagnostics')
+        self.assertIn('reprojection_metrics', diagnostic.evidence['environment_poster'])
+        self.assertIn('median_px', diagnostic.evidence['environment_poster']['reprojection_metrics'])
         self.assertIs(diagnostic.T_reference_imu, data[0].T_reference_imu)
 
     def test_new_recording_reinitializes_poster_position(self):
@@ -189,7 +205,7 @@ class PosterWorkflowTests(unittest.TestCase):
 
         with patch.object(tags, 'cached', side_effect=cached):
             workflow.run_episode(helper.episode_path)
-        output = helper.episode_path.parent/'results'
+        output = helper.task_root/'results'
         frozen = output/'devices/environment_poster.json'
         self.assertEqual(tag_board.load(frozen).asset_hash, tag_board.load().asset_hash)
         self.assertEqual(identities, [tag_board.load().asset_hash]*2)

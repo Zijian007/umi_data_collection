@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from software import settings
+
 from concurrent.futures import CancelledError
 from contextlib import contextmanager
 from pathlib import Path
@@ -45,6 +47,7 @@ def use_calibration_environment(arguments: list[str], *, install_missing: bool) 
         return
     # 两个 venv 的 python 可能指向同一二进制；用 sys.prefix 区分运行环境。
     if Path(sys.prefix).resolve() != calibration_python.parent.parent.resolve():
+        os.environ.update(settings.child_environment())
         os.execv(str(calibration_python), [str(calibration_python), '-m', 'software.calibration', *arguments])
 
 
@@ -69,25 +72,44 @@ def timed(timings: dict, name: str, *, label: str | None = None):
 
 
 def run_logged(command: list, log: Path, environment: dict | None = None, cwd: Path | None = None, *,
-               append: bool = False, cancelled=None) -> int:
+               append: bool = False, cancelled=None, progress=None,
+               progress_interval_s: float = 30.0) -> int:
+    """Run a child while retaining its complete log.
+
+    Long-running solvers write their progress to the log, not the terminal.
+    An optional callback lets the parent report a heartbeat without making
+    diagnostics part of the child process or changing the recorded output.
+    """
+    environment = settings.child_environment(environment)
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "a" if append else "w", encoding="utf-8") as output:
         output.write("$ " + " ".join(map(str, command)) + "\n")
         output.flush()
-        if cancelled is None:
+        if cancelled is None and progress is None:
             return subprocess.run(list(map(str, command)), stdout=output, stderr=subprocess.STDOUT, env=environment, cwd=cwd).returncode
-        if cancelled.is_set():
+        if cancelled is not None and cancelled.is_set():
             raise CancelledError('后台命令已取消')
         with subprocess.Popen(list(map(str, command)), stdout=output, stderr=subprocess.STDOUT,
                               env=environment, cwd=cwd) as process:
             try:
+                next_progress = time.monotonic() + max(0.1, float(progress_interval_s))
                 while True:
-                    if cancelled.is_set():
+                    if cancelled is not None and cancelled.is_set():
                         raise CancelledError('后台命令已取消')
+                    if progress is not None and time.monotonic() >= next_progress:
+                        try:
+                            progress()
+                        except Exception:
+                            # A diagnostic callback must never change the solver result.
+                            pass
+                        next_progress = time.monotonic() + max(0.1, float(progress_interval_s))
+                    code = process.poll()
+                    if code is not None:
+                        return code
                     try:
-                        return process.wait(timeout=0.2)
+                        process.wait(timeout=0.2)
                     except subprocess.TimeoutExpired:
-                        pass
+                        continue
             finally:
                 if process.poll() is None:
                     process.terminate()
@@ -169,7 +191,7 @@ def prepare(cores: str | None, *, solve: bool = True) -> bool:
         return False
     # 帧间已经并行；避免每个工作线程再启动一整组 OpenCV 线程。
     import cv2
-    cv2.setNumThreads(1)
+    cv2.setNumThreads(settings.values('runtime')['calibration_opencv_threads'])
     return True
 
 

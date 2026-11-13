@@ -24,6 +24,34 @@ class ArmMeasurements:
     tag_distance: TagDistanceResult | None
 
 
+def prepare_detections(episode: Episode, arm: str, recording: PreparedRecording) -> None:
+    """多类检测共用一次首次解码，各自缓存供融合和测量阶段读取。"""
+    camera, scene = recording.camera, episode.scene
+    if sum(('width' in camera.files, 'tag_distance' in camera.files, scene.tag_layout is not None)) < 2:
+        return
+    from software.gripper_width import detection
+    from software.gripper_width.sampled_detection import SampledDetectionCache
+    from software.vision import tag_board, tags
+    from software.vision.decoding import VideoDecode
+
+    video, digest = episode.recordings[arm], episode.recording_refs[arm]['sha256']
+    cache = layout.metadata(episode.root, 'cache')
+    decoder = VideoDecode(video)
+    progress = lambda message: console.write(f'{arm}：{message}', recording=episode.root.name)
+    if 'width' in camera.files:
+        detection.cached(video, cache / 'gripper_width', digest, decoder=decoder)
+    if 'tag_distance' in camera.files:
+        SampledDetectionCache(video, cache, digest, recording.video_times_s, progress,
+            roi_px=tuple(scene.parameters.tag_distance_roi_px)).load(decoder=decoder)
+    if scene.tag_layout is not None:
+        board = tag_board.load(scene.tag_layout)
+        tags.cached(video, cache / 'environment_tags' / arm,
+            tags.DetectionSettings(border_bits=board.border_bits, ids=board.ids, dictionary=board.dictionary,
+                                   minimum_side_px=scene.parameters.tag_minimum_side_px),
+            layout=board, progress=progress, decoder=decoder)
+    decoder.run()
+
+
 def measure(episode: Episode, arm: str, recording: PreparedRecording,
             video_offset_s: float, output: Path) -> ArmMeasurements:
     """共享或局部重建共用同一验收；失败由任务编排层阻止发布。"""

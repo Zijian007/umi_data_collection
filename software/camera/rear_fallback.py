@@ -11,14 +11,14 @@ import json
 
 from scipy.spatial.transform import Rotation
 
-from software import config, provenance
+from software import config
 from software.calibration.algorithms import factory_kb4
 from software.camera import calibration_source
 from software.camera.geometry import imu_from_camera, validate_transform
 from software.camera.x3 import factory
 from software.console import Console
 from software.storage import atomic_file
-from software.trajectory.calibration.assets import parse_basalt, read_basalt
+from software.trajectory.calibration.assets import parse_basalt
 
 
 KIND = 'umi_rear_factory_fallback'
@@ -53,10 +53,9 @@ def derive(video: Path, *, front_path: Path, serial: str, front_source: str) -> 
         raise ValueError(f'未提供 rear 标定且无法读取 INSV 工厂参数：{error}；请提供正式 rear 标定') from error
     if native['serial'] != serial:
         raise ValueError('rear 工厂兜底的原片序列号与 front 标定设备不一致')
-    front_hash = provenance.file_hash(front_path)
-    front = read_basalt(front_path)
-    if provenance.file_hash(front_path) != front_hash:
-        raise ValueError('front 标定在推导 rear 期间发生变化')
+    front_bytes = front_path.read_bytes()
+    front_hash = hashlib.sha256(front_bytes).hexdigest()
+    front = parse_basalt(json.loads(front_bytes), label=str(front_path))
     front_from_rear = factory.working_from_environment(native)
     imu_from_rear = validate_transform(imu_from_camera(front) @ front_from_rear)
     limits = config.load('calibration').values.factory

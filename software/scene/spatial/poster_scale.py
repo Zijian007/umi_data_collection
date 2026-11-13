@@ -54,7 +54,9 @@ def estimate_scale(observations, map_lens_measurement, rear_measurement, detecti
     sigma = np.hypot(parameters.tag_corner_sigma_px,
                      parameters.tag_sigma_per_radius_px*np.maximum(0., radius/720.-1.))
     try:
-        seed, _ = estimate_board(cameras(initial_scale), points, pixels, model, float('inf'))
+        seed, _ = estimate_board(cameras(initial_scale), points, pixels, model, float('inf'),
+                                 frame_ids=detections.sample_indices[selected],
+                                 tag_ids=detections.tag_ids[selected])
     except PosterGeometryError as error:
         raise PosterScaleConflict(str(error), dict(evidence, status='conflict')) from error
 

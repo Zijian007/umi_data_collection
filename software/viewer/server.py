@@ -11,6 +11,10 @@ import mimetypes
 import os
 import re
 
+from software import settings
+from software.viewer import media
+from software.viewer.cache import root as cache_root
+
 from software.viewer.data import RecordingCatalog
 from software.viewer.errors import ViewerDataError
 from software.viewer.media import decode_frame, preview_file, preview_status, video_version
@@ -163,12 +167,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog='umi-view', description='本地 UMI 三维轨迹、姿态和视频同步查看器',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='示例：\n  umi-view\n  umi-view scenes/test_shelf --port 9092\n'
-               '  umi-view /path/to/take_001/results\n启动后按终端地址访问网页，Ctrl+C 停止。')
-    parser.add_argument('root', nargs='?', type=Path, default=DEFAULT_ROOT,
+               '  umi-view /path/to/take_001/results\n启动后按终端地址访问网页，Ctrl+C 停止。\n'
+               '完整参数参考：docs/命令行参数.md。')
+    parser.add_argument('root', nargs='?', type=Path, default=DEFAULT_ROOT, metavar='数据目录',
                         help='场景/批次/任务目录或单个结果目录；默认扫描本项目的 scenes/')
-    parser.add_argument('--host', default='127.0.0.1', help='默认仅本机访问；远程访问可指定 0.0.0.0')
-    parser.add_argument('--port', type=parse_port, default=9091,
-                        help='监听端口，默认 %(default)s；范围 0–65535，0 自动选择空闲端口')
+    parser.add_argument('--host', default=None, help='监听地址，默认 viewer.yaml 的 host（127.0.0.1）；远程访问可指定 0.0.0.0')
+    parser.add_argument('--port', type=parse_port, default=None,
+                        help='监听端口，默认 viewer.yaml 的 port（9092）；范围 0–65535，0 自动选择空闲端口')
     parser.add_argument('--show-config', action='store_true', help='只输出生效启动配置 JSON，不扫描结果、不监听端口；查看器不读取算法 YAML')
     return parser
 
@@ -176,25 +181,37 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.show_config:
-        print(json.dumps(dict(program='umi-view', operation='serve', scope='configuration_only',
-            precedence=['program_defaults', 'command_line'],
-            defaults=dict(root=str(DEFAULT_ROOT), host='127.0.0.1', port=9091),
-            effective=dict(root=str(args.root.expanduser().resolve()), host=args.host, port=args.port)),
-            ensure_ascii=False, indent=2))
-        return 0
     try:
+        defaults = settings.current('viewer')
+        export_budget = settings.current('runtime')
+        explicit = {key: getattr(args, key) for key in ('host', 'port') if getattr(args, key) is not None}
+        configured = settings.load('viewer', environment={settings.SNAPSHOT_ENV: json.dumps({'viewer': defaults.report()})}, overrides=explicit)
+        args.host, args.port = configured.values['host'], configured.values['port']
+        if args.show_config:
+            print(json.dumps(dict(program='umi-view', operation='serve', scope='configuration_only',
+                precedence=configured.report()['precedence'], defaults=dict(root=str(DEFAULT_ROOT), **defaults.values),
+                effective=dict(root=str(args.root.expanduser().resolve()), **configured.values),
+                configuration=configured.report(),
+                map_export=dict(timeout_s=export_budget.values['map_export_timeout_s'],
+                                origin=export_budget.origins['map_export_timeout_s']),
+                cache=dict(path=str(cache_root()), origin='environment:UMI_VIEW_CACHE' if os.environ.get('UMI_VIEW_CACHE')
+                           else 'XDG_CACHE_HOME/umi-view or ~/.cache/umi-view')),
+                ensure_ascii=False, indent=2))
+            return 0
         catalog = RecordingCatalog(args.root)
         catalog.scan()
         server = ThreadingHTTPServer((args.host, args.port), make_handler(catalog))
     except (OSError, ValueError) as error:
         parser.exit(2, f'无法启动 UMI Trace：{error}\n')
     print(f'UMI Trace · http://{args.host if args.host != "0.0.0.0" else "127.0.0.1"}:{server.server_port}', flush=True)
-    print(f'数据目录：{catalog.root}\n按 Ctrl+C 停止。', flush=True)
+    print(f'数据目录：{catalog.root}\n配置：{", ".join(configured.sources)}；'
+          f'解码并发 {configured.values["decode_concurrency"]}，预览并发 {configured.values["preview_workers"]}，'
+          f'每图最多 {configured.values["map_max_points"]} 点；缓存：{cache_root()}\n按 Ctrl+C 停止。', flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+        media.shutdown()
     return 0

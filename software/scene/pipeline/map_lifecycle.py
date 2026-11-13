@@ -9,6 +9,7 @@ from pathlib import Path
 import json
 import os
 import shutil
+import threading
 import time
 import traceback
 import uuid
@@ -19,14 +20,14 @@ from software import provenance as artifact_identity
 from software.console import Console
 from software.scene import layout
 from software.scene.configuration import SceneOverrides
-from software.scene.map_cache import MapBuildCache, camera_identity, matches, reuse_key, source_identity
+from software.scene.map_cache import MAP_CAMERA_ASSETS, MapBuildCache, camera_identity, matches, reuse_key, source_identity
 from software.scene.layout import locked
-from software.scene.management import camera_assets
+from software.scene.management import camera_assets, cleanup
 from software.scene.management import inputs
 from software.scene.models import BuildSceneResult, Scene
 from software.scene.pipeline import recordings
 from software.scene.spatial import mapping
-from software.storage import write_json, locked as storage_lock
+from software.storage import write_json, write_yaml, locked as storage_lock
 from software.vision import runtime
 from software.vision.paths import exporter_paths
 from software.vision.models import ProcessingError
@@ -47,17 +48,19 @@ def load_published(scene: Scene, *, version: str | None = None, manifest_sha256:
                    check_definition: bool = False, allow_import: bool = False) -> tuple[Path, dict]:
     uses_fixed_version = version is not None
     if not uses_fixed_version:
-        if not (scene.map_root / 'current.json').is_file():
-            raise ValueError('本批次尚未发布地图，请先运行 umi-scene run <采集批次> 或 build <采集批次>')
-        pointer = json.loads((scene.map_root / 'current.json').read_text())
-        version, manifest_sha256 = pointer['version'], pointer['manifest_sha256']
+        # 当前地图只记录在批次清单的 map 中；任务运行和查看都读同一处。
+        record = layout.metadata(scene.batch_root or scene.root, 'manifest.yaml')
+        bound = (inputs.read_yaml(record).get('map') or {}) if record.is_file() else {}
+        if not bound.get('version'):
+            raise ValueError('本批次尚未绑定地图，请先运行 umi-scene run <采集批次> 或 build <采集批次>')
+        version, manifest_sha256 = bound['version'], bound['manifest_sha256']
     if not isinstance(version, str) or not version or any(c not in '0123456789abcdef-_' for c in version):
         raise ValueError('场景版本指针无效')
     map_store = scene.map_root / 'versions'
     map_dir = (map_store / version).resolve()
     if not map_dir.is_dir() and uses_fixed_version and allow_import:
         candidates = [root / 'versions' / version for root in (
-            scene.root / '.umi/maps', *(batch / '.umi/maps' for batch in scene.root.iterdir() if layout.is_batch(batch)))
+            scene.root / layout.INTERNAL / 'maps', *(layout.maps(batch) for batch in scene.root.iterdir() if layout.is_batch(batch)))
             if (root / 'versions' / version / 'manifest.json').is_file()]
         if candidates:
             digests = {artifact_identity.file_hash(candidate / 'manifest.json') for candidate in candidates}
@@ -96,8 +99,6 @@ def import_map(scene: Scene, source: Path) -> Path:
         manifest = json.loads((staging / 'manifest.json').read_text())
         inputs.validate_assets(staging, manifest['assets'])
         staging.rename(target)
-        write_json(scene.map_root / 'current.json', dict(version=manifest['version'],
-                   manifest_sha256=artifact_identity.file_hash(target / 'manifest.json')))
     finally:
         if staging.exists():
             shutil.rmtree(staging)
@@ -107,41 +108,40 @@ def import_map(scene: Scene, source: Path) -> Path:
 def build_scene(path: Path, *, force=False, keep_work=False, cores='', dry_run=False, overrides: SceneOverrides | None = None) -> BuildSceneResult:
     path = path.expanduser().resolve()
     session_path = layout.manifest(path, 'manifest.yaml') if path.is_dir() or path.name == 'manifest.yaml' else path
-    if session_path.name == 'manifest.yaml' and session_path.is_file():
-        with nullcontext() if dry_run else locked(layout.owner(session_path), blocking=True):
-            session = inputs.read_batch(session_path, verify_mapping=True, overrides=overrides)
-            configuration = inputs.configuration_identity(session.root)
-            if session.map_version and not force:
-                try:
-                    selected_map, manifest = load_published(session.scene, version=session.map_version,
-                        manifest_sha256=session.map_manifest_sha256, allow_import=True)
-                except (OSError, ValueError, KeyError):
-                    if not session.mapping:
-                        raise
-                else:
-                    validate_map_bindings(session.kit, manifest)
-                    if (not session.mapping or (configuration is None and overrides is None) or matches(manifest['inputs'], mapping_inputs(session.scene,
-                            camera_assets.select_cameras(session.scene.recordings, session.scene, session.scene.recording_serials)))):
-                        console.write(f'场景地图 {manifest["version"]}', state='复用')
-                        if not dry_run:
-                            import_map(session.scene, selected_map)
-                        return dict(status='skipped', version=manifest['version'], frame_id=manifest['frame_id'])
-            if not session.mapping:
-                raise ValueError('本批次未登记建图原片；请准备批次 mapping/ 后登记，或显式选择已有地图版本')
-            before = artifact_identity.file_hash(session.path)
-            result = _build_scene(session.scene, force=force, keep_work=keep_work, cores=cores, dry_run=dry_run)
-            if not dry_run:
-                if artifact_identity.file_hash(session.path) != before:
-                    raise ValueError('建图期间批次清单发生变化，未绑定地图，请重新核对')
-                if configuration != inputs.configuration_identity(session.root):
-                    raise ValueError('建图期间 batch.yaml 或 kit.yaml 发生变化，请重新运行')
-                manifest_path = session.scene.map_root / 'versions' / result['version'] / 'manifest.json'
-                batch_manifest = inputs.read_yaml(session.path)
-                batch_manifest['map'] = dict(version=result['version'], manifest_sha256=artifact_identity.file_hash(manifest_path))
-                inputs.write_batch_snapshot(session.path, batch_manifest)
-            return result
-    return _build_scene(inputs.read_scene(path, verify_mapping=True, overrides=overrides), force=force,
-                        keep_work=keep_work, cores=cores, dry_run=dry_run)
+    if session_path.name != 'manifest.yaml' or not session_path.is_file():
+        raise ValueError(f'建图需要采集批次的 {layout.INTERNAL}/manifest.yaml')
+    with nullcontext() if dry_run else locked(layout.owner(session_path), blocking=True):
+        session = inputs.read_batch(session_path, verify_mapping=True, overrides=overrides)
+        configuration = inputs.configuration_identity(session.root)
+        if session.map_version and not force:
+            try:
+                selected_map, manifest = load_published(session.scene, version=session.map_version,
+                    manifest_sha256=session.map_manifest_sha256, allow_import=True)
+            except (OSError, ValueError, KeyError):
+                if not session.mapping:
+                    raise
+            else:
+                validate_map_bindings(session.kit, manifest)
+                if (not session.mapping or (configuration is None and overrides is None) or matches(manifest['inputs'], mapping_inputs(session.scene,
+                        camera_assets.select_cameras(session.scene.recordings, session.scene, session.scene.recording_serials)))):
+                    console.write(f'场景地图 {manifest["version"]}', state='复用')
+                    if not dry_run:
+                        import_map(session.scene, selected_map)
+                    return dict(status='skipped', version=manifest['version'], frame_id=manifest['frame_id'])
+        if not session.mapping:
+            raise ValueError('本批次未登记建图原片；请准备批次 mapping/ 后登记，或显式选择已有地图版本')
+        before = artifact_identity.file_hash(session.path)
+        result = _build_scene(session.scene, force=force, keep_work=keep_work, cores=cores, dry_run=dry_run)
+        if not dry_run:
+            if artifact_identity.file_hash(session.path) != before:
+                raise ValueError('建图期间批次清单发生变化，未绑定地图，请重新核对')
+            if configuration != inputs.configuration_identity(session.root):
+                raise ValueError('建图期间 batch.yaml 或 kit.yaml 发生变化，请重新运行')
+            manifest_path = session.scene.map_root / 'versions' / result['version'] / 'manifest.json'
+            batch_manifest = inputs.read_yaml(session.path)
+            batch_manifest['map'] = dict(version=result['version'], manifest_sha256=artifact_identity.file_hash(manifest_path))
+            write_yaml(session.path, batch_manifest)
+        return result
 
 
 def mapping_inputs(scene: Scene, cameras: dict) -> dict:
@@ -161,11 +161,13 @@ def mapping_inputs(scene: Scene, cameras: dict) -> dict:
 
 
 def validate_map_calibrations(cameras: dict, manifest: dict) -> None:
-    """A source switch requires a corresponding map, including for another camera."""
+    """同一相机的来源与完整参数须匹配；不同相机可独立选择来源。"""
     mapped = list(manifest.get('inputs', {}).get('cameras', {}).values())
     for camera in cameras.values():
         source = camera.selected.intrinsics_source
         for reference in mapped:
+            if reference['serial'] != camera.serial:
+                continue
             if reference.get('intrinsics_source', 'measured') != source:
                 raise ValueError('地图与任务的内参来源不同；请用所选来源重新建图或选择对应地图版本')
             if reference['serial'] == camera.serial:
@@ -181,11 +183,19 @@ def validate_map_bindings(kit: dict, manifest: dict) -> None:
         if requested is None:
             continue
         for reference in manifest.get('inputs', {}).get('cameras', {}).values():
+            if reference['serial'] != binding['serial']:
+                continue
             if requested != reference.get('intrinsics_source', 'measured'):
                 raise ValueError('固定地图与批次选择的内参来源不同，请重新建图')
             if (reference['serial'] == binding['serial'] and reference.get('calibration_version') is not None
                     and reference['calibration_version'] != binding['calibration']):
                 raise ValueError('固定地图与批次选择的完整标定版本不同，请重新建图')
+            rear = binding.get('rear_calibration')
+            old_rear = reference.get('assets', {}).get('rear')
+            if rear and old_rear is not None:
+                from software import registry
+                if artifact_identity.file_hash(registry.rear_path(binding['serial'], rear)) != old_rear:
+                    raise ValueError('固定地图与批次选择的环境镜头参数不同，请重新建图')
 
 
 def _build_scene(scene: Scene, *, force=False, keep_work=False, cores='', dry_run=False) -> BuildSceneResult:
@@ -202,24 +212,13 @@ def _build_scene(scene: Scene, *, force=False, keep_work=False, cores='', dry_ru
         return dict(status='planned', scene=scene.name, inputs=input_identity)
 
     with storage_lock(scene.map_root, '.build.lock'):
-        # 1. 检查是否可秒级复用已有地图版本
-        if not force and (scene.map_root / 'current.json').is_file():
-            try:
-                _, current = load_published(scene)
-                if matches(current['inputs'], input_identity):
-                    console.write(f'场景地图 {current["version"]}', state='复用')
-                    return dict(status='skipped', version=current['version'], frame_id=current['frame_id'])
-            except (OSError, ValueError, KeyError) as error:
-                console.write(f'准备新的场景版本：{error}')
-
+        # 1. 从新到旧查找输入完全相同的已有版本；绑定由调用方写入批次清单
         if not force:
             for path in sorted((scene.map_root/'versions').glob('*/manifest.json'), reverse=True):
                 try:
                     previous = json.loads(path.read_text())
                     if matches(previous.get('inputs', {}), input_identity):
                         _, previous = load_published(scene, version=previous['version'])
-                        write_json(scene.map_root/'current.json', dict(version=previous['version'],
-                            manifest_sha256=artifact_identity.file_hash(path)))
                         console.write(f'场景地图 {previous["version"]}', state='复用')
                         return dict(status='skipped', version=previous['version'], frame_id=previous['frame_id'])
                 except (OSError, ValueError, KeyError):
@@ -231,13 +230,13 @@ def _build_scene(scene: Scene, *, force=False, keep_work=False, cores='', dry_ru
         map_dir = scene.map_root / 'versions' / version
         map_dir.mkdir(parents=True)
         work_dir = map_dir / 'work'
-        started = time.monotonic()
+        started, started_at = time.monotonic(), time.time()
         cache = MapBuildCache(scene.map_root / 'cache', input_identity['engines'], force=force)
         retry_report = dict(maximum_attempts=scene.trajectory.values.retry.max_tries,
                             stop_reason='not_started', attempts=[])
 
         try:
-            cameras = camera_assets.snapshot_cameras(cameras, map_dir)
+            cameras = camera_assets.snapshot_cameras(cameras, map_dir, only=MAP_CAMERA_ASSETS)
             if {arm: camera_identity(camera) for arm, camera in cameras.items()} != input_identity['cameras']:
                 raise ValueError('建图相机资产在读取与冻结之间发生变化，请重新运行')
             poster_data = {}
@@ -361,7 +360,6 @@ def _build_scene(scene: Scene, *, force=False, keep_work=False, cores='', dry_ru
                 f'地图：{", ".join(frozen)}\n单位：米；Z 朝上。\n实际误差：未测量；对齐验收仅检查内部一致性。\n' + poster_report,
                 encoding='utf-8',
             )
-            write_json(scene.map_root / 'current.json', dict(version=version, manifest_sha256=artifact_identity.file_hash(map_dir / 'manifest.json')))
         except Exception as error:
             write_json(map_dir / 'error.json', dict(status='failed', reason=str(error),
                 traceback=''.join(traceback.format_exception(error)), inputs=input_identity, timings=cache.timings,
@@ -369,19 +367,84 @@ def _build_scene(scene: Scene, *, force=False, keep_work=False, cores='', dry_ru
             raise
 
         cleanup_work(work_dir, keep_work)
+        removal = cleanup.Removal()
+        cleanup.prune_cache(scene.map_root / 'cache', removal, used_since=started_at)
+        cleanup.report(removal)
         return dict(status='ok', version=version, frame_id=manifest['frame_id'], output=str(map_dir))
 
 
-def bind_map(episode, requested: str | None, dry_run: bool):
+class BatchMap:
+    """一次批量运行内固定一份地图；不同批次各有自己的构建锁和失败记录。"""
+
+    def __init__(self, requested: str | None, dry_run: bool, *, cores: str = ''):
+        self.requested, self.dry_run, self.cores = requested, dry_run, cores
+        self._lock = threading.Lock()
+        self._binding = None
+        self._error = None
+        self._watched = {}
+        self._configuration = set()
+
+    @staticmethod
+    def _stamp(path: Path):
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            return None
+        return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+    def validate(self, *, check_configuration: bool = True) -> None:
+        for path, expected in self._watched.items():
+            if not check_configuration and path in self._configuration:
+                continue
+            if self._stamp(path) != expected:
+                raise ValueError(f'批次配置、建图原片或固定地图在运行期间发生变化，请重新运行：{path}')
+        if self._binding is not None:
+            manifest = self._binding[2]
+            if manifest['inputs']['engines'].get('orb_library') != artifact_identity.engine_identity('trajectory').get('orb_library'):
+                raise ValueError('ORB 地图库版本在运行期间发生变化，请重新运行')
+
+    def bind(self, episode):
+        with self._lock:
+            if self._error is not None:
+                raise ValueError(self._error)
+            if self._binding is None:
+                try:
+                    bound, directory, manifest = bind_map(episode, self.requested, self.dry_run, cores=self.cores)
+                    session = bound.session
+                    self._configuration = {session.root / 'batch.yaml', session.scene.path,
+                                           inputs.KITS / session.kit['id'] / 'kit.yaml'}
+                    paths = {session.path, *self._configuration, directory / 'manifest.json',
+                             *session.scene.recordings.values(),
+                             *(directory / name for name in manifest['assets'])}
+                    epoch_plan = layout.metadata(session.root, 'map_epochs.yaml')
+                    if epoch_plan.is_file():
+                        paths.add(epoch_plan)
+                        self._configuration.add(epoch_plan)
+                    if session.scene.tag_layout is not None:
+                        paths.add(session.scene.tag_layout)
+                        self._configuration.add(session.scene.tag_layout)
+                    self._watched = {path: self._stamp(path) for path in paths}
+                    self._binding = session, directory, manifest
+                except Exception as error:
+                    self._error = str(error)
+                    raise
+            self.validate()
+            session, directory, manifest = self._binding
+            if episode.session.path != session.path:
+                raise ValueError('任务与固定地图不属于同一批次')
+            return replace(episode, session=session), directory, manifest
+
+
+def bind_map(episode, requested: str | None, dry_run: bool, *, cores: str = ''):
     """使用批次固定版本；待建批次从自身原片建图，不猜场景最新地图。"""
     overrides = episode.scene.overrides
     use_current_inputs = (episode.session.root / 'batch.yaml').is_file()
     if not requested and episode.session.mapping and (use_current_inputs or overrides is not None or not episode.session.map_version):
         if dry_run:
-            if build_scene(episode.session.path, dry_run=True, overrides=overrides)['status'] == 'planned':
+            if build_scene(episode.session.path, dry_run=True, overrides=overrides, cores=cores)['status'] == 'planned':
                 raise ValueError('当前输入需要构建地图；只读预览不会启动建图')
         else:
-            build_scene(episode.session.path, overrides=overrides)
+            build_scene(episode.session.path, overrides=overrides, cores=cores)
     with nullcontext() if dry_run else locked(episode.session.root, blocking=True):
         session = inputs.read_batch(episode.session.path, overrides=overrides)
         version = requested or session.map_version
@@ -392,15 +455,15 @@ def bind_map(episode, requested: str | None, dry_run: bool):
         if not dry_run:
             map_dir = import_map(session.scene, map_dir)
         validate_map_bindings(session.kit, map_manifest)
-        selected_scene = replace(session.scene, devices=session.devices,
-                                 rear_calibrations=camera_assets.rear_files(session.devices))
-        selected_cameras = camera_assets.select_cameras(episode.recordings, selected_scene, episode.serials)
-        validate_map_calibrations(selected_cameras, map_manifest)
         digest = artifact_identity.file_hash(map_dir / 'manifest.json')
-        if not dry_run and (session.map_version != map_manifest['version'] or session.map_manifest_sha256 != digest):
+        # A task-level map_version is an immutable per-task binding.  Do not
+        # move the batch's default pointer while another take may be running
+        # against a different epoch in parallel.
+        if (not dry_run and episode.map_version is None
+                and (session.map_version != map_manifest['version'] or session.map_manifest_sha256 != digest)):
             session_manifest = inputs.read_yaml(session.path)
             session_manifest['map'] = dict(version=map_manifest['version'], manifest_sha256=digest)
-            inputs.write_batch_snapshot(session.path, session_manifest)
+            write_yaml(session.path, session_manifest)
     session = replace(session, map_version=map_manifest['version'], map_manifest_sha256=digest)
     scene = replace(session.scene, mode=map_manifest['mode'])
     return replace(episode, session=replace(session, scene=scene)), map_dir, map_manifest

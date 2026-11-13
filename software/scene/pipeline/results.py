@@ -186,6 +186,13 @@ def write_episode(episode: Episode, tracks: dict[str, ArmTrajectory], directory:
             text += f'环境海报：{poster["status"]}；真实轨迹误差未测量。\n'
             if 'final_reprojection_rms_px' in poster:
                 text += f'海报重投影 RMS：{poster["final_reprojection_rms_px"]:.3f} px（内部指标）\n'
+            metrics = (poster.get('final_reprojection_metrics') or poster.get('reprojection_metrics')
+                       or poster.get('initial_reprojection_metrics'))
+            if metrics:
+                text += (f'海报角点残差：median {metrics.get("median_px", float("nan")):.3f} px；'
+                         f'P95 {metrics.get("p95_px", float("nan")):.3f} px；'
+                         f'帧数 {len(metrics.get("frame_rms_px", []))}；'
+                         f'ID 数 {len(metrics.get("id_rms_px", {}))}\n')
             if 'reason' in poster:
                 text += f'海报诊断原因：{poster["reason"]}\n'
         for lens, recovery in arm_metadata.get('localization', {}).items():
@@ -195,7 +202,7 @@ def write_episode(episode: Episode, tracks: dict[str, ArmTrajectory], directory:
             text += f'标签中心间距有效比例：{tag_distance[arm]["valid_fraction"]:.1%}；单位 mm\n'
     (directory / 'report.txt').write_text(text, encoding='utf-8')
     assets = inputs.artifact_hashes(directory, (*tracks, 'devices'))
-    for name in ('report.txt', 'bimanual.csv'):
+    for name in ('report.txt', 'bimanual.csv', 'run_report.json'):
         if (directory / name).is_file():
             assets[name] = artifact_identity.file_hash(directory / name)
     if (directory/'fallback.json').exists():

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from software import settings
+
 from pathlib import Path
 import subprocess
 import traceback
@@ -47,10 +49,10 @@ def run_logged(command: list[str], log: Path, *, stage: str, environment: dict[s
     try:
         with log.open('w', encoding='utf-8') as stdout:
             if stderr is None:
-                result = subprocess.run(command, stdout=stdout, stderr=subprocess.STDOUT, env=environment, cwd=cwd)
+                result = subprocess.run(command, stdout=stdout, stderr=subprocess.STDOUT, env=settings.child_environment(environment), cwd=cwd)
             else:
                 with stderr.open('w', encoding='utf-8') as errors:
-                    result = subprocess.run(command, stdout=stdout, stderr=errors, env=environment, cwd=cwd)
+                    result = subprocess.run(command, stdout=stdout, stderr=errors, env=settings.child_environment(environment), cwd=cwd)
     except OSError as error:
         raise ProcessingError(stage, f'{error}；日志：{log}') from error
     if check and result.returncode:

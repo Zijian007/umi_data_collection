@@ -1,4 +1,4 @@
-"""Source selection must keep B, lenses, maps, and immutable registry versions paired."""
+"""Source selection must keep B, lenses, maps, and current registry assets paired."""
 from __future__ import annotations
 from software import provenance as artifact_identity
 from software.scene.pipeline import map_lifecycle
@@ -15,7 +15,7 @@ from software import config, registry
 from software.camera import calibration_source as origin
 from software.camera.x3 import factory as optical
 from software.calibration import acceptance, cli, result_io, workflow
-from software.calibration.models import CalibrationInputs, RunPaths, SegmentPaths, Step
+from software.calibration.models import RunPaths, Step
 from software.calibration.solve import factory as solver, basalt
 from software.calibration.validation import factory as diagnostic
 from software.scene import cli as scene_cli
@@ -146,12 +146,6 @@ class FactoryWorkflowTests(unittest.TestCase):
                 request=parse_run_args(args)
                 from dataclasses import replace
                 request=replace(request,lens=lens,intrinsics_source='factory',keep_work=True)
-                source=CalibrationInputs(SegmentPaths(*(Path(d)/f'{r}.insv' for r in 'ABCD')),'camera',
-                    dict(tagCols=6,tagRows=6,tagSpacing=.3,tagSize=.024))
-                original=solver.generate
-                def generate(*a,**kw):
-                    solved,evidence=original(*a,**kw)
-                    return solved,evidence
                 def solve_b(dataset,grid,initial,imu,execution,**kw):
                     raw=json.loads(initial.calibration_json.read_text());raw['value0']['cam_time_offset_ns']=1000000
                     write_json(execution.paths.calibration,raw)
@@ -203,8 +197,7 @@ class BatchSourceTests(unittest.TestCase):
                 session=scene_inputs.read_batch(path)
                 self.assertEqual(session.kit['arms']['left']['calibration'],'002')
                 archives=path.parent/'snapshots'
-                self.assertTrue((archives/(artifact_identity.canonical_hash(previous)+'.yaml')).is_file())
-                self.assertTrue((archives/(artifact_identity.canonical_hash(record)+'.yaml')).is_file())
+                self.assertFalse(archives.exists())
                 self.assertEqual(scene_inputs.read_yaml(batch/'batch.yaml'),dict(kit='rig'))
 
     def test_legacy_sample_factory_override_cannot_select_insv_factory(self):

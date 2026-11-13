@@ -1,0 +1,44 @@
+{
+  "kind": "umi_camera_calibration_result",
+  "schema_version": 3,
+  "camera_serial": "IAQEB26097M4CP",
+  "lens": "front",
+  "camera_model": "kb4",
+  "resolution": [
+    1440,
+    1440
+  ],
+  "provenance": {
+    "created_by": "umi-calib",
+    "board": {
+      "tagCols": 6,
+      "tagRows": 6,
+      "tagSpacing": 0.3,
+      "tagSize": 0.024
+    },
+    "recordings": {
+      "A": {
+        "path": "/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB26097M4CP/20261113/front/A/VID_20261113_121907_00_036.insv",
+        "sha256": "ebb78a6844c092c61c434776125d812f7d057fd7ce09bfbe4b720e6180ba8ca8"
+      },
+      "B": {
+        "path": "/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB26097M4CP/20261113/front/B/VID_20261113_122033_00_037.insv",
+        "sha256": "aa9159c7c28a5645a7e2036aa8e93fc78c530361e05fa95f1ee6588b80642bbc"
+      },
+      "C": {
+        "path": "/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB26097M4CP/20261113/front/C/VID_20261113_122207_00_038.insv",
+        "sha256": "eb85c8a96882c65f544fd585acbbd63f0041bca9ab5c99e57226d0dd0149af58"
+      },
+      "D": {
+        "path": "/home/zijianwang/umi_data_collection/recordings/calibration/IAQEB26097M4CP/20261113/front/D/VID_20261113_122335_00_039.insv",
+        "sha256": "672abcf06ce9cee370f6df614a0d7acbedae5c55e395fb6ccfc8e4654728a6e3"
+      }
+    },
+    "intrinsics_source": "measured",
+    "b_intrinsics_sha256": "e2c4853ee239ec188185f2111317fe3d9960bf3ee62ba1318445757b5f604c76",
+    "extrinsics_source": "measured_with_selected_intrinsics"
+  },
+  "files": {
+    "calibration.json": "ea73bd404e892eecd2e20ac153ba2eeb59468362fa15716e376427f0cd124728"
+  }
+}

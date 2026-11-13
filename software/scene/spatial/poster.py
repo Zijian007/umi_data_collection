@@ -8,7 +8,8 @@ from software.camera.geometry import resample_pose_series
 from software.scene.spatial import fusion
 from software.scene.spatial.geometry import VisualObservations
 from software.vision.poster_pose import (PosterGeometryError, camera_model, estimate_board,
-                                        project_observations, residual_and_jacobians)
+                                        project_observations, residual_and_jacobians,
+                                        residual_metrics)
 
 
 def observation_nodes(times, rear_times):
@@ -47,11 +48,17 @@ def refine(baseline, times, imu, observations, T_cam_imu, trajectory_parameters,
     try:
         model = camera_model(measured)
         pixels = detections.corners_px[selected]
+        frame_ids = detections.sample_indices[selected]
+        tag_ids = detections.tag_ids[selected]
         points = np.array([board.corners_m[int(i)] for i in detections.tag_ids[selected]])
         body_seeds = resample_pose_series(times, baseline.T_reference_imu, used_times)
         cameras = body_seeds @ np.linalg.inv(T_cam_imu['rear'])
-        board_pose, initial_rms = estimate_board(cameras, points, pixels, model, parameters.tag_maximum_reprojection_rms_px)
-        evidence.update(initial_reprojection_rms_px=initial_rms, T_scene_board_initial=board_pose.tolist(),
+        board_pose, initial_rms, initial_metrics = estimate_board(
+            cameras, points, pixels, model, parameters.tag_maximum_reprojection_rms_px,
+            frame_ids=frame_ids, tag_ids=tag_ids, return_metrics=True)
+        evidence.update(initial_reprojection_rms_px=initial_rms,
+                        initial_reprojection_metrics=initial_metrics,
+                        T_scene_board_initial=board_pose.tolist(),
                         first_imu_time_s=float(used_times.min()), last_imu_time_s=float(used_times.max()))
         if not parameters.tag_fusion_enabled:
             return result('diagnostics_only')
@@ -95,7 +102,8 @@ def refine(baseline, times, imu, observations, T_cam_imu, trajectory_parameters,
         poses = np.array([optimized.atPose3(X(i)).matrix() for i in range(len(node_times))])
         final_board = optimized.atPose3(L(0)).matrix()
         prediction, camera_points = project_observations(final_board, poses[tag_indices] @ np.linalg.inv(T_cam_imu['rear']), points, model)
-        rms = float(np.sqrt(np.mean(np.sum((prediction-pixels)**2, axis=2))))
+        final_metrics = residual_metrics(prediction, pixels, frame_ids=frame_ids, tag_ids=tag_ids)
+        rms = final_metrics['rms_px']
         if (not np.isfinite(poses).all() or not np.isfinite(final_error) or final_error > initial_error+1e-5
                 or not np.isfinite(rms) or rms > parameters.tag_maximum_reprojection_rms_px
                 or np.any(camera_points[:, :, 2] <= 0)):
@@ -104,7 +112,8 @@ def refine(baseline, times, imu, observations, T_cam_imu, trajectory_parameters,
             map_rms = fusion.measure_map_consistency(poses, remapped, T_cam_imu, parameters)
         except fusion.SceneFusionQualityError as error:
             raise PosterGeometryError(str(error)) from error
-        evidence.update(final_reprojection_rms_px=rms, T_scene_board=final_board.tolist(),
+        evidence.update(final_reprojection_rms_px=rms, final_reprojection_metrics=final_metrics,
+                        T_scene_board=final_board.tolist(),
                         nodes=len(node_times), added_nodes=len(node_times)-len(times),
                         initial_error=initial_error, final_error=final_error, zero_velocity_nodes=zero_nodes,
                         visual_consistency_rms_m=map_rms)
@@ -113,6 +122,8 @@ def refine(baseline, times, imu, observations, T_cam_imu, trajectory_parameters,
                        initial_error=initial_error, final_error=final_error, zero_velocity_nodes=zero_nodes))
     except (ValueError, RuntimeError, KeyError) as error:
         evidence['reason'] = str(error)
+        if getattr(error, 'metrics', None) is not None:
+            evidence['reprojection_metrics'] = error.metrics
         if parameters.tag_fusion_enabled:
-            raise PosterGeometryError(f'环境海报融合失败：{error}') from error
+            raise PosterGeometryError(f'环境海报融合失败：{error}', metrics=getattr(error, 'metrics', None)) from error
         return result('rejected_diagnostics')

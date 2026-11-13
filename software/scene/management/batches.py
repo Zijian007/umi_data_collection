@@ -55,7 +55,7 @@ def select_kit(declaration: dict, *, intrinsics_source: str | None = None) -> Ki
 
 def _validate_unregistered_directory(directory: Path) -> None:
     for entry in directory.iterdir():
-        if entry.name in ('.scene.lock', '.umi') or entry.name == 'batch.yaml' and entry.is_file():
+        if entry.name in ('.scene.lock', layout.INTERNAL) or entry.name == 'batch.yaml' and entry.is_file():
             continue
         if entry.name in {'pending', 'mapping'} and entry.is_dir():
             continue
@@ -64,7 +64,7 @@ def _validate_unregistered_directory(directory: Path) -> None:
         except ValueError:
             raise ValueError(f'未登记批次只允许 mapping/、pending/ 或 <任务>/left/、right/：{directory}') from None
         if (not entry.is_dir() or not inputs.task_video_sources(entry) or
-                any(not (child.name in {*ARMS, 'videos'} and child.is_dir()
+                any(not (child.name in ARMS and child.is_dir()
                          or child.name == 'task.yaml' and child.is_file()) for child in entry.iterdir())):
             raise ValueError(f'未登记任务只允许预先放置 left/、right/ 原片目录及 task.yaml：{entry}')
 
@@ -100,7 +100,7 @@ def read_inputs(batch: Path, *, require_mapping: bool = True, intrinsics_source:
         _validate_unregistered_directory(batch)
     intrinsics_source = selected_kit.intrinsics_source
     kit, expected_arms = selected_kit.kit, selected_kit.expected_arms
-    scene = replace(inputs.read_scene(batch.parent / 'scene.yaml', load_mapping=False, overrides=overrides), batch_root=batch)
+    scene = replace(inputs.read_scene(batch.parent / 'scene.yaml', overrides=overrides), batch_root=batch)
     mapping_paths = _mapping_paths(batch, scene.mode)
     if mapping_paths and 'map_version' in declaration:
         raise ValueError('本轮建图原片与 map_version 不能同时提供')
@@ -151,9 +151,5 @@ def save_record(batch: BatchInputs) -> Path:
         if previous_record != batch.previous_record:
             raise ValueError('批次记录在准备期间发生变化，请重新运行')
         if previous_record != record:
-            for snapshot in (previous_record, record):
-                if snapshot:
-                    archive = layout.metadata(batch.root, 'snapshots') / (artifact_identity.canonical_hash(snapshot)+'.yaml')
-                    if not archive.exists(): write_yaml(archive, snapshot)
-            inputs.write_batch_snapshot(record_path, record)
+            write_yaml(record_path, record)
     return record_path

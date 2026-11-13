@@ -75,11 +75,12 @@ class CompactManifestTests(unittest.TestCase):
         manifest = self.session()
         session = inputs.read_batch(manifest)
         path = write_task(session, 'take_001', {'right': self.f.recording_paths['right']}, expected_arms=['right'])
-        task_record = inputs.read_yaml(path)
+        configuration_path = layout.owner(path) / 'task.yaml'
+        task_record = inputs.read_yaml(configuration_path)
         task_record['instruction'] = '把盒子放入托盘'
-        write_yaml(path, task_record)
+        write_yaml(configuration_path, task_record)
         data = inputs.read_yaml(path)
-        self.assertEqual(data['expected_arms'], ['right'])
+        self.assertEqual(inputs.read_yaml(configuration_path)['expected_arms'], ['right'])
         self.assertNotIn('synchronization', data)
         self.assertEqual(episodes.task_status(path)['status'], 'pending')
         self.assertTrue(inputs.read_episode(path).synchronization['confirmed'])
@@ -105,16 +106,17 @@ class CompactManifestTests(unittest.TestCase):
         manifest = self.session()
         session = inputs.read_batch(manifest)
         path = write_task(session, 'take_001', self.f.recording_paths)
-        data = inputs.read_yaml(path)
+        configuration_path = layout.owner(path) / 'task.yaml'
+        data = {}
         data['synchronization'] = dict(offsets_s=dict(left=0., right=-.12), confirmed=True, note='首尾已核验共同事件')
-        write_yaml(path, data)
-        task_record = inputs.read_yaml(path)
+        write_yaml(configuration_path, data)
+        task_record = inputs.read_yaml(configuration_path)
         task_record['instruction'] = '双手移动盒子'
-        write_yaml(path, task_record)
-        self.assertEqual(inputs.read_yaml(path)['synchronization'], data['synchronization'])
+        write_yaml(configuration_path, task_record)
+        self.assertEqual(inputs.read_yaml(configuration_path)['synchronization'], data['synchronization'])
         self.assertEqual(inputs.read_episode(path).offsets(), dict(left=0., right=-.12))
         data['synchronization']['note'] = ''
-        write_yaml(path, data)
+        write_yaml(configuration_path, data)
         with self.assertRaisesRegex(ValueError, '核验依据'):
             inputs.read_episode(path)
 

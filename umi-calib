@@ -2,12 +2,17 @@
 # umi-calib：工作/环境镜头标定、标定板验证与设备管理。
 #   ./umi-calib run /path/to/front --tag-size-mm 24 --resume
 #   ./umi-calib run /path/to/rear --tag-size-mm 24
+#   ./umi-calib install /path/to/front/calibration_result
+#   ./umi-calib install /path/to/rear/calibration_result
 #   ./umi-calib detect-width recording.insv --roi 600 980 1350 1250 --contrast 2
 #   ./umi-calib run --help
 #   ./umi-calib run /path/to/front --show-config
 # 命令行 / YAML / 资产分工及 --config 覆盖规则见 config/README.md。
 # --tag-size-mm 指标定板标签黑框边长；夹爪标签尺寸在 kit 的 tag_distance JSON 配置。
-# 详细操作见 docs/标定.md；参数与求解环境选择由 software/calibration/cli.py 负责。
+# install 自动识别 front/rear，更新对应镜头和内参来源的固定当前目录。
+# 完整参数见 docs/命令行参数.md；详细操作见 docs/标定.md。
+# 参数与求解环境选择由 software/calibration/cli.py 负责。
+# UMI_DEPS 覆盖依赖目录；UMI_PY 覆盖基础解释器。
 set -euo pipefail
 
 PROJECT_ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)

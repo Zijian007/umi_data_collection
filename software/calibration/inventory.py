@@ -1,4 +1,4 @@
-"""只读检查镜头版本与套件标定绑定，不代替原片/安装几何/组合验收。"""
+"""只读检查每个镜头、每种来源的当前参数和套件选择。"""
 from __future__ import annotations
 
 from typing import NotRequired, TypedDict
@@ -94,19 +94,12 @@ def device_inventory() -> list[DeviceStatus]:
                 registry.get(serial, calibration=version, intrinsics_source=source, allow_retired=True)
         except READ_ERRORS as error:
             device_status['errors'].append(str(error))
-        calibrations_directory = registry.CAMERAS / serial / 'calibrations'
-        try:
-            version_directories = sorted(calibrations_directory.iterdir()) if calibrations_directory.exists() else []
-            for directory in version_directories:
-                if not directory.is_dir() or directory.name.startswith('.'):
-                    continue
-                # Registration uses numeric front versions and rear_<hash> rear versions.
-                lens = 'rear' if directory.name.startswith('rear_') else 'front'
-                version = lens_version(serial, directory.name, lens)
-                version['default'] = lens == 'front' and device_status['calibration_owner'] == serial and directory.name == device_status['front_default']
+        front = device_record.get('calibration_sources') or {None: device_record.get('calibration')}
+        for lens, selected in (('front', front), ('rear', device_record.get('rear_calibration_sources', {}))):
+            for source, identity in selected.items():
+                version = lens_version(serial, identity, lens, expected_source=source)
+                version['default'] = lens == 'front' and device_status['calibration_owner'] == serial and identity == device_status['front_default']
                 device_status['versions'].append(version)
-        except READ_ERRORS as error:
-            device_status['errors'].append(str(error))
         device_status['ok'] = not device_status['errors'] and all(version['ok'] for version in device_status['versions'])
         device_statuses.append(device_status)
     return device_statuses
@@ -133,10 +126,13 @@ def kit_status(name: str, *, intrinsics_source: str | None = None, require_rear:
             arm_status['errors'].append('套件不能借用其他设备或样例的标定')
         expected_source = arm_binding.get('intrinsics_source')
         arm_status['front'] = lens_version(serial, arm_binding['calibration'], 'front', expected_source=expected_source)
-        expected_source = expected_source or arm_status['front'].get('intrinsics_source')
+        expected_source = arm_binding.get('rear_intrinsics_source') or expected_source or arm_status['front'].get('intrinsics_source')
         rear = arm_binding.get('rear_calibration')
         arm_status['rear'] = (lens_version(serial, rear, 'rear', expected_source=expected_source) if rear else
-                       dict(version=None, lens='rear', ok=False, error='未绑定 rear 标定版本'))
+                       dict(version=None, lens='rear', ok=False, error='未绑定 rear 当前标定'))
+        if not rear and arm_binding.get('rear_intrinsics_source') == 'factory':
+            arm_status['rear'].update(intrinsics_source='factory',
+                error='将从原片工厂参数与 front B 推导；原片尚未检查，rear 未独立验收')
         arm_status['front_calibration_available'] = not arm_status['errors'] and arm_status['front']['ok']
         arm_status['dual_calibrations_available'] = arm_status['front_calibration_available'] and arm_status['rear']['ok']
         arm_status['ok'] = arm_status['front_calibration_available'] and (arm_status['rear']['ok'] if rear or require_rear else True)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from software import settings
+
 from pathlib import Path
 import argparse
 import csv
@@ -137,7 +139,7 @@ def export_attempt(attempt: Path, output: Path) -> dict:
         raw_path = Path(temporary_atlas) / 'atlas.json'
         try:
             result = subprocess.run([str(executable), str(archive), str(vocabulary), str(raw_path)],
-                                    capture_output=True, text=True, timeout=180)
+                                    capture_output=True, text=True, timeout=settings.values('runtime')['map_export_timeout_s'])
         except subprocess.TimeoutExpired as error:
             raise MapDataError('地图读取超时') from error
         if result.returncode:

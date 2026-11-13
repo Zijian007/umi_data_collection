@@ -52,7 +52,7 @@ class RecordingCheckTests(unittest.TestCase):
         f=fixtures.SceneWorkflowTests();f.setUp()
         try:
             f.build_scene();workflow.run_episode(f.episode_path)
-            output=f.episode_path.parent/'results';previous=output.resolve()
+            output=f.task_root/'results';previous=output.resolve()
             before={str(path):path.read_bytes() for path in f.root.rglob('*') if path.is_file() and not path.is_symlink()}
             failure=recording_checks.EpisodeCheckReport(False,['review rejection'])
             with patch.object(recording_checks,'check_episode',return_value=failure):
@@ -61,7 +61,7 @@ class RecordingCheckTests(unittest.TestCase):
                 self.assertEqual(before,after)
                 with self.assertRaises(recording_checks.RecordingCheckError):workflow.run_episode(f.episode_path)
             self.assertEqual(output.resolve(),previous)
-            state=json.loads((layout.metadata(f.episode_path.parent, 'state.json')).read_text())
+            state=json.loads((layout.metadata(f.task_root, 'state.json')).read_text())
             self.assertEqual(state['attempt']['status'],'rejected_preflight')
             self.assertEqual(json.loads((output/'episode.json').read_text())['status'],'ok')
         finally:f.doCleanups()

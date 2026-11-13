@@ -5,7 +5,11 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 
-from software.gripper_width.detection import FULL_SEARCH_INTERVAL, MarkerDetector, CascadeMarkerDetector, FrameDetection
+from software import settings
+
+from software.gripper_width.detection import MarkerDetector, CascadeMarkerDetector, FrameDetection
+
+FULL_SEARCH_INTERVAL = settings.values('tag_detection')['full_search_interval']
 
 
 def dark_markers(tags: tuple[int, ...], *, size=(24, 14), sigma=.4, positions=(20, 120, 220)) -> np.ndarray:

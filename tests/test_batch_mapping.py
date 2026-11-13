@@ -65,7 +65,7 @@ class BatchMappingTests(unittest.TestCase):
         self.assertNotEqual(first_session.map_version, built_second['version'])
         self.assertNotEqual(first_session.scene.map_root, inputs.read_batch(second).scene.map_root)
         self.assertFalse((first_session.scene.map_root / 'versions' / built_second['version']).exists())
-        self.assertFalse((self.f.scene.root / '.umi/maps').exists())
+        self.assertFalse((self.f.scene.root / '.pipeline/maps').exists())
         self.assertEqual(result_first['frame_id'], 'lab/' + first_session.map_version)
         result_second = workflow.run_episode(second_episode)
         self.assertEqual(result_second['frame_id'], built_second['frame_id'])
@@ -96,12 +96,12 @@ class BatchMappingTests(unittest.TestCase):
         first, episode = self.batch('round_001')
         second, _ = self.batch('round_002')
         map_lifecycle.build_scene(second)
-        pointer = (inputs.read_batch(second).scene.map_root / 'current.json').read_bytes()
+        pointer = second.read_bytes()
         inputs.read_batch(first).scene.recordings['left'].write_text('changed')
         with self.assertRaisesRegex(ValueError, 'SHA256'):
             workflow.run_episode(episode)
         self.assertIsNone(inputs.read_batch(first).map_version)
-        self.assertEqual((inputs.read_batch(second).scene.map_root / 'current.json').read_bytes(), pointer)
+        self.assertEqual(second.read_bytes(), pointer)
 
     def test_batch_build_preview_is_readonly_and_reports_batch_source(self):
         manifest, _ = self.batch('preview')

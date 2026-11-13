@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+import ast
 import hashlib
 import json
 import os
@@ -29,18 +30,38 @@ PRESENTATION_SOURCES = frozenset({
 
 
 def code_identity(domain: str) -> dict:
-    """Content hashes cover uncommitted source too; never rely on Git HEAD alone."""
+    """算法语法身份包含未提交改动，忽略注释、排版和文档字符串。"""
     shared_sources = [ROOT / 'software' / filename for filename in (
-        'pose_io.py', 'config.py', 'parameters.py', 'provenance.py',
+        'pose_io.py', 'config.py', 'settings.py', 'parameters.py', 'provenance.py',
         'registry.py', 'storage.py', 'environment.py')]
     source_paths = [*shared_sources, *sorted((ROOT / 'software' / domain).rglob('*.py')),
                     *sorted((ROOT / 'software/camera').rglob('*.py')),
                     *sorted((ROOT / 'software/vision').rglob('*.py'))]
     if domain == 'trajectory':
         source_paths += sorted((ROOT / 'software/trajectory/assets/config').glob('*.yaml'))
-    return {name: hashlib.sha256(source_path.read_bytes()).hexdigest()
+    return {name: source_hash(source_path)
             for source_path in source_paths
             if (name := str(source_path.relative_to(ROOT))) not in PRESENTATION_SOURCES}
+
+
+def source_hash(path: Path) -> str:
+    """Python 用无位置信息的 AST；配置和二进制资产仍按原始字节校验。"""
+    return _python_hash(path.read_bytes()) if path.suffix == '.py' else file_hash(path)
+
+
+@lru_cache(maxsize=512)
+def _python_hash(source: bytes) -> str:
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if (node.body and isinstance(node.body[0], ast.Expr)
+                    and isinstance(node.body[0].value, ast.Constant)
+                    and isinstance(node.body[0].value.value, str)):
+                node.body.pop(0)
+                if not node.body and not isinstance(node, ast.Module):
+                    node.body.append(ast.Pass())
+    normalized = ast.dump(tree, include_attributes=False)
+    return hashlib.sha256(('python-ast-v1\n' + normalized).encode()).hexdigest()
 
 
 # 原片、地图和镜头视频在一次运行中会被多个阶段核对。大文件按文件系统身份

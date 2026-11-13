@@ -50,6 +50,25 @@ class CacheStorageTests(unittest.TestCase):
         self.assertEqual((final / 'result/map.osa').read_bytes(), b'complete atlas')
         self.assertEqual([entry['status'] for entry in self.cache.timings], ['computed', 'cached', 'cached'])
 
+    def test_linked_stage_shares_read_only_files_and_rejects_writes(self):
+        def run_linked(name):
+            output = self.root / name
+            with self.cache.stage('prepare', '录像准备', {'video': 'one'}, output,
+                                  roots=('result',), link=True) as reused:
+                if not reused:
+                    (output / 'result').mkdir(parents=True)
+                    (output / 'result/front.mp4').write_bytes(b'decoded')
+            return output / 'result/front.mp4', reused
+        first, reused = run_linked('first')
+        self.assertFalse(reused)
+        second, reused = run_linked('second')
+        self.assertTrue(reused)
+        cached = next((self.root / 'cache/prepare').rglob('front.mp4'))
+        self.assertEqual({first.stat().st_ino, second.stat().st_ino}, {cached.stat().st_ino})
+        with self.assertRaises(PermissionError):
+            second.write_bytes(b'changed')
+        self.assertEqual(cached.read_bytes(), b'decoded')
+
     def test_corrupted_cache_recomputes_instead_of_returning_damaged_atlas(self):
         self.run_stage('first')
         next((self.root / 'cache').rglob('map.osa')).write_bytes(b'broken')
@@ -122,14 +141,14 @@ class MapReuseTests(unittest.TestCase):
                            'software/trajectory/calibration/assets.py',
                            'software/trajectory/algorithms/fusion_alignment.py',
                            'software/trajectory/algorithms/fusion_alignment_solver.py',
-                           'software/trajectory/algorithms/inertial.py'):
+                           'software/trajectory/algorithms/inertial.py', 'software/vision/decoding.py'):
             self.assertIn(dependency, sources)
-        original_hash = provenance.file_hash
-        for module in ('fusion_alignment.py', 'fusion_alignment_solver.py', 'inertial.py'):
+        original_hash = provenance.source_hash
+        for module in ('fusion_alignment.py', 'fusion_alignment_solver.py', 'inertial.py', 'decoding.py'):
             with self.subTest(module=module):
                 def changed_hash(path):
                     return 'changed' if path.name == module else original_hash(path)
-                with patch.object(provenance, 'file_hash', side_effect=changed_hash):
+                with patch.object(provenance, 'source_hash', side_effect=changed_hash):
                     self.assertNotEqual(source_identity('map'), sources)
 
     def test_tcp_change_keeps_map_but_calibration_and_threshold_changes_invalidate(self):
@@ -160,6 +179,23 @@ class MapReuseTests(unittest.TestCase):
         resized = replace(scene, trajectory=replace(scene.trajectory, values=replace(scene.trajectory.values,
                           video=replace(scene.trajectory.values.video, size_px=640))))
         self.assertNotEqual(cache.preparation_inputs(source, camera, resized), original)
+
+    def test_preparation_ignores_calibration_but_tracks_decoding(self):
+        source = self.fixture.recording_paths['left']
+        camera = self.fixture.cameras[source]
+        cache = MapBuildCache(self.fixture.root / 'cache', {'ffmpeg': 'one', 'orb_library': 'x'})
+        original = cache.preparation_inputs(source, camera, self.fixture.scene)
+        recalibrated = replace(camera, selected=replace(camera.selected, calibration_id='new-calibration'))
+        self.assertEqual(cache.preparation_inputs(source, recalibrated, self.fixture.scene), original)
+        self.assertEqual(original['engines'], {'ffmpeg': 'one'})
+        sources = source_identity('prepare')
+        for unrelated in ('software/registry.py', 'software/camera/calibration_source.py',
+                          'software/trajectory/calibration/assets.py', 'software/scene/map_cache.py'):
+            self.assertNotIn(unrelated, sources)
+        for decoder in ('software/camera/x3/extraction.py', 'software/vision/tools/make_lens_video.py'):
+            self.assertIn(decoder, sources)
+        newer_ffmpeg = MapBuildCache(self.fixture.root / 'cache', {'ffmpeg': 'two'})
+        self.assertNotEqual(newer_ffmpeg.preparation_inputs(source, camera, self.fixture.scene), original)
 
 
 class VisualStageCacheTests(unittest.TestCase):
