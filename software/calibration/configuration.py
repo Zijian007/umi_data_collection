@@ -1,14 +1,14 @@
 """标定配置预览；不解析录像或访问设备档案。"""
 from __future__ import annotations
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 from argparse import Namespace
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from software import config
+from software.configuration import loader as config
 from software.calibration.models import CalibrationRequest
 
 if TYPE_CHECKING:
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 def rear_validation_parameters() -> SceneParameters:
     """环境镜头 C 独立验证，不采用任务海报或建图尺度修正。"""
-    from software.scene.management.inputs import load_scene_parameters
+    from software.scene.management.scene_inputs import load_scene_parameters
     return replace(load_scene_parameters(), tag_fusion_enabled=False,
                    tag_mapping_enabled=False, tag_mapping_scale_enabled=False)
 
@@ -32,7 +32,7 @@ def effective_report(arguments: Namespace, request: CalibrationRequest | None = 
     if request is not None:
         effective['output'] = str(request.output_directory)
     return dict(program='umi-calib', operation=arguments.cmd, scope='configuration_only',
-        precedence=['project_defaults', '--config', 'C_validation_overrides'],
+        precedence=['project_defaults', 'config/user.yaml', '--expert-config', 'C_validation_overrides'],
         inputs={key: str(value) if isinstance(value, Path) else value
                 for key, value in vars(arguments).items() if key in ('folder', 'video', 'out')},
         execution={key: value for key, value in vars(arguments).items()

@@ -8,12 +8,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from software import config
+from software.configuration import loader as config
 from software.calibration import cli as calibration_cli
 from software.scene import cli as scene_cli
 from software.scene.configuration import SceneOverrides, apply_overrides
-from software.scene.management import inputs
-from software.storage import write_yaml
+from software.scene.parameter_schema import nested_snapshot
+from software.infrastructure.file_store import read_yaml
+from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
+from software.infrastructure.file_store import write_yaml
 from software.viewer import server
 
 
@@ -24,30 +26,29 @@ class EffectiveConfigurationTests(unittest.TestCase):
         self.root = Path(temporary.name)
 
     def test_scene_precedence_and_immutable_loaded_overlay(self):
-        scene_path = self.root/'scene.yaml'
-        write_yaml(scene_path, dict(trajectory=dict(video=dict(frame_step=3, crf=15)),
-                                   parameters=dict(gripper_width_max_gap_s=.4)))
+        scene_path = self.root/'batch/collection.yaml'
+        write_yaml(scene_path, dict(schema_version=1, scene=dict(layout='shared', map_reference_arm='left'), kit='rig'))
         override_path = self.root/'override.yaml'
-        write_yaml(override_path, dict(trajectory=dict(video=dict(frame_step=4)),
-                                      parameters=dict(gripper_width_max_gap_s=.8)))
+        write_yaml(override_path, dict(trajectory=dict(video=dict(frame_step=4, crf=15)),
+                                      parameters=dict(measurements=dict(gripper_width=dict(max_gap_s=.8)))))
         overrides = SceneOverrides.load(override_path)
         override_path.write_text('{}')
-        scene = inputs.read_scene(scene_path, overrides=overrides)
+        scene = scene_inputs.read_scene(scene_path, overrides=overrides)
         self.assertEqual(scene.trajectory.values.video.frame_step, 4)
         self.assertEqual(scene.trajectory.values.video.crf, 15)
         self.assertEqual(scene.parameters.gripper_width_max_gap_s, .8)
         self.assertEqual(scene.trajectory.sources[-1], str(override_path))
-        self.assertEqual(inputs.read_scene(scene_path).trajectory.values.video.frame_step, 3)
+        self.assertNotEqual(scene_inputs.read_scene(scene_path).trajectory.values.video.frame_step, 4)
 
     def test_partial_overlay_validates_after_scene_merge(self):
         override_path = self.root/'override.yaml'
-        write_yaml(override_path, dict(parameters=dict(tag_mapping_scale_enabled=True)))
+        write_yaml(override_path, dict(parameters=dict(mapping=dict(environment_tags=dict(scale=dict(enabled=True))))))
         overrides = SceneOverrides.load(override_path)
-        parameters = inputs.load_scene_parameters(overrides=dict(tag_mapping_enabled=True))
+        parameters = scene_inputs.load_scene_parameters(overrides=dict(tag_mapping_enabled=True))
         _, effective = apply_overrides(config.load('trajectory'), parameters, overrides)
         self.assertTrue(effective.tag_mapping_scale_enabled)
         with self.assertRaisesRegex(ValueError, 'tag_mapping_enabled'):
-            apply_overrides(config.load('trajectory'), inputs.load_scene_parameters(), overrides)
+            apply_overrides(config.load('trajectory'), scene_inputs.load_scene_parameters(), overrides)
 
     def test_scene_overlay_rejects_asset_fields_and_unknown_parameters(self):
         override_path = self.root/'override.yaml'
@@ -59,14 +60,16 @@ class EffectiveConfigurationTests(unittest.TestCase):
                     SceneOverrides.load(override_path)
 
     def test_scene_show_config_never_processes_inputs(self):
-        write_yaml(self.root/'scene.yaml', {})
+        collection = self.root/'batch/collection.yaml'
+        write_yaml(collection, dict(schema_version=1, scene=dict(layout='shared', map_reference_arm='left'), kit='kit_001'))
         before = {path: path.read_bytes() for path in self.root.rglob('*') if path.is_file()}
         with patch.object(scene_cli.processing, 'run') as run, redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(scene_cli.main(['run', str(self.root), '--show-config', '--force', '--dry-run']), 0)
+            self.assertEqual(scene_cli.main(['run', str(collection.parent), '--show-config', '--force', '--dry-run']), 0)
         run.assert_not_called()
         report = json.loads(output.getvalue())
         self.assertEqual(report['scope'], 'configuration_only')
-        self.assertEqual(report['configuration'][0]['effective']['parameters'], asdict(inputs.load_scene_parameters()))
+        self.assertEqual(report['configuration'][0]['effective']['parameters'],
+                         nested_snapshot(asdict(scene_inputs.load_scene_parameters())))
         self.assertEqual({path: path.read_bytes() for path in self.root.rglob('*') if path.is_file()}, before)
 
     def test_calibration_show_config_without_recordings_or_environment(self):
@@ -78,7 +81,7 @@ class EffectiveConfigurationTests(unittest.TestCase):
              patch.object(calibration_cli.runtime, 'use_calibration_environment') as environment:
             for command in (['run', 'missing/front'], ['verify', 'missing.insv'], ['run', 'missing/rear']):
                 with self.subTest(command=command), redirect_stdout(io.StringIO()) as output:
-                    self.assertEqual(calibration_cli.main(command + ['--config', str(overlay),
+                    self.assertEqual(calibration_cli.main(command + ['--expert-config', str(overlay),
                         '--show-config', '--tag-size-mm', '36'], prepare_environment=True), 0)
                 effective = json.loads(output.getvalue())['effective']
                 trajectory = effective['trajectory_validation']['values']

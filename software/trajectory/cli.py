@@ -46,7 +46,7 @@ def main(argv=None) -> int:
     parser.add_argument('--tag-layout', type=Path, help='环境海报布局 JSON；默认诊断，配置 environment_tags.tag_fusion_enabled 开启融合')
     parser.add_argument('--rear-calibration', help='本设备已登记的 rear 参数来源（measured/factory）；dual 或海报模式省略时尝试 INSV 工厂参数 + front B 兜底')
     parser.add_argument("--mask", type=Path, help="工作镜头遮罩 PNG（默认通用夹爪遮罩）")
-    parser.add_argument("--config", type=Path, help="显式 YAML 覆盖配置（默认 config/trajectory.yaml）")
+    parser.add_argument("--config", type=Path, help="显式 YAML 覆盖配置（默认 config/algorithms/trajectory.yaml）")
     parser.add_argument("--dry-run", action="store_true", help="只检查输入、标定和生效参数，不创建输出或运行算法")
     args = parser.parse_args(argv)
     request = TrajectoryRequest(mode=args.mode, max_tries=args.max_tries, cores=args.cores, keep_work=args.keep_work,

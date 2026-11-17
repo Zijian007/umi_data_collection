@@ -8,7 +8,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from software.trajectory.algorithms.fusion_alignment_solver import estimate_lens_alignment
-from software import config
+from software.configuration import loader as config
 from software.trajectory.algorithms.fusion_alignment import (
     AlignmentError, align_lenses,
 )

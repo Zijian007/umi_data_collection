@@ -7,8 +7,8 @@ from pathlib import Path
 import re
 import shutil
 
-from software import provenance as artifact_identity
-from software import registry
+from software.infrastructure import provenance as artifact_identity
+from software.camera import registry
 from software.camera import calibration_source, rear_fallback
 from software.gripper_width import calibration as gripper_calibration
 from software.scene.models import CalibratedCamera, Scene
@@ -30,7 +30,7 @@ def require_calibration_source(kit: dict, requested_source: str) -> None:
             calibration_source.read_rear(registry.rear_path(binding['serial'], binding['rear_calibration']),
                                          serial=binding['serial'], expected_source=requested_source)
         elif binding.get('rear_intrinsics_source') not in (None, requested_source):
-            raise ValueError('冻结批次的环境镜头来源与请求不同；请从 batch.yaml 重新选择')
+            raise ValueError('冻结批次的环境镜头来源与请求不同；请从 collection.yaml 重新选择')
 
 
 def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
@@ -40,9 +40,10 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
         raise ValueError(f'相机 {serial} 未固定到场景/采集套件，请先登记设备配置')
     device_binding = scene.devices[serial]
     device_record = registry.get(serial, calibration=device_binding['calibration'], allow_retired=True)
-    expected_source = device_binding.get('intrinsics_source') or device_record.get('intrinsics_source', 'measured')
+    recorded_source = device_record.get('intrinsics_source', 'measured')
+    expected_source = device_binding.get('intrinsics_source') or recorded_source
     calibration_source.require(device_record, expected_source, label=f'相机 {serial} 工作镜头')
-    if device_record.get('intrinsics_source') == 'factory':
+    if recorded_source == 'factory':
         from software.vision.capabilities import require_forward_kb4
         require_forward_kb4()
         calibration_source.check_recording(recording_path, device_record['intrinsics_provenance'])
@@ -59,7 +60,7 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
         assets=assets, directory=Path(device_record['dir']), calibration_id=device_binding['calibration'],
         camera_serial=device_record['serial'], source=device_record['source'], selection='scene_registry',
         status=device_record['status'], time_offset_ns=int(device_record['cam_time_offset_ns']), geometry=geometry,
-        intrinsics_source=device_record.get('intrinsics_source', 'measured'))
+        intrinsics_source=recorded_source)
     asset_paths = dict(front=assets.camera_json, mask=assets.front_mask)
     if tcp_path is not None:
         asset_paths['tcp'] = tcp_path
@@ -71,7 +72,7 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
     if 'tag_distance' in gripper:
         asset_paths['tag_distance'] = Path(gripper['tag_distance'])
         tag_distance_measurement = gripper_calibration.read_tag_sizes(asset_paths['tag_distance'])
-    lens_calibrations = dict(front=dict(device_record['measurement'], intrinsics_source=device_record.get('intrinsics_source', 'measured')))
+    lens_calibrations = dict(front=dict(device_record['measurement'], intrinsics_source=recorded_source))
     manifest = Path(device_record['dir'])/'manifest.json'
     if manifest.is_file(): asset_paths['front_manifest'] = manifest
     factory_rear = None

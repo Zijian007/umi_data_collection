@@ -9,12 +9,12 @@ from gtsam.symbol_shorthand import X, V, B
 import gtsam
 import numpy as np
 
-from software import parameters as parameter_models
+from software.configuration import parameter_models
 from software.trajectory.algorithms.fusion_alignment import AlignmentResult
 from software.trajectory.algorithms.fusion_alignment_solver import summarize_alignment
 from software.trajectory.algorithms.fusion_data import FusionSolution
 from software.trajectory.algorithms.fusion_factors import logR
-from software.trajectory.algorithms.fusion_graph import OptimizedGraph, segment_keys
+from software.trajectory.algorithms.fusion_graph import TrajectoryOptimizationResult, segment_variable_keys
 from software.trajectory.algorithms.fusion_placement import MapPlacements
 from software.trajectory.algorithms.fusion_quality import scale_consistency
 
@@ -26,7 +26,7 @@ class RecoveredState:
     bias: gtsam.imuBias.ConstantBias
 
 
-def _recover_states(video_times_s: np.ndarray, optimized: OptimizedGraph) -> dict[int, RecoveredState]:
+def _recover_states(video_times_s: np.ndarray, optimized: TrajectoryOptimizationResult) -> dict[int, RecoveredState]:
     """保留节点解；区间内从前节点积分，按既有帧比例吸收终点误差。"""
     states = {}
     if optimized.node_times is not None:
@@ -96,7 +96,7 @@ def _describe_segments(placements: MapPlacements, values: gtsam.Values,
     final_scales = {lens_name: [] for lens_name in placements.segments}
     for lens_name, segments in placements.segments.items():
         for segment in segments:
-            scale_key, rotation_key, translation_key = segment_keys(lens_name, segment['sid'])
+            scale_key, rotation_key, translation_key = segment_variable_keys(lens_name, segment['sid'])
             placement = placements.chains[lens_name][segment['chain']]
             rotation_change_deg = np.degrees(np.linalg.norm(logR(placement['R'].T @ values.atRot3(rotation_key).matrix())))
             translation = values.atVector(translation_key)
@@ -112,7 +112,7 @@ def _describe_segments(placements: MapPlacements, values: gtsam.Values,
 
 
 def recover_trajectory(aligned: AlignmentResult, placements: MapPlacements,
-                       optimized: OptimizedGraph, parameters: parameter_models.TrajectoryParameters) -> FusionSolution:
+                       optimized: TrajectoryOptimizationResult, parameters: parameter_models.TrajectoryParameters) -> FusionSolution:
     fusion_parameters = parameters.fusion
     frame_count = len(aligned.video_times_s)
     states = _recover_states(aligned.video_times_s, optimized)

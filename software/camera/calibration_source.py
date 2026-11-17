@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 
 
 SOURCES = ('measured', 'factory')

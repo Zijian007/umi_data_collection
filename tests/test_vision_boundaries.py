@@ -1,4 +1,4 @@
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 """公共视觉边界与融合模块导入不依赖独立工作流或触发执行。"""
 import ast
 import subprocess
@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from software import config
+from software.configuration import loader as config
 
 
 class SharedBoundaryTests(unittest.TestCase):

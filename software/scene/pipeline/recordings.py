@@ -11,8 +11,8 @@ import tempfile
 
 import numpy as np
 
-from software import provenance as artifact_identity
-from software import registry
+from software.infrastructure import provenance as artifact_identity
+from software.camera import registry
 from software.camera.timing import euroc_ns_to_seconds
 from software.scene.models import CalibratedCamera, PreparedRecording, Scene
 from software.scene.map_cache import MapBuildCache
@@ -69,11 +69,12 @@ def import_video(video: Path, directory: Path, *, metadata: dict, link: bool = F
     return target
 
 
-def prepare_recording(recording_path: Path, camera: CalibratedCamera, scene: Scene, cache_dir: Path, *, cores: str = '', reuse: bool = False,
+def prepare_recording(recording_path: Path, camera: CalibratedCamera, scene: Scene, cache_dir: Path, *, cores: str = '',
                       cache: MapBuildCache | None = None) -> PreparedRecording:
     identity = cache.preparation_inputs(recording_path, camera, scene) if cache else {}
+    # 无缓存时（rear 标定等一次性用途）总是重新准备。
     with (cache.stage('prepare', f'{camera.serial} 录像准备', identity, cache_dir,
-                      roots=('debug/dataset', 'debug/lens_videos'), link=True) if cache else nullcontext(reuse)) as reuse:
+                      roots=('debug/dataset', 'debug/lens_videos'), link=True) if cache else nullcontext(False)) as reuse:
         paths = RecordingPaths(cache_dir)
         paths.logs.mkdir(parents=True, exist_ok=True)
         if reuse:

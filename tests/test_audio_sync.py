@@ -3,12 +3,14 @@
 import unittest
 from pathlib import Path
 import tempfile
+import json
 from unittest.mock import patch
 
 import numpy as np
 
-from software.sync.audio import AudioSyncError, estimate_offset
-from software.scene.pipeline.synchronization import estimate_audio_sync
+from software.infrastructure import provenance
+from software.sync.audio import AudioSyncError, AudioSyncEstimate, estimate_offset
+from software.scene.pipeline.synchronization import estimate_audio_sync, load_ready_audio_sync
 
 
 def _bursts(rate: int, duration_s: float, onsets: list[float], seed: int) -> np.ndarray:
@@ -46,7 +48,7 @@ class AudioSyncTests(unittest.TestCase):
         with self.assertRaisesRegex(AudioSyncError, "silent"):
             estimate_offset(np.zeros(1024), np.zeros(1024))
 
-    def test_pipeline_persists_raw_estimate_and_reuses_matching_inputs(self) -> None:
+    def test_pipeline_persists_specialist_session_clock_offset_and_reuses_matching_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             reference = root / 'left.insv'
@@ -54,19 +56,51 @@ class AudioSyncTests(unittest.TestCase):
             output = root / 'sync.json'
             reference.write_bytes(b'left')
             other.write_bytes(b'right')
-            fake = type('Estimate', (), {
-                'other_started_later_s': 0.25,
-                'peak_ratio': 2.0,
-                'peak_value': 3.0,
-                'sample_rate_hz': 16000,
-                'max_offset_s': 30.0,
-            })()
+            fake = AudioSyncEstimate(other_started_later_s=0.25, peak_ratio=2.0, peak_value=3.0,
+                                     sample_rate_hz=16000, max_offset_s=30.0)
             with patch('software.scene.pipeline.synchronization.estimate_offset_from_files', return_value=fake) as estimate:
                 first = estimate_audio_sync({'left': reference, 'right': other}, output=output)
                 second = estimate_audio_sync({'left': reference, 'right': other}, output=output)
 
             self.assertEqual(first, second)
-            self.assertEqual(first['status'], 'estimated_raw')
+            self.assertEqual(first['status'], 'ready')
             self.assertEqual(first['raw_audio_offset_s']['right'], 0.25)
-            self.assertEqual(first['video_offset_status'], 'requires_av_correction')
+            self.assertEqual(first['offsets_s']['right'], -0.25)
+            self.assertEqual(first['video_offset_status'], 'specialist_assumed_video_clock')
             estimate.assert_called_once()
+
+    def test_ready_record_is_consumable_only_with_matching_recordings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / 'left.insv'
+            other = root / 'right.insv'
+            output = root / 'sync.json'
+            reference.write_bytes(b'left')
+            other.write_bytes(b'right')
+            fake = AudioSyncEstimate(other_started_later_s=0.12, peak_ratio=2.0, peak_value=3.0,
+                                     sample_rate_hz=16000, max_offset_s=30.0)
+            with patch('software.scene.pipeline.synchronization.estimate_offset_from_files', return_value=fake):
+                estimate_audio_sync({'left': reference, 'right': other}, output=output)
+            result = load_ready_audio_sync(output, {'left': reference, 'right': other})
+            self.assertEqual(result['offsets_s'], {'left': 0., 'right': -.12})
+            self.assertEqual(result['sync_record_sha256'], provenance.file_hash(output))
+            other.write_bytes(b'changed')
+            with self.assertRaisesRegex(ValueError, '指纹已变化'):
+                load_ready_audio_sync(output, {'left': reference, 'right': other})
+
+    def test_failed_estimate_is_persisted_and_blocks_repeated_consumption(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / 'left.insv'
+            other = root / 'right.insv'
+            output = root / 'sync.json'
+            reference.write_bytes(b'left')
+            other.write_bytes(b'right')
+            with patch('software.scene.pipeline.synchronization.estimate_offset_from_files',
+                       side_effect=AudioSyncError('no common event')):
+                with self.assertRaisesRegex(AudioSyncError, '音频同步失败'):
+                    estimate_audio_sync({'left': reference, 'right': other}, output=output)
+            record = json.loads(output.read_text())
+            self.assertEqual(record['status'], 'failed')
+            with self.assertRaisesRegex(ValueError, '上次 specialist 音频同步失败'):
+                load_ready_audio_sync(output, {'left': reference, 'right': other})

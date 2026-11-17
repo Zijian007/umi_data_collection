@@ -8,14 +8,15 @@ from scipy.spatial.transform import Rotation
 import numpy as np
 
 from . import fusion, mapping, slam
-from software import config, registry
-from software import provenance as artifact_identity
+from software.configuration import loader as config
+from software.camera import registry
+from software.infrastructure import provenance as artifact_identity
 from software.calibration import workflow
 from software.calibration.models import CalibrationRequest
 from software.calibration.pipeline import inputs as calibration_inputs
 from software.camera.geometry import imu_from_camera
 from software.camera.timing import video_to_imu_seconds
-from software.pose_io import write_tum
+from software.trajectory.io.tum import write_tum
 from software.scene.management import camera_assets
 from software.scene.models import Scene
 from software.scene.pipeline import recordings

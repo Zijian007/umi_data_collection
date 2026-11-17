@@ -1,3 +1,4 @@
+from software.infrastructure.file_store import read_yaml
 """指令和同步作为任务输入参与处理、验收与导出，不改变单相机求解时钟。"""
 import json
 import math
@@ -7,9 +8,10 @@ from unittest.mock import patch
 import numpy as np
 from software.scene.result_io import pose_rows
 
-from software.scene.management import episodes, inputs
+from software.scene.management import episodes, batch_inputs, episode_inputs, scene_inputs
 from software.scene import workflow
-from software.storage import write_yaml
+from software.infrastructure.file_store import write_yaml
+from registry_fakes import write_task_configuration, read_task_configuration
 import test_scene as fixtures
 
 
@@ -22,12 +24,12 @@ class EpisodeAnnotationTests(unittest.TestCase):
     def configure(self, *, offset=-.12, confirmed=True, note='同一事件：左2.00s，右2.12s；末尾已复核'):
         data = dict(instruction='双手把盒子放入托盘', synchronization=dict(
             offsets_s=dict(left=0., right=offset), confirmed=confirmed, note=note))
-        write_yaml(self.f.task_root / 'task.yaml', data)
+        write_task_configuration(self.f.task_root, data)
         return data
 
     def test_task_without_annotations_is_read_without_rewriting_or_claiming_sync(self):
         before = self.f.episode_path.read_bytes()
-        episode = inputs.read_episode(self.f.episode_path)
+        episode = episode_inputs.read_episode(self.f.episode_path)
         self.assertEqual(episode.instruction, '')
         self.assertFalse(episode.synchronization['confirmed'])
         self.assertEqual(episode.offsets(), dict(left=0., right=0.))
@@ -42,20 +44,20 @@ class EpisodeAnnotationTests(unittest.TestCase):
             dict(offsets_s=dict(left=0., right=0.), confirmed=True, note='  '),
         ):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                inputs.read_synchronization(bad, ('left', 'right'))
-        single = inputs.read_synchronization(None, ('right',))
+                episode_inputs.read_synchronization(bad, ('left', 'right'))
+        single = episode_inputs.read_synchronization(None, ('right',))
         self.assertTrue(single['confirmed'])
         self.assertEqual(single['offsets_s'], dict(right=0.))
 
     def test_audio_auto_is_an_unconfirmed_two_camera_request(self):
-        result = inputs.read_synchronization({'mode': 'audio_auto', 'confirmed': False}, ('left', 'right'))
+        result = episode_inputs.read_synchronization({'mode': 'audio_auto', 'confirmed': False}, ('left', 'right'))
         self.assertEqual(result['method'], 'audio_auto')
         self.assertEqual(result['offsets_s'], {'left': 0., 'right': 0.})
         self.assertFalse(result['confirmed'])
 
     def test_task_can_bind_an_explicit_map_version(self):
-        write_yaml(self.f.task_root / 'task.yaml', dict(map_version='map_v2'))
-        episode = inputs.read_episode(self.f.episode_path)
+        write_task_configuration(self.f.task_root, dict(map_version='map_v2'))
+        episode = episode_inputs.read_episode(self.f.episode_path)
         self.assertEqual(episode.map_version, 'map_v2')
         self.assertEqual(episode.map_selection['selection'], 'explicit_task')
 
@@ -65,18 +67,51 @@ class EpisodeAnnotationTests(unittest.TestCase):
             maps=[dict(epoch='epoch_001', map_version='map_v1', sequence=0),
                   dict(epoch='epoch_002', map_version='map_v2', sequence=3)],
             tasks=[dict(task='take_001', sequence=4)]))
-        episode = inputs.read_episode(self.f.episode_path)
+        episode = episode_inputs.read_episode(self.f.episode_path)
         self.assertEqual(episode.map_version, 'map_v2')
         self.assertEqual(episode.map_selection['selection'], 'latest_prior_map')
 
-    def test_audio_auto_never_uses_zero_placeholder_as_video_offset(self):
-        write_yaml(self.f.task_root / 'task.yaml', dict(synchronization=dict(
+    def test_task_can_bind_an_epoch_and_resolve_its_map_version(self):
+        write_yaml(self.f.batch_root / '.pipeline/map_epochs.yaml', dict(
+            schema_version=1,
+            maps=[dict(epoch='epoch_001', map_version='map_v1', sequence=0),
+                  dict(epoch='epoch_002', map_version='map_v2', sequence=3)],
+            tasks=[dict(task='take_001', sequence=4)]))
+        write_task_configuration(self.f.task_root, dict(map_epoch='epoch_001'))
+        episode = episode_inputs.read_episode(self.f.episode_path)
+        self.assertEqual(episode.map_version, 'map_v1')
+        self.assertEqual(episode.map_selection['selection'], 'explicit_epoch')
+        self.assertEqual(episode.map_selection['epoch'], 'epoch_001')
+
+    def test_command_epoch_override_is_rejected_when_task_binds_another_epoch(self):
+        write_yaml(self.f.batch_root / '.pipeline/map_epochs.yaml', dict(
+            schema_version=1,
+            maps=[dict(epoch='epoch_001', map_version='map_v1', sequence=0),
+                  dict(epoch='epoch_002', map_version='map_v2', sequence=3)],
+            tasks=[dict(task='take_001', sequence=4)]))
+        write_task_configuration(self.f.task_root, dict(map_epoch='epoch_001'))
+        with self.assertRaisesRegex(ValueError, 'map_epoch'):
+            episode_inputs.read_episode(self.f.episode_path, map_epoch_override='epoch_002')
+
+    def test_audio_auto_uses_specialist_offset_as_video_and_imu_shift(self):
+        write_task_configuration(self.f.task_root, dict(synchronization=dict(
             mode='audio_auto', confirmed=False)))
-        raw = dict(raw_audio_offset_s={'left': 0., 'right': .42})
+        self.f.build_scene()
+        raw = dict(raw_audio_offset_s={'left': 0., 'right': .42},
+                   offsets_s={'left': 0., 'right': -.42},
+                   peak_ratio=2.4,
+                   video_offset_status='specialist_assumed_video_clock',
+                   note='specialist session-clock sync')
         with patch.object(workflow.synchronization, 'estimate_audio_sync', return_value=raw) as estimate:
-            with self.assertRaisesRegex(ValueError, 'A/V 修正'):
-                workflow.run_episode(self.f.episode_path)
+            run_result = workflow.run_episode(self.f.episode_path)
         estimate.assert_called_once()
+        self.assertEqual(run_result['synchronization']['offsets_s']['right'], -.42)
+        result = json.loads((self.f.task_root / 'results/episode.json').read_text())
+        self.assertEqual(result['synchronization']['offsets_s']['right'], -.42)
+        report = (self.f.task_root / 'results/report.txt').read_text()
+        self.assertIn('同步原始音频偏移：left=+0.000000s, right=+0.420000s', report)
+        self.assertIn('同步音频峰值比：2.40', report)
+        self.assertIn('同步视频时间轴：specialist_assumed_video_clock', report)
 
     def test_offsets_change_only_output_time_and_propagate_instruction(self):
         self.f.build_scene()
@@ -106,11 +141,11 @@ class EpisodeAnnotationTests(unittest.TestCase):
         episodes.review(self.f.episode_path, accept=True, reviewer='test')
         before = self.f.episode_path.read_bytes()
         changed = dict(original, instruction='拿起盒子')
-        write_yaml(self.f.task_root / 'task.yaml', changed)
+        write_task_configuration(self.f.task_root, changed)
         self.assertEqual(self.f.episode_path.read_bytes(), before)
         self.assertEqual(changed['synchronization'], original['synchronization'])
         with self.assertRaisesRegex(ValueError, '成功结果'):
-            episodes.accepted_run(inputs.read_episode(self.f.episode_path))
+            episodes.accepted_run(episode_inputs.read_episode(self.f.episode_path))
         workflow.run_episode(self.f.episode_path)
         result = json.loads((self.f.task_root / 'results/episode.json').read_text())
         self.assertEqual(result['instruction'], '拿起盒子')
@@ -123,19 +158,19 @@ class EpisodeAnnotationTests(unittest.TestCase):
         episodes.review(self.f.episode_path, accept=True, reviewer='test')
         self.configure(offset=-.3)
         with self.assertRaisesRegex(ValueError, '成功结果'):
-            episodes.accepted_run(inputs.read_episode(self.f.episode_path))
+            episodes.accepted_run(episode_inputs.read_episode(self.f.episode_path))
         self.configure(offset=-100.)
         with self.assertRaisesRegex(ValueError, '没有重叠'):
             workflow.run_episode(self.f.episode_path)
 
     def test_instruction_update_keeps_single_hand_in_a_bimanual_kit(self):
-        data = inputs.read_yaml(self.f.episode_path)
+        data = read_yaml(self.f.episode_path)
         data['recordings'].pop('left')
         write_yaml(self.f.episode_path, data)
-        write_yaml(self.f.task_root / 'task.yaml', dict(expected_arms=['right']))
-        configuration = inputs.read_yaml(self.f.task_root / 'task.yaml')
+        write_task_configuration(self.f.task_root, dict(expected_arms=['right']))
+        configuration = read_task_configuration(self.f.task_root)
         configuration['instruction'] = '把盒子放入托盘'
-        write_yaml(self.f.task_root / 'task.yaml', configuration)
-        episode = inputs.read_episode(self.f.episode_path)
+        write_task_configuration(self.f.task_root, configuration)
+        episode = episode_inputs.read_episode(self.f.episode_path)
         self.assertEqual(episode.expected_arms, ('right',))
         self.assertEqual(episode.instruction, '把盒子放入托盘')

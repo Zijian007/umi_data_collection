@@ -4,7 +4,7 @@
 #   ./umi-view scenes/test_shelf --port 9092
 #   ./umi-view --help
 #   ./umi-view --show-config
-# 启动选项只在命令行设置，不读取算法 YAML；统一说明见 config/README.md。
+# 日常 host/port 可写入 config/user.yaml；算法 YAML 不由查看器读取，统一说明见 config/README.md。
 # 完整参数见 docs/命令行参数.md；操作见 docs/结果查看与验收.md。
 # 参数由 software/viewer/server.py 解析。
 # UMI_VIEW_PYTHON 覆盖解释器；UMI_DEPS 覆盖依赖目录。

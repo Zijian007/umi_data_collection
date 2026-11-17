@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from software import registry
-from software import provenance as artifact_identity
+from software.camera import registry
+from software.infrastructure import provenance as artifact_identity
 from software.calibration import devices
 from software.calibration import reports
 from software.trajectory.calibration import assets as calibration
@@ -67,7 +67,7 @@ class ResultReportTests(unittest.TestCase):
     def empty_registry(root: Path) -> Path:
         target = root/'registry'
         target.mkdir()
-        (target/'index.json').write_text(json.dumps(dict(kind='umi_device_registry', version=2, devices={})))
+        (target/'index.json').write_text(json.dumps(dict(kind='umi_device_registry', version=3, devices={})))
         return target
 
     def test_manual_install_copies_result_and_updates_activation_snapshot(self):
@@ -112,7 +112,7 @@ class ResultReportTests(unittest.TestCase):
                     doc['operation']='verify'
                     result_io.write(out, doc)
                 from contextlib import nullcontext
-                from software.storage import locked
+                from software.infrastructure.file_store import locked
                 lock = locked(out.parent, name=f'.{out.name}.calibration.lock') if case == 'locked' else nullcontext()
                 with lock, patch.object(registry, 'register') as register:
                     self.assertEqual(devices.install_bundle(out, True, camera_serial='other' if case == 'serial' else None), 2)

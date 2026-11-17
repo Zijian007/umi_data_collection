@@ -14,9 +14,9 @@ from pathlib import Path
 import json
 import shutil
 
-from software.console import Console
+from software.infrastructure.terminal import Console
 from software.scene import layout
-from software.storage import locked as storage_lock, read_yaml
+from software.infrastructure.file_store import locked as storage_lock, read_yaml
 
 
 console = Console('清理')
@@ -122,6 +122,12 @@ def kept_map_versions(batch: Path) -> set[str]:
                 target = (run / reference['path']).resolve()
                 if target.is_relative_to(versions.resolve()):
                     keep.add(target.relative_to(versions.resolve()).parts[0])
+    epoch_plan = layout.metadata(batch, 'map_epochs.yaml')
+    if epoch_plan.is_file():
+        from software.scene.pipeline import map_epoch_selection
+        for epoch in map_epoch_selection.read_plan(epoch_plan).epochs:
+            if epoch.map_version:
+                keep.add(epoch.map_version)
     # 最新一次建图保留其结果或失败现场。版本名以秒级本机时间开头，后缀随机，
     # 同一秒内的多个版本按目录修改时间区分先后。
     published = sorted((path for path in versions.iterdir() if not path.name.startswith('.')),

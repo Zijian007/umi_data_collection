@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 from pathlib import Path
 import re
@@ -61,7 +61,7 @@ def _solver_progress(log: Path, role: str) -> None:
 
 def write_board(path: Path, grid: dict) -> Path:
     """Write the AprilGrid description the Basalt solvers read; same content on every call."""
-    from software.storage import write_json
+    from software.infrastructure.file_store import write_json
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json(path, grid)
     return path
@@ -95,13 +95,13 @@ def prepare_bag(dataset, execution, *, name, log_name, cancelled=None):
     bag = execution.paths.work / (name + '.bag')
     bag.unlink(missing_ok=True)
     log = execution.paths.logs / log_name
-    to_bag = [sys.executable, runtime.TOOLS / 'calib_folder_to_bag.py', '--euroc', dataset, '--out', bag,
+    to_bag = [sys.executable, '-m', 'software.calibration.tools.calib_folder_to_bag', '--euroc', dataset, '--out', bag,
               '--workers', min(settings.values('runtime')['calibration_bag_threads'], execution.workers)]
     role = 'A' if name == 'camera_intrinsics' else 'B'
     label = f'{role} 求解数据准备' + ('（后台，与 A 并行）' if cancelled is not None else '')
     timings = {}
     with runtime.timed(timings, 'bag', label=label):
-        if runtime.run_logged(to_bag, log, cancelled=cancelled) != 0:
+        if runtime.run_logged(to_bag, log, cancelled=cancelled, cwd=runtime.REPO) != 0:
             raise RuntimeError(f'转 bag 失败，见 {log}')
     return bag, dict(timings['bag'], background=cancelled is not None)
 

@@ -7,7 +7,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 import numpy as np
 
-from software.scene.management import inputs
+from software.infrastructure.file_store import read_yaml
+from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
 from software.scene.pipeline import recording_checks
 from software.scene import workflow
 import test_scene as fixtures
@@ -15,7 +16,7 @@ import test_scene as fixtures
 
 class RecordingCheckTests(unittest.TestCase):
     def setUp(self):
-        self.cfg=inputs.load_scene_parameters(None)
+        self.cfg=scene_inputs.load_scene_parameters(None)
 
     def test_static_hand_in_fixed_metric_map_is_allowed(self):
         t=np.arange(0,5,.001)

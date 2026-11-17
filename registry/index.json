@@ -1,19 +1,25 @@
 {
   "kind": "umi_device_registry",
-  "version": 2,
+  "version": 3,
   "devices": {
     "IAQEB26097M4CP": {
       "status": "active",
-      "calibration": "measured",
+      "calibration": "front_measured_a288baaa5e52b62f",
       "rear_calibration_sources": {
-        "measured": "measured"
+        "measured": "rear_measured_3aed17b4e4d64488"
+      },
+      "calibration_sources": {
+        "measured": "front_measured_a288baaa5e52b62f"
       }
     },
     "IAQEB2609JPAR3": {
       "status": "active",
-      "calibration": "measured",
+      "calibration": "front_measured_3353eb60f136bf72",
       "rear_calibration_sources": {
-        "measured": "measured"
+        "measured": "rear_measured_366a09f6c2f472cf"
+      },
+      "calibration_sources": {
+        "measured": "front_measured_3353eb60f136bf72"
       }
     }
   }

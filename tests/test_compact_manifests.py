@@ -1,12 +1,14 @@
+from software.infrastructure.file_store import read_yaml
+from software.scene.management import kit_inputs
 """精简清单仍保留快照、缺片语义、同步和内容校验。"""
 import unittest
-from registry_fakes import write_kit, write_batch, write_task
+from registry_fakes import write_kit, write_batch, write_task, write_task_configuration, read_task_configuration
 from unittest.mock import patch
 
-from software import registry
+from software.camera import registry
 from software.scene import layout
-from software.scene.management import episodes, inputs
-from software.storage import write_yaml
+from software.scene.management import episodes, batch_inputs, episode_inputs, scene_inputs
+from software.infrastructure.file_store import write_yaml
 from software.viewer.episodes import capture_status
 import test_scene as fixtures
 
@@ -31,38 +33,40 @@ class CompactManifestTests(unittest.TestCase):
 
     def test_minimal_scene_matches_explicit_defaults_and_preserves_nondefault_reference(self):
         scene = self.f.root / 'shelf'
-        scene.mkdir()
-        minimal = inputs.read_scene(scene)
+        collection = scene / 'seed/collection.yaml'
+        collection.parent.mkdir(parents=True)
+        write_yaml(collection, dict(schema_version=1, scene=dict(layout='shared', map_reference_arm='left')))
+        minimal = scene_inputs.read_scene(collection)
         self.assertEqual((minimal.name, minimal.mode, minimal.reference_arm), ('shelf', 'shared_front', 'left'))
-        write_yaml(scene / 'scene.yaml', dict(mode='shared_front'))
-        self.assertEqual(minimal, inputs.read_scene(scene))
-        write_yaml(scene / 'scene.yaml', dict(mode='dual', reference_arm='right'))
-        explicit = inputs.read_scene(scene)
+        write_yaml(collection, dict(schema_version=1, scene=dict(layout='shared', map_reference_arm='left')))
+        self.assertEqual(minimal, scene_inputs.read_scene(collection))
+        write_yaml(collection, dict(schema_version=1, scene=dict(layout='per_arm', map_reference_arm='right')))
+        explicit = scene_inputs.read_scene(collection)
         self.assertEqual((explicit.mode, explicit.reference_arm), ('dual', 'right'))
 
     def test_batch_keeps_measurements_but_does_not_copy_kit_description(self):
         kit = self.kit(description='设备备注，与采集无关')
-        stored_kit = inputs.read_yaml(inputs.KITS / 'rig/kit.yaml')
+        stored_kit = read_yaml(kit_inputs.KITS / 'rig/kit.yaml')
         self.assertNotIn('id', stored_kit)
         self.assertEqual(stored_kit['description'], '设备备注，与采集无关')
         path = self.session()
-        batch = inputs.read_yaml(path)
-        self.assertEqual(set(batch), {'schema_version', 'kit'})
+        batch = read_yaml(path)
+        self.assertEqual(set(batch), {'schema_version', 'scene', 'kit', 'map_policy', 'resolved_mode'})
         self.assertEqual(batch['kit'], dict(id='rig', arms=kit['arms']))
         self.kit(('right',), description='已更换设备配置')
-        self.assertEqual(inputs.read_batch(path).expected_arms, ('left', 'right'))
-        (inputs.KITS / 'rig/kit.yaml').unlink()
-        self.assertEqual(inputs.read_batch(path).kit, batch['kit'])
+        self.assertEqual(batch_inputs.read_batch(path).expected_arms, ('left', 'right'))
+        (kit_inputs.KITS / 'rig/kit.yaml').unlink()
+        self.assertEqual(batch_inputs.read_batch(path).kit, batch['kit'])
 
     def test_missing_video_keeps_inherited_bimanual_expectation(self):
         self.kit()
         manifest = self.session()
-        path = write_task(inputs.read_batch(manifest), 'take_001', {'left': self.f.recording_paths['left']})
-        data = inputs.read_yaml(path)
+        path = write_task(batch_inputs.read_batch(manifest), 'take_001', {'left': self.f.recording_paths['left']})
+        data = read_yaml(path)
         self.assertNotIn('expected_arms', data)
         self.assertNotIn('session', data)
         self.assertNotIn('synchronization', data)
-        episode = inputs.read_episode(path)
+        episode = episode_inputs.read_episode(path)
         self.assertEqual(episode.expected_arms, ('left', 'right'))
         self.assertFalse(episode.synchronization['confirmed'])
         self.assertEqual(episodes.task_status(path)['status'], 'incomplete')
@@ -73,52 +77,50 @@ class CompactManifestTests(unittest.TestCase):
     def test_explicit_single_hand_override_survives_instruction_edit(self):
         self.kit()
         manifest = self.session()
-        session = inputs.read_batch(manifest)
+        session = batch_inputs.read_batch(manifest)
         path = write_task(session, 'take_001', {'right': self.f.recording_paths['right']}, expected_arms=['right'])
-        configuration_path = layout.owner(path) / 'task.yaml'
-        task_record = inputs.read_yaml(configuration_path)
+        task_record = read_task_configuration(layout.owner(path))
         task_record['instruction'] = '把盒子放入托盘'
-        write_yaml(configuration_path, task_record)
-        data = inputs.read_yaml(path)
-        self.assertEqual(inputs.read_yaml(configuration_path)['expected_arms'], ['right'])
+        configuration_path = write_task_configuration(layout.owner(path), task_record)
+        data = read_yaml(path)
+        self.assertEqual(read_task_configuration(layout.owner(path))['expected_arms'], ['right'])
         self.assertNotIn('synchronization', data)
         self.assertEqual(episodes.task_status(path)['status'], 'pending')
-        self.assertTrue(inputs.read_episode(path).synchronization['confirmed'])
+        self.assertTrue(episode_inputs.read_episode(path).synchronization['confirmed'])
         single_batch = write_batch(self.f.scene.root, 'right_only', kit='rig', arms=['right'])
-        self.assertEqual(inputs.read_yaml(single_batch)['expected_arms'], ['right'])
+        self.assertEqual(read_yaml(single_batch)['expected_arms'], ['right'])
 
     def test_single_hand_defaults_keep_identity_hash_and_viewer_status(self):
         self.kit(('left',))
         manifest = self.session()
-        path = write_task(inputs.read_batch(manifest), 'take_001', {'left': self.f.recording_paths['left']})
-        data = inputs.read_yaml(path)
+        path = write_task(batch_inputs.read_batch(manifest), 'take_001', {'left': self.f.recording_paths['left']})
+        data = read_yaml(path)
         self.assertEqual(set(data), {'schema_version', 'recordings'})
         self.assertEqual(set(data['recordings']['left']), {'serial', 'path', 'sha256'})
-        self.assertEqual(inputs.read_episode(path).instruction, '')
+        self.assertEqual(episode_inputs.read_episode(path).instruction, '')
         status = capture_status(layout.owner(path))
         self.assertEqual((status['scene'], status['kit'], status['status']), ('lab', 'rig', 'pending'))
-        inputs.read_episode(path).recordings['left'].write_text('corrupted')
+        episode_inputs.read_episode(path).recordings['left'].write_text('corrupted')
         with self.assertRaisesRegex(ValueError, '录像已变化'):
-            inputs.read_episode(path)
+            episode_inputs.read_episode(path)
 
     def test_explicit_bimanual_sync_remains_validated_and_preserved(self):
         self.kit()
         manifest = self.session()
-        session = inputs.read_batch(manifest)
+        session = batch_inputs.read_batch(manifest)
         path = write_task(session, 'take_001', self.f.recording_paths)
-        configuration_path = layout.owner(path) / 'task.yaml'
         data = {}
         data['synchronization'] = dict(offsets_s=dict(left=0., right=-.12), confirmed=True, note='首尾已核验共同事件')
-        write_yaml(configuration_path, data)
-        task_record = inputs.read_yaml(configuration_path)
+        configuration_path = write_task_configuration(layout.owner(path), data)
+        task_record = read_task_configuration(layout.owner(path))
         task_record['instruction'] = '双手移动盒子'
-        write_yaml(configuration_path, task_record)
-        self.assertEqual(inputs.read_yaml(configuration_path)['synchronization'], data['synchronization'])
-        self.assertEqual(inputs.read_episode(path).offsets(), dict(left=0., right=-.12))
+        write_task_configuration(layout.owner(path), task_record)
+        self.assertEqual(read_task_configuration(layout.owner(path))['synchronization'], data['synchronization'])
+        self.assertEqual(episode_inputs.read_episode(path).offsets(), dict(left=0., right=-.12))
         data['synchronization']['note'] = ''
-        write_yaml(configuration_path, data)
+        write_task_configuration(layout.owner(path), data)
         with self.assertRaisesRegex(ValueError, '核验依据'):
-            inputs.read_episode(path)
+            episode_inputs.read_episode(path)
 
 
 if __name__ == '__main__':

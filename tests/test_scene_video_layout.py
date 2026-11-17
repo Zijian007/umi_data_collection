@@ -1,4 +1,4 @@
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 """场景内原片：先放视频、后登记，保留原片身份并避免重复复制。"""
 from pathlib import Path
 import tempfile
@@ -6,11 +6,11 @@ import unittest
 from registry_fakes import write_kit, write_batch, write_task
 from unittest.mock import patch
 
-from software import registry
+from software.camera import registry
 from software.scene import layout
-from software.scene.management import batches, ingest, inputs, processing
+from software.scene.management import batches, ingest, kit_inputs, processing, batch_inputs, episode_inputs, scene_inputs
 from software.scene.pipeline import recordings
-from software.storage import write_yaml
+from software.infrastructure.file_store import write_yaml
 import test_scene as fixtures
 
 
@@ -20,7 +20,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         for override in (
-            patch.object(inputs, 'KITS', self.f.root / 'kits'),
+            patch.object(kit_inputs, 'KITS', self.f.root / 'kits'),
             patch.object(registry, 'get', return_value={}),
             patch.object(registry, 'pin', side_effect=lambda serial: self.f.device_pins[serial]),
             patch.object(registry, 'read_insv_serial', side_effect=lambda path: 'SERIAL_' + Path(path).read_text().split('_')[0]),
@@ -42,20 +42,22 @@ class SceneVideoLayoutTests(unittest.TestCase):
             path.write_text(arm)
             infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, artifact_identity.file_hash(path), 1000., 8.))
         before = {path: (path.read_bytes(), path.stat().st_ino) for path in scene.rglob('*.insv')}
-        write_yaml(batch / 'batch.yaml', dict(kit='rig'))
+        write_yaml(batch / 'collection.yaml', dict(schema_version=1,
+                   scene=dict(layout='auto', map_reference_arm='left'), kit='rig',
+                   map_policy='latest_prior'))
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
             preview = processing.prepare_batch(batch, dry_run=True)
         self.assertEqual(len(preview['episodes']), 1)
         self.assertEqual(preview['episodes'][0]['name'], 'take_001')
-        self.assertFalse((scene / 'scene.yaml').exists())
+        self.assertFalse((scene / 'collection.yaml').exists())
         self.assertFalse((batch / '.pipeline/manifest.yaml').exists())
         self.assertFalse((scene / '.scene.lock').exists())
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
             processing.prepare_batch(batch)
         manifest = batch / '.pipeline/manifest.yaml'
-        episode = inputs.read_episode(batch / 'take_001')
+        episode = episode_inputs.read_episode(batch / 'take_001')
         self.assertEqual(episode.recordings, {arm: infos[index].path for index, arm in enumerate(('left', 'right'))})
-        self.assertEqual(inputs.read_batch(manifest).scene.recordings['left'], mapping)
+        self.assertEqual(batch_inputs.read_batch(manifest).scene.recordings['left'], mapping)
         self.assertEqual({path: (path.read_bytes(), path.stat().st_ino) for path in scene.rglob('*.insv')}, before)
         self.assertEqual(episode.recording_refs['left']['path'], 'left/' + infos[0].path.name)
 
@@ -77,14 +79,14 @@ class SceneVideoLayoutTests(unittest.TestCase):
 
     def test_external_same_named_videos_are_separated_by_actual_arm(self):
         manifest = write_batch(self.f.scene.root, 'external', kit='rig')
-        session = inputs.read_batch(manifest)
+        session = batch_inputs.read_batch(manifest)
         paths = {}
         for arm in ('left', 'right'):
             path = self.f.root / 'sd' / arm / 'VID.insv'
             path.parent.mkdir(parents=True)
             path.write_text(arm)
             paths[arm] = path
-        episode = inputs.read_episode(write_task(session, 'take_001', paths))
+        episode = episode_inputs.read_episode(write_task(session, 'take_001', paths))
         for arm in ('left', 'right'):
             self.assertEqual(episode.recordings[arm], layout.owner(manifest) / 'take_001' / arm / 'VID.insv')
             self.assertEqual(paths[arm].read_bytes(), episode.recordings[arm].read_bytes())
@@ -94,17 +96,17 @@ class SceneVideoLayoutTests(unittest.TestCase):
         infos = [ingest.RecordingMetadata(path, 'SERIAL_' + arm, artifact_identity.file_hash(path), 1000., 8.)
                  for arm, path in self.f.recording_paths.items()]
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos[:1], [])):
-            first = ingest.register_recordings(inputs.read_batch(manifest))
+            first = ingest.register_recordings(batch_inputs.read_batch(manifest))
         pending = Path(first['pending'][0]['path'])
         self.assertEqual(pending.parent, layout.owner(manifest) / 'pending/left')
         self.assertTrue(pending.is_file())
         self.assertFalse((layout.owner(manifest) / 'take_001').exists())
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
-            ingest.register_recordings(inputs.read_batch(manifest), dry_run=True)
+            ingest.register_recordings(batch_inputs.read_batch(manifest), dry_run=True)
             self.assertTrue(pending.is_file())
             self.assertFalse((layout.owner(manifest) / 'take_001').exists())
-            result = ingest.register_recordings(inputs.read_batch(manifest))
-        episode = inputs.read_episode(Path(result['episodes'][0]['path']))
+            result = ingest.register_recordings(batch_inputs.read_batch(manifest))
+        episode = episode_inputs.read_episode(Path(result['episodes'][0]['path']))
         self.assertFalse((layout.owner(manifest) / 'pending').exists())
         for arm in ('left', 'right'):
             self.assertEqual(episode.recordings[arm].parent, episode.root / arm)
@@ -122,11 +124,11 @@ class SceneVideoLayoutTests(unittest.TestCase):
         manifest = write_batch(self.f.scene.root, batch.name, kit='rig')
         before = {info.path: info.path.stat().st_ino for info in infos}
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
-            result = ingest.register_recordings(inputs.read_batch(manifest))
+            result = ingest.register_recordings(batch_inputs.read_batch(manifest))
         self.assertEqual(result['status'], 'ok')
         self.assertEqual([item['name'] for item in result['episodes']], ['take_010', 'take_011'])
         for item in result['episodes']:
-            episode = inputs.read_episode(Path(item['path']))
+            episode = episode_inputs.read_episode(Path(item['path']))
             for arm, path in episode.recordings.items():
                 self.assertEqual(path.read_text(), arm + '_' + item['name'])
         self.assertEqual({info.path: info.path.stat().st_ino for info in infos}, before)
@@ -147,7 +149,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
                     infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, artifact_identity.file_hash(path), None, 8.))
                 manifest = write_batch(self.f.scene.root, batch.name, kit='rig')
                 with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
-                    result = ingest.register_recordings(inputs.read_batch(manifest))
+                    result = ingest.register_recordings(batch_inputs.read_batch(manifest))
                 self.assertEqual(result['episodes'], [])
                 self.assertEqual({item['status'] for item in result['pending']}, {'ambiguous_task'})
                 self.assertEqual(len(result['pending']), 3)
@@ -181,7 +183,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
         def inspect(path):
             return ingest.RecordingMetadata(path, 'SERIAL_left', artifact_identity.file_hash(path), None, 8.)
         with patch.object(ingest, 'inspect_recording', side_effect=inspect):
-            found, errors = ingest.scan_raw_videos(inputs.batch_video_sources(batch))
+            found, errors = ingest.scan_raw_videos(batch_inputs.batch_video_sources(batch))
         self.assertEqual(errors, [])
         self.assertEqual({item.path for item in found}, {batch / name for name in wanted})
 
@@ -211,15 +213,15 @@ class SceneVideoLayoutTests(unittest.TestCase):
         left.write_text('left')
         manifest = write_batch(self.f.scene.root, batch.name, kit='rig')
         inode = left.stat().st_ino
-        session = inputs.read_batch(manifest)
+        session = batch_inputs.read_batch(manifest)
         task = write_task(session, 'take_001', dict(left=left))
-        current = inputs.read_episode(task)
+        current = episode_inputs.read_episode(task)
         clips = dict(current.recordings, right=self.f.recording_paths['right'])
         metadata = [ingest.RecordingMetadata(clip, 'SERIAL_' + arm, artifact_identity.file_hash(clip), 1000., 8.)
                     for arm, clip in clips.items()]
         with patch.object(ingest, 'scan_raw_videos', return_value=(metadata, [])):
             ingest.register_recordings(session)
-        episode = inputs.read_episode(task)
+        episode = episode_inputs.read_episode(task)
         self.assertEqual(episode.recordings['left'], left)
         self.assertEqual(episode.recordings['right'], batch / 'take_001/right/right.insv')
         self.assertEqual(left.stat().st_ino, inode)
@@ -233,9 +235,9 @@ class SceneVideoLayoutTests(unittest.TestCase):
         manifest = write_batch(self.f.scene.root, batch.name, kit='rig', arms=('right',))
         info = ingest.RecordingMetadata(path, 'SERIAL_right', artifact_identity.file_hash(path), None, 8.)
         with patch.object(ingest, 'scan_raw_videos', return_value=([info], [])):
-            result = ingest.register_recordings(inputs.read_batch(manifest))
+            result = ingest.register_recordings(batch_inputs.read_batch(manifest))
         self.assertEqual(result['status'], 'ok')
-        task = inputs.read_episode(Path(result['episodes'][0]['path']))
+        task = episode_inputs.read_episode(Path(result['episodes'][0]['path']))
         self.assertEqual(task.expected_arms, ('right',))
         self.assertEqual(task.recording_refs['right']['path'], 'right/VID.insv')
         self.assertFalse((task.root / 'videos').exists())

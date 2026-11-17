@@ -1,4 +1,4 @@
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 """Peripheral workflow regressions; no camera recordings or solver execution required."""
 import json
 import copy
@@ -10,7 +10,8 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from software import config, registry
+from software.configuration import loader as config
+from software.camera import registry
 from software.calibration.pipeline import board_detection
 from software.calibration import acceptance
 from software.calibration import cli
@@ -26,7 +27,7 @@ from software.calibration import workflow
 from software.calibration.algorithms import board_pnp
 from software.trajectory.calibration import assets as tcal
 from software.calibration.models import CameraImuResult, GravityResult, IntrinsicsResult, VerificationRequest
-from software.storage import locked
+from software.infrastructure.file_store import locked
 
 
 
@@ -198,7 +199,7 @@ class FullWorkflowTests(unittest.TestCase):
                 destination = Path(command[command.index("--result-path") + 1])
                 (destination / "calibration.json").write_bytes(tcal.SAMPLE_CAMERA_JSON.read_bytes())
                 (destination / "corners.cereal").touch()
-            if any("imu_calib_physical_check.py" in part for part in command):
+            if any("software.calibration.tools.imu_calib_physical_check" in part for part in command):
                 destination = Path(command[command.index("--out") + 1])
                 destination.mkdir(exist_ok=True)
                 (destination / "imu_calib_physical_check.json").write_text(json.dumps({
@@ -514,10 +515,9 @@ class FullWorkflowTests(unittest.TestCase):
             self.assertIn('样例轨迹对照：未运行', (out / 'report.txt').read_text())
             tcal.describe(out, "registry")
             self.assertEqual(len(commands), 5)  # A bag, A solve, B bag, B solve, D check
-            for command in (commands[0], commands[2], commands[4]):
-                tool = Path(command[1])
-                self.assertTrue(tool.is_file(), tool)
-                self.assertEqual(tool.parent.name, 'tools')
+            for command in (commands[0], commands[2]):
+                self.assertEqual(command[1:3], ['-m', 'software.calibration.tools.calib_folder_to_bag'])
+            self.assertEqual(commands[4][1:3], ['-m', 'software.calibration.tools.imu_calib_physical_check'])
             self.assertIn("--fixed-scale-opt-offset", commands[3])
             self.assertFalse((out / "run" / "work").exists())
             self.assertEqual({p.name for p in out.iterdir()}, {"report.txt", "calibration.json", "manifest.json", "run"})

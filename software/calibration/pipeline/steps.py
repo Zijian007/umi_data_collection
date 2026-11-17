@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.calibration import result_io
 from software.calibration.models import Step
 from software.calibration.pipeline import runtime

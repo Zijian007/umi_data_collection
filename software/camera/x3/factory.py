@@ -185,25 +185,39 @@ class Kb4Model:
     def project_jacobian(self, points):
         """返回逐点 2×3 解析导数；与球面 project() 使用相同模型。"""
         p = np.asarray(points, float).reshape(-1, 3)
+        x, y, z = p.T
+        radius = np.hypot(x, y)
+        small = radius < 1e-8
+        if np.any(small & (z <= 1e-12)):
+            raise ValueError('KB4 投影在原点或反向光轴不可导')
         result = np.empty((len(p), 2, 3))
-        for i, (x, y, z) in enumerate(p):
-            radius = np.hypot(x, y)
-            if radius < 1e-8:
-                if z <= 1e-12:
-                    raise ValueError('KB4 投影在原点或反向光轴不可导')
-                result[i] = [[self.fx/z, 0., -self.fx*x/z**2],
-                             [0., self.fy/z, -self.fy*y/z**2]]
-                continue
-            theta = np.arctan2(radius, z)
+        if np.any(~small):
+            index = ~small
+            r = radius[index]
+            theta = np.arctan2(r, z[index])
             t2 = theta*theta
             rd = theta*(1+self.k1*t2+self.k2*t2**2+self.k3*t2**3+self.k4*t2**4)
             slope = 1+3*self.k1*t2+5*self.k2*t2**2+7*self.k3*t2**3+9*self.k4*t2**4
-            distance2 = radius*radius+z*z
-            radial_derivative = (slope*z/distance2*radius-rd)/radius**2
-            xy = np.array([x, y])
-            result[i, :, :2] = rd/radius*np.eye(2) + radial_derivative/radius*np.outer(xy, xy)
-            result[i, :, 2] = -slope/distance2*xy
-            result[i] *= np.array([self.fx, self.fy])[:, None]
+            distance2 = r*r+z[index]*z[index]
+            radial_derivative = (slope*z[index]/distance2*r-rd)/r**2
+            scale = rd/r
+            outer_scale = radial_derivative/r
+            xi, yi = x[index], y[index]
+            result[index, 0, 0] = scale + outer_scale*xi*xi
+            result[index, 0, 1] = outer_scale*xi*yi
+            result[index, 1, 0] = outer_scale*xi*yi
+            result[index, 1, 1] = scale + outer_scale*yi*yi
+            result[index, 0, 2] = -slope/distance2*xi
+            result[index, 1, 2] = -slope/distance2*yi
+            result[index, 0] *= self.fx
+            result[index, 1] *= self.fy
+        if np.any(small):
+            index = small
+            result[index] = 0.
+            result[index, 0, 0] = self.fx/z[index]
+            result[index, 0, 2] = -self.fx*x[index]/z[index]**2
+            result[index, 1, 1] = self.fy/z[index]
+            result[index, 1, 2] = -self.fy*y[index]/z[index]**2
         return result
 
     def unproject(self, pixels):

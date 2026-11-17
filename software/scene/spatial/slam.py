@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 from contextlib import nullcontext
 from pathlib import Path
@@ -15,8 +15,8 @@ from . import relocalization
 from .geometry import VisualObservations, read_visual_observations
 from software.scene.models import PreparedRecording, SceneParameters
 from software.scene.map_cache import MapBuildCache
-from software import provenance as artifact_identity
-from software.storage import write_json
+from software.infrastructure import provenance as artifact_identity
+from software.infrastructure.file_store import write_json
 from software.trajectory.reporting import map_data
 from software.vision import slam as visual_slam, runtime
 from software.vision.models import MapAtlas

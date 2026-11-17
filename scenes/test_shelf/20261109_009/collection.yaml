@@ -1,0 +1,20 @@
+schema_version: 1
+scene:
+  layout: auto
+  map_reference_arm: left
+  description: test shelf
+  tags:
+    enabled: false
+    layout: ../../hardware/calibration_targets/environment_poster.json
+    mapping:
+      enabled: false
+      scale:
+        enabled: false
+    fusion:
+      enabled: false
+kit: kit_001
+arms: [left, right]
+map_policy: latest_prior
+# 可选：需要冻结到已有地图时填写已发布版本。
+# map_version: 20261113_100000-a1b2c3d4
+tasks: {}

@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
-from software import config
+from software.configuration import loader as config
 from software.trajectory.calibration import assets
 
 GOLDEN = [
@@ -69,7 +69,7 @@ class FusionRegressionTests(unittest.TestCase):
         path = self.root/'parameters.json'
         path.write_text(json.dumps(asdict(parameters)))
         output = self.root/'out'
-        command = [sys.executable, str(assets.FUSION_SCRIPT), str(self.frames), str(self.frames), str(self.imu),
+        command = [sys.executable, '-m', 'software.trajectory.algorithms.fusion_cli', str(self.frames), str(self.frames), str(self.imu),
                    str(self.camera['cam_time_offset_ns']), '.500794,.498606,-.501155,.499441', str(output),
                    '--lever_prior', '.0147,-.0093,-.0163', '--calibration', str(camera), '--parameters', str(path)]
         if refine:
@@ -185,7 +185,7 @@ class FusionRegressionTests(unittest.TestCase):
         path = self.root/'parameters.json'
         path.write_text(json.dumps(asdict(config.load('trajectory').values)))
         output = self.root/'signed'
-        command = [sys.executable, str(assets.FUSION_SCRIPT), str(self.frames), str(self.frames), str(self.imu),
+        command = [sys.executable, '-m', 'software.trajectory.algorithms.fusion_cli', str(self.frames), str(self.frames), str(self.imu),
                    str(self.camera['cam_time_offset_ns']), '-.500794,-.498606,.501155,-.499441', str(output),
                    '--lever_prior', '-.0147,.0093,.0163', '--calibration', str(assets.SAMPLE_CAMERA_JSON), '--parameters', str(path)]
         process = subprocess.run(command, capture_output=True, text=True, timeout=60)

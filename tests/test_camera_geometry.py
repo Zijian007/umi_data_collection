@@ -1,4 +1,4 @@
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 """共用外参与逐帧位姿换算：非零杆臂、转动和四元数约定。"""
 import json
 from pathlib import Path
@@ -79,7 +79,7 @@ class CameraGeometryTests(unittest.TestCase):
 
     def test_independent_export_records_the_selected_tcp_convention(self):
         from software.trajectory.calibration import assets as calibration_assets
-        from software.pose_io import write_tum
+        from software.trajectory.io.tum import write_tum
         from software.trajectory.algorithms import postprocess
 
         root = Path(__file__).resolve().parents[1]
@@ -121,7 +121,7 @@ class CameraGeometryTests(unittest.TestCase):
         from software.trajectory.algorithms import postprocess
         from software.trajectory.reporting.metadata import load_extrinsics
         from software.trajectory.reporting import reports
-        from software.pose_io import write_tum, read_tum
+        from software.trajectory.io.tum import write_tum, read_tum
 
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

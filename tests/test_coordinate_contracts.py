@@ -6,14 +6,15 @@ import unittest
 
 import numpy as np
 
-from software import config
+from software.configuration import loader as config
 from software.camera.timing import (
     canonical_to_video_seconds, euroc_ns_to_seconds,
     video_to_canonical_seconds, video_to_imu_seconds,
 )
 from software.scene.spatial import fusion
-from software.scene.management import inputs
-from software.scene.pipeline import results
+from software.infrastructure.file_store import read_yaml
+from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
+from software.scene.pipeline import trajectory_writers
 from software.scene.spatial.geometry import VisualObservations
 from software.scene.models import ArmTrajectory
 
@@ -45,11 +46,11 @@ class CoordinateContractTests(unittest.TestCase):
         obs = VisualObservations(times, np.tile(np.eye(4), (3, 1, 1)), np.arange(3), 'visual_map')
         with self.assertRaisesRegex(ValueError, '场景坐标'):
             fusion.fuse(times, np.zeros((3, 7)), dict(front=obs), dict(front=np.eye(4)),
-                        config.load('trajectory').values, inputs.load_scene_parameters(None))
+                        config.load('trajectory').values, scene_inputs.load_scene_parameters(None))
 
     def test_bimanual_export_rejects_two_different_scene_frames(self):
         track = ArmTrajectory(np.arange(3.), np.tile(np.eye(4), (3, 1, 1)), 'scene:first', {})
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaisesRegex(ValueError, '同一个'):
-                results.write_bimanual(dict(left=track, right=replace(track, frame_id='scene:second')), Path(temporary))
+                trajectory_writers.write_bimanual_trajectory(dict(left=track, right=replace(track, frame_id='scene:second')), Path(temporary))
             self.assertEqual(list(Path(temporary).iterdir()), [])

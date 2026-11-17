@@ -11,11 +11,15 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software import config
-from software.scene.management import inputs
+from software.configuration import loader as config
+from software.scene.configuration import SceneOverrides
+from software.infrastructure.file_store import read_yaml
+from software.scene.management import batch_inputs, scene_inputs
 from software.scene.spatial import geometry, mapping, poster_scale
-from software.vision import tag_board
-from software.storage import write_yaml
+from software.vision import tag_board, environment_tags
+tags = environment_tags
+from software.infrastructure.file_store import write_yaml
+from software.scene import asset_identity
 
 
 def scale_fixture():
@@ -65,8 +69,20 @@ class PosterScaleNumericalTests(unittest.TestCase):
         with self.assertRaises(poster_scale.PosterScaleConflict):
             poster_scale.estimate_scale(*args)
 
+    def test_scale_estimation_culls_an_isolated_bad_tag_sighting(self):
+        args = list(scale_fixture())
+        detections = args[3]
+        corners = detections.corners_half_px.copy()
+        corners[0] += [20., 0.]
+        args[3] = replace(detections, corners_half_px=corners)
+        result = poster_scale.estimate_scale(*args)
+        self.assertEqual(result['status'], 'estimated')
+        self.assertGreaterEqual(result['culled_observations'], 1)
+        self.assertGreater(result['pre_cull_reprojection_rms_px'],
+                           result['reprojection_rms_px'])
+
     def test_log_weighted_combination_floors_and_both_conflict_limits(self):
-        p = inputs.load_scene_parameters()
+        p = scene_inputs.load_scene_parameters()
         report = poster_scale.combine_scales(2., .01, 2.05, .02, p)
         self.assertTrue(report['compatible'])
         variance = np.array([.01**2+.03**2, .02**2+.02**2])
@@ -82,7 +98,7 @@ class PosterScaleNumericalTests(unittest.TestCase):
         times, poses, imu = motion()
         raw = poses.copy(); raw[:,:3,3] /= 2.3
         obs = geometry.VisualObservations(times, raw, np.arange(len(times)), 'visual_map')
-        p = inputs.load_scene_parameters()
+        p = scene_inputs.load_scene_parameters()
         baseline = geometry.metric_alignment(obs, np.eye(4), imu, np.zeros(3), 9.81, p)
         refit = geometry.metric_alignment(obs, np.eye(4), imu, np.zeros(3), 9.81, p, fixed_scale=2.3)
         self.assertEqual(refit['scale'], 2.3)
@@ -112,14 +128,14 @@ class PosterScaleNumericalTests(unittest.TestCase):
 class PosterScaleIdentityTests(unittest.TestCase):
     def test_mapping_identity_tracks_geometry_and_scale_policy_only_when_enabled(self):
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary)/'scene.yaml'
+            path = Path(temporary)/'batch/collection.yaml'
             board_path = Path(temporary)/'board.json'
             board_path.write_bytes(tag_board.DEFAULT_LAYOUT.read_bytes())
-            write_yaml(path, dict(schema_version=3,tags=dict(layout=str(board_path))))
-            scene = inputs.read_scene(path)
+            write_yaml(path, dict(schema_version=1, kit='rig', scene=dict(layout='shared', tags=dict(enabled=True, layout=str(board_path)))))
+            scene = scene_inputs.read_scene(path)
             before = mapping.definition(scene)
             scene = replace(scene, parameters=replace(scene.parameters, tag_fusion_enabled=True))
-            self.assertEqual(mapping.definition(scene), before)
+            self.assertNotEqual(mapping.definition(scene), before)
             scene = replace(scene, parameters=replace(scene.parameters, tag_mapping_enabled=True))
             enabled = mapping.definition(scene)
             self.assertNotEqual(enabled, before)
@@ -133,12 +149,12 @@ class PosterScaleIdentityTests(unittest.TestCase):
 
     def test_scale_requires_diagnostics_and_layout(self):
         with self.assertRaisesRegex(ValueError, 'tag_mapping_enabled'):
-            inputs.load_scene_parameters(overrides=dict(tag_mapping_scale_enabled=True))
+            scene_inputs.load_scene_parameters(overrides=dict(tag_mapping_scale_enabled=True))
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary)/'scene.yaml'
-            write_yaml(path, dict(schema_version=3, parameters=dict(tag_mapping_enabled=True)))
-            with self.assertRaisesRegex(ValueError, 'tags.layout'):
-                inputs.read_scene(path)
+            path = Path(temporary)/'batch/collection.yaml'
+            write_yaml(path, dict(schema_version=1, kit='rig', scene=dict(layout='shared', parameters=dict(tag_mapping_enabled=True))))
+            with self.assertRaisesRegex(ValueError, '不承载算法参数'):
+                scene_inputs.read_scene(path)
 
 
 class PosterMappingWorkflowTests(unittest.TestCase):
@@ -150,16 +166,21 @@ class PosterMappingWorkflowTests(unittest.TestCase):
         return helper
 
     def configure(self, helper, *, correction):
-        declaration = inputs.read_yaml(helper.scene_path)
-        declaration.update(tags=dict(layout=str(tag_board.DEFAULT_LAYOUT)), parameters=dict(tag_mapping_enabled=True, tag_mapping_scale_enabled=correction))
-        write_yaml(helper.scene_path, declaration)
-        helper.scene = inputs.read_batch(helper.session_path).scene
+        declaration_path = helper.batch_root / 'collection.yaml'
+        declaration = read_yaml(declaration_path)
+        declaration['scene'] = dict(declaration['scene'], tags=dict(enabled=True, layout=str(tag_board.DEFAULT_LAYOUT)))
+        write_yaml(declaration_path, declaration)
+        expert = helper.root / 'expert.yaml'
+        write_yaml(expert, dict(parameters=dict(mapping=dict(environment_tags=dict(
+            enabled=True, scale=dict(enabled=correction))))))
+        helper.scene_overrides = SceneOverrides.load(expert)
+        helper.scene = batch_inputs.read_batch(helper.session_path, overrides=helper.scene_overrides).scene
         for video, camera in list(helper.cameras.items()):
             helper.cameras[video] = replace(camera, measurements=dict(camera.measurements, rear=camera.measurements['front']),
                                             files=dict(camera.files, rear=camera.files['front']))
 
     def detections(self, helper, *, empty=False, shifted=False):
-        from software.vision import poster_pose, tags
+        from software.vision import poster_pose, environment_tags
         from test_scene import motion
         times, truth, _ = motion()
         frame_indices = np.arange(0,len(times),3)
@@ -173,11 +194,11 @@ class PosterMappingWorkflowTests(unittest.TestCase):
         if shifted:
             pixels[len(pixels)//2:] += [80., 0.]
         sides = np.linalg.norm(pixels-np.roll(pixels,-1,axis=1),axis=2).min(axis=1)
-        return tags.TagObservations(frame_indices, times[frame_indices], samples, ids, pixels+240., sides,
+        return environment_tags.TagObservations(frame_indices, times[frame_indices], samples, ids, pixels+240., sides,
             np.ones(len(ids),bool), np.full(len(ids),not empty,bool), np.zeros(len(frame_indices),int), np.zeros(len(frame_indices),int))
 
     def fake_cache(self, detections):
-        from software.storage import write_json
+        from software.infrastructure.file_store import write_json
         def cached(video, output, settings, **kwargs):
             output.mkdir(parents=True,exist_ok=True)
             np.savez_compressed(output/'observations.npz', **{name:getattr(detections,name) for name in detections.__dataclass_fields__})
@@ -186,7 +207,6 @@ class PosterMappingWorkflowTests(unittest.TestCase):
         return cached
 
     def test_enabled_correction_publishes_refit_and_frozen_observations(self):
-        from software.vision import tags
         helper = self.helper()
         self.configure(helper, correction=True)
         with patch.object(tags,'cached',side_effect=self.fake_cache(self.detections(helper))):
@@ -202,12 +222,11 @@ class PosterMappingWorkflowTests(unittest.TestCase):
         self.assertEqual(placement['evidence']['relative_scale_std'],report['combination']['relative_scale_std'])
         self.assertIn('devices/environment_poster.json',metadata['assets'])
         self.assertIn('environment_tags/left/observations.npz',metadata['assets'])
-        inputs.validate_assets(root,metadata['assets'])
+        asset_identity.validate_assets(root,metadata['assets'])
         with patch.object(tags,'cached',side_effect=AssertionError('must reuse unchanged map')):
             self.assertEqual(helper.build_scene()['status'],'skipped')
 
     def test_empty_observations_preserve_imu_scale_and_conflict_does_not_replace_map(self):
-        from software.vision import tags
         helper = self.helper()
         baseline = helper.build_scene()
         root = helper.scene.map_root

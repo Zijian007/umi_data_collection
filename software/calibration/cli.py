@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from software import settings
+from software.configuration import operational_settings as settings
+from software.configuration import user_settings as user_config
 
 from pathlib import Path
 import argparse
@@ -24,6 +25,13 @@ def main(argv: list[str] | None = None, *, prepare_environment: bool = False) ->
     arguments = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(arguments)
     try:
+        common = user_config.current().values
+        if hasattr(args, 'cores') and not args.cores and common['runtime']['cores'] != 'auto':
+            args.cores = common['runtime']['cores']
+        if args.cmd == 'run':
+            args.intrinsics_source = common['calibration']['intrinsics_source'] or 'measured'
+        elif args.cmd == 'devices':
+            args.intrinsics_source = common['calibration']['intrinsics_source']
         run_request = inputs.parse_run_args(args) if args.cmd == 'run' else None
         if args.cmd in ('run', 'verify'):
             if args.force and args.resume:
@@ -34,11 +42,13 @@ def main(argv: list[str] | None = None, *, prepare_environment: bool = False) ->
                 raise ValueError('--tag-size-mm 必须是标定板标签的正的有限毫米边长')
             if args.show_config:
                 from software.calibration.configuration import effective_report
-                print(json.dumps(effective_report(args, run_request), ensure_ascii=False, indent=2))
+                report = effective_report(args, run_request)
+                report['user_config'] = user_config.current().report()
+                print(json.dumps(report, ensure_ascii=False, indent=2))
                 return 0
         if args.cmd in ('run', 'verify', 'preview-width', 'detect-width'):
             settings.current('runtime')
-            settings.current('tag_detection')
+            settings.current('gripper_tag_detection')
             startup_summary = settings.summary(cores=getattr(args, 'cores', '') or '', workers=getattr(args, 'workers', None), calibration=True)
         if prepare_environment:
             if args.cmd == 'run' and not args.dry_run:
@@ -136,18 +146,16 @@ def build_parser() -> argparse.ArgumentParser:
         width_command.add_argument('--contrast', type=float, default=1.,
                                    help='检测区域灰度增益（有限数值且 ≥1），默认 %(default)g；暗光可试 2，预览区域同步增强')
     run_parser = commands.add_parser("run", help="从 A/B/C/D 四段录像求解、验收并自动对照工厂参数",
-        description="从 front / rear 目录名选择镜头。默认用 A 求内参；--intrinsics-source factory 使用 B 原片对应镜头的工厂内参，A 仅验证，B/C/D 仍须实测验收。rear 需要该设备已有工作镜头标定。")
+        description="从 front / rear 目录名选择镜头。默认用 A 求内参；内参来源读取 config/user.yaml，A 仅验证，B/C/D 仍须实测验收。rear 需要该设备已有工作镜头标定。")
     run_parser.add_argument('folder', type=Path, help='末级名称必须为 front / rear；内放 A/B/C/D 子目录各一段 INSV，或按文件名排序的四段 INSV')
     run_parser.add_argument('--out', type=Path, help='结果目录，默认 <front或rear>/calibration_result；factory 加 _factory 后缀')
     run_parser.add_argument("--compare-sample", action="store_true", help="仅 front：额外用样例标定跑 C 段轨迹作对照；rear 不支持")
     run_parser.add_argument("--install", action="store_true", help="检查通过后按序列号写入设备档案；替换同镜头、同来源的当前安装")
-    run_parser.add_argument('--intrinsics-source', choices=('measured', 'factory'), default='measured',
-        help='默认 measured：A 求内参；factory：B 工厂 MEI 拟合 KB4、A 仅验证；两者均重新求 B 并验收 C/D')
     verify_parser = commands.add_parser("verify", help="用 C 段录像复查已有工作镜头标定，不生成或启用新参数")
     verify_parser.add_argument("video", help="C 段录像（录法见 docs/标定.md 的“录 4 段”）")
     verify_parser.add_argument("--out", help="结果目录（默认 <录像名>_calibration_verification，在录像旁边）")
     for command_parser in (run_parser, verify_parser):
-        configuration = command_parser.add_argument_group('算法配置', 'config/calibration.yaml → --config；C 段自动使用本次板尺寸')
+        configuration = command_parser.add_argument_group('专家配置', 'config/algorithms/calibration.yaml；C 段自动使用本次板尺寸')
         measurement = command_parser.add_argument_group('本次测量', '实测板尺寸属于标定输入')
         execution = command_parser.add_argument_group('执行与检查', '只影响本次运行，不写入 YAML')
         measurement.add_argument("--tag-size-mm", type=float, default=24.0, help="AprilGrid 标定板单个标签黑色外框的实测边长，须为有限正毫米数，不含白边；默认 %(default)g。夹爪标签尺寸在 kit 的 gripper.tag_distance 配置")
@@ -159,12 +167,12 @@ def build_parser() -> argparse.ArgumentParser:
         execution.add_argument("--resume", action="store_true", help="校验并复用已完成阶段，从失败或中断处继续；不能与 --force 同用")
         execution.add_argument("--keep-work", action="store_true", help="成功后也保留中间文件；失败或中断时默认保留以便 --resume")
         execution.add_argument("--force", action="store_true", help="清空指定结果目录后重算，不能与 --resume 同用")
-        configuration.add_argument("--config", type=Path, help="显式 YAML 覆盖配置（默认 config/calibration.yaml）")
+        configuration.add_argument("--expert-config", dest='config', type=Path, help="显式专家 YAML 覆盖配置")
         configuration.add_argument('--show-config', action='store_true', help='只输出生效配置和来源 JSON，不检查录像、不准备环境；优先于 --dry-run')
         execution.add_argument("--dry-run", action="store_true", help="只检查输入与生效参数，不创建输出或运行算法")
     recheck_parser = commands.add_parser("recheck", help="仅按新验收规则重新评估已有完整报告")
     recheck_parser.add_argument("out", type=Path, help="已有完整标定结果目录")
-    recheck_parser.add_argument("--config", type=Path, help="用于重新评估的标定 YAML 覆盖配置；默认使用当前规则")
+    recheck_parser.add_argument("--expert-config", dest='config', type=Path, help="用于重新评估的标定专家 YAML 覆盖配置")
     install_parser = commands.add_parser("install", help="安装 front/rear 标定；自动识别结果并清理同镜头、同来源旧版本")
     install_parser.add_argument("asset", help="通过验收的完整标定结果目录；也可直接传 rear_calibration.json")
     install_parser.add_argument("--serial", help="核对测量所属序列号（不能改写）")
@@ -172,7 +180,6 @@ def build_parser() -> argparse.ArgumentParser:
     inventory = commands.add_parser('devices', help='只读检查各镜头的当前参数与套件来源选择')
     inventory.add_argument('--kit', help='检查指定套件的前后镜头来源与当前参数，例如 kit_002')
     inventory.add_argument('--json', dest='json_output', action='store_true', help='输出机器可读的检查报告')
-    inventory.add_argument('--intrinsics-source', choices=('measured', 'factory'), help='临时统一检查两镜头的来源，需 --kit；省略时按 kit 的 intrinsics.front/rear')
     inventory.add_argument('--require-rear', action='store_true', help='要求已独立验收的 rear 参数；工厂推导不算，需 --kit')
     retire_parser = commands.add_parser("retire", help="停用一台相机")
     retire_parser.add_argument("serial", help="待停用设备的完整序列号")

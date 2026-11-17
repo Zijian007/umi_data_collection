@@ -37,8 +37,8 @@ class FakeEngines:
     def __call__(self, command, **kwargs):
         command = list(map(str, command))
         output = kwargs['stdout']
-        if any(Path(arg).name == 'make_lens_video.py' for arg in command):
-            pos = next(i for i, arg in enumerate(command) if Path(arg).name == 'make_lens_video.py')
+        if 'software.vision.tools.make_lens_video' in command:
+            pos = command.index('software.vision.tools.make_lens_video')
             target = Path(command[pos + 3])
             self.calls.append(('video', command, kwargs))
             code = self.failures.get('video', 0)
@@ -63,13 +63,13 @@ class FakeEngines:
                 f'{k},{k*1001/30000:.9f},2,1,{k*.01:.6f},0,0,0,0,0,1\n' for k in range(self.frames)))
             output.write(f'TRACKED {self.frames} / {self.frames}\n')
             return SimpleNamespace(returncode=self.map_returncode if kind == 'map' else 0)
-        if any(Path(arg).name == 'merge_frames.py' for arg in command):
+        if 'software.vision.tools.merge_frames' in command:
             self.calls.append(('merge', command, kwargs))
             if self.failures.get('merge'):
                 return SimpleNamespace(returncode=self.failures['merge'])
             return REAL_RUN(command, **kwargs)
-        if any(Path(arg).name == 'fusion_cli.py' for arg in command):
-            pos = next(i for i, arg in enumerate(command) if Path(arg).name == 'fusion_cli.py')
+        if 'software.trajectory.algorithms.fusion_cli' in command:
+            pos = command.index('software.trajectory.algorithms.fusion_cli')
             directory = Path(command[pos + 6])
             self.calls.append(('fuse', command, kwargs))
             code = self.failures.get('fuse', 0)

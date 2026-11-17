@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from software import provenance as artifact_identity
-from software.scene.management import episodes, inputs
+from software.infrastructure import provenance as artifact_identity
+from software.scene.management import episodes
+from software.scene.management.episode_inputs import read_episode
 
 
 @dataclass(frozen=True)
@@ -20,8 +21,8 @@ class AcceptedEpisode:
     result_sha256: str
 
 
-def read_accepted(path: Path) -> AcceptedEpisode:
-    episode = inputs.read_episode(path)
+def read_accepted_episode(path: Path) -> AcceptedEpisode:
+    episode = read_episode(path)
     run, manifest, review = episodes.accepted_run(episode)
     if not episode.instruction.strip():
         raise ValueError(f'训练导出需要非空 instruction：{path}')
@@ -39,17 +40,19 @@ def read_accepted(path: Path) -> AcceptedEpisode:
                            artifact_identity.file_hash(run / 'episode.json'))
 
 
-def select(paths: list[Path]) -> list[AcceptedEpisode]:
+def select_accepted_episodes(paths: list[Path]) -> list[AcceptedEpisode]:
     found = episodes.episode_paths(paths)
     if not found:
         raise ValueError('没有找到任务清单')
-    selected = [read_accepted(path) for path in found]
-    if len({item.name for item in selected}) != len(selected):
+    selected = [read_accepted_episode(path) for path in found]
+    if len({accepted_episode.name for accepted_episode in selected}) != len(selected):
         raise ValueError('任务导出身份重复，请检查场景/套件/批次/任务名称')
     return selected
 
 
-def verify_current(source: AcceptedEpisode) -> None:
-    current = read_accepted(source.path)
-    if current.run != source.run or current.result_sha256 != source.result_sha256 or current.review != source.review:
-        raise ValueError(f'导出期间源结果或验收发生变化：{source.path}')
+def verify_accepted_episode_unchanged(accepted_episode: AcceptedEpisode) -> None:
+    current = read_accepted_episode(accepted_episode.path)
+    if (current.run != accepted_episode.run
+            or current.result_sha256 != accepted_episode.result_sha256
+            or current.review != accepted_episode.review):
+        raise ValueError(f'导出期间源结果或验收发生变化：{accepted_episode.path}')

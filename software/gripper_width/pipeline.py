@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from software import settings
-
 from dataclasses import dataclass
 from pathlib import Path
 import csv
 
 import numpy as np
 
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.gripper_width import detection, series
 from software.gripper_width.calibration import pixel_distances_to_widths
 

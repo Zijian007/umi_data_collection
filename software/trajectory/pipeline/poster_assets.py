@@ -9,11 +9,11 @@ import shutil
 
 import numpy as np
 
-from software import provenance
-from software.parameters import EnvironmentTagParameters
-from software.storage import write_json
+from software.infrastructure import provenance
+from software.configuration.parameter_models import EnvironmentTagParameters
+from software.infrastructure.file_store import write_json
 from software.trajectory.calibration.assets import read_basalt
-from software.vision import tag_board, tags
+from software.vision import environment_tags, tag_board
 
 
 if TYPE_CHECKING:
@@ -36,10 +36,10 @@ def prepare(video: Path, directory: Path, layout: Path, rear: Path, parameters: 
     if expected is not None and (board.asset_hash != expected.layout_sha256
                                  or provenance.file_hash(frozen_rear) != expected.rear_sha256):
         raise ValueError('海报布局或 rear 标定在预检后发生变化')
-    detection_settings = tags.DetectionSettings(
+    detection_settings = environment_tags.DetectionSettings(
         border_bits=board.border_bits, ids=board.ids, dictionary=board.dictionary,
         minimum_side_px=parameters.tag_minimum_side_px)
-    detection_report = tags.cached(video, directory / 'detection', detection_settings, layout=board, progress=progress)
+    detection_report = environment_tags.cached(video, directory / 'detection', detection_settings, layout=board, progress=progress)
     manifest_path = directory / 'input.json'
     write_json(manifest_path, dict(
         schema_version=1, layout='layout.json', rear='rear.json', observations='detection/observations.npz',
@@ -63,8 +63,8 @@ def load(manifest_path: Path) -> PosterInputs:
         if manifest[asset_kind] not in manifest['assets']:
             raise ValueError('海报输入未被哈希覆盖')
     with np.load(snapshot_directory / manifest['observations'], allow_pickle=False) as observation_archive:
-        observations = tags.TagObservations(**{
-            field: observation_archive[field] for field in tags.TagObservations.__dataclass_fields__})
+        observations = environment_tags.TagObservations(**{
+            field: observation_archive[field] for field in environment_tags.TagObservations.__dataclass_fields__})
     observations.validate()
     return PosterInputs(tag_board.load(snapshot_directory / manifest['layout']), observations,
                         read_basalt(snapshot_directory / manifest['rear']))

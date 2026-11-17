@@ -11,10 +11,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from software import settings
+from software.configuration import operational_settings as settings
 from software.gripper_width import detection, pipeline, tag_distance
 from software.scene import scheduling
-from software.storage import write_yaml
+from software.infrastructure.file_store import write_yaml
 from software.viewer import cache, maps, media, server
 
 
@@ -66,7 +66,7 @@ class OperationalSettingsTests(unittest.TestCase):
                  ('viewer', {'preview_workers': 3, 'preview_pending': 2}),
                  ('viewer', {'preview_width': 721}), ('viewer', {'map_max_points': 50001}),
                  ('viewer', {'host': ''}), ('viewer', {'preview_timeout_s': float('inf')}),
-                 ('tag_detection', {'recovery_batch_size': -1})]
+                 ('gripper_tag_detection', {'recovery_batch_size': -1})]
         for kind, overlay in cases:
             with self.subTest(kind=kind, overlay=overlay):
                 self.overlay(kind, **overlay)
@@ -83,7 +83,7 @@ class OperationalSettingsTests(unittest.TestCase):
         self.assertIs(settings.current('runtime'), first)
         env = settings.child_environment()
         # The child uses the snapshot even though the YAML now differs.
-        code = "from software import settings; print(settings.values('runtime')['decode_threads'])"
+        code = "from software.configuration import operational_settings as settings; print(settings.values('runtime')['decode_threads'])"
         child = subprocess.run([sys.executable, '-c', code], env=env, text=True,
                                capture_output=True, check=True)
         self.assertEqual(int(child.stdout), first.values['decode_threads'])
@@ -107,7 +107,7 @@ class OperationalSettingsTests(unittest.TestCase):
         original = [function() for function in (detection.identity, pipeline.identity, tag_distance.identity)]
         self.overlay('runtime', decode_threads=2, slam_timeout_base_s=900)
         self.assertEqual(original, [function() for function in (detection.identity, pipeline.identity, tag_distance.identity)])
-        self.overlay('tag_detection', candidate_limit=48, full_search_interval=10)
+        self.overlay('gripper_tag_detection', candidate_limit=48, full_search_interval=10)
         for before, function in zip(original, (detection.identity, pipeline.identity, tag_distance.identity)):
             self.assertNotEqual(before, function())
         detector = detection.MarkerDetector()

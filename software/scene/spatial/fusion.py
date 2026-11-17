@@ -5,17 +5,45 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from scipy.spatial.transform import Rotation, Slerp
 import numpy as np
 
 from .geometry import VisualObservations, integrate_samples
-from software import parameters as parameter_models
+from software.configuration import parameter_models
 from software.scene.models import FusedTrajectory, SceneParameters
 from software.trajectory.algorithms.inertial import estimate_gyro_bias
 
 
 class SceneFusionQualityError(ValueError):
     """输入有效，但固定场景的视觉约束或融合质量不足。"""
+
+
+@dataclass(frozen=True)
+class InertialGraphKeys:
+    """Collision-free X/V/B keys for one graph namespace."""
+
+    namespace: int = 0
+    width: int = 1_000_000
+
+    def __post_init__(self):
+        if type(self.namespace) is not int or self.namespace < 0 or self.namespace % self.width:
+            raise ValueError('图命名空间必须是非负的整百万偏移')
+
+    def _key(self, symbol: str, index: int):
+        import gtsam
+        if type(index) is not int or not 0 <= index < self.width:
+            raise ValueError(f'图节点索引超出命名空间范围：{index}')
+        return gtsam.symbol(symbol, self.namespace + index)
+
+    def pose(self, index: int):
+        return self._key('x', index)
+
+    def velocity(self, index: int):
+        return self._key('v', index)
+
+    def bias(self, index: int):
+        return self._key('b', index)
 
 
 def sample_observations(observations_for_lens: VisualObservations, node_times: np.ndarray, maximum_gap_s: float) -> VisualObservations:
@@ -95,10 +123,15 @@ def seed_states(times, observations, T_cam_imu, scene_parameters):
     return sampled, tracked, front_tracked, fraction, gap, rotations, positions, velocities
 
 
-def build_inertial_graph(times, imu, rotations, positions, velocities, fusion_parameters):
+def build_inertial_graph(times, imu, rotations, positions, velocities, fusion_parameters,
+                         *, pose_key_fn=None, velocity_key_fn=None, bias_key_fn=None):
     """按原顺序插入 X/V/B、初始先验、IMU 及 bias 随机游走因子。"""
     import gtsam
     from gtsam.symbol_shorthand import B, V, X
+
+    pose_key_fn = pose_key_fn or X
+    velocity_key_fn = velocity_key_fn or V
+    bias_key_fn = bias_key_fn or B
 
     preintegration_parameters = gtsam.PreintegrationParams(np.array([0., 0., -fusion_parameters.gravity_m_s2]))
     preintegration_parameters.setAccelerometerCovariance(np.eye(3)*fusion_parameters.acc_noise**2)
@@ -108,39 +141,43 @@ def build_inertial_graph(times, imu, rotations, positions, velocities, fusion_pa
     initial_bias = gtsam.imuBias.ConstantBias(np.zeros(3), gyro_bias)
     graph, values = gtsam.NonlinearFactorGraph(), gtsam.Values()
     for frame_index in range(len(times)):
-        values.insert(X(frame_index), gtsam.Pose3(gtsam.Rot3(rotations[frame_index].as_matrix()), positions[frame_index]))
-        values.insert(V(frame_index), velocities[frame_index])
-        values.insert(B(frame_index), initial_bias)
-    graph.add(gtsam.PriorFactorVector(V(0), velocities[0], gtsam.noiseModel.Isotropic.Sigma(3, fusion_parameters.velocity_prior_sigma_m_s)))
-    graph.add(gtsam.PriorFactorConstantBias(B(0), initial_bias, gtsam.noiseModel.Diagonal.Sigmas(
+        values.insert(pose_key_fn(frame_index), gtsam.Pose3(gtsam.Rot3(rotations[frame_index].as_matrix()), positions[frame_index]))
+        values.insert(velocity_key_fn(frame_index), velocities[frame_index])
+        values.insert(bias_key_fn(frame_index), initial_bias)
+    graph.add(gtsam.PriorFactorVector(velocity_key_fn(0), velocities[0], gtsam.noiseModel.Isotropic.Sigma(3, fusion_parameters.velocity_prior_sigma_m_s)))
+    graph.add(gtsam.PriorFactorConstantBias(bias_key_fn(0), initial_bias, gtsam.noiseModel.Diagonal.Sigmas(
         np.r_[np.repeat(fusion_parameters.acc_bias_prior_sigma, 3), np.repeat(fusion_parameters.gyro_bias_prior_sigma, 3)])))
     bias_random_walk = np.r_[np.repeat(fusion_parameters.acc_bias_rw, 3), np.repeat(fusion_parameters.gyro_bias_rw, 3)]
     for frame_index, (start, end) in enumerate(zip(times[:-1], times[1:])):
         integrated = gtsam.PreintegratedImuMeasurements(preintegration_parameters, initial_bias)
         for frame_duration_s, gyro, acc in integrate_samples(imu, start, end):
             integrated.integrateMeasurement(acc, gyro, frame_duration_s)
-        graph.add(gtsam.ImuFactor(X(frame_index), V(frame_index), X(frame_index + 1), V(frame_index + 1), B(frame_index), integrated))
-        graph.add(gtsam.BetweenFactorConstantBias(B(frame_index), B(frame_index + 1), gtsam.imuBias.ConstantBias(),
+        graph.add(gtsam.ImuFactor(pose_key_fn(frame_index), velocity_key_fn(frame_index), pose_key_fn(frame_index + 1), velocity_key_fn(frame_index + 1), bias_key_fn(frame_index), integrated))
+        graph.add(gtsam.BetweenFactorConstantBias(bias_key_fn(frame_index), bias_key_fn(frame_index + 1), gtsam.imuBias.ConstantBias(),
                     gtsam.noiseModel.Diagonal.Sigmas(bias_random_walk * np.sqrt(end - start))))
     return graph, values
 
 
-def add_map_pose_priors(graph, sampled, T_cam_imu, scene_parameters) -> None:
+def add_map_pose_priors(graph, sampled, T_cam_imu, scene_parameters, *, pose_key_fn=None) -> None:
     """固定地图的米制位姿先验；噪声与插入顺序保持不变。"""
     import gtsam
     from gtsam.symbol_shorthand import X
+
+    pose_key_fn = pose_key_fn or X
 
     for lens, observations_for_lens in sampled.items():
         position_sigma_m = scene_parameters.front_position_sigma_m if lens == 'front' else scene_parameters.rear_position_sigma_m
         visual_noise_model = gtsam.noiseModel.Diagonal.Sigmas(np.r_[np.repeat(np.radians(scene_parameters.visual_rotation_sigma_deg), 3), np.repeat(position_sigma_m, 3)])
         robust_visual_noise = gtsam.noiseModel.Robust.Create(gtsam.noiseModel.mEstimator.Huber.Create(scene_parameters.huber), visual_noise_model)
         for index, pose in zip(observations_for_lens.indices, observations_for_lens.T_reference_camera @ T_cam_imu[lens]):
-            graph.add(gtsam.PriorFactorPose3(X(int(index)), gtsam.Pose3(gtsam.Rot3(pose[:3, :3]), pose[:3, 3]), robust_visual_noise))
+            graph.add(gtsam.PriorFactorPose3(pose_key_fn(int(index)), gtsam.Pose3(gtsam.Rot3(pose[:3, :3]), pose[:3, 3]), robust_visual_noise))
 
 
-def add_zero_velocity(graph, times, imu, zupt_config) -> int:
+def add_zero_velocity(graph, times, imu, zupt_config, *, velocity_key_fn=None) -> int:
     import gtsam
     from gtsam.symbol_shorthand import V
+
+    velocity_key_fn = velocity_key_fn or V
 
     # 静止约束只作用于有真实静止 IMU 证据的节点，不把缺少视觉当成静止。
     zero_velocity_nodes = 0
@@ -149,7 +186,7 @@ def add_zero_velocity(graph, times, imu, zupt_config) -> int:
             samples = imu[(imu[:, 0] >= time - zupt_config.half_window_s) & (imu[:, 0] <= time + zupt_config.half_window_s)]
             if (len(samples) >= zupt_config.minimum_samples and np.max(np.linalg.norm(samples[:, 1:4], axis=1)) < zupt_config.maximum_gyro_rad_s
                     and np.std(np.linalg.norm(samples[:, 4:7], axis=1)) < zupt_config.maximum_acc_norm_std_m_s2):
-                graph.add(gtsam.PriorFactorVector(V(frame_index), np.zeros(3), gtsam.noiseModel.Isotropic.Sigma(3, zupt_config.velocity_sigma_m_s)))
+                graph.add(gtsam.PriorFactorVector(velocity_key_fn(frame_index), np.zeros(3), gtsam.noiseModel.Isotropic.Sigma(3, zupt_config.velocity_sigma_m_s)))
                 zero_velocity_nodes += 1
     return zero_velocity_nodes
 

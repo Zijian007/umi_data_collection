@@ -32,7 +32,26 @@ def skew(point):
     return np.array([[0., -z, y], [z, 0., -x], [-y, x, 0.]])
 
 
-def residual_and_jacobians(body, board, T_camera_imu, points, pixels, model):
+def _skew_batch(vectors):
+    """Return cross-product matrices for a batch of 3-vectors."""
+    result = np.zeros((len(vectors), 3, 3))
+    result[:, 0, 1] = -vectors[:, 2]
+    result[:, 0, 2] = vectors[:, 1]
+    result[:, 1, 0] = vectors[:, 2]
+    result[:, 1, 2] = -vectors[:, 0]
+    result[:, 2, 0] = -vectors[:, 1]
+    result[:, 2, 1] = vectors[:, 0]
+    return result
+
+
+def rotation_correction_jacobian(correction, base_rotation, in_body, projection):
+    """Jacobian for a right perturbation of a left-applied camera correction."""
+    base_camera = np.einsum('ij,nj->ni', base_rotation, in_body)
+    seat_camera = -np.einsum('ij,njk->nik', correction, _skew_batch(base_camera))
+    return np.einsum('nij,njk->nik', projection, seat_camera).reshape(-1, 3)
+
+
+def residual_and_jacobians(body, board, T_camera_imu, points, pixels, model, *, return_projection=False):
     """GTSAM Pose3 右扰动（旋转、平移）；一个 ID 的八维像素残差。"""
     world = transform(board, points)
     in_body = transform(np.linalg.inv(body), world)
@@ -40,11 +59,33 @@ def residual_and_jacobians(body, board, T_camera_imu, points, pixels, model):
     projection = model.project_jacobian(in_camera)
     camera_rotation = T_camera_imu[:3, :3]
     board_rotation = body[:3, :3].T @ board[:3, :3]
-    j_body, j_board = [], []
-    for q, p, jac in zip(points, in_body, projection):
-        j_body.append(jac @ camera_rotation @ np.column_stack((skew(p), -np.eye(3))))
-        j_board.append(jac @ camera_rotation @ board_rotation @ np.column_stack((-skew(q), np.eye(3))))
-    return (model.project(in_camera) - pixels).ravel(), np.vstack(j_body), np.vstack(j_board)
+    count = len(points)
+    skew_body = np.zeros((count, 3, 3))
+    skew_body[:, 0, 1] = -in_body[:, 2]
+    skew_body[:, 0, 2] = in_body[:, 1]
+    skew_body[:, 1, 0] = in_body[:, 2]
+    skew_body[:, 1, 2] = -in_body[:, 0]
+    skew_body[:, 2, 0] = -in_body[:, 1]
+    skew_body[:, 2, 1] = in_body[:, 0]
+    skew_board = np.zeros((count, 3, 3))
+    skew_board[:, 0, 1] = -points[:, 2]
+    skew_board[:, 0, 2] = points[:, 1]
+    skew_board[:, 1, 0] = points[:, 2]
+    skew_board[:, 1, 2] = -points[:, 0]
+    skew_board[:, 2, 0] = -points[:, 1]
+    skew_board[:, 2, 1] = points[:, 0]
+    identity = np.broadcast_to(np.eye(3), (count, 3, 3))
+    body_twist = np.concatenate((skew_body, -identity), axis=2)
+    board_twist = np.concatenate((-skew_board, identity), axis=2)
+    projected_rotation = np.einsum('nij,jk->nik', projection, camera_rotation)
+    j_body = np.einsum('nij,njk->nik', projected_rotation, body_twist)
+    board_rotation_twist = np.einsum('ij,njk->nik', board_rotation, board_twist)
+    j_board = np.einsum('nij,njk->nik', projected_rotation, board_rotation_twist)
+    result = ((model.project(in_camera) - pixels).ravel(),
+              j_body.reshape(-1, 6), j_board.reshape(-1, 6))
+    if return_projection:
+        return result + (projection, in_body)
+    return result
 
 
 def project_observations(board, cameras, points, model):

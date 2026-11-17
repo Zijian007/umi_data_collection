@@ -5,11 +5,11 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 from software.gripper_width.detection import MarkerDetector, CascadeMarkerDetector, FrameDetection
 
-FULL_SEARCH_INTERVAL = settings.values('tag_detection')['full_search_interval']
+FULL_SEARCH_INTERVAL = settings.values('gripper_tag_detection')['full_search_interval']
 
 
 def dark_markers(tags: tuple[int, ...], *, size=(24, 14), sigma=.4, positions=(20, 120, 220)) -> np.ndarray:
@@ -296,7 +296,7 @@ class MarkerDetectionTests(unittest.TestCase):
         detector._recovery = Mock()
         detected = detector.detect(gray)
         detector._recovery.detectMarkers.assert_not_called()
-        np.testing.assert_array_equal(detected.ids, ids)
+        np.testing.assert_array_equal(detected.ids.flatten(), ids.flatten())
         for actual, original in zip(detected.corners, corners):
             np.testing.assert_array_equal(actual, original)
 

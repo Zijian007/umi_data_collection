@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 
-from software import config
+from software.configuration import loader as config
 from software.camera.geometry import imu_from_camera, camera_from_tcp, tcp_frame_definition
 from software.camera.x3.frame import geometry_record
 from software.trajectory.calibration.assets import FUSION_SCRIPT, read_basalt

@@ -11,11 +11,11 @@ import json
 
 import numpy as np
 
-from software import config
+from software.configuration import loader as config
 from software.camera.geometry import compose_pose_series
 from software.camera.timing import canonical_to_video_seconds
 from software.camera.x3.frame import output_frame_rate
-from software.pose_io import read_tum, write_tum
+from software.trajectory.io.tum import read_tum, write_tum
 from software.trajectory.reporting.metadata import CALIB_IMU_CAM, collect_run_settings, load_extrinsics
 from software.trajectory.reporting.plots import plot
 from software.trajectory.reporting.quality import frame_constraints, front_tracked, tracked_counts, runs, evaluate_notes
@@ -23,7 +23,7 @@ from software.trajectory.reporting.quality import frame_constraints, front_track
 
 def export_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_dir: Path, mode: str, name: str,
                 calib: dict | None = None, command: dict | None = None) -> dict:
-    """calib = software.registry.resolve_insv(...). command = extra trajectory flags recorded in run_settings.json."""
+    """calib = software.camera.registry.resolve_insv(...). command = extra trajectory flags recorded in run_settings.json."""
     reconstruction_dir, out_dir = Path(reconstruction_dir), Path(out_dir)
     fuse = reconstruction_dir / "fuse"
     segment_diagnostics = json.loads((fuse / "fuse_info.json").read_text(encoding="utf-8"))

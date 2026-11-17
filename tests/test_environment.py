@@ -6,7 +6,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
-from software.environment import python_executable
+from software.infrastructure.runtime_environment import python_executable
 
 
 class TrajectoryHealthTests(unittest.TestCase):
@@ -17,7 +17,8 @@ class TrajectoryHealthTests(unittest.TestCase):
             root = Path(temporary)
             trajectory = root/'trajectory'
             for relative in ('assets/calib/calibration_r1440.json', 'assets/config/front_x3_r1440_720.yaml',
-                             'assets/config/front_hand_mask.png', 'Vocabulary/ORBvoc.txt', 'solver'):
+                             'assets/config/front_hand_mask.png', 'Vocabulary/ORBvoc.txt', 'solver',
+                             'umi_export_atlas'):
                 target = trajectory/relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text('test')
@@ -26,7 +27,9 @@ class TrajectoryHealthTests(unittest.TestCase):
             with patch.object(runtime, 'HERE', trajectory), patch.object(runtime, 'REPO', root), \
                  patch.dict(os.environ, dict(ORB3_DIR=str(trajectory), ORB3_VOCAB=str(trajectory/'Vocabulary/ORBvoc.txt'))), \
                  patch.object(runtime.shutil, 'which', return_value='test-tool'), \
-                 patch.object(runtime.visual_runtime, 'orb_executable', return_value=trajectory/'solver'), \
+                 patch.object(runtime.visual_runtime, 'orb_executable',
+                               side_effect=lambda _orb, name='x3_mono_slam':
+                               trajectory / ('solver' if name == 'x3_mono_slam' else name)), \
                  patch.object(runtime.subprocess, 'run', return_value=SimpleNamespace(stdout='libx264', stderr='', returncode=0)), \
                  patch.object(runtime.console, 'write') as messages:
                 for devices, expected in (([healthy], 0), ([broken], 1), ([], 1)):

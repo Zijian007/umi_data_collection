@@ -72,7 +72,7 @@
 
 保留原有命令选项、求解器参数、验收阈值、图像提取及融合算法。
 `verify` 仅对未登记序列号回退到样例标定；已停用设备或损坏档案明确报错。
-`software.registry.UnknownCameraError` 是 `RegistryError` 的子类，既有调用者仍可捕获父类。
+`software.camera.registry.UnknownCameraError` 是 `RegistryError` 的子类，调用者可捕获父类。后续清理已删除 `software.registry` 兼容模块别名，调用方统一使用 `software.camera.registry`。
 验证报告的 `calibration` 对象增加显示用的 `name` 字段，原字段保留。
 
 外围回归检查（不运行真实视频求解）：
@@ -98,7 +98,7 @@ B 阶段成功后将最终参数移入 `bundle/calibration_r1440.json`，不再�
 `software/trajectory/cli.py` 负责参数和批量调度，单视频流程移入 `workflow.py`。
 `models.py` 定义运行选项，`selection.py` 将设备档案转换为有明确字段的标定选择及资产路径，`reuse.py` 集中判断旧结果是否匹配。
 重试和评分位于 `runner.py`，诊断发布与清理位于 `artifacts.py`，输入发现位于 `inputs.py`，环境诊断位于 `runtime.py`。
-标定选择优先级保持为 `UMI_TRAJ_CALIB`、`--device`、视频内部序列号；`software.registry.resolve_insv` 的原有字典 API 保留供标定模块使用。
+标定选择优先级保持为 `UMI_TRAJ_CALIB`、`--device`、视频内部序列号；`software.camera.registry.resolve_insv` 的原有字典 API 保留供标定模块使用。
 
 成功结果新增 `run_fingerprint`，比较录像路径/大小/修改时间、小型标定及夹爪资产完整哈希、处理模式/掉帧选项/重试次数。
 缺少记录信息的旧结果、设置或资产变化、必要输出缺失时重新计算；设备档案校验仍发生在结果复用之前。
@@ -228,7 +228,7 @@ A/B 求解、D 物理检查、新标定 C 验证和全部验收阈值保留，�
 
 后续精简：删除未调用的 MP4 遍历、旧清单说明函数和通用 profile 表；录像几何识别与固定裁剪集中到 `camera/x3/frame.py`。移除设备注册表中未使用的跳过哈希检查开关、报告复制参数及重复字典合并。复用摘要只读取一次，强制重算跳过复用判断；质量检查异常保留原始原因并统一重试。IMU 解码、数值算法与标定验收阈值保持原样。
 
-标定和轨迹使用一致的请求、序列号、保留中间文件及失败信息命名。当前单段轨迹入口为 `software.trajectory.workflow.run_recording`，请求类型为 `TrajectoryRequest`。`software/console.py` 统一终端格式，各阶段与报告模块负责业务文案；移除旧打印函数、设备状态转发函数及数据对象中的终端描述方法。CLI 参数与 JSON 字段保持兼容，数值算法和引擎日志协议保持原样。
+标定和轨迹使用一致的请求、序列号、保留中间文件及失败信息命名。当前单段轨迹入口为 `software.trajectory.workflow.run_recording`，请求类型为 `TrajectoryRequest`。`software/infrastructure/terminal.py` 统一终端格式，各阶段与报告模块负责业务文案；移除旧打印函数、设备状态转发函数及数据对象中的终端描述方法。CLI 参数与 JSON 字段保持兼容，数值算法和引擎日志协议保持原样。
 
 ## 2026-10-24 文档整理
 
@@ -265,7 +265,7 @@ README 按安装、标定并手动启用、任务录制、抽取、查看排列�
 - 全局设备索引 version 2；前后镜头标定和夹爪几何按版本保存。新默认值用于显式创建新配置，已有批次继续引用旧版本。设备登记和停用使用写入锁，新版本完整复制、校验后发布。
 - 新增 `umi-scene session`；`init`、`episode` 自动读取设备身份、保留原名并复制原片到规范目录，同名不同内容拒绝覆盖。`run` 支持按场景、批次、任务批量执行；固定地图后更换当前地图不影响旧批次。
 - `umi-calib install-rear`、`install-gripper` 登记独立资产版本；场景初始化可导入通过验收的后镜头文件。双镜头任务检查前地图与实际左右设备一致，防止换设备或换手后误套固定变换。
-- 原子文件、写入锁与结果指针移至公共 `software/storage.py`，设备档案不依赖场景模块。运行指纹包括公共存储与设备选择代码。
+- 原子文件、写入锁与结果指针移至公共 `software/infrastructure/file_store.py`，设备档案不依赖场景模块。运行指纹包括公共存储与设备选择代码。
 - 查看器默认扫描 `scenes/`，按“场景/批次/任务”区分同名任务；跳过历史归档，直接指定归档目录仍可查看。
 - 已将现有 `recordings/M4CP/` 原片、标定求解产物和独立轨迹迁入 `supermarket_demo` 示例结构；5 段原始视频均核对设备序列号。58 个原有文件共 4,818,534,083 字节全部通过迁移前后 SHA256 核对，清单在 `scenes/supermarket_demo/migration.json`；原设备索引和旧独立轨迹保留在归档中。
 - 商超仅为目录与流程模拟：视频仍为原实验室录像，单台真实相机，同一段录像用于建图和回放。不将旧独立世界坐标结果标为共享场景结果，不生成虚假的右手。真实商超、多任务泛化和双机精度仍需实拍验收。
@@ -433,9 +433,9 @@ state.json 只保存 attempt/review，身份、使用手和完整性从清单读
 2. **独立轨迹模块架构分层与碎片整合**：
    - 将原 29 行的 `recording_data.py` 升格重构为更规范的 `pipeline/inputs.py`；原 45 行的 `plots.py` 归集进 `reporting/` 产物交付子包；
    - 划分为 `calibration/`（资产与设备选择）、`pipeline/`（多轮重建调度、复用与运行环境）、`reporting/`（结果布局、质量分析、元数据与展示地图）及底层的 `algorithms/`（图优化求解器内核）；
-   - 根目录下保留极简的门面入口 `cli.py`, `workflow.py`, `models.py` 与轻量兼容垫片。
-3. **100% 向后兼容与循环依赖解耦**：
-   - 在 `software/scene/__init__.py` 与 `software/trajectory/__init__.py` 中建立了完整的门面导出与 `sys.modules` 别名映射，老测试中的 `mock.patch` 与外部模块的历史 import 路径 100% 无缝兼容；
+   - 根目录下保留极简的门面入口 `cli.py`、`workflow.py`、`models.py`；内部兼容垫片已在后续清理中删除。
+3. **历史阶段的循环依赖解耦**：
+   - 当时曾在 `software/scene/__init__.py` 与 `software/trajectory/__init__.py` 中使用门面导出与 `sys.modules` 别名映射；当前版本已删除这些内部兼容层，测试和生产代码均直接导入 canonical 模块；
    - 将 `selection.py` 与 `runtime.py` 对 `software.registry` 的依赖改为函数级延迟导入，彻底消除包初始化阶段的潜在循环依赖。
 4. **代码可读性与 PEP 8 命名规范化**：
    - 解密了 `metadata.py`、`assets.py`、`fusion.py`、`workflow.py`、`dataset/` 等核心文件中的单字母（`p`, `s`, `c`, `d`, `ic`, `cad`, `cand`, `z`, `dur`）与压缩分号语句，代码符合 PEP 8 规范。
@@ -814,7 +814,7 @@ state.json 只保存 attempt/review，身份、使用手和完整性从清单读
 
 - 在 `refactor/environment-tags-adaptive-fusion` 分支开始实施。`Scene.localization_lenses()` 将地图定位镜头与已登记标定分开：shared_front 可加载经过相同身份、来源和验收检查的 rear 标定，仍只定位 front；dual 仍定位两镜头。任务预检、单手重建和结果中的 rear 使用标记同步采用实际定位角色。没有把环境观测默认为已参与轨迹。
 - 场景 `fuse()` 拆为输入检查、定位采样与初值、惯性图、地图先验、静止因子、求解和一致性度量。保留因子及变量插入顺序、噪声、初值和失败检查顺序。使用修改前工作区实现对 front、dual、短缺口三组 157 节点合成输入逐项比较，位姿、tracked 和 evidence 完全相同；新增 35 节点改动前数值夹具（合成数据，不是实际录像真值）。尚未实施独立 checks 模块、逐帧来源表、海报投影因子或尺度变量融合。
-- 新增 `vision/tags.py` 和 `umi-scene detect-tags`：顺序解码 X3 3840×1920 4K60 原片的真实 PTS，默认每两个源帧检测一次环境镜头左半幅。使用 `DICT_4X4_100`，同帧重复 ID 全部拒绝，未知 ID 计数；记录半幅原像素角点、投影边长、标定裁切内标志和采样帧关联。标定视场外观测仅统计，不标为几何可用。角点可显式转换为 1440 裁切坐标及环境镜头 IMU 时间，但不会默认套用工作镜头时间偏移。
+- 新增 `vision/environment_tags.py` 和 `umi-scene detect-tags`：顺序解码 X3 3840×1920 4K60 原片的真实 PTS，默认每两个源帧检测一次环境镜头左半幅。使用 `DICT_4X4_100`，同帧重复 ID 全部拒绝，未知 ID 计数；记录半幅原像素角点、投影边长、标定裁切内标志和采样帧关联。标定视场外观测仅统计，不标为几何可用。角点可显式转换为 1440 裁切坐标及环境镜头 IMU 时间，但不会默认套用工作镜头时间偏移。
 - 角点 NPZ 与检测 JSON 绑定原片内容、字典/ID/黑边/采样/筛选参数、实现内容及 OpenCV/PyAV/NumPy 版本，复用时核对角点文件哈希。报告给出每 ID 和整板的采样可见率、最长采样缺口、每帧有效 ID/角点数及重复/未知检测；同帧多 ID 不计作多个时间点。当前只做单次原分辨率检测，未做窗口追踪、放大补检或几何位姿验收。
 - 用户提供 `hardware/UMI_ArU..an.pdf`，SHA256 为 `a3da873d895afa719bc0a3021ad1f422c6d67fa54e56d0ca162a80a4095ebaf9`。从 PDF 矢量外框核对 77 个标签坐标，并渲染解码验证：7 列 × 11 行，ID 按行从 12 到 88、朝向一致、黑边 1 格；页面 1000 × 1500 mm，黑框边长 100 mm、间距 130 mm，左右边距 60 mm、上下 50 mm。渲染角点与布局投影最大差 1 px；矢量坐标与设计值差在 0.001 mm 容差内。
 - 新增 `hardware/calibration_targets/environment_poster.json` 和 `vision/tag_board.py`，保存显式 ID → 米制角点及 PDF 来源哈希。原点在纸张左上，X 向右、Y 向下、Z 指入纸面，角点对应 OpenCV 解码后的 TL/TR/BR/BL；拒绝重复 ID/字段、未知格式、非平面或非正方形几何等坏资产。尺寸标为 `pdf_design`，不声称打印成品已经实测。CLI 默认读取该资产；布局与检测身份分开，更正物理几何可复用角点，但报告记录当前布局身份。
@@ -1057,7 +1057,7 @@ rear measured 缺少当前参数时拒绝；rear factory 优先使用当前已�
 
 ## 2026-11-12：运行、查看器和夹爪检测默认值集中化
 
-- 新增 `config/runtime.yaml`、`viewer.yaml`、`tag_detection.yaml`，由 `software/settings.py` 严格校验与进程内冻结。可选同名 `.local.yaml` 已忽略；优先级为项目默认 → 本机覆盖 → 既有环境变量 → CLI。算法 `--config` 含义保持不变。
+- 新增 `config/operations/runtime.yaml`、`viewer.yaml`、`tag_detection.yaml`，由 `software/configuration/operational_settings.py` 严格校验与进程内冻结。可选同名 `.local.yaml` 已忽略；优先级为项目默认 → 本机覆盖 → 既有环境变量 → CLI。算法 `--config` 含义保持不变。
 - 运行配置接入共享/采样解码、场景 OpenCV、标定 worker/预留核/bag 线程、双手并行阈值、SLAM 和地图导出超时。`--show-config` 补充逐项来源、CPU affinity 与实际线程预算。场景/标定主流程输出精简资源摘要；宽度诊断保持原有 CSV/stdout 与 JSON/stderr 契约。
 - 查看器端口默认 9092；预览/画面编码、并发、排队、内存缓存与超时集中配置，资源延迟创建且并发首次请求只创建一组工作资源。画质/尺寸影响对应缓存身份，线程/超时不影响；画面 URL 同时包含画质身份。地图显示预算仅抽样响应，不改写已发布资产。
 - 夹爪搜索间隔、候选数和补检批量进入原始检测与最终任务结果身份；运行预算不进入数值缓存身份。X3 图像约定、标签字典、低层 ArUco 阈值及内部流水线策略仍由代码管理。

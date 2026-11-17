@@ -1,5 +1,6 @@
+from software.scene.management import kit_inputs
 """一轮建图对应一个批次：延后处理、显式复用、失败保护和建图片隔离。"""
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.scene.pipeline import map_lifecycle
 from contextlib import redirect_stdout
 import io
@@ -9,9 +10,9 @@ import unittest
 from registry_fakes import write_kit, write_batch, write_task
 from unittest.mock import patch
 
-from software import registry
+from software.camera import registry
 from software.scene import cli, workflow
-from software.scene.management import ingest, inputs
+from software.scene.management import ingest, kit_inputs, batch_inputs, episode_inputs, scene_inputs
 import test_scene as fixtures
 
 
@@ -21,7 +22,7 @@ class BatchMappingTests(unittest.TestCase):
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         for override in (
-            patch.object(inputs, 'KITS', self.f.root / 'kits'),
+            patch.object(kit_inputs, 'KITS', self.f.root / 'kits'),
             patch.object(registry, 'get', return_value={}),
             patch.object(registry, 'read_insv_serial', side_effect=lambda path: 'SERIAL_' + Path(path).read_text().split('_')[0]),
         ):
@@ -40,10 +41,10 @@ class BatchMappingTests(unittest.TestCase):
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_text('left_' + name)
         manifest = write_batch(self.f.scene.root, name, kit='rig')
-        session = inputs.read_batch(manifest)
+        session = batch_inputs.read_batch(manifest)
         self.prepare(session)
         episode = write_task(session, 'take_001', self.f.recording_paths)
-        for arm, path in inputs.read_episode(episode).recordings.items():
+        for arm, path in episode_inputs.read_episode(episode).recordings.items():
             original = self.f.recording_paths[arm]
             self.f.cameras[path] = self.f.cameras[original]
             self.f.prepared_recordings[path] = self.f.prepared_recordings[original]
@@ -53,17 +54,17 @@ class BatchMappingTests(unittest.TestCase):
         first, first_episode = self.batch('round_001')
         second, second_episode = self.batch('round_002')
         write_kit('rig', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(left='SERIAL_left')).items()})
-        self.assertEqual(set(inputs.read_batch(first).kit['arms']), {'left', 'right'})
-        self.assertEqual(inputs.read_batch(first).scene.devices['SERIAL_left'],
-                         dict(calibration='test', gripper=dict(tcp=str(inputs.KITS / 'rig/tcp_camera.json'))))
-        self.assertIsNone(inputs.read_batch(first).map_version)
+        self.assertEqual(set(batch_inputs.read_batch(first).kit['arms']), {'left', 'right'})
+        self.assertEqual(batch_inputs.read_batch(first).scene.devices['SERIAL_left'],
+                         dict(calibration='test', gripper=dict(tcp=str(kit_inputs.KITS / 'rig/tcp_camera.json'))))
+        self.assertIsNone(batch_inputs.read_batch(first).map_version)
         built_second = map_lifecycle.build_scene(second)
         frozen_second = second.read_bytes()
         result_first = workflow.run_episode(first_episode)
-        first_session = inputs.read_batch(first)
+        first_session = batch_inputs.read_batch(first)
         self.assertIsNotNone(first_session.map_version)
         self.assertNotEqual(first_session.map_version, built_second['version'])
-        self.assertNotEqual(first_session.scene.map_root, inputs.read_batch(second).scene.map_root)
+        self.assertNotEqual(first_session.scene.map_root, batch_inputs.read_batch(second).scene.map_root)
         self.assertFalse((first_session.scene.map_root / 'versions' / built_second['version']).exists())
         self.assertFalse((self.f.scene.root / '.pipeline/maps').exists())
         self.assertEqual(result_first['frame_id'], 'lab/' + first_session.map_version)
@@ -82,11 +83,11 @@ class BatchMappingTests(unittest.TestCase):
         before = reused.read_bytes()
         second, _ = self.batch('round_002')
         map_lifecycle.build_scene(second)
-        self.assertEqual(inputs.read_batch(reused).map_version, built['version'])
+        self.assertEqual(batch_inputs.read_batch(reused).map_version, built['version'])
         self.assertEqual(map_lifecycle.build_scene(reused)['version'], built['version'])
         self.assertEqual(reused.read_bytes(), before)
-        source = inputs.read_batch(first).scene.map_root / 'versions' / built['version']
-        copied = inputs.read_batch(reused).scene.map_root / 'versions' / built['version']
+        source = batch_inputs.read_batch(first).scene.map_root / 'versions' / built['version']
+        copied = batch_inputs.read_batch(reused).scene.map_root / 'versions' / built['version']
         self.assertNotEqual(source, copied)
         self.assertEqual((source / 'manifest.json').read_bytes(), (copied / 'manifest.json').read_bytes())
         (source / 'manifest.json').unlink()
@@ -97,10 +98,10 @@ class BatchMappingTests(unittest.TestCase):
         second, _ = self.batch('round_002')
         map_lifecycle.build_scene(second)
         pointer = second.read_bytes()
-        inputs.read_batch(first).scene.recordings['left'].write_text('changed')
+        batch_inputs.read_batch(first).scene.recordings['left'].write_text('changed')
         with self.assertRaisesRegex(ValueError, 'SHA256'):
             workflow.run_episode(episode)
-        self.assertIsNone(inputs.read_batch(first).map_version)
+        self.assertIsNone(batch_inputs.read_batch(first).map_version)
         self.assertEqual(second.read_bytes(), pointer)
 
     def test_batch_build_preview_is_readonly_and_reports_batch_source(self):
@@ -111,19 +112,19 @@ class BatchMappingTests(unittest.TestCase):
         planned = json.loads(output.getvalue())
         self.assertEqual(planned['status'], 'planned')
         self.assertEqual(planned['inputs']['definition']['mapping'],
-                         {'left': str(inputs.read_batch(manifest).scene.recordings['left'])})
+                         {'left': str(batch_inputs.read_batch(manifest).scene.recordings['left'])})
         self.assertEqual({path: path.read_bytes() for path in self.f.root.rglob('*') if path.is_file()}, before)
 
     def test_mapping_clip_is_excluded_when_importing_entire_batch(self):
         manifest, _ = self.batch('scan')
         # 新一组任务只为导入测试使用；已有 take_001 会按内容去重。
-        session = inputs.read_batch(manifest)
+        session = batch_inputs.read_batch(manifest)
         mapping = session.scene.recordings['left']
         infos = [ingest.RecordingMetadata(mapping, 'SERIAL_left', artifact_identity.file_hash(mapping), 1000., 8.)]
         for arm, path in self.f.recording_paths.items():
             infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, artifact_identity.file_hash(path), 1000., 8.))
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
-            result = ingest.register_recordings(inputs.read_batch(manifest))
+            result = ingest.register_recordings(batch_inputs.read_batch(manifest))
         self.assertEqual(result['total_scanned'], 2)
         self.assertEqual(result['skipped'], ['take_001'])
         self.assertEqual(result['pending'], [])

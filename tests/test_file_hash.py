@@ -7,7 +7,7 @@ import os
 import tempfile
 import unittest
 
-from software import provenance
+from software.infrastructure import provenance
 
 
 class FileHashTests(unittest.TestCase):
@@ -67,11 +67,12 @@ class CodeIdentityScopeTests(unittest.TestCase):
             self.assertNotEqual(provenance.file_hash(path), provenance.source_hash(path))
 
     def test_presentation_and_orchestration_files_do_not_invalidate_results(self):
-        from software.scene.management import inputs
+        from software.infrastructure.file_store import read_yaml
+        from software.scene.management import episode_inputs
         trajectory = provenance.code_identity('trajectory')
         self.assertFalse(provenance.PRESENTATION_SOURCES & trajectory.keys())
         self.assertIn('software/trajectory/algorithms/fusion_graph.py', trajectory)
-        scene = inputs.algorithm_identity()
+        scene = episode_inputs.algorithm_identity()
         for name in ('processing.py', 'diagnostics.py', 'cli.py'):
             self.assertFalse([path for path in scene if path.endswith('/' + name) and '/scene/' in path], name)
         self.assertIn('software/scene/spatial/fusion.py', scene)

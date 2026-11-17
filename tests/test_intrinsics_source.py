@@ -1,6 +1,6 @@
 """Source selection must keep B, lenses, maps, and current registry assets paired."""
 from __future__ import annotations
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.scene.pipeline import map_lifecycle
 import copy
 import json
@@ -11,7 +11,8 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 
-from software import config, registry
+from software.configuration import loader as config
+from software.camera import registry
 from software.camera import calibration_source as origin
 from software.camera.x3 import factory as optical
 from software.calibration import acceptance, cli, result_io, workflow
@@ -19,8 +20,9 @@ from software.calibration.models import RunPaths, Step
 from software.calibration.solve import factory as solver, basalt
 from software.calibration.validation import factory as diagnostic
 from software.scene import cli as scene_cli
-from software.scene.management import inputs as scene_inputs, batches
-from software.storage import write_json, write_yaml
+from software.infrastructure.file_store import read_yaml
+from software.scene.management import batches, batch_inputs, kit_inputs, scene_inputs
+from software.infrastructure.file_store import write_json, write_yaml
 from software.trajectory.calibration import assets
 from test_factory_comparison import offset
 import test_calibration_workflow as calibration_tests
@@ -48,16 +50,18 @@ def factory_bundle(root, *, source='factory', lens='front'):
 
 
 class SourceTests(unittest.TestCase):
-    def test_both_calibration_commands_and_scene_commands_share_the_flag(self):
-        parser=cli.build_parser()
-        for lens in ('front','rear'):
-            self.assertEqual(parser.parse_args(['run',lens,'--intrinsics-source','factory']).intrinsics_source,'factory')
-        for command in ('run','build'):
-            self.assertEqual(scene_cli.build_parser().parse_args([command,'batch','--intrinsics-source','factory']).intrinsics_source,'factory')
+    def test_source_is_read_from_user_config_not_command_line(self):
+        parser = cli.build_parser()
+        self.assertIsNone(parser.parse_args(['run', 'front']).__dict__.get('intrinsics_source'))
+        for command in ('run', 'build'):
+            with self.assertRaises(SystemExit):
+                scene_cli.build_parser().parse_args([command, 'batch', '--intrinsics-source', 'factory'])
+        with self.assertRaisesRegex(ValueError, '未知项'):
+            batches.select_kit(dict(kit='rig', intrinsics_source='factory'))
 
     def test_measured_and_factory_versions_coexist_and_wrong_source_is_rejected(self):
         with tempfile.TemporaryDirectory() as d:
-            root=Path(d);idx=root/'registry/index.json';write_json(idx,dict(kind='umi_device_registry',version=2,devices={}))
+            root=Path(d);idx=root/'registry/index.json';write_json(idx,dict(kind='umi_device_registry',version=3,devices={}))
             with patch.multiple(registry,ROOT=idx.parent,INDEX=idx,CAMERAS=idx.parent/'cameras'):
                 measured=factory_bundle(root/'measured',source='measured')
                 first=registry.register('camera',measured)
@@ -95,11 +99,11 @@ class SourceTests(unittest.TestCase):
             p=Path(d);tcp=p/'tcp.json';write_json(tcp,dict(units='metres',T_camera_tcp=dict(R_rows=np.eye(3).tolist(),t_m=[0.,0.,0.])))
             declaration=dict(id='kit',arms=dict(left=dict(serial='camera',gripper=dict(tcp=str(tcp)),
                 calibrations=dict(measured=dict(front='001',rear='rear_001'),factory=dict(front='002',rear='rear_002')))))
-            chosen=scene_inputs.validate_kit(declaration,intrinsics_source='factory')['arms']['left']
+            chosen=kit_inputs.validate_kit(declaration,intrinsics_source='factory')['arms']['left']
             self.assertEqual((chosen['calibration'],chosen['rear_calibration'],chosen['intrinsics_source']),('002','rear_002','factory'))
             declaration['arms']['left']['calibrations'].pop('factory')
             with self.assertRaisesRegex(ValueError,'缺少 factory'):
-                scene_inputs.validate_kit(declaration,intrinsics_source='factory')
+                kit_inputs.validate_kit(declaration,intrinsics_source='factory')
 
     def test_map_mismatch_is_rejected_even_with_identical_numeric_intrinsics(self):
         selected=SimpleNamespace(intrinsics_source='factory')
@@ -181,24 +185,30 @@ class BatchSourceTests(unittest.TestCase):
             write_json(gripper,dict(units='metres',T_camera_tcp=dict(R_rows=np.eye(3).tolist(),t_m=[0.,0.,0.])))
             write_yaml(kits/'rig/kit.yaml',dict(arms=dict(left=dict(serial='camera',gripper=dict(tcp='tcp.json'),
                 calibrations=dict(measured=dict(front='001',rear='rear_001'),factory=dict(front='002',rear='rear_002'))))))
-            write_yaml(batch/'batch.yaml',dict(kit='rig'))
-            with patch.object(scene_inputs,'KITS',kits), patch.object(registry,'rear_path',side_effect=lambda serial,version:root/version):
-                factory=scene_inputs.read_kit('rig',intrinsics_source='factory')
+            write_yaml(batch/'collection.yaml',dict(
+                schema_version=1,
+                scene=dict(layout='shared', map_reference_arm='left'),
+                kit='rig', arms=['left'], map_policy='latest_prior'))
+            with patch.object(kit_inputs,'KITS',kits), patch.object(registry,'rear_path',side_effect=lambda serial,version:root/version):
+                factory=kit_inputs.read_kit('rig',intrinsics_source='factory')
                 video=batch/'mapping/video.insv';video.parent.mkdir();video.write_bytes(b'video')
                 metadata=dict(serial='camera',sha256=artifact_identity.file_hash(video))
                 with patch.object(batches.recordings,'inspect',return_value=metadata):
                     current=batches.read_inputs(batch,intrinsics_source='measured')
                     path=batches.save_record(current)
-                    previous=scene_inputs.read_yaml(path);previous['map']=dict(version='deadbeef',manifest_sha256='0'*64);write_yaml(path,previous)
+                    previous=read_yaml(path);previous['map']=dict(version='deadbeef',manifest_sha256='0'*64);write_yaml(path,previous)
                     selected=replace(current,previous_record=previous,kit=factory,intrinsics_source='factory')
                     batches.save_record(selected)
-                record=scene_inputs.read_yaml(path)
+                record=read_yaml(path)
                 self.assertNotIn('map',record)
-                session=scene_inputs.read_batch(path)
+                session=batch_inputs.read_batch(path)
                 self.assertEqual(session.kit['arms']['left']['calibration'],'002')
                 archives=path.parent/'snapshots'
                 self.assertFalse(archives.exists())
-                self.assertEqual(scene_inputs.read_yaml(batch/'batch.yaml'),dict(kit='rig'))
+                self.assertEqual(read_yaml(batch/'collection.yaml'), dict(
+                    schema_version=1,
+                    scene=dict(layout='shared', map_reference_arm='left'),
+                    kit='rig', arms=['left'], map_policy='latest_prior'))
 
     def test_legacy_sample_factory_override_cannot_select_insv_factory(self):
         import os

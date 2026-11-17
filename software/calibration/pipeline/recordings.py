@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -20,11 +20,11 @@ import os
 import cv2
 import numpy as np
 
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.calibration.pipeline import runtime
 from software.camera.x3 import extraction
 from software.camera.x3.frame import SRC_H, SRC_W, STEP, T0_S, crop_xywh
-from software.storage import write_json
+from software.infrastructure.file_store import write_json
 
 
 LUMA_FORMATS = ("yuvj420p", "yuv420p")       # 8-bit planar, plane 0 = luma
@@ -36,7 +36,13 @@ def _write_png(path: Path, g: np.ndarray) -> None:
 
 
 def n_workers(requested: int | None = None) -> int:
-    return settings.calibration_workers(requested)
+    available = len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else (os.cpu_count() or 2)
+    if requested is not None:
+        if type(requested) is not int or requested < 1:
+            raise ValueError('--workers 必须为正整数')
+        return min(requested, available)
+    runtime = settings.values('runtime')
+    return max(1, min(runtime['calibration_max_workers'], available - runtime['calibration_reserved_cpus']))
 
 
 def preparation_identity(insv: Path, with_images: bool, lens: str) -> str:

@@ -13,10 +13,11 @@ import stat
 import time
 import uuid
 
-from software import provenance as artifact_identity
-from software.console import Console
+from software.infrastructure import provenance as artifact_identity
+from software.scene.asset_identity import artifact_hashes, validate_assets
+from software.infrastructure.terminal import Console
 from software.scene.models import CalibratedCamera, PreparedRecording, Scene
-from software.storage import mark_used, write_json
+from software.infrastructure.file_store import mark_used, write_json
 
 
 console = Console('场景')
@@ -24,20 +25,22 @@ console = Console('场景')
 # 显式列出各阶段的实现依赖。CLI、查看器和任务编排不改变地图。
 # 新增算法依赖时应加入对应组；不以 Git 提交或文件时间代替内容哈希。
 COMMON_SOURCES = (
-    'software/config.py', 'software/settings.py', 'software/parameters.py', 'software/provenance.py',
-    'software/environment.py', 'software/storage.py', 'software/scene/models.py',
-    'software/scene/map_cache.py', 'software/vision/models.py',
+    'software/configuration/loader.py', 'software/configuration/operational_settings.py',
+    'software/configuration/parameter_models.py', 'software/infrastructure/provenance.py',
+    'software/infrastructure/paths.py',
+    'software/infrastructure/runtime_environment.py', 'software/infrastructure/file_store.py', 'software/scene/models.py',
+    'software/scene/map_cache.py', 'software/scene/asset_identity.py', 'software/vision/models.py',
 )
 # 录像准备只把 INSV 解码为 EuRoC 数据集和镜头视频；标定、ORB 和对齐参数
 # 在之后才使用，不能让它们的代码改动使同一原片重新解码。
 DECODE_SOURCES = (
-    'software/config.py', 'software/parameters.py', 'software/vision/models.py',
+    'software/configuration/loader.py', 'software/configuration/parameter_models.py', 'software/vision/models.py',
     'software/camera/x3/extraction.py', 'software/camera/x3/frame.py',
     'software/camera/x3/imu_reader.py', 'software/camera/x3/insv_reader.py',
     'software/vision/recordings.py', 'software/vision/tools/make_lens_video.py',
 )
 PREPARATION_SOURCES = (
-    'software/registry.py', 'software/camera/*.py', 'software/camera/x3/*.py',
+    'software/camera/registry.py', 'software/camera/*.py', 'software/camera/x3/*.py',
     'software/scene/pipeline/recordings.py', 'software/scene/management/camera_assets.py',
     'software/calibration/algorithms/factory_kb4.py',
     'software/trajectory/calibration/assets.py', 'software/trajectory/calibration/selection.py',
@@ -50,15 +53,18 @@ VISUAL_SOURCES = (
     'software/scene/spatial/slam.py',
 )
 PLACEMENT_SOURCES = (
-    'software/scene/pipeline/map_lifecycle.py', 'software/scene/management/inputs.py',
+    'software/scene/pipeline/map_lifecycle.py',
+    'software/scene/management/scene_inputs.py',
+    'software/scene/management/batch_inputs.py',
+    'software/scene/management/episode_inputs.py',
     'software/scene/layout.py', 'software/scene/spatial/mapping.py',
     'software/scene/spatial/geometry.py', 'software/scene/spatial/fusion.py',
     'software/scene/spatial/poster_scale.py', 'software/vision/poster_pose.py',
-    'software/vision/tag_board.py', 'software/vision/tags.py', 'software/vision/decoding.py',
+    'software/vision/tag_board.py', 'software/vision/environment_tags.py', 'software/vision/decoding.py',
     'software/trajectory/algorithms/fusion_alignment.py',
     'software/trajectory/algorithms/fusion_alignment_solver.py',
     'software/trajectory/algorithms/inertial.py',
-    'software/trajectory/algorithms/fusion_data.py', 'software/pose_io.py',
+    'software/trajectory/algorithms/fusion_data.py', 'software/trajectory/io/tum.py',
     'software/trajectory/reporting/map_data.py',
 )
 
@@ -107,8 +113,7 @@ def reuse_key(input_identity: dict) -> str:
 
 
 def matches(previous: dict, current: dict) -> bool:
-    # 老地图缺少原片内容身份，仍可显式引用；不猜测它是否匹配当前输入。
-    return bool(previous.get('reuse_key')) and previous['reuse_key'] == current['reuse_key']
+    return previous.get('reuse_key') == current['reuse_key']
 
 
 class MapBuildCache:
@@ -172,10 +177,12 @@ class MapBuildCache:
                     if manifest['inputs'] != identity:
                         raise ValueError('缓存输入身份不匹配')
                     assets = manifest['assets']
-                    from software.scene.management.inputs import validate_assets
                     validate_assets(cache_dir, assets)
                 except (OSError, ValueError, KeyError, TypeError) as error:
                     console.write(f'{label}缓存无效，将重新计算：{error}', state='提醒')
+                    if self.audit is not None:
+                        self.audit.record(stage=stage, key=key, path=str(cache_dir), status='invalidated',
+                                          reason=f'缓存校验失败：{error}')
                     assets = None
             if assets is not None:
                 mark_used(cache_dir)
@@ -188,25 +195,30 @@ class MapBuildCache:
                                       reason='ready.json 输入身份与资产哈希校验通过')
                 return
 
-            yield False
-            from software.scene.management.inputs import artifact_hashes
-            assets = artifact_hashes(directory, roots)
-            if not assets:
-                raise ValueError(f'{label}未生成可缓存的产物')
-            staging = cache_dir.with_name(f'.{key}-{uuid.uuid4().hex}')
             try:
-                for name in assets:
-                    place(directory / name, staging / name)
-                write_json(staging / 'ready.json', dict(inputs=identity, assets=assets))
-                if cache_dir.exists():
-                    shutil.rmtree(cache_dir)
-                staging.rename(cache_dir)
+                yield False
+                assets = artifact_hashes(directory, roots)
+                if not assets:
+                    raise ValueError(f'{label}未生成可缓存的产物')
+                staging = cache_dir.with_name(f'.{key}-{uuid.uuid4().hex}')
+                try:
+                    for name in assets:
+                        place(directory / name, staging / name)
+                    write_json(staging / 'ready.json', dict(inputs=identity, assets=assets))
+                    if cache_dir.exists():
+                        shutil.rmtree(cache_dir)
+                    staging.rename(cache_dir)
+                    if self.audit is not None:
+                        self.audit.record(stage=stage, key=key, path=str(cache_dir), status='computed',
+                                          reason='未命中可用 ready.json，完成计算并发布缓存')
+                finally:
+                    if staging.exists():
+                        shutil.rmtree(staging)
+            except BaseException as error:
                 if self.audit is not None:
-                    self.audit.record(stage=stage, key=key, path=str(cache_dir), status='computed',
-                                      reason='未命中可用 ready.json，完成计算并发布缓存')
-            finally:
-                if staging.exists():
-                    shutil.rmtree(staging)
+                    self.audit.record(stage=stage, key=key, path=str(cache_dir), status='failed',
+                                      reason=f'缓存计算失败：{error}')
+                raise
 
 
 def _copy(source: Path, target: Path) -> None:

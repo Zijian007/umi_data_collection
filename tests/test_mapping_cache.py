@@ -11,7 +11,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software import config, provenance
+from software.configuration import loader as config
+from software.infrastructure import provenance
 from software.scene.map_cache import MapBuildCache, source_identity
 from software.scene.pipeline import map_lifecycle
 from software.scene.spatial import slam

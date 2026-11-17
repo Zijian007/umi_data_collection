@@ -15,8 +15,8 @@ import os
 import shutil
 import threading
 
-from software import config
-from software import provenance as artifact_identity
+from software.configuration import loader as config
+from software.infrastructure import provenance as artifact_identity
 from software.calibration import acceptance, devices, reports, result_io
 from software.calibration.algorithms import aprilgrid_detect, board_pnp
 from software.calibration.models import CalibrationRequest, VerificationRequest, RunPaths, ExecutionOptions, Step, ROLE_STEPS, Decision
@@ -25,7 +25,7 @@ from software.calibration.pipeline.steps import StageRunner
 from software.calibration.solve import basalt, factory as factory_solver
 from software.calibration.validation import factory, gravity, trajectory
 from software.camera.calibration_source import validate as validate_source
-from software.storage import atomic_file, locked
+from software.infrastructure.file_store import atomic_file, locked
 from software.trajectory.calibration import assets
 from software.vision.runtime import write_error_log
 

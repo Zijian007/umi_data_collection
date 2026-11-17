@@ -15,8 +15,8 @@ from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation, Slerp
 import numpy as np
 
-from software import config
-from software import parameters as parameter_models
+from software.configuration import loader as config
+from software.configuration import parameter_models
 from software.camera.geometry import transform, validate_transform
 from software.camera.timing import video_to_imu_seconds
 from software.scene.models import SceneParameters

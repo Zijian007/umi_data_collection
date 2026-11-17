@@ -8,12 +8,15 @@ import gtsam
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software import config
+from software.configuration import loader as config
 from software.camera.geometry import resample_pose_series
-from software.scene.management.inputs import load_scene_parameters
+from software.scene.management.scene_inputs import load_scene_parameters
+from software.scene.configuration import SceneOverrides
 from software.scene.spatial import fusion, poster
 from software.scene.spatial.geometry import VisualObservations
-from software.vision import tag_board, tags, poster_pose
+from software.vision import tag_board, environment_tags, poster_pose
+from software.scene import asset_identity
+tags = environment_tags
 
 
 def pose(rotation=(0., 0., 0.), translation=(0., 0., 0.)):
@@ -45,7 +48,7 @@ def fixture():
     cameras = resample_pose_series(times, truth, rear_times[samples]) @ np.linalg.inv(extrinsics['rear'])
     pixels, _ = poster_pose.project_observations(board_pose, cameras, points, model)
     sides = np.linalg.norm(pixels-np.roll(pixels, -1, axis=1), axis=2).min(axis=1)
-    detections = tags.TagObservations(np.arange(len(rear_times))*2, rear_times-.013, samples, ids, pixels+240.,
+    detections = environment_tags.TagObservations(np.arange(len(rear_times))*2, rear_times-.013, samples, ids, pixels+240.,
         sides, np.ones(len(ids), bool), np.ones(len(ids), bool), np.zeros(len(rear_times), int), np.zeros(len(rear_times), int))
     parameters = replace(load_scene_parameters(None), tag_fusion_enabled=True)
     trajectory = replace(config.load('trajectory').values, zupt=replace(config.load('trajectory').values.zupt, enabled=False))
@@ -80,6 +83,38 @@ class PosterGeometryTests(unittest.TestCase):
                 numerical.append((a-b)/2e-6)
             np.testing.assert_allclose(analytic, np.array(numerical).T, atol=2e-5, rtol=2e-6)
 
+    def test_rear_seat_jacobian_matches_gtsam_retract(self):
+        data = fixture()
+        detections, board, measured = data[7:10]
+        body = pose((.1, -.2, .03), (.2, -.1, .04))
+        board_pose = data[-1]
+        base_ext = data[4]['rear']
+        model = poster_pose.camera_model(measured)
+        tag_id = int(detections.tag_ids[0])
+        points = board.corners_m[tag_id]
+        pixels = detections.corners_px[0]
+        pose_key, board_key, seat_key = (gtsam.symbol('x', 0), gtsam.symbol('b', 0),
+                                         gtsam.symbol('s', 0))
+        correction = gtsam.Rot3(Rotation.from_rotvec((.03, -.04, .02)).as_matrix())
+        state = gtsam.Values()
+        state.insert(pose_key, gtsam.Pose3(body))
+        state.insert(board_key, gtsam.Pose3(board_pose))
+        state.insert(seat_key, correction)
+        analytic = poster._rear_rotation_error(
+            state, pose_key, board_key, seat_key, base_ext, points, pixels, model)[3]
+        numerical = []
+        for axis in np.eye(3):
+            plus = gtsam.Values(state)
+            minus = gtsam.Values(state)
+            plus.update(seat_key, correction.retract(1e-6 * axis))
+            minus.update(seat_key, correction.retract(-1e-6 * axis))
+            plus_residual = poster._rear_rotation_error(
+                plus, pose_key, board_key, seat_key, base_ext, points, pixels, model)[0]
+            minus_residual = poster._rear_rotation_error(
+                minus, pose_key, board_key, seat_key, base_ext, points, pixels, model)[0]
+            numerical.append((plus_residual - minus_residual) / 2e-6)
+        np.testing.assert_allclose(analytic, np.array(numerical).T, atol=2e-4, rtol=2e-6)
+
     def test_seed_recovers_pose_with_changing_visible_ids(self):
         data = fixture()
         detections, board, measured, truth, expected = data[7:]
@@ -105,10 +140,98 @@ class PosterGeometryTests(unittest.TestCase):
 
 
 class PosterFusionTests(unittest.TestCase):
+    def test_joint_method_solves_from_visual_imu_seeds(self):
+        data = fixture()
+        baseline, times, imu, observations, extrinsics, trajectory, parameters, detections, board, measured = data[:10]
+        parameters = replace(parameters, tag_fusion_enabled=True, tag_fusion_method='joint')
+        result = poster.fuse_poster(poster.PosterInputs(
+            'left', baseline, times, imu, observations, extrinsics, trajectory, parameters,
+            detections, board, measured))
+        evidence = result.evidence['environment_poster']
+        self.assertEqual(evidence['status'], 'fused')
+        self.assertEqual(evidence['method'], 'joint')
+        self.assertLess(evidence['final_reprojection_rms_px'], 1.)
+        # 报告从顶层读融合级指标，与 staged 形状一致。
+        self.assertEqual(result.evidence['visual_consistency_rms_m'], evidence['visual_consistency_rms_m'])
+        self.assertEqual(result.T_reference_imu.shape, baseline.T_reference_imu.shape)
+
+    def test_joint_without_observations_keeps_baseline_with_evidence(self):
+        data = list(fixture()[:10])
+        data[6] = replace(data[6], tag_fusion_enabled=True, tag_fusion_method='joint')
+        data[7] = replace(data[7], usable=np.zeros(len(data[7].usable), bool))
+        result = poster.fuse_poster(poster.PosterInputs('left', *data))
+        self.assertIs(result.T_reference_imu, data[0].T_reference_imu)
+        evidence = result.evidence['environment_poster']
+        self.assertEqual((evidence['status'], evidence['method']), ('insufficient_observations', 'joint'))
+
+    def test_joint_post_solve_cull_reoptimizes_without_the_bad_sighting(self):
+        data = list(fixture()[:10])
+        data[6] = replace(data[6], tag_fusion_enabled=True, tag_fusion_method='joint')
+        corners = data[7].corners_half_px.copy()
+        corners[0] += [20., 0.]
+        data[7] = replace(data[7], corners_half_px=corners)
+        # 跳过求解前剔除，让坏观测留到求解后的剔除分支。
+        with patch.object(poster, 'isolated_cull', return_value=False):
+            result = poster.fuse_poster(poster.PosterInputs('left', *data))
+        evidence = result.evidence['environment_poster']
+        self.assertEqual((evidence['status'], evidence['method']), ('fused', 'joint'))
+        self.assertGreaterEqual(evidence['culled_observations'], 1)
+
+    def test_joint_map_inconsistency_is_a_poster_error_not_a_localization_failure(self):
+        data = list(fixture()[:10])
+        data[6] = replace(data[6], tag_fusion_enabled=True, tag_fusion_method='joint')
+        with patch.object(poster.fusion, 'measure_map_consistency',
+                          side_effect=poster.fusion.SceneFusionQualityError('不一致')), \
+                self.assertRaises(poster_pose.PosterGeometryError) as caught:
+            poster.fuse_poster(poster.PosterInputs('left', *data))
+        self.assertNotIsInstance(caught.exception, poster.fusion.SceneFusionQualityError)
+
+    def test_disabled_fusion_only_diagnoses_whatever_the_method(self):
+        for method in poster.FUSION_METHODS:
+            with self.subTest(method=method):
+                data = list(fixture()[:10])
+                data[6] = replace(data[6], tag_fusion_enabled=False, tag_fusion_method=method)
+                result = poster.fuse_poster(poster.PosterInputs('left', *data))
+                self.assertIs(result.T_reference_imu, data[0].T_reference_imu)
+                self.assertEqual(result.evidence['environment_poster']['status'], 'diagnostics_only')
+
+    def test_unknown_method_is_rejected_by_registry(self):
+        data = list(fixture()[:10])
+        data[6] = replace(data[6], tag_fusion_enabled=True, tag_fusion_method='nope')
+        with self.assertRaisesRegex(ValueError, 'staged'):
+            poster.fuse_poster(poster.PosterInputs('left', *data))
+
+    def test_joint_method_matches_staged_relative_motion_on_fixture(self):
+        data = fixture()
+        baseline, times, imu, observations, extrinsics, trajectory, parameters, detections, board, measured, truth = data[:11]
+        staged, joint = (poster.fuse_poster(poster.PosterInputs(
+            'left', baseline, times, imu, observations, extrinsics, trajectory,
+            replace(parameters, tag_fusion_enabled=True, tag_fusion_method=method),
+            detections, board, measured)) for method in ('staged', 'joint'))
+
+        def centered_position_error(result):
+            error = result.T_reference_imu[:, :3, 3] - truth[:, :3, 3]
+            error -= error.mean(axis=0)
+            return float(np.linalg.norm(error))
+
+        self.assertLessEqual(centered_position_error(joint), centered_position_error(staged) * 1.1)
+
+    def test_joint_method_culls_a_bad_tag_sighting(self):
+        data = list(fixture())
+        detections = data[7]
+        corners = detections.corners_half_px.copy()
+        corners[0] += [20., 0.]
+        data[7] = replace(detections, corners_half_px=corners)
+        parameters = replace(data[6], tag_fusion_enabled=True, tag_fusion_method='joint')
+        result = poster.fuse_poster(poster.PosterInputs('left', *data[:6], parameters, data[7], data[8], data[9]))
+        evidence = result.evidence['environment_poster']
+        self.assertEqual(evidence['status'], 'fused')
+        self.assertGreaterEqual(evidence['culled_observations'], 1)
+
     def test_joint_fusion_improves_relative_motion_and_uses_exact_rear_times(self):
         data = fixture()
         baseline, times = data[:2]
-        result = poster.refine(*data[:10])
+        result = poster.fuse_poster(poster.PosterInputs('left', *data[:10]))
         before = baseline.T_reference_imu[:, :3, 3]-data[10][:, :3, 3]
         after = result.T_reference_imu[:, :3, 3]-data[10][:, :3, 3]
         # An unknown board cannot establish absolute world translation; assess motion.
@@ -124,15 +247,30 @@ class PosterFusionTests(unittest.TestCase):
     def test_diagnostics_and_empty_data_leave_baseline_exact(self):
         data = list(fixture()[:10])
         data[6] = replace(data[6], tag_fusion_enabled=False)
-        diagnosed = poster.refine(*data)
+        diagnosed = poster.fuse_poster(poster.PosterInputs('left', *data))
         self.assertEqual(diagnosed.evidence['environment_poster']['status'], 'diagnostics_only')
         self.assertIs(diagnosed.T_reference_imu, data[0].T_reference_imu)
         data[6] = replace(data[6], tag_fusion_enabled=True)
         data[7] = replace(data[7], usable=np.zeros(len(data[7].usable), bool))
         with patch.object(poster, 'estimate_board', side_effect=AssertionError('must skip empty evidence')):
-            empty = poster.refine(*data)
+            empty = poster.fuse_poster(poster.PosterInputs('left', *data))
         self.assertEqual(empty.evidence['environment_poster']['status'], 'insufficient_observations')
         self.assertIs(empty.T_reference_imu, data[0].T_reference_imu)
+
+    def test_diagnostics_culls_an_isolated_bad_tag_sighting(self):
+        data = list(fixture()[:10])
+        detections = data[7]
+        corners = detections.corners_half_px.copy()
+        corners[0] += [20., 0.]
+        data[7] = replace(detections, corners_half_px=corners)
+        data[6] = replace(data[6], tag_fusion_enabled=False)
+        result = poster.fuse_poster(poster.PosterInputs('left', *data))
+        evidence = result.evidence['environment_poster']
+        self.assertEqual(evidence['status'], 'diagnostics_only')
+        self.assertGreaterEqual(evidence['culled_observations'], 1)
+        self.assertGreater(evidence['pre_cull_reprojection_rms_px'],
+                           evidence['initial_reprojection_rms_px'])
+        self.assertIs(result.T_reference_imu, data[0].T_reference_imu)
 
     def test_moved_poster_is_not_silently_swallowed_as_localization_failure(self):
         data = list(fixture()[:10])
@@ -140,10 +278,10 @@ class PosterFusionTests(unittest.TestCase):
         corners[len(corners)//2:] += [50., 0.]
         data[7] = replace(data[7], corners_half_px=corners)
         with self.assertRaises(poster_pose.PosterGeometryError) as caught:
-            poster.refine(*data)
+            poster.fuse_poster(poster.PosterInputs('left', *data))
         self.assertNotIsInstance(caught.exception, fusion.SceneFusionQualityError)
         data[6] = replace(data[6], tag_fusion_enabled=False)
-        diagnostic = poster.refine(*data)
+        diagnostic = poster.fuse_poster(poster.PosterInputs('left', *data))
         self.assertEqual(diagnostic.evidence['environment_poster']['status'], 'rejected_diagnostics')
         self.assertIn('reprojection_metrics', diagnostic.evidence['environment_poster'])
         self.assertIn('median_px', diagnostic.evidence['environment_poster']['reprojection_metrics'])
@@ -156,24 +294,99 @@ class PosterFusionTests(unittest.TestCase):
         cameras = resample_pose_series(data[1], data[10], detections.imu_times_s(measured['cam_time_offset_ns'])) @ np.linalg.inv(data[4]['rear'])
         pixels, _ = poster_pose.project_observations(moved, cameras, np.array([board.corners_m[i] for i in detections.tag_ids]), poster_pose.camera_model(measured))
         data[7] = replace(detections, corners_half_px=pixels+240.)
-        refined = poster.refine(*data[:10])
+        refined = poster.fuse_poster(poster.PosterInputs('left', *data[:10]))
         self.assertEqual(refined.evidence['environment_poster']['status'], 'fused')
         np.testing.assert_allclose(np.array(refined.evidence['environment_poster']['T_scene_board'])[:3,3], moved[:3,3], atol=.03)
+
+    def test_shared_fusion_accepts_different_ids_on_each_arm(self):
+        data = fixture()
+        baseline, times, imu, observations, extrinsics, trajectory, parameters, detections, board, measured = data[:10]
+        common = dict(times=times, imu=imu, observations=observations, T_cam_imu=extrinsics,
+                      trajectory_parameters=trajectory, parameters=replace(parameters, tag_fusion_enabled=True),
+                      board=board, measured=measured)
+        keep = [i for i, tag_id in enumerate(detections.tag_ids) if int(tag_id) in {18, 42, 82}]
+        partial = replace(detections,
+            sample_indices=detections.sample_indices[keep], tag_ids=detections.tag_ids[keep],
+            corners_half_px=detections.corners_half_px[keep], side_px=detections.side_px[keep],
+            in_calibrated_crop=detections.in_calibrated_crop[keep], usable=detections.usable[keep])
+        contexts = [poster.PosterInputs(**common, arm='left', baseline=baseline, detections=detections),
+                    poster.PosterInputs(**common, arm='right', baseline=replace(baseline, T_reference_imu=baseline.T_reference_imu.copy()),
+                         detections=partial)]
+        result = poster.refine_shared_poster_pose(contexts)
+        self.assertEqual(result['left'].evidence['environment_poster']['status'], 'fused')
+        self.assertEqual(result['right'].evidence['environment_poster']['status'], 'fused')
+        self.assertEqual(result['right'].evidence['environment_poster']['visible_ids'], [18, 42, 82])
+
+    def test_shared_fusion_seed_follows_configured_method(self):
+        data = fixture()
+        baseline, times, imu, observations, extrinsics, trajectory, parameters, detections, board, measured, truth = data[:11]
+        common = dict(times=times, imu=imu, observations=observations, T_cam_imu=extrinsics,
+                      trajectory_parameters=trajectory, parameters=replace(parameters, tag_fusion_enabled=True),
+                      board=board, measured=measured, detections=detections)
+        seeded = []
+        for name, method in poster.FUSION_METHODS.items():
+            def record(inputs, seed=method, name=name):
+                seeded.append(name)
+                return seed(inputs)
+            configured = dict(common, parameters=replace(common['parameters'], tag_fusion_method=name))
+            with patch.dict(poster.FUSION_METHODS, {name: record}):
+                result = poster.refine_shared_poster_pose([
+                    poster.PosterInputs(**configured, arm='left', baseline=baseline),
+                    poster.PosterInputs(**configured, arm='right',
+                                        baseline=replace(baseline, T_reference_imu=baseline.T_reference_imu.copy()))])
+            for arm in ('left', 'right'):
+                evidence = result[arm].evidence['environment_poster']
+                self.assertEqual((evidence['status'], evidence['method']), ('fused', name))
+            error = result['left'].T_reference_imu[:, :3, 3] - truth[:, :3, 3]
+            self.assertLess(np.linalg.norm(error - error.mean(axis=0)), .05)
+        self.assertEqual(seeded, ['staged', 'staged', 'joint', 'joint'])
+
+    def test_shared_fusion_keeps_arm_without_poster_observations_on_baseline(self):
+        data = fixture()
+        baseline, times, imu, observations, extrinsics, trajectory, parameters, detections, board, measured = data[:10]
+        empty = replace(detections,
+            sample_indices=np.empty(0, dtype=int), tag_ids=np.empty(0, dtype=int),
+            corners_half_px=np.empty((0, 4, 2), dtype=float), side_px=np.empty(0),
+            in_calibrated_crop=np.empty(0, dtype=bool), usable=np.empty(0, dtype=bool))
+        common = dict(times=times, imu=imu, observations=observations, T_cam_imu=extrinsics,
+                      trajectory_parameters=trajectory, parameters=replace(parameters, tag_fusion_enabled=True),
+                      board=board, measured=measured)
+        right_baseline = replace(baseline, T_reference_imu=baseline.T_reference_imu.copy())
+        result = poster.refine_shared_poster_pose([
+            poster.PosterInputs(**common, arm='left', baseline=baseline, detections=detections),
+            poster.PosterInputs(**common, arm='right', baseline=right_baseline, detections=empty),
+        ])
+        self.assertEqual(result['left'].evidence['environment_poster']['status'], 'fused')
+        self.assertEqual(result['right'].evidence['environment_poster']['status'], 'not_observed_shared_board')
+        self.assertIs(result['right'].T_reference_imu, right_baseline.T_reference_imu)
+
+    def test_fusion_culls_one_bad_environment_sighting_and_reoptimizes(self):
+        data = list(fixture())
+        detections = data[7]
+        corners = detections.corners_half_px.copy()
+        corners[0] += [20., 0.]
+        data[7] = replace(detections, corners_half_px=corners)
+        result = poster.fuse_poster(poster.PosterInputs('left', *data[:10]))
+        evidence = result.evidence['environment_poster']
+        self.assertEqual(evidence['status'], 'fused')
+        self.assertEqual(evidence['culled_observations'], 1)
+        self.assertLess(evidence['final_reprojection_rms_px'], .2)
 
 
 class PosterWorkflowTests(unittest.TestCase):
     def test_configuration_requires_layout_and_valid_thresholds(self):
         import tempfile
-        from software.scene.management import inputs
-        from software.storage import write_yaml
+        from software.scene.management import scene_inputs
+        from software.infrastructure.file_store import write_yaml
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary)/'scene.yaml'
-            write_yaml(path, dict(schema_version=3, parameters=dict(tag_fusion_enabled=True)))
-            with self.assertRaisesRegex(ValueError, 'tags.layout'):
-                inputs.read_scene(path)
-            write_yaml(path, dict(schema_version=3, tags=dict(layout=str(tag_board.DEFAULT_LAYOUT)),
-                                 parameters=dict(tag_fusion_enabled=True)))
-            self.assertTrue(inputs.read_scene(path).parameters.tag_fusion_enabled)
+            path = Path(temporary)/'batch/collection.yaml'
+            write_yaml(path, dict(schema_version=1, kit='rig', scene=dict(layout='shared', parameters=dict(tag_fusion_enabled=True))))
+            with self.assertRaisesRegex(ValueError, '不承载算法参数'):
+                scene_inputs.read_scene(path)
+            write_yaml(path, dict(schema_version=1, kit='rig', scene=dict(layout='shared', tags=dict(enabled=True, layout=str(tag_board.DEFAULT_LAYOUT)))))
+            expert = Path(temporary)/'expert.yaml'
+            write_yaml(expert, dict(parameters=dict(fusion=dict(environment_tags=dict(enabled=True)))))
+            self.assertTrue(scene_inputs.read_scene(path, overrides=SceneOverrides.load(expert)).parameters.tag_fusion_enabled)
             for override in (dict(tag_minimum_frames=2), dict(tag_corner_sigma_px=0.), dict(tag_fusion_enabled=1)):
                 with self.subTest(override=override), self.assertRaises(ValueError):
                     load_scene_parameters(overrides=override)
@@ -183,18 +396,19 @@ class PosterWorkflowTests(unittest.TestCase):
         import shutil
         import test_scene
         from software.scene import workflow
-        from software.scene.management import inputs
+        from software.infrastructure.file_store import read_yaml
         from software.scene.result_io import read_arm_summary
-        from software.storage import write_yaml
+        from software.infrastructure.file_store import write_yaml
         helper = test_scene.SceneWorkflowTests('runTest')
         helper.setUp()
         self.addCleanup(helper.doCleanups)
         helper.build_scene()
         original = helper.root/'poster.json'
         shutil.copyfile(tag_board.DEFAULT_LAYOUT, original)
-        declaration = inputs.read_yaml(helper.scene_path)
-        declaration['tags'] = dict(layout=str(original))
-        write_yaml(helper.scene_path, declaration)
+        declaration_path = helper.batch_root / 'collection.yaml'
+        declaration = read_yaml(declaration_path)
+        declaration['scene'] = dict(declaration.get('scene', {}), tags=dict(enabled=True, layout=str(original)))
+        write_yaml(declaration_path, declaration)
         identities = []
 
         def cached(video, output, settings, **kwargs):
@@ -214,7 +428,7 @@ class PosterWorkflowTests(unittest.TestCase):
             self.assertEqual(summary['fusion']['environment_poster']['status'], 'missing_rear_calibration')
         metadata = json.loads((output/'episode.json').read_text())
         self.assertIn('devices/environment_poster.json', metadata['assets'])
-        inputs.validate_assets(output.resolve(), metadata['assets'])
+        asset_identity.validate_assets(output.resolve(), metadata['assets'])
 
     def test_nanosecond_equivalent_times_merge_but_real_lens_offsets_do_not(self):
         front = np.array([.1, .2, .3, .4])
@@ -228,7 +442,7 @@ class PosterWorkflowTests(unittest.TestCase):
     def test_result_distinguishes_rear_localization_from_poster_fusion(self):
         import test_scene
         from software.scene.models import FusedTrajectory
-        from software.scene.pipeline import results
+        from software.scene.pipeline import trajectory_writers
         helper = test_scene.SceneWorkflowTests('runTest')
         helper.setUp()
         self.addCleanup(helper.doCleanups)
@@ -237,7 +451,7 @@ class PosterWorkflowTests(unittest.TestCase):
         for status in ('fused', 'diagnostics_only', 'insufficient_observations'):
             fused = FusedTrajectory(np.tile(np.eye(4), (count,1,1)), np.ones(count,bool), np.ones(count,bool),
                                     dict(environment_poster=dict(status=status)))
-            track = results.write_arm('left', recording, fused, 0., dict(frame_id='test'), helper.root/status)
+            track = trajectory_writers.write_arm_trajectory('left', recording, fused, 0., dict(frame_id='test'), helper.root/status)
             rear = track.metadata['frame_geometry']['rear_lens']
             self.assertFalse(rear['used_for_localization'])
             self.assertEqual(rear['used_for_poster_fusion'], status == 'fused')

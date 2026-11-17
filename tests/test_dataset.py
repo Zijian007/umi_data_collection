@@ -1,3 +1,4 @@
+from software.infrastructure.file_store import read_yaml
 """训练中间包：真实视频解码、人工验收、时间映射、缺失通道与独立读取。"""
 from fractions import Fraction
 import io
@@ -12,19 +13,20 @@ import numpy as np
 from software.dataset import sampling
 from software.scene import cli
 from software.dataset.export import build, load_episode
-from software.scene.management import episodes, inputs
+from software.scene.management import episodes, batch_inputs, episode_inputs, scene_inputs
 from software.scene import workflow
-from software.storage import write_yaml
+from software.infrastructure.file_store import write_yaml
+from registry_fakes import write_task_configuration, read_task_configuration
 import test_scene as fixtures
 
 
-def encode_video(path, count):
-    with av.open(str(path), 'w') as container:
+def encode_video(path, count, *, width=32, height=32):
+    with av.open(str(path), 'w', format='mp4') as container:
         stream = container.add_stream('mpeg4', rate=20)
-        stream.width = stream.height = 32
+        stream.width, stream.height = width, height
         stream.pix_fmt = 'yuv420p'
         for k in range(count):
-            frame = av.VideoFrame.from_ndarray(np.full((32, 32, 3), k % 255, dtype=np.uint8), format='rgb24')
+            frame = av.VideoFrame.from_ndarray(np.full((height, width, 3), k % 255, dtype=np.uint8), format='rgb24')
             frame.pts = k
             frame.time_base = Fraction(1, 20)
             for packet in stream.encode(frame):
@@ -38,7 +40,7 @@ class DatasetTests(unittest.TestCase):
         self.f = fixtures.SceneWorkflowTests()
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
-        write_yaml(self.f.task_root / 'task.yaml', dict(instruction='双手把盒子放入托盘', synchronization=dict(
+        write_task_configuration(self.f.task_root, dict(instruction='双手把盒子放入托盘', synchronization=dict(
             offsets_s=dict(left=0., right=-.12), confirmed=True, note='共同事件，首尾已核验')))
         for recording in self.f.prepared_recordings.values():
             encode_video(recording.lens_video('front').path, len(recording.video_times_s))
@@ -47,8 +49,7 @@ class DatasetTests(unittest.TestCase):
         episodes.review(self.f.episode_path, accept=True, reviewer='test')
         self.output = self.f.root / 'dataset'
 
-    def test_legacy_scene_settings_still_export_to_training_package(self):
-        self.f.make_legacy_result()
+    def test_scene_settings_export_to_training_package(self):
         episodes.review(self.f.episode_path, accept=True, reviewer='test')
         build([self.f.episode_path], self.output, fps=20.)
         entry = json.loads((self.output / 'manifest.json').read_text())['episodes'][0]
@@ -66,7 +67,7 @@ class DatasetTests(unittest.TestCase):
         entry = manifest['episodes'][0]
         # Removing source files/registries from the reader's reach is unnecessary:
         # these imports must never be consulted when reading an exported package.
-        with patch('software.dataset.source.read_accepted', side_effect=AssertionError('source accessed')):
+        with patch('software.dataset.source.read_accepted_episode', side_effect=AssertionError('source accessed')):
             metadata, arrays = load_episode(self.output, entry['path'])
         self.assertEqual(metadata['instruction'], '双手把盒子放入托盘')
         self.assertEqual(metadata['missing_channels'], ['gripper'])
@@ -102,21 +103,21 @@ class DatasetTests(unittest.TestCase):
     def test_invalid_annotations_and_review_block_export(self):
         for change, message in ((dict(instruction='  '), 'instruction'),
                                 (dict(synchronization=dict(offsets_s=dict(left=0., right=0.), confirmed=False)), 'synchronization')):
-            original = inputs.read_yaml(self.f.task_root / 'task.yaml')
+            original = read_task_configuration(self.f.task_root)
             data = dict(original, **change)
-            write_yaml(self.f.task_root / 'task.yaml', data)
+            write_task_configuration(self.f.task_root, data)
             workflow.run_episode(self.f.episode_path)
             episodes.review(self.f.episode_path, accept=True, reviewer='test')
             with self.assertRaisesRegex(ValueError, message):
                 build([self.f.episode_path], self.output)
             self.assertFalse(self.output.exists())
-            write_yaml(self.f.task_root / 'task.yaml', original)
+            write_task_configuration(self.f.task_root, original)
         workflow.run_episode(self.f.episode_path)
         with self.assertRaisesRegex(ValueError, '人工接收'):
             build([self.f.episode_path], self.output)
 
     def test_corrupt_video_or_source_change_never_publishes_partial_package(self):
-        with patch('software.dataset.source.verify_current', side_effect=ValueError('源结果发生变化')):
+        with patch('software.dataset.source.verify_accepted_episode_unchanged', side_effect=ValueError('源结果发生变化')):
             with self.assertRaisesRegex(ValueError, '发生变化'):
                 build([self.f.episode_path], self.output)
         self.assertFalse(self.output.exists())
@@ -127,12 +128,12 @@ class DatasetTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_single_arm_keeps_its_identity_and_needs_no_intercamera_confirmation(self):
-        data = inputs.read_yaml(self.f.episode_path)
+        data = read_yaml(self.f.episode_path)
         data['recordings'].pop('left')
         write_yaml(self.f.episode_path, data)
-        configuration = inputs.read_yaml(self.f.task_root / 'task.yaml')
+        configuration = read_task_configuration(self.f.task_root)
         configuration.update(expected_arms=['right'], synchronization=dict(offsets_s=dict(right=0.), confirmed=False))
-        write_yaml(self.f.task_root / 'task.yaml', configuration)
+        write_task_configuration(self.f.task_root, configuration)
         workflow.run_episode(self.f.episode_path)
         episodes.review(self.f.episode_path, accept=True, reviewer='test')
         build([self.f.episode_path], self.output, fps=20.)

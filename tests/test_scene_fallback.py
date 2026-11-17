@@ -10,14 +10,15 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software import config
+from software.configuration import loader as config
 from software.scene.models import PreparedRecording
 from software.scene.pipeline import fallback
-from software.scene.management import inputs
+from software.scene.management import scene_inputs
 from software.trajectory.calibration import assets
 from software.trajectory.pipeline import runtime
 from software.vision.models import LensVideo, RecordingPaths
 from trajectory_fakes import FakeEngines
+from software.scene import asset_identity
 
 
 class SceneFallbackAdapterTests(unittest.TestCase):
@@ -35,7 +36,8 @@ class SceneFallbackAdapterTests(unittest.TestCase):
         self.camera.write_bytes(assets.SAMPLE_CAMERA_JSON.read_bytes())
         configuration = config.load('trajectory')
         self.episode = SimpleNamespace(expected_arms=('right',), recordings={'right': self.root / 'right.insv'},
-                                       scene=SimpleNamespace(trajectory=configuration,parameters=inputs.load_scene_parameters(),tag_layout=None))
+                                       scene=SimpleNamespace(trajectory=configuration,parameters=scene_inputs.load_scene_parameters(),tag_layout=None,
+                                                             environment_tag_detection=False))
         times = np.loadtxt(self.paths.dataset / 'mav0/cam0/data.csv', delimiter=',', usecols=0) / 1e9 - 1
         self.recording = PreparedRecording(
             SimpleNamespace(files={'front': self.camera, 'mask': runtime.HERE / 'assets/config/front_hand_mask.png'}),
@@ -72,7 +74,7 @@ class SceneFallbackAdapterTests(unittest.TestCase):
                 self.assertEqual(parameters['fusion']['gravity_tolerance_m_s2'],
                                  self.episode.scene.trajectory.values.fusion.gravity_tolerance_m_s2)
         directory = self.root / 'independent'
-        inputs.validate_assets(directory, inputs.artifact_hashes(directory, ('debug',)))
+        asset_identity.validate_assets(directory, asset_identity.artifact_hashes(directory, ('debug',)))
 
     def test_independent_quality_failure_is_not_published_as_success(self):
         self.engines.scale_changes = {1: 3.27, 2: 3.27, 3: 3.27}
@@ -85,8 +87,8 @@ class SceneFallbackAdapterTests(unittest.TestCase):
     def test_truncated_trajectory_cannot_silently_drop_tail_frames(self):
         def execute(command, **options):
             result = self.engines(command, **options)
-            if any(Path(arg).name == 'fusion_cli.py' for arg in command):
-                position = next(i for i, arg in enumerate(command) if Path(arg).name == 'fusion_cli.py')
+            if 'software.trajectory.algorithms.fusion_cli' in command:
+                position = command.index('software.trajectory.algorithms.fusion_cli')
                 tum = Path(command[position + 6]) / 'traj_tum.txt'
                 tum.write_text(''.join(tum.read_text().splitlines(keepends=True)[:-1]))
             return result

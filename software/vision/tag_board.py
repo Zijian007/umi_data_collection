@@ -8,7 +8,7 @@ import json
 
 import numpy as np
 
-from software import provenance
+from software.infrastructure import provenance
 
 
 DEFAULT_LAYOUT = provenance.ROOT / 'hardware/calibration_targets/environment_poster.json'

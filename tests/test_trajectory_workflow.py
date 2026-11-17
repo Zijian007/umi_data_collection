@@ -8,7 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from software.vision import recordings as visual_recordings
-from software import config, registry
+from software.configuration import loader as config
+from software.camera import registry
 from software.trajectory.calibration import assets as calibration_assets
 from software.trajectory import cli, workflow
 from software.trajectory.pipeline import reconstruction, runtime
@@ -53,9 +54,12 @@ class RecordingFixture(unittest.TestCase):
 
     def successful_result(self):
         self.output.mkdir(parents=True, exist_ok=True)
-        (self.output / 'summary.json').write_text(json.dumps(dict(status='ok', run_fingerprint=self.fingerprint())))
+        details = self.output / 'details'
+        details.mkdir(exist_ok=True)
+        (details / 'summary.json').write_text(json.dumps(dict(status='ok', run_fingerprint=self.fingerprint())))
         for name in REQUIRED_OUTPUTS:
-            (self.output / name).write_text('output')
+            target = self.output / name if name == 'traj_tcp.txt' else details / name
+            target.write_text('output')
 
 
 class ReuseTests(RecordingFixture):
@@ -94,7 +98,7 @@ class ReuseTests(RecordingFixture):
         self.successful_result()
         for text in ('{"status":"ok"}', '{invalid', '[]', '{"status":"failed"}'):
             with self.subTest(text=text):
-                (self.output / 'summary.json').write_text(text)
+                (self.output / 'details/summary.json').write_text(text)
                 self.assertIsNone(reuse_decision(self.output, self.fingerprint(), notes=config.load('trajectory').values.notes).summary)
 
     def test_missing_output_is_not_reused(self):
@@ -139,7 +143,7 @@ class SelectionTests(unittest.TestCase):
             self.assertEqual(chosen.camera_serial, 'specified')
             get.assert_not_called()
             hashes = chosen.assets.hashes()
-            self.assertEqual(chosen.as_postprocess_dict(hashes)['mask'], str(chosen.assets.front_mask))
+            self.assertEqual(chosen.postprocess_record(hashes)['mask'], str(chosen.assets.front_mask))
             self.assertEqual(chosen.time_offset_ns, calibration_assets.read_basalt(chosen.assets.camera_json)['cam_time_offset_ns'])
 
     def test_invalid_override_fails_at_the_file_boundary(self):
@@ -205,11 +209,11 @@ class WorkflowTests(RecordingFixture):
 
     def test_invalid_selection_preserves_existing_output(self):
         self.successful_result()
-        before = (self.output / 'summary.json').read_bytes()
+        before = (self.output / 'details/summary.json').read_bytes()
         with patch.object(selection, 'select_calibration', side_effect=registry.RegistryError('retired')), patch.object(runtime.console, 'write'):
             result = workflow.run_recording(self.video, self.output.parent, TrajectoryRequest())
         self.assertEqual(result['status'], 'failed')
-        self.assertEqual((self.output / 'summary.json').read_bytes(), before)
+        self.assertEqual((self.output / 'details/summary.json').read_bytes(), before)
 
     def test_all_attempts_fail_and_record_diagnostics(self):
         error = reconstruction.ProcessingError('重建质量检查', 'invalid fusion metrics')

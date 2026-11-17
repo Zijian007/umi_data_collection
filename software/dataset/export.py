@@ -10,10 +10,10 @@ import tempfile
 
 import numpy as np
 
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.dataset import gripper, sampling, source
 from software.scene.result_io import read_arm_settings, scene_reference
-from software.storage import locked, write_json
+from software.infrastructure.file_store import locked, write_json
 
 
 FORMAT = 'umi_training_dataset'
@@ -25,7 +25,7 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
         raise ValueError('fps 必须为 (0, 120] 内的有限数值')
     if not math.isfinite(max_gap_s) or max_gap_s <= 0:
         raise ValueError('max_gap_s 必须为有限正秒数')
-    selected = source.select(paths)
+    selected = source.select_accepted_episodes(paths)
     output = output.expanduser().resolve()
     if any(output.is_relative_to(item.scene_root) or item.scene_root.is_relative_to(output) for item in selected):
         raise ValueError('数据集输出目录不能位于源场景内或覆盖源场景')
@@ -73,7 +73,7 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
                                     training_ready=metadata['training_ready'], missing_channels=metadata['missing_channels'],
                                     not_ready_reasons=metadata['not_ready_reasons']))
             for item in selected:
-                source.verify_current(item)
+                source.verify_accepted_episode_unchanged(item)
             missing_channels = sorted({name for entry in entries for name in entry['missing_channels']})
             ready = all(entry['training_ready'] for entry in entries)
             manifest = dict(kind=FORMAT, schema_version=SCHEMA_VERSION, fps=fps, max_gap_s=max_gap_s,

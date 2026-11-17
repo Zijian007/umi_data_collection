@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 from pathlib import Path
 import subprocess
 import traceback
 
-from software import parameters as parameter_models
+from software.configuration import parameter_models
 from software.camera.images import prepare_mask
-from software.environment import python_executable
+from software.infrastructure.runtime_environment import python_executable
+from software.infrastructure.paths import PROJECT_ROOT
 from software.vision.models import VisualContext, VisualSettings, ProcessingError
 from software.vision.paths import orb_executable
 
 
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE / 'tools'
+REPO = PROJECT_ROOT
 
 
 def write_error_log(path: Path, error: BaseException) -> None:

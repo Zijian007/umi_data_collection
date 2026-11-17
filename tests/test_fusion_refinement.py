@@ -99,7 +99,7 @@ class RefinementTests(unittest.TestCase):
     def test_review_reports_rejection_without_publishing_trajectory(self):
         from software.trajectory.algorithms.fusion_data import FusionInputs
         from software.trajectory.reporting.initialization_review import review
-        from software import config
+        from software.configuration import loader as config
         observations = {k: (np.zeros(3), rot) for k, (_, rot) in self.lens['obs'].items()}
         inputs = FusionInputs(dict(front=observations, rear={}), dict(front={}, rear={}), self.imu,
             self.times, dict(q_xyzw=[0, 0, 0, 1], p=[0, 0, 0]), np.eye(3), np.zeros(3))

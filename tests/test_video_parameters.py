@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software import config
+from software.configuration import loader as config
 from software.camera.images import prepare_mask
 from software.camera.x3 import extraction, frame
 from software.trajectory.calibration import assets

@@ -10,13 +10,14 @@ import unittest
 import av
 import numpy as np
 
-from software import provenance
+from software.infrastructure import provenance
 from software.gripper_width import detection, sampled_detection
 from software.scene import layout
-from software.scene.management import inputs
+from software.infrastructure.file_store import read_yaml
+from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
 from software.scene.pipeline import measurements
-from software.storage import write_yaml
-from software.vision import tag_board, tags
+from software.infrastructure.file_store import write_yaml
+from software.vision import tag_board, environment_tags
 from software.vision.decoding import VideoDecode
 from test_environment_tags import poster, recording
 from test_marker_detection import bright_markers
@@ -35,7 +36,7 @@ class SharedDecodingTests(unittest.TestCase):
         self.times = np.array([float(frame.pts * frame.time_base) for frame in self.frames])
         self.queries = self.times[::2]
         self.digest = provenance.file_hash(self.video)
-        self.settings = tags.DetectionSettings(border_bits=1, ids=(12, 88))
+        self.settings = environment_tags.DetectionSettings(border_bits=1, ids=(12, 88))
 
     def prepare(self, cache, *, settings=None, queries=None):
         decoder = VideoDecode(self.video)
@@ -43,7 +44,7 @@ class SharedDecodingTests(unittest.TestCase):
         sampled = sampled_detection.SampledDetectionCache(
             self.video, cache, self.digest, self.queries if queries is None else queries, None)
         sampled.load(decoder=decoder)
-        tags.cached(self.video, cache / 'poster', settings or self.settings, decoder=decoder)
+        environment_tags.cached(self.video, cache / 'poster', settings or self.settings, decoder=decoder)
         return decoder, sampled
 
     def test_shared_outputs_are_byte_identical_to_independent_detection(self):
@@ -56,7 +57,7 @@ class SharedDecodingTests(unittest.TestCase):
         detection.cached(self.video, independent / 'width', self.digest)
         reference = sampled_detection.SampledDetectionCache(self.video, independent, self.digest, self.queries, None)
         reference.load()
-        tags.cached(self.video, independent / 'poster', self.settings)
+        environment_tags.cached(self.video, independent / 'poster', self.settings)
         for actual, expected in (
             (next((cache / 'width').glob('*/detections.npz')), next((independent / 'width').glob('*/detections.npz'))),
             (sampled.directory / 'quick.npz', reference.directory / 'quick.npz'),
@@ -89,7 +90,7 @@ class SharedDecodingTests(unittest.TestCase):
         decoder, original = self.prepare(cache)
         decoder.run()
         with patch.object(detection.WidthDetection, 'consume', side_effect=AssertionError('width cache')), \
-                patch.object(tags.PosterDetection, 'consume', side_effect=AssertionError('poster cache')), \
+                patch.object(environment_tags.PosterDetection, 'consume', side_effect=AssertionError('poster cache')), \
                 patch('av.open', wraps=av.open) as opened:
             changed, sampled = self.prepare(cache, queries=self.times[1::2])
             changed.run()
@@ -113,7 +114,7 @@ class SharedDecodingTests(unittest.TestCase):
         container = MagicMock()
         container.__enter__.return_value = container
         container.streams.video = [SimpleNamespace(codec_context=SimpleNamespace(width=3840, height=1920),
-                                                  average_rate=tags.FPS_SRC)]
+                                                  average_rate=environment_tags.FPS_SRC)]
 
         def broken():
             yield self.frames[0]
@@ -128,17 +129,22 @@ class SharedDecodingTests(unittest.TestCase):
     def test_consumer_validation_failure_does_not_publish_other_caches(self):
         cache = self.root / 'invalid'
         decoder, _ = self.prepare(cache)
-        with patch.object(tags.PosterDetection, 'finish', side_effect=ValueError('invalid observations')), \
+        with patch.object(environment_tags.PosterDetection, 'finish', side_effect=ValueError('invalid observations')), \
                 self.assertRaisesRegex(ValueError, 'invalid observations'):
             decoder.run()
         self.assertFalse(list(cache.rglob('*.npz')))
 
     def test_scene_prepares_all_caches_then_consumers_need_no_more_decode(self):
         batch = self.root / 'shelf/batch_001'
-        write_yaml(batch / 'batch.yaml', {})
+        write_yaml(batch / 'collection.yaml', dict(
+            schema_version=1,
+            scene=dict(layout='shared', map_reference_arm='left'),
+            kit='fixture', arms=['left'], map_policy='latest_prior'))
         episode = SimpleNamespace(root=batch / 'take_001', recordings=dict(left=self.video),
             recording_refs=dict(left=dict(sha256=self.digest)),
-            scene=SimpleNamespace(tag_layout=tag_board.DEFAULT_LAYOUT, parameters=inputs.load_scene_parameters()))
+            scene=SimpleNamespace(tag_layout=tag_board.DEFAULT_LAYOUT,
+                                  environment_tag_detection=True,
+                                  parameters=scene_inputs.load_scene_parameters()))
         prepared = SimpleNamespace(camera=SimpleNamespace(files=dict(width=Path('width.json'), tag_distance=Path('tags.json'))),
                                    video_times_s=self.queries)
         with patch('av.open', wraps=av.open) as opened:
@@ -150,7 +156,7 @@ class SharedDecodingTests(unittest.TestCase):
             self.assertIsNotNone(detection.cached(self.video, cache / 'gripper_width', self.digest))
             sampled_detection.SampledDetectionCache(self.video, cache, self.digest, self.queries, None).load()
             board = tag_board.load(tag_board.DEFAULT_LAYOUT)
-            result = tags.cached(self.video, cache / 'environment_tags/left',
-                tags.DetectionSettings(border_bits=board.border_bits, ids=board.ids, dictionary=board.dictionary,
+            result = environment_tags.cached(self.video, cache / 'environment_tags/left',
+                environment_tags.DetectionSettings(border_bits=board.border_bits, ids=board.ids, dictionary=board.dictionary,
                                        minimum_side_px=episode.scene.parameters.tag_minimum_side_px), layout=board)
         self.assertTrue(result['cache_reused'])

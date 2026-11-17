@@ -10,9 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from software import config
-from software import parameters as parameter_models
-from software import provenance as artifact_identity
+from software.configuration import loader as config
+from software.configuration import parameter_models
+from software.infrastructure import provenance as artifact_identity
 from software.trajectory.calibration.selection import SelectedCalibration
 from software.trajectory.models import TrajectoryRequest
 from software.trajectory.pipeline.calibration_assets import EnvironmentAssets, load_frozen_rear
@@ -58,7 +58,7 @@ def reuse_decision(output: Path, fingerprint: dict, *, notes: parameter_models.N
         return ReuseDecision(None, '上次处理未成功')
     previous = summary.get('run_fingerprint')
     if not isinstance(previous, dict) or previous.get('version') != 2 or fingerprint.get('version') != 2:
-        return ReuseDecision(None, '旧结果缺少兼容的输入指纹')
+        return ReuseDecision(None, '结果缺少当前输入指纹')
     for key, reason in (
         ('recording', '录像信息已变化'),
         ('calibration', '标定或夹爪配置已变化'),

@@ -6,11 +6,13 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software import config, registry
+from software.configuration import loader as config
+from software.camera import registry
 from software.camera.geometry import resample_pose_series
 from software.trajectory.algorithms import fusion, fusion_poster
 from software.trajectory.algorithms.fusion_data import FusionInputs
-from software.vision import tag_board, tags, poster_pose
+from software.vision import tag_board, environment_tags, poster_pose
+tags = environment_tags
 
 
 def fixture():
@@ -35,7 +37,7 @@ def fixture():
     cameras = resample_pose_series(times,truth,rear_times[sample]) @ T_imu_rear
     pixels,_ = poster_pose.project_observations(board_pose,cameras,points,poster_pose.camera_model(rear))
     side = np.linalg.norm(pixels-np.roll(pixels,-1,axis=1),axis=2).min(axis=1)
-    detection = tags.TagObservations(np.arange(len(rear_times))*6,rear_times-.013,sample,ids,pixels+240.,side,
+    detection = environment_tags.TagObservations(np.arange(len(rear_times))*6,rear_times-.013,sample,ids,pixels+240.,side,
         np.ones(len(ids),bool),np.ones(len(ids),bool),np.zeros(len(rear_times),int),np.zeros(len(rear_times),int))
     inputs = FusionInputs(dict(front=observations,rear={}),dict(front={},rear={}),imu,times,camera,
         T_imu_rear[:3,:3],np.linalg.inv(T_imu_rear)[:3,3],fusion_poster.PosterInputs(board,detection,rear))
@@ -182,16 +184,17 @@ class IndependentPosterPipelineTests(unittest.TestCase):
         helper.episode.recordings['right'].write_bytes(b'synthetic container')
         rear=helper.root/'rear.json';write_camera(rear,inputs.poster.measured,rear=True)
         helper.episode.scene.tag_layout=tag_board.DEFAULT_LAYOUT
+        helper.episode.scene.environment_tag_detection=True
         helper.episode.scene.parameters=replace(helper.episode.scene.parameters,tag_fusion_enabled=True)
         helper.recording=replace(helper.recording,camera=SimpleNamespace(
             files=dict(helper.recording.camera.files,rear=rear),measurements=dict(rear=inputs.poster.measured)))
         def engine(command,**kwargs):
             result=helper.engines(command,**kwargs)
-            if any(Path(arg).name=='fusion_cli.py' for arg in command):
+            if 'software.trajectory.algorithms.fusion_cli' in command:
                 manifest=Path(command[command.index('--poster')+1]);poster_assets.load(manifest)
                 parameters=json.loads(Path(command[command.index('--parameters')+1]).read_text())
                 self.assertTrue(parameters['environment_tags']['tag_fusion_enabled'])
-                pos=next(i for i,arg in enumerate(command) if Path(arg).name=='fusion_cli.py')
+                pos=command.index('software.trajectory.algorithms.fusion_cli')
                 evidence=Path(command[pos+6])/'fuse_info.json'
                 document=json.loads(evidence.read_text());document['environment_poster']=dict(status='fused',actual_error='not_measured')
                 evidence.write_text(json.dumps(document))

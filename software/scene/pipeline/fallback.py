@@ -10,11 +10,11 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from software.camera.timing import canonical_to_video_seconds
-from software.parameters import EnvironmentTagParameters
-from software.pose_io import read_tum
+from software.configuration.parameter_models import EnvironmentTagParameters
+from software.trajectory.io.tum import read_tum
 from software.scene.models import Episode, PreparedRecording, FusedTrajectory
 from software.scene.spatial.fusion import longest_gap
-from software.storage import write_json
+from software.infrastructure.file_store import write_json
 from software.trajectory.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
 from software.trajectory.pipeline import reconstruction, runtime
 from software.vision.models import RecordingData
@@ -24,6 +24,8 @@ from software.vision.recordings import write_times_csv
 def reconstruct(episode: Episode, arm: str, recording: PreparedRecording, directory: Path) -> FusedTrajectory:
     if len(episode.expected_arms) != 1 or set(episode.recordings) != {arm}:
         raise ValueError('独立回退只支持完整单手任务')
+    if episode.scene.parameters.tag_fusion_enabled and episode.scene.parameters.tag_fusion_method != 'staged':
+        raise ValueError('独立回退暂不支持 joint 环境标签方法；请先修复共享场景融合或改用 staged')
     # 使用工作镜头+IMU，不借用独立 dual 模式的历史环境镜头样例标定。
     configuration = replace(episode.scene.trajectory, values=replace(episode.scene.trajectory.values,
         input=replace(episode.scene.trajectory.values.input, mode='handheld'),
@@ -38,7 +40,7 @@ def reconstruct(episode: Episode, arm: str, recording: PreparedRecording, direct
     settings = runtime.reconstruction_settings(dict(os.environ), camera_json=recording.camera.files['front'],
         front_mask=recording.camera.files['mask'], output=paths.debug/'settings', parameters=configuration.values)
     poster_status = None
-    if episode.scene.tag_layout is not None:
+    if episode.scene.environment_tag_detection:
         if 'rear' not in recording.camera.measurements:
             if episode.scene.parameters.tag_fusion_enabled:
                 raise ValueError('独立回退海报融合缺少环境镜头完整标定')

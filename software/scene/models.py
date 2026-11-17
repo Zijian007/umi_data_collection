@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, TypedDict
 
 import numpy as np
 
-from software import config
-from software import provenance as artifact_identity
+from software.configuration import loader as config
+from software.infrastructure import provenance as artifact_identity
 from software.scene import layout
 from software.trajectory.calibration import selection
 from software.vision.models import LensVideo, VisualContext
@@ -51,6 +51,7 @@ class SceneParameters:
     visual_rotation_sigma_deg: float
     huber: float
     tag_fusion_enabled: bool
+    tag_fusion_method: str
     tag_minimum_side_px: float
     tag_minimum_frames: int
     tag_corner_sigma_px: float
@@ -102,10 +103,11 @@ class Scene:
     tag_layout: Path | None = None
     overrides: SceneOverrides | None = None
     batch_root: Path | None = None
+    environment_tags_enabled: bool = False
 
     @property
     def root(self) -> Path:
-        return self.path.parent
+        return self.path.parent.parent if self.path.name == 'collection.yaml' else self.path.parent
 
     @property
     def map_root(self) -> Path:
@@ -123,6 +125,24 @@ class Scene:
         if self.mode == 'dual':
             return ('front', 'rear')
         raise ValueError(f'未知场景模式：{self.mode}')
+
+    @property
+    def environment_tag_detection(self) -> bool:
+        """是否运行环境标签检测：collection.yaml 的 scene.tags.enabled，且必须有布局。"""
+        return self.tag_layout is not None and self.environment_tags_enabled
+
+    @property
+    def environment_tag_policy(self) -> dict[str, object]:
+        """Canonical user-facing policy for environment-tag processing."""
+        return {
+            'enabled': self.environment_tag_detection,
+            'mapping': {
+                'enabled': bool(self.parameters.tag_mapping_enabled),
+                'scale': {'enabled': bool(self.parameters.tag_mapping_scale_enabled)},
+            },
+            'fusion': {'enabled': bool(self.parameters.tag_fusion_enabled),
+                       'method': self.parameters.tag_fusion_method},
+        }
 
 
 @dataclass(frozen=True)
@@ -255,3 +275,5 @@ class EpisodeRunResult(TypedDict, total=False):
     frame_id: str
     common_interval_s: list[float] | None
     inputs: dict
+    synchronization: dict
+    quality: dict

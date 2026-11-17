@@ -12,11 +12,11 @@ import numpy as np
 
 from . import slam
 from .geometry import MapAlignmentError, VisualObservations, alignment_parameters, metric_alignment, place_front
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.camera.geometry import imu_from_camera
 from software.scene.models import PreparedRecording, Scene
 from software.scene.map_cache import MapBuildCache
-from software.storage import write_json
+from software.infrastructure.file_store import write_json
 from software.trajectory.algorithms.inertial import estimate_gyro_bias
 
 
@@ -58,6 +58,7 @@ def definition(scene: Scene) -> dict:
              'maximum_acc_bias', 'minimum_pose', 'placement_', 'maximum_placement')
     fusion_parameters = alignment_parameters(scene.trajectory.values, scene.parameters)
     result = dict(name=scene.name, mode=scene.mode, reference_arm=scene.reference_arm,
+        environment_tag_policy=scene.environment_tag_policy,
         mapping={arm: str(path) for arm, path in scene.recordings.items()},
         devices={serial: dict(binding, gripper={key: value for key, value in binding.get('gripper', {}).items()
                                               if key != 'width'})

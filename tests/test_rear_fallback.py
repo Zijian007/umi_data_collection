@@ -6,14 +6,16 @@ from unittest.mock import patch
 import gtsam
 import numpy as np
 
-from software import config, provenance, registry
+from software.configuration import loader as config
+from software.infrastructure import provenance
+from software.camera import registry
 from software.calibration.algorithms import factory_kb4
 from software.camera import calibration_source, rear_fallback
 from software.camera.geometry import imu_from_camera
 from software.camera.x3 import factory
 from software.scene.management import camera_assets
 from software.scene.models import Scene
-from software.storage import write_json
+from software.infrastructure.file_store import write_json
 from software.trajectory.calibration import assets
 from software.trajectory.models import TrajectoryRequest
 from software.trajectory.pipeline import calibration_assets, reuse
@@ -95,7 +97,7 @@ class RearFallbackTests(RecordingFixture):
         fingerprint = reuse.run_fingerprint(self.video, self.selected, request, environment_assets=selected)
         self.successful_result()
         manifest = calibration_assets.freeze_rear_calibration(selected.rear, self.output/'devices/rear')
-        write_json(self.output/'summary.json', dict(status='ok', run_fingerprint=fingerprint))
+        write_json(self.output/'details/summary.json', dict(status='ok', run_fingerprint=fingerprint))
         self.assertIsNotNone(reuse.reuse_decision(self.output, fingerprint, notes=request.configuration.values.notes).summary)
         (manifest.parent/'calibration.json').write_text('{}')
         self.assertIsNone(reuse.reuse_decision(self.output, fingerprint, notes=request.configuration.values.notes).summary)
@@ -116,22 +118,23 @@ class RearFallbackTests(RecordingFixture):
     def test_invalid_factory_metadata_does_not_remove_previous_result(self):
         from software.trajectory import workflow
         self.successful_result()
-        before = (self.output/'summary.json').read_bytes()
+        before = (self.output/'details/summary.json').read_bytes()
         with patch.object(factory, 'read_factory', side_effect=ValueError('unsupported v6')), \
              patch('software.trajectory.calibration.selection.select_calibration', return_value=self.selected):
             result = workflow.run_recording(self.video, self.output.parent, replace(self.request, force=True))
         self.assertEqual(result['status'], 'failed')
         self.assertIn('unsupported v6', result['reason'])
-        self.assertEqual(before, (self.output/'summary.json').read_bytes())
+        self.assertEqual(before, (self.output/'details/summary.json').read_bytes())
 
     def test_shared_scene_and_dual_share_fallback_and_frozen_asset_identity(self):
-        from software.scene.management import inputs
+        from software.infrastructure.file_store import read_yaml
+        from software.scene.management import scene_inputs
         front = assets.read_basalt(self.selected.assets.camera_json)
         record = dict(serial='camera', status='active', json=str(self.selected.assets.camera_json),
             dir=str(self.selected.directory), source='registry', cam_time_offset_ns=front['cam_time_offset_ns'],
             measurement=front, intrinsics_source='measured')
-        scene = Scene(self.root/'scene.yaml', 'fallback', 'shared_front', 'left',
-            {'left': self.video}, {}, config.load('trajectory'), inputs.load_scene_parameters(None),
+        scene = Scene(self.root/'collection.yaml', 'fallback', 'shared_front', 'left',
+            {'left': self.video}, {}, config.load('trajectory'), scene_inputs.load_scene_parameters(None),
             {'camera': dict(calibration='front-version')}, tag_layout=tag_board.DEFAULT_LAYOUT)
         with patch.object(registry, 'read_insv_serial', return_value='camera'), \
              patch.object(registry, 'get', return_value=record), \

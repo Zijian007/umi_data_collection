@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 from contextlib import ExitStack
 from fractions import Fraction
@@ -20,8 +20,8 @@ from .detection import MarkerDetector, validate_roi
 from .frame_processing import detect_frame
 from .preview import PreviewWriter
 from software.camera.x3.frame import SRC_H, SRC_W
-from software.console import Console
-from software.storage import atomic_file
+from software.infrastructure.terminal import Console
+from software.infrastructure.file_store import atomic_file
 
 
 console = Console('宽度检测')

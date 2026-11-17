@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 from collections.abc import Callable
 from pathlib import Path

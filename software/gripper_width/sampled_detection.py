@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -11,12 +11,12 @@ import time
 
 import numpy as np
 
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.camera.x3.frame import FPS_SRC, SRC_H, SRC_W
 from software.gripper_width.detection import (
     DEFAULT_TAG_ROI, FrameDetection, MarkerDetector, identity, reconcile_detections, validate_roi)
 from software.gripper_width.frame_processing import detect_frame
-from software.storage import atomic_file, mark_used, write_json
+from software.infrastructure.file_store import atomic_file, mark_used, write_json
 from software.vision.decoding import VideoDecode
 
 
@@ -58,10 +58,10 @@ class NearestFrames:
         if self.done:
             return
         if frame.pts is None or frame.time_base is None:
-            raise ValueError('标签检测原片缺少帧时间戳')
+            raise ValueError('夹爪标签检测原片缺少帧时间戳')
         timestamp = float(frame.pts * frame.time_base)
         if not np.isfinite(timestamp) or self.previous_time is not None and timestamp <= self.previous_time:
-            raise ValueError('标签检测原片时间无效或非递增')
+            raise ValueError('夹爪标签检测原片时间无效或非递增')
         if self.first_time is None:
             self.first_time = timestamp
         while not self.done and self.query_times_s[self.ordered[self.cursor]] <= timestamp:
@@ -103,7 +103,7 @@ def sampled_frames(video: Path, query_times_s: np.ndarray,
     with av.open(str(video)) as container:
         stream = container.streams.video[0]
         if (stream.codec_context.width, stream.codec_context.height) != (SRC_W, SRC_H):
-            raise ValueError('标签检测需要 X3 原始 3840×1920 工作镜头画面')
+            raise ValueError('夹爪标签检测需要 X3 原始 3840×1920 工作镜头画面')
         stream.codec_context.thread_count = settings.values('runtime')['decode_threads']
         seek_time_s = float(query_times_s[selection.ordered[0]]) - 2 / FPS_SRC
         if seek_time_s > 0:
@@ -132,7 +132,7 @@ class QuickDetection:
     def validate(self, streams) -> None:
         stream = streams[0]
         if (stream.codec_context.width, stream.codec_context.height) != (SRC_W, SRC_H):
-            raise ValueError('标签检测需要 X3 原始 3840×1920 工作镜头画面')
+            raise ValueError('夹爪标签检测需要 X3 原始 3840×1920 工作镜头画面')
 
     def accept(self, index: int, native_time: float, frame) -> None:
         self.cache.native_times_s[index] = native_time
@@ -266,9 +266,9 @@ class SampledDetectionCache:
             bounds = (max(left, int(minimum[0]) - padding), max(top, int(minimum[1]) - padding),
                       min(right, int(maximum[0]) + padding + 1), min(bottom, int(maximum[1]) + padding + 1))
         local = MarkerDetector((0, 0, bounds[2] - bounds[0], bounds[3] - bounds[1]),
-                               candidate_limit=settings.values('tag_detection')['recovery_candidate_limit'])
+                               candidate_limit=settings.values('gripper_tag_detection')['recovery_candidate_limit'])
         full = MarkerDetector((0, 0, self.roi_px[2] - self.roi_px[0], self.roi_px[3] - self.roi_px[1]),
-                              candidate_limit=settings.values('tag_detection')['recovery_candidate_limit'])
+                              candidate_limit=settings.values('gripper_tag_detection')['recovery_candidate_limit'])
         converter = av.video.reformatter.VideoReformatter()
         try:
             for index, native_time, frame in sampled_frames(self.video, self.query_times_s, indices):
@@ -276,7 +276,7 @@ class SampledDetectionCache:
                     continue
                 if frame is None or abs(native_time - self.native_times_s[index]) > 1e-8:
                     raise ValueError('标签补检与快速检测的原片时间戳不一致')
-                detected = (detect_frame(frame, full, self.roi_px, converter) if index % settings.values('tag_detection')['full_search_interval'] == 0
+                detected = (detect_frame(frame, full, self.roi_px, converter) if index % settings.values('gripper_tag_detection')['full_search_interval'] == 0
                             else detect_frame(frame, local, bounds, converter))
                 reconciled = reconcile_detections(_frame_detection(self.quick_corners[index]), detected)
                 self.recovered_corners[index] = reconciled.target_corners()

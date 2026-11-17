@@ -9,7 +9,7 @@ import struct
 import numpy as np
 
 from software.camera.x3 import frame, imu_reader, insv_reader
-from software.scene.management import inputs
+from software.scene.management.scene_inputs import load_scene_parameters
 from software.scene.models import SceneParameters
 
 
@@ -111,7 +111,7 @@ def check_exposure(path: Path, parameters: SceneParameters) -> CheckResult:
 
 
 def check_video(path: Path, parameters: SceneParameters | None = None) -> RecordingCheckReport:
-    parameters = parameters or inputs.load_scene_parameters(None)
+    parameters = parameters or load_scene_parameters()
     checks = [check_stream(path)]
     result, imu = check_imu(path, parameters)
     checks.append(result)

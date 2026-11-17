@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software import config
+from software.configuration import loader as config
 from software.calibration import acceptance
 from software.calibration.pipeline import inputs
 from software.calibration.solve import basalt

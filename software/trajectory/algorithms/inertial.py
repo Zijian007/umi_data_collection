@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
-from software.parameters import FusionParameters
+from software.configuration.parameter_models import FusionParameters
 
 
 def estimate_gyro_bias(gyro: np.ndarray, parameters: FusionParameters) -> np.ndarray:

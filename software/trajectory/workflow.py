@@ -16,8 +16,9 @@ import os
 import shutil
 import time
 
-from software import config, registry
-from software import provenance as artifact_identity
+from software.configuration import loader as config
+from software.camera import registry
+from software.infrastructure import provenance as artifact_identity
 from software.trajectory.algorithms import postprocess
 from software.trajectory.calibration import selection
 from software.trajectory.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
@@ -162,7 +163,7 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
         # 4. 用本次选中的相机与夹爪几何，将融合结果转换为相机/TCP 轨迹。
         stage = "生成轨迹产物"
         runtime.console.write("生成轨迹、地图、视频与报告", recording=recording_name, step=(4, 4))
-        calibration_record = selected.as_postprocess_dict(fingerprint["calibration"]["assets"])
+        calibration_record = selected.postprocess_record(fingerprint["calibration"]["assets"])
         calibration_record.update(yaml=str(settings.front_settings), rear_yaml=str(settings.rear_settings),
                                   mask=str(settings.front_mask), source_mask=str(selected.assets.front_mask))
         if rear_manifest is not None:

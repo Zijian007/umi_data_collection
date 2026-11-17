@@ -6,7 +6,7 @@ import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
-from software.parameters import FusionParameters
+from software.configuration.parameter_models import FusionParameters
 from software.trajectory.algorithms.inertial import preintegrate_samples
 
 

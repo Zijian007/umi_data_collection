@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -11,10 +11,10 @@ import json
 
 import numpy as np
 
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.camera.x3.frame import SRC_H, SRC_W
 from software.gripper_width import DEFAULT_TAG_ROI
-from software.storage import atomic_file, mark_used, write_json
+from software.infrastructure.file_store import atomic_file, mark_used, write_json
 from software.vision.decoding import VideoDecode
 
 
@@ -68,14 +68,14 @@ class FrameDetection:
 def identity() -> dict:
     import cv2
 
-    return dict(settings=dict(settings.values('tag_detection')), opencv=cv2.__version__, detector_sha256=artifact_identity.source_hash(Path(__file__)),
+    return dict(settings=dict(settings.values('gripper_tag_detection')), opencv=cv2.__version__, detector_sha256=artifact_identity.source_hash(Path(__file__)),
                 frame_processing_sha256=artifact_identity.source_hash(Path(__file__).with_name('frame_processing.py')),
                 decoding_sha256=artifact_identity.source_hash(Path(__file__).parents[1] / 'vision/decoding.py'),
                 source_size=[SRC_W, SRC_H], lens_half='right', default_roi_px=list(DEFAULT_TAG_ROI))
 
 
 class MarkerDetector:
-    """自动收敛到标签活动区域，逐帧解码并定期全图重定位。"""
+    """自动收敛到夹爪标签活动区域，逐帧解码并定期全图重定位。"""
 
     def __init__(self, roi: tuple[int, int, int, int] | None = None, *, fast: bool = False,
                  contrast: float = 1., candidate_limit: int | None = None) -> None:
@@ -105,8 +105,8 @@ class MarkerDetector:
         self._fixed_roi = tuple(roi) if roi is not None else None
         self._fast = fast
         self._contrast = contrast
-        self._candidate_limit = candidate_limit if candidate_limit is not None else settings.values('tag_detection')['candidate_limit']
-        self._full_search_interval = settings.values('tag_detection')['full_search_interval']
+        self._candidate_limit = candidate_limit if candidate_limit is not None else settings.values('gripper_tag_detection')['candidate_limit']
+        self._full_search_interval = settings.values('gripper_tag_detection')['full_search_interval']
 
     def detect(self, gray: np.ndarray) -> FrameDetection:
         if self._frame_shape != gray.shape:

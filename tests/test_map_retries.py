@@ -5,12 +5,12 @@ import json
 import unittest
 from unittest.mock import patch
 
-from software.scene.management import inputs
 from software.scene.pipeline import map_lifecycle
 from software.scene.spatial import mapping, slam
 from software.vision.models import ProcessingError
 
 import test_scene as fixtures
+from software.scene import asset_identity
 
 
 class MapRetryTests(unittest.TestCase):
@@ -43,7 +43,7 @@ class MapRetryTests(unittest.TestCase):
         self.assertEqual(first['category'], 'map_acceptance')
         self.assertEqual(pointer.read_bytes(), previous)
         directory, manifest = map_lifecycle.load_published(fixture.scene)
-        inputs.validate_assets(directory, manifest['assets'])
+        asset_identity.validate_assets(directory, manifest['assets'])
 
     def test_changed_trajectory_can_recover_on_third_attempt(self):
         fixture = self.fixture

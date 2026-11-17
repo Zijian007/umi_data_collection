@@ -1,12 +1,12 @@
 # 夹爪开合宽度
 
-## 标签中心三维间距
+## 夹爪标签中心三维间距
 
-`tag_geometry.py` 实现几何计算，`tag_distance.py` 编排与像素锚点宽度独立的测量：从 ID 0/1 的原始四角点、工作镜头 KB4 内参及各自标签边长，求两枚标签中心在相机坐标系中的位置，输出其三维欧氏距离（mm）。不使用夹持面偏置、零点或像素—毫米 anchors，不据此生成 `close_01` 或闭合状态。
+`tag_geometry.py` 实现几何计算，`tag_distance.py` 编排与像素锚点宽度独立的测量：从夹爪标签 ID 0/1 的原始四角点、工作镜头 KB4 内参及各自标签边长，求两枚夹爪标签中心在相机坐标系中的位置，输出其三维欧氏距离（mm）。不使用夹持面偏置、零点或像素—毫米 anchors，不据此生成 `close_01` 或闭合状态。
 
 套件配置 `gripper.tag_distance: tag_distance.json`，文件包含 `{"tag_sizes_mm":{"0":6.0,"1":6.0}}`；两枚边长分别配置，必须为正数。测量黑色外框，不含白边；尺寸变化线性改变尺度，不能借用标定板尺寸。原片检测缓存保存 `[帧, ID, 角点, xy]`，重复/缺失 ID 的角点保留 NaN。标签中心距按最终轨迹时间点检测，像素锚点宽度沿用原片逐帧检测；两者分别缓存。改尺寸或内参会复用角点重算几何，有效比例不足时再补检尚未尝试的帧。
 
-标签检测先裁剪原始工作镜头半幅中的固定范围，默认 `LEFT TOP RIGHT BOTTOM = 600 980 1350 1250`，即 750×270 像素；坐标原点仍是 1920×1920 工作镜头半幅左上角。场景通过 `parameters.tag_distance_roi_px` 配置范围，`preview-width`、`detect-width` 使用相同默认值，可用 `--roi` 覆盖。场景快速扫描/补检、像素宽度提取和两个宽度 CLI 共用 `frame_processing.py`：先裁剪源像素平面，再仅把 ROI 转灰度，检测后统一恢复原始半幅坐标。RGB 输入也先裁剪再转灰度。快速扫描、补检和重搜都不越过配置范围。`trajectory.video.crop` 负责轨迹视频准备；标签检测使用这里明确配置的 ROI。
+标签检测先裁剪原始工作镜头半幅中的固定范围，默认 `LEFT TOP RIGHT BOTTOM = 600 980 1350 1250`，即 750×270 像素；坐标原点仍是 1920×1920 工作镜头半幅左上角。场景通过 `parameters.measurements.gripper_tags.roi_px` 配置范围，`preview-width`、`detect-width` 使用相同默认值，可用 `--roi` 覆盖。场景快速扫描/补检、像素宽度提取和两个宽度 CLI 共用 `frame_processing.py`：先裁剪源像素平面，再仅把 ROI 转灰度，检测后统一恢复原始半幅坐标。RGB 输入也先裁剪再转灰度。快速扫描、补检和重搜都不越过配置范围。`trajectory.video.crop` 负责轨迹视频准备；标签检测使用这里明确配置的 ROI。
 
 共享灰度转换保留颜色空间、亮度量程及色度采样对齐；奇数 ROI 坐标先对齐后取回精确边界，高位深转 8 位保留抖动相位。视频仍需解码源帧，减少的是灰度转换和检测的像素量；预览视频的彩色显示转换独立于标签检测图像。
 
@@ -14,11 +14,11 @@
 
 三维计算再将原始角点减去 240 像素边距，转换到已标定的 1440 中心裁切坐标；不使用 720 视频内参直接解释原片角点。超出标定裁切或前向 85° 射线范围、退化/过小四边形、无正深度解、重投影误差超限的观测保持缺失。使用 IPPE_SQUARE 两解并按鱼眼重投影误差选择；两解误差相差不超过 0.25 px、中心差超过配置门限时保留 `ambiguous_pose`。
 
-质量参数在 `scene_parameters.yaml`：`tag_distance_max_reprojection_error_px` 默认 2.0（每角点二维残差的 RMS），`tag_distance_max_center_ambiguity_mm` 默认 2.0；均可在场景 `parameters` 下覆盖。原片测量按最近的实际帧对齐轨迹时钟，限制在半个源帧周期内；不补缺口或用前帧值代替当前缺失。`trajectory.csv` 增加 `tag_distance_mm`、`tag_distance_valid`、`tag_distance_source`，无效数值留空；来源包括 `two_tags`、`missing`、`outside_calibration`、`invalid_geometry`、`pose_failed`、`high_reprojection_error`、`ambiguous_pose`、`ambiguous_detection`、`unmatched_time`。
+质量参数在 `scene_parameters.yaml` 的 `measurements.gripper_tags`：`max_reprojection_error_px` 默认 2.0（每角点二维残差的 RMS），`max_center_ambiguity_mm` 默认 2.0；实验性覆盖写入 `--expert-config` 的 `parameters.measurements.gripper_tags`。原片测量按最近的实际帧对齐轨迹时钟，限制在半个源帧周期内；不补缺口或用前帧值代替当前缺失。`trajectory.csv` 增加 `tag_distance_mm`、`tag_distance_valid`、`tag_distance_source`，无效数值留空；来源包括 `two_tags`、`missing`、`outside_calibration`、`invalid_geometry`、`pose_failed`、`high_reprojection_error`、`ambiguous_pose`、`ambiguous_detection`、`unmatched_time`。
 
 `TagDistanceRequest` 将原片、尺寸、相机、哈希、`TagPoseQuality`、ROI 和验收要求组合为具名输入。`sampled_detection.py` 按真实 PTS 为每个最终轨迹帧选择最近源帧，裁剪到配置 ROI 后检测，不缩小检测像素；解码仍读取压缩视频，非输出时间点不执行标签检测。超出源时钟范围或帧间隔过大时保持 `unmatched_time`。
 
-先用快速模式扫描全段全部输出帧并完成三维检查。每只手同时满足两项才通过：`two_tags` 有效帧数除以最终 CSV 总帧数达到 `tag_distance_min_valid_fraction`（默认 0.5，范围 `(0, 1]`），且连续没有有效三维中心距的帧数不超过 `tag_distance_max_missing_frames`（默认 15，非负整数，0 表示不允许缺失）。恰好等于上限通过；开头、结尾、所有无效原因都计入连续缺失。该上限按最终输出帧计数，当前约 30 帧/秒时 15 帧约为 0.5 秒；调整输出频率后帧数上限不自动改变。
+先用快速模式扫描全段全部输出帧并完成三维检查。每只手同时满足两项才通过：`two_tags` 有效帧数除以最终 CSV 总帧数达到 `parameters.measurements.gripper_tags.minimum_valid_fraction`（默认 0.5，范围 `(0, 1]`），且连续没有有效三维中心距的帧数不超过 `parameters.measurements.gripper_tags.max_missing_frames`（默认 15，非负整数，0 表示不允许缺失）。恰好等于上限通过；开头、结尾、所有无效原因都计入连续缺失。该上限按最终输出帧计数，当前约 30 帧/秒时 15 帧约为 0.5 秒；调整输出频率后帧数上限不自动改变。
 
 两项中任一不满足就执行有界补检，优先处理最长超限缺口中间的小窗口；只需提高总比例时，优先已有标签的帧并分散补检时间点。根据全段已识别标签学习 ROI 内的活动子区域，每 30 个输出帧中的固定时间点重新搜索整个配置 ROI。每帧最多放大补检 16 个候选，保留 2 倍、3 倍和锐化 3 倍尝试；总比例已通过但仍有长缺口时继续补检，两项同时达标才停止。若已有连续超过上限的帧完成补检后仍无效，或已知重复 ID/源时间缺失使其无法恢复，其他帧不能桥接这段缺口，提前以 `unrecoverable_gap` 失败，不再尝试无关帧。补检解码从目标前的关键帧开始，保留邻帧做最近 PTS 匹配。快速扫描已得到的其余有效帧全部保留，重复 ID 或两轮识别冲突不会通过补检变成有效测量。
 

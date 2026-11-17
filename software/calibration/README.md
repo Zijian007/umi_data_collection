@@ -143,12 +143,12 @@ Basalt 保留 bag 输入、KB4、噪声先验和 `--fixed-scale-opt-offset`。�
 
 ## 内参来源选择
 
-工作镜头 `run <front目录>` 和环境镜头 `run <rear目录>` 均支持 `--intrinsics-source measured|factory`，默认 measured。factory 表示“出厂 MEI 拟合的 KB4 + 用该 KB4 重新实测的 B”，不使用工厂相机–IMU 外参替代 B。仍要求 A/B/C/D：A 仅做固定内参的留出标签验证，B 求外参与时间偏移，C/D 按原规则验收。
+工作镜头 `run <front目录>` 和环境镜头 `run <rear目录>` 均读取 `config/user.yaml` 的 `calibration.intrinsics_source`，默认 measured。factory 表示“出厂 MEI 拟合的 KB4 + 用该 KB4 重新实测的 B”，不使用工厂相机–IMU 外参替代 B。仍要求 A/B/C/D：A 仅做固定内参的留出标签验证，B 求外参与时间偏移，C/D 按原规则验收。
 
 两来源使用独立结果目录，factory 默认增加 `_factory` 后缀；`--resume` 拒绝切换来源。正式结果的 `manifest.json` 标明 `intrinsics_source`、工厂 B 原片及哈希、镜头编号、有效视野和 B 输入内参哈希。工厂原始参数与拟合/A 验证证据保存在 `factory/intrinsics.json`、`run/record.json`。C 原片自动对照仍是诊断，不能把选用的工厂 KB4 标成实测 A。
 
-factory 的硬条件包括：有效单调前向模型、1440 分辨率下转换 RMS ≤1 px/P99 ≤2 px、各原片相对 B 的最大射线差 ≤0.1°。这些是 `config/calibration.yaml` 中可配置的初始工程门槛，不是外部真值精度承诺。A 至少 6 个有效留出帧；缺证据不可安装，留出 RMS 超过 2 px 给 WARN，和实测 A 重投影提醒采用相同语义。C 的 30 mm/10% 失败门槛保持原值。只有完整、可验收的结果才能正常安装。
+factory 的硬条件包括：有效单调前向模型、1440 分辨率下转换 RMS ≤1 px/P99 ≤2 px、各原片相对 B 的最大射线差 ≤0.1°。这些是 `config/algorithms/calibration.yaml` 中可配置的初始工程门槛，不是外部真值精度承诺。A 至少 6 个有效留出帧；缺证据不可安装，留出 RMS 超过 2 px 给 WARN，和实测 A 重投影提醒采用相同语义。C 的 30 mm/10% 失败门槛保持原值。只有完整、可验收的结果才能正常安装。
 
 `factory` 新开关与历史 `UMI_TRAJ_CALIB=factory` 不同：后者仍指实验室样例。内部使用独立的 `intrinsics_source` 字段区分新来源。工厂参数包要求引擎 `--capabilities` 报告 `forward_v1/85°`；项目构建默认启用此实现，两种来源共用同一引擎。1920 全镜头仍仅诊断。
 
-运行预算统一在 `config/runtime.yaml`，机器覆盖用 `config/runtime.local.yaml`；夹爪检测预算在 `config/tag_detection.yaml`。`--show-config` 同时展示配置来源与实际 CPU/线程预算，启动终端输出精简摘要。覆盖顺序与缓存规则见 [配置说明](../../config/README.md#运行与查看器默认值)。
+运行预算统一在 `config/operations/runtime.yaml`，机器覆盖用 `config/operations/runtime.local.yaml`；夹爪标签检测预算在 `config/operations/gripper_tag_detection.yaml`。`--show-config` 同时展示配置来源与实际 CPU/线程预算，启动终端输出精简摘要。覆盖顺序与缓存规则见 [配置说明](../../config/README.md#运行与查看器默认值)。

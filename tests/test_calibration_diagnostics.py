@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software import config
+from software.configuration import loader as config
 from software.calibration.algorithms import trajectory_metrics
 from software.calibration.validation import trajectory_diagnostics, trajectory
 from software.calibration.models import ExecutionOptions, RunPaths
@@ -65,7 +65,8 @@ class DiagnosticTests(unittest.TestCase):
             video = Path('C.insv')
             output = execution.paths.work/'C_traj_candidate/C'
             output.mkdir(parents=True)
-            (output/'summary.json').write_text(json.dumps(dict(status='failed', reason='scale divergence', tries=[{'try':1, 'usable':False}])))
+            (output/'details').mkdir()
+            (output/'details/summary.json').write_text(json.dumps(dict(status='failed', reason='scale divergence', tries=[{'try':1, 'usable':False}])))
             self.write_visual(output/'debug/reconstruction/try_1/front/loc/frames.csv')
             with patch.object(trajectory.runtime, 'run_logged', return_value=1) as run, \
                  patch.object(trajectory.board_pnp, 'board_reference', return_value=self.reference):

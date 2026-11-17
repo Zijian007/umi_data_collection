@@ -14,14 +14,9 @@ import hashlib
 import json
 import os
 import subprocess
-import sys
 
-_REPO = Path(__file__).resolve().parents[3]
-if str(_REPO) not in sys.path:
-    sys.path.insert(0, str(_REPO))
-
-from software import config  # noqa: E402
-from software import parameters as parameter_models  # noqa: E402
+from software.configuration import loader as config  # noqa: E402
+from software.configuration import parameter_models  # noqa: E402
 from software.camera.x3.frame import crop_xywh, output_frame_rate, validate_video_parameters  # noqa: E402
 
 

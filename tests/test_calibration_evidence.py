@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from software import config
+from software.configuration import loader as config
 from software.calibration import acceptance
 from software.calibration.validation import gravity
 from software.calibration.algorithms import trajectory_metrics

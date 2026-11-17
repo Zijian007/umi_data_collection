@@ -10,8 +10,8 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software import config
-from software.scene.management.inputs import load_scene_parameters
+from software.configuration import loader as config
+from software.scene.management.scene_inputs import load_scene_parameters
 from software.scene.spatial import geometry, mapping
 
 

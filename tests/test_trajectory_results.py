@@ -1,6 +1,5 @@
 """Result layout must remain usable by trajectory reuse and calibration validation."""
 import json
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +10,7 @@ import numpy as np
 from software.calibration.pipeline import runtime
 from software.calibration.validation import trajectory as calibration_validation
 from software.calibration.algorithms import board_pnp
-from software import config
+from software.configuration import loader as config
 from software.calibration.algorithms import trajectory_metrics
 from software.calibration.models import RunPaths, ExecutionOptions
 from software.trajectory.reporting import map_data, results
@@ -30,36 +29,36 @@ class ResultLayoutTests(unittest.TestCase):
                        duration_s=34.7, rows=1041, tcp_path_length_m=2.96,
                        constraint_fraction={'full': 1.0},
                        run_fingerprint=dict(version=2, recording={}, calibration=dict(assets=dict(tcp_geometry='fixture')), options={}, algorithm_parameters="test", code={}, engines={}, evaluation_hash="test"))
-        (self.root / 'summary.json').write_text(json.dumps(summary))
+        details = self.root / 'details'
+        details.mkdir()
+        (details / 'summary.json').write_text(json.dumps(summary))
         for name in REQUIRED_OUTPUTS:
-            (self.root / name).write_text(name)
+            target = self.root / name if name == 'traj_tcp.txt' else details / name
+            target.write_text(name)
         (self.root / 'trajectory.png').write_bytes(b'preview')
-        for name in ('logs', 'work'):
-            (self.root / name).mkdir()
-            (self.root / name / 'unique.dat').write_bytes(name.encode())
         return summary
 
     def test_camera_only_result_reuses_without_tcp_but_requires_camera_trajectory(self):
         summary = self.flat_result()
         summary['pose_frame'] = 'camera'
         summary['run_fingerprint']['calibration']['assets'].pop('tcp_geometry')
-        (self.root / 'summary.json').write_text(json.dumps(summary))
+        (self.root / 'details/summary.json').write_text(json.dumps(summary))
         (self.root / 'traj_tcp.txt').unlink()
         fingerprint = summary['run_fingerprint']
         notes = config.load('trajectory').values.notes
         self.assertIsNotNone(reuse_decision(self.root, fingerprint, notes=notes).summary)
-        (self.root / 'traj_camera.txt').unlink()
+        (self.root / 'details/traj_camera.txt').unlink()
         self.assertIsNone(reuse_decision(self.root, fingerprint, notes=notes).summary)
 
     def test_map_and_video_use_the_same_selected_attempt_and_layout_priority(self):
         summary = {'chosen_try': 2}
         candidates = results.attempt_paths(self.root, summary)
-        for attempt in reversed(candidates):
-            video = attempt / 'front/front.mp4'
-            video.parent.mkdir(parents=True)
-            video.write_bytes(str(attempt).encode())
-            self.assertEqual(results.front_video_path(self.root, summary), video)
-            self.assertEqual(map_data.attempt_directory(self.root, summary), attempt)
+        attempt = candidates[0]
+        video = attempt / 'front/front.mp4'
+        video.parent.mkdir(parents=True)
+        video.write_bytes(str(attempt).encode())
+        self.assertEqual(results.front_video_path(self.root, summary), video)
+        self.assertEqual(map_data.attempt_directory(self.root, summary), attempt)
         self.assertIsNone(results.front_video_path(self.root, {'chosen_try': 1}))
         self.assertIsNone(map_data.attempt_directory(self.root, {'chosen_try': 1}))
         published = self.root / 'front.mp4'
@@ -67,7 +66,7 @@ class ResultLayoutTests(unittest.TestCase):
         self.assertEqual(results.front_video_path(self.root, summary), published)
 
     def test_invalid_attempt_cannot_fall_back_to_another_recording_result(self):
-        video = self.root / 'work/kiwi/front/front.mp4'
+        video = self.root / 'debug/reconstruction/try_1/front/front.mp4'
         video.parent.mkdir(parents=True)
         video.write_bytes(b'first attempt')
         for chosen in (None, True, 0, -1, '2', 1.5):
@@ -77,16 +76,15 @@ class ResultLayoutTests(unittest.TestCase):
                 with self.assertRaisesRegex(map_data.MapDataError, '重建轮次无效'):
                     map_data.attempt_directory(self.root, {'chosen_try': chosen})
 
-    def test_compaction_preserves_artifacts_and_reuse(self):
+    def test_finalize_is_idempotent_and_reuse_uses_current_layout(self):
         summary = self.flat_result()
-        before = {name: (self.root / name).read_bytes() for name in REQUIRED_OUTPUTS}
+        before = {name: (self.root / name if name == 'traj_tcp.txt' else self.root / 'details' / name).read_bytes()
+                  for name in REQUIRED_OUTPUTS}
         results.finalize_result(self.root, summary)
         self.assertEqual({p.name for p in self.root.iterdir()},
-                         {'traj_tcp.txt', 'trajectory.png', 'report.txt', 'details', 'debug'})
+                         {'traj_tcp.txt', 'trajectory.png', 'report.txt', 'details'})
         for name, data in before.items():
             self.assertEqual(results.result_path(self.root, name).read_bytes(), data)
-        self.assertEqual((self.root / 'debug/unique.dat').read_bytes(), b'work')
-        self.assertEqual((self.root / 'debug/logs/unique.dat').read_bytes(), b'logs')
         self.assertEqual(results.load_summary(self.root)['run_settings'], 'details/run_settings.json')
         self.assertIsNotNone(reuse_decision(self.root, summary['run_fingerprint'], notes=config.load('trajectory').values.notes).summary)
         results.finalize_result(self.root, results.load_summary(self.root))  # Repeat safely.
@@ -94,55 +92,37 @@ class ResultLayoutTests(unittest.TestCase):
         self.assertIn('1041', text)
         self.assertIn('未测量', text)
 
-    def test_conflicting_layout_is_rejected_before_any_moves(self):
+    def test_root_summary_is_rejected(self):
         summary = self.flat_result()
-        (self.root / 'diagnostics').mkdir()
-        (self.root / 'diagnostics/traj_camera.txt').write_text('different data')
-        with self.assertRaisesRegex(ValueError, '布局冲突'):
+        (self.root / 'summary.json').write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'details/summary.json'):
             results.finalize_result(self.root, summary)
-        self.assertTrue((self.root / 'summary.json').is_file())
-        self.assertTrue((self.root / 'work/unique.dat').is_file())
-        self.assertEqual((self.root / 'diagnostics/traj_camera.txt').read_text(), 'different data')
+        self.assertTrue((self.root / 'details/summary.json').is_file())
 
     def test_failure_has_report_and_diagnostics(self):
         summary = dict(status='failed', reason='cannot track', video='VID.insv')
-        (self.root / 'logs').mkdir()
+        (self.root / 'debug/logs').mkdir(parents=True)
         results.finalize_result(self.root, summary)
         self.assertIn('cannot track', (self.root / 'report.txt').read_text())
         self.assertEqual(results.load_summary(self.root)['status'], 'failed')
         self.assertTrue((self.root / 'debug/logs').is_dir())
 
-    def test_compact_layout_migration_preserves_all_unique_data(self):
-        summary = self.flat_result()
-        old = self.root / 'diagnostics'
-        old.mkdir()
-        for name in (*results.AUXILIARY_RESULTS, 'logs', 'work'):
-            if (self.root / name).exists():
-                shutil.move(str(self.root / name), old / name)
-        (old / 'extra.bin').write_bytes(b'unique legacy evidence')
-        results.finalize_result(self.root, summary)
-        self.assertFalse(old.exists())
-        self.assertEqual((self.root / 'debug/unique.dat').read_bytes(), b'work')
-        self.assertEqual((self.root / 'debug/legacy/extra.bin').read_bytes(), b'unique legacy evidence')
-        self.assertIsNotNone(reuse_decision(self.root, summary['run_fingerprint'], notes=config.load('trajectory').values.notes).summary)
-
-    def test_migration_repairs_selected_video_symlink(self):
+    def test_selected_video_is_published_from_current_attempt(self):
         summary = self.flat_result()
         summary['chosen_try'] = 2
-        first_video = self.root / 'work/kiwi/front/front.mp4'
+        first_video = self.root / 'debug/reconstruction/try_1/front/front.mp4'
         first_video.parent.mkdir(parents=True)
         first_video.write_bytes(b'lens video')
-        winner_video = self.root / 'work/kiwi_try2/front/front.mp4'
+        winner_video = self.root / 'debug/reconstruction/try_2/front/front.mp4'
         winner_video.parent.mkdir(parents=True)
         winner_video.symlink_to(first_video)
         results.finalize_result(self.root, summary)
         published = self.root / 'front.mp4'
         self.assertFalse(published.is_symlink())
         self.assertEqual(published.read_bytes(), b'lens video')
-        migrated = self.root / 'debug/reconstruction/try_2/front/front.mp4'
-        self.assertTrue(migrated.is_symlink())
-        self.assertEqual(migrated.read_bytes(), b'lens video')
-        self.assertEqual(migrated.resolve(), self.root / 'debug/reconstruction/try_1/front/front.mp4')
+        self.assertTrue(winner_video.is_symlink())
+        self.assertEqual(winner_video.read_bytes(), b'lens video')
+        self.assertEqual(winner_video.resolve(), first_video)
         results.finalize_result(self.root, results.load_summary(self.root))
         self.assertEqual(published.read_bytes(), b'lens video')
 
@@ -185,39 +165,28 @@ class ResultLayoutTests(unittest.TestCase):
         results.cleanup_debug(paths)
         self.assertEqual((self.root / 'front.mp4').read_bytes(), b'lens video')
 
-    def test_failed_video_publication_does_not_move_or_delete_legacy_data(self):
+    def test_failed_video_publication_does_not_move_current_data(self):
         summary = self.flat_result()
-        video = self.root / 'work/kiwi/front/front.mp4'
+        video = self.root / 'debug/reconstruction/try_1/front/front.mp4'
         video.parent.mkdir(parents=True)
         video.write_bytes(b'lens video')
         with patch.object(results.os, 'link', side_effect=OSError('no hard links')), patch.object(results.shutil, 'copyfile', side_effect=OSError('disk full')):
             with self.assertRaisesRegex(OSError, 'disk full'):
                 results.finalize_result(self.root, summary)
-        self.assertTrue((self.root / 'summary.json').is_file())
+        self.assertTrue((self.root / 'details/summary.json').is_file())
         self.assertFalse((self.root / 'front.mp4').exists())
         self.assertEqual(video.read_bytes(), b'lens video')
         self.assertEqual(list(self.root.glob('.front-*')), [])
 
-    def test_late_debug_conflict_is_rejected_before_any_moves(self):
-        summary = self.flat_result()
-        (self.root / 'debug/logs').mkdir(parents=True)
-        (self.root / 'debug/logs/keep.txt').write_text('keep')
-        with self.assertRaisesRegex(ValueError, '布局冲突'):
-            results.finalize_result(self.root, summary)
-        self.assertTrue((self.root / 'traj_camera.txt').is_file())
-        self.assertTrue((self.root / 'work/unique.dat').is_file())
-        self.assertEqual((self.root / 'debug/logs/keep.txt').read_text(), 'keep')
-
     def test_calibration_c_check_reads_all_layouts(self):
-        for layout in ('flat', 'diagnostics', 'details'):
-            with self.subTest(layout=layout), tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 video = root / 'VID.insv'
                 context = ExecutionOptions(RunPaths(root), '2-3', 1)
                 output = context.paths.work / 'C_traj_test/VID'
                 output.mkdir(parents=True)
-                details = output if layout == 'flat' else output / layout
-                details.mkdir(exist_ok=True)
+                details = output / 'details'
+                details.mkdir()
                 (details / 'summary.json').write_text(json.dumps(dict(status='ok', constraint_fraction={'full': 1})))
                 (details / 'traj_camera.txt').write_text('0 1 2 3 0 0 0 1\n')
                 with patch.object(runtime, 'run_logged', return_value=0) as runner, patch.object(board_pnp, 'read_kb4', return_value=[]), patch.object(board_pnp, 'board_reference', return_value={'idx': [0], 'n_frames': 1}), patch.object(trajectory_metrics, 'compare', return_value={'status':'ok', 'ate_se3_rmse_mm': 5.0}) as compare:

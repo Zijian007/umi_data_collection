@@ -11,7 +11,8 @@ from software.camera.images import prepare_mask
 from unittest.mock import patch
 
 from software.vision import runtime as visual_runtime
-from software import config, registry
+from software.configuration import loader as config
+from software.camera import registry
 from software.calibration.pipeline import inputs
 from software.calibration import result_io
 from software.calibration import workflow as calibration_workflow
@@ -49,6 +50,23 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual((c.checks.ate_fail_mm, c.checks.scale_warn, c.checks.scale_fail), (30, .03, .1))
         with self.assertRaises(FrozenInstanceError):
             p.fusion.step = 10
+
+    def test_environment_tag_defaults_have_one_shared_source(self):
+        from software.scene.management.scene_inputs import load_scene_parameters
+        from software.infrastructure.file_store import read_yaml
+
+        shared = read_yaml(Path('config/algorithms/environment_tags.yaml'))
+        trajectory_yaml = read_yaml(Path('config/algorithms/trajectory.yaml'))
+        scene_yaml = read_yaml(Path('config/algorithms/scene_parameters.yaml'))
+        trajectory = config.load('trajectory')
+        scene = load_scene_parameters()
+        self.assertEqual(set(trajectory_yaml['environment_tags']), {'tag_fusion_enabled'})
+        self.assertNotIn('tag_fusion_enabled', shared)
+        self.assertTrue(set(shared).isdisjoint(scene_yaml))
+        self.assertIn(str(Path('config/algorithms/environment_tags.yaml').resolve()), trajectory.sources)
+        for name, expected in shared.items():
+            self.assertEqual(getattr(trajectory.values.environment_tags, name), expected)
+            self.assertEqual(getattr(scene, name), expected)
 
     def test_cli_only_overrides_explicit_fields(self):
         path = self.overlay("input:\n  mode: \"dual\"\n  allow_irregular: true\nretry:\n  max_tries: 7\n")
@@ -166,8 +184,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.load('trajectory', self.root / 'child.yaml').values, measured.values)
 
     def test_c_isolates_task_poster_and_dual_mode_but_keeps_solver_parameters(self):
-        self.overlay('environment_tags:\n  tag_fusion_enabled: true\ninput:\n  mode: dual\nfusion:\n  node_stride: 3\n', 'task.yaml')
-        c = config.load('calibration', self.overlay('trajectory_validation:\n  config: task.yaml\n'))
+        self.overlay('environment_tags:\n  tag_fusion_enabled: true\ninput:\n  mode: dual\nfusion:\n  node_stride: 3\n', 'expert.yaml')
+        c = config.load('calibration', self.overlay('trajectory_validation:\n  config: expert.yaml\n'))
         resolved = c.load_trajectory_validation(tag_size_m=.0357)
         self.assertFalse(resolved.values.environment_tags.tag_fusion_enabled)
         self.assertEqual(resolved.values.input.mode, 'handheld')
@@ -287,28 +305,31 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(calibration_assets.CalibrationError):
             calibration_assets.describe(bundle, 'user')
 
-    def test_legacy_bundle_is_read_only_and_never_executes_its_script(self):
+    def test_v1_bundle_is_rejected(self):
         target = legacy_bundle(self.root / 'legacy')
-        script = target / 'kiwi_fuse3s.py'
-        script.write_text(script.read_text()+'\nraise RuntimeError("must never execute")\n')
-        before = {p.name: p.read_bytes() for p in target.iterdir()}
-        record = calibration_assets.describe(target, 'user')
-        self.assertEqual(record['bundle_schema_version'], 1)
-        self.assertEqual(Path(record['fuser']), calibration_assets.FUSION_SCRIPT)
-        self.assertEqual(before, {p.name: p.read_bytes() for p in target.iterdir()})
+        metadata = json.loads((target / 'bundle.json').read_text())
+        metadata['schema_version'] = 1
+        (target / 'bundle.json').write_text(json.dumps(metadata))
+        with self.assertRaises(calibration_assets.CalibrationError):
+            calibration_assets.describe(target, 'user')
 
 
 class SafetyTests(trajectory_tests.RecordingFixture):
+    @staticmethod
+    def tree_snapshot(root):
+        return {str(path.relative_to(root)): path.read_bytes()
+                for path in root.rglob('*') if path.is_file()}
+
     def test_invalid_configuration_with_force_preserves_existing_results(self):
         self.successful_result()
-        before = {p.name:p.read_bytes() for p in self.output.iterdir()}
+        before = self.tree_snapshot(self.output)
         path = self.root / 'bad.yaml'
         path.write_text("fusion:\n  acc_noise: -1")
         with patch.object(selection, 'select_calibration') as select, patch.object(runtime.console, 'write'):
             self.assertEqual(workflow.run_batch([str(self.video)], self.output.parent,
                              TrajectoryRequest(config=path, force=True)), 1)
         select.assert_not_called()
-        self.assertEqual(before, {p.name:p.read_bytes() for p in self.output.iterdir()})
+        self.assertEqual(before, self.tree_snapshot(self.output))
 
     def test_dry_run_with_force_creates_no_output_and_does_not_run_engines(self):
         with patch.object(selection, 'select_calibration', return_value=self.selected), patch.object(visual_runtime, 'run_logged') as execute, contextlib.redirect_stdout(io.StringIO()):
@@ -317,15 +338,15 @@ class SafetyTests(trajectory_tests.RecordingFixture):
         execute.assert_not_called()
         self.assertFalse(self.output.parent.exists())
         self.successful_result()
-        before = {p.name:p.read_bytes() for p in self.output.iterdir()}
+        before = self.tree_snapshot(self.output)
         with patch.object(selection, 'select_calibration', return_value=self.selected), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(workflow.run_batch([str(self.video)], self.output.parent,
                              TrajectoryRequest(force=True, dry_run=True)), 0)
-        self.assertEqual(before, {p.name:p.read_bytes() for p in self.output.iterdir()})
+        self.assertEqual(before, self.tree_snapshot(self.output))
 
     def test_missing_engine_with_force_preserves_old_output(self):
         self.successful_result()
-        marker = self.output / 'summary.json'
+        marker = self.output / 'details/summary.json'
         before = marker.read_bytes()
         with patch.object(selection, 'select_calibration', return_value=self.selected), patch.dict(os.environ, {'ORB3_DIR':'/missing/engine'}), patch.object(runtime.console, 'write'):
             summary = workflow.run_recording(self.video, self.output.parent, TrajectoryRequest(force=True))
@@ -407,7 +428,7 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(calibration_workflow.run(inputs.parse_run_args(args)), 0)
             imu_command = next(command for command in commands if '--gyro-noise-std' in command)
             self.assertEqual(float(imu_command[imu_command.index('--gyro-noise-std')+1]), .0004)
-            gravity_command = next(command for command in commands if any('imu_calib_physical_check.py' in part for part in command))
+            gravity_command = next(command for command in commands if any('software.calibration.tools.imu_calib_physical_check' in part for part in command))
             self.assertEqual(float(gravity_command[gravity_command.index('--window-s')+1]), .7)
             self.assertEqual(float(gravity_command[gravity_command.index('--min-window-span-fraction')+1]), .9)
             from software.calibration.pipeline import board_detection

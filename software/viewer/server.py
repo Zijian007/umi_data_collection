@@ -11,9 +11,11 @@ import mimetypes
 import os
 import re
 
-from software import settings
+from software.configuration import operational_settings as settings
+from software.configuration import user_settings as user_config
 from software.viewer import media
 from software.viewer.cache import root as cache_root
+from software.infrastructure.paths import SCENES_ROOT
 
 from software.viewer.data import RecordingCatalog
 from software.viewer.errors import ViewerDataError
@@ -21,7 +23,7 @@ from software.viewer.media import decode_frame, preview_file, preview_status, vi
 
 
 STATIC = Path(__file__).resolve().parent / 'static'
-DEFAULT_ROOT = Path(__file__).resolve().parents[2] / 'scenes'
+DEFAULT_ROOT = SCENES_ROOT
 
 
 def byte_range(header: str, size: int) -> tuple[int, int]:
@@ -184,14 +186,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         defaults = settings.current('viewer')
         export_budget = settings.current('runtime')
+        common = user_config.current().values['viewer']
         explicit = {key: getattr(args, key) for key in ('host', 'port') if getattr(args, key) is not None}
-        configured = settings.load('viewer', environment={settings.SNAPSHOT_ENV: json.dumps({'viewer': defaults.report()})}, overrides=explicit)
+        common_overrides = {key: value for key, value in common.items() if value is not None}
+        common_overrides.update(explicit)
+        configured = settings.load('viewer', environment={settings.SNAPSHOT_ENV: json.dumps({'viewer': defaults.report()})},
+                                   overrides=common_overrides)
         args.host, args.port = configured.values['host'], configured.values['port']
         if args.show_config:
             print(json.dumps(dict(program='umi-view', operation='serve', scope='configuration_only',
                 precedence=configured.report()['precedence'], defaults=dict(root=str(DEFAULT_ROOT), **defaults.values),
                 effective=dict(root=str(args.root.expanduser().resolve()), **configured.values),
                 configuration=configured.report(),
+                user_config=user_config.current().report(),
                 map_export=dict(timeout_s=export_budget.values['map_export_timeout_s'],
                                 origin=export_budget.origins['map_export_timeout_s']),
                 cache=dict(path=str(cache_root()), origin='environment:UMI_VIEW_CACHE' if os.environ.get('UMI_VIEW_CACHE')

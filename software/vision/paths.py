@@ -3,8 +3,10 @@
 from pathlib import Path
 import os
 
+from software.infrastructure.paths import PROJECT_ROOT, deps_root
 
-ROOT = Path(__file__).resolve().parents[2]
+
+ROOT = PROJECT_ROOT
 
 
 def orb_executable(orb: Path, name: str = 'x3_mono_slam') -> Path:
@@ -12,7 +14,7 @@ def orb_executable(orb: Path, name: str = 'x3_mono_slam') -> Path:
 
 
 def orb_directory(environment) -> Path:
-    deps = Path(environment.get('UMI_DEPS') or ROOT / '.deps')
+    deps = deps_root(environment)
     return Path(environment.get('ORB3_DIR') or deps / 'src/ORB_SLAM3')
 
 

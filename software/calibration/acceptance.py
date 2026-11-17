@@ -6,7 +6,7 @@ import json
 
 import numpy as np
 
-from software import parameters as parameter_models
+from software.configuration import parameter_models
 from software.calibration.models import IntrinsicsResult, CameraImuResult, GravityResult, TrajectoryValidation, Decision, Step, Kb4
 
 

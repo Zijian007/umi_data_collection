@@ -28,7 +28,7 @@ import sys
 
 import numpy as np
 
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.camera.x3.frame import FPS_SRC, PROFILE, STEP, T0_S, detect_profile_from_streams, output_frame_rate, FPS_TOLERANCE, REGULAR_GRID_TOLERANCE_MS, GAP_INTERVAL_RATIO, IMU_COVERAGE_TOLERANCE_S
 from software.camera.x3.imu_reader import ImuReadError, read_imu_and_meta
 

@@ -12,7 +12,7 @@ import json
 import time
 
 from . import runtime
-from software.storage import write_json
+from software.infrastructure.file_store import write_json
 from software.trajectory.algorithms.fusion_quality import scale_failure
 from software.trajectory.models import AttemptResult, FusionArtifacts, ReconstructionContext
 from software.vision import runtime as visual_runtime, slam
@@ -116,14 +116,14 @@ def fuse_visual_imu(localization: tuple[LensLocalization, ...], run_inputs: Reco
         extra += ['--poster',str(settings.poster_manifest)]
     if settings.rear_manifest is not None:
         extra += ['--rear-calibration', str(settings.rear_manifest)]
-    command = [settings.fusion_python, str(settings.fusion_script),
+    command = [settings.fusion_python, '-m', 'software.trajectory.algorithms.fusion_cli',
                str(frames.get('rear', frames['front'])), str(frames['front']), str(run_inputs.imu_csv),
                settings.time_offset_ns, settings.rear_q_ic, str(directory / 'fuse'),
                '--lever_prior', settings.rear_lever, '--calibration', str(settings.camera_json),
                '--parameters', str(settings.parameters_file), *extra]
     log = directory / 'logs/fuse.log'
     # 只复用当前 run_attempts 内有结构化诊断的初始化失败；超时/崩溃仍正常重试。
-    from software.provenance import canonical_hash, file_hash
+    from software.infrastructure.provenance import canonical_hash, file_hash
     assets = dict(imu=run_inputs.imu_csv, calibration=settings.camera_json,
                   parameters=settings.parameters_file, **frames)
     if run_inputs.times_csv is not None:
@@ -142,7 +142,7 @@ def fuse_visual_imu(localization: tuple[LensLocalization, ...], run_inputs: Reco
         raise RepeatedAlignmentFailure('IMU 融合', reason, return_code=4)
     try:
         visual_runtime.run_logged(visual_runtime.engine_command(context.visual, command), log, stage='IMU 融合',
-                           environment=settings.environment, failure_code=4)
+                           environment=settings.environment, cwd=visual_runtime.REPO, failure_code=4)
     except ProcessingError as error:
         diagnostic = directory / 'fuse/alignment_failure.json'
         try:
@@ -176,7 +176,7 @@ def _start_run(directory: Path, context: ReconstructionContext, recording_name: 
     (directory / 'logs').mkdir()
     settings = context.settings
     lines = [f'UMI_START {_utc_time()} insv={recording_name} frames={context.frame_count} mode={context.request.mode} cores={context.request.cores or "all"}',
-             f'{settings.fusion_script.name} {_asset_hash(settings.fusion_script)} front_setting {_asset_hash(settings.front_settings)} cam_imu_offset_ns {settings.time_offset_ns}',
+             f'software.trajectory.algorithms.fusion_cli {_asset_hash(settings.fusion_script)} front_setting {_asset_hash(settings.front_settings)} cam_imu_offset_ns {settings.time_offset_ns}',
              f'x3_mono_slam {_asset_hash(visual_runtime.orb_executable(settings.orb_directory))} lib {_asset_hash(settings.orb_directory / "lib/libORB_SLAM3.so")}']
     (directory / 'logs/run.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
     write_json(directory / 'logs/run.json', dict(kind='umi_reconstruction_run', schema_version=1,
@@ -191,7 +191,7 @@ def _start_run(directory: Path, context: ReconstructionContext, recording_name: 
 
 def assess_try(fusion: FusionArtifacts, parameters=None) -> dict:
     """返回本轮质量；读取或计算失败时保留实际原因，由重试入口统一处理。"""
-    from software import config
+    from software.configuration import loader as config
     parameters = parameters or config.load("trajectory").values.retry
     try:
         attempt_diagnostics = json.loads(fusion.quality_report.read_text(encoding='utf-8'))

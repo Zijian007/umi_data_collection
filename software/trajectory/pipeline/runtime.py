@@ -8,12 +8,13 @@ import os
 import shutil
 import subprocess
 
-from software import parameters as parameter_models
-from software.console import Console
-from software.environment import python_executable
+from software.configuration import parameter_models
+from software.infrastructure.terminal import Console
+from software.infrastructure.runtime_environment import python_executable
 from software.trajectory.calibration import assets as calibration_assets
 from software.trajectory.models import ReconstructionSettings
 from software.vision import runtime as visual_runtime
+from software.infrastructure.paths import PROJECT_ROOT
 
 
 __all__ = [
@@ -23,7 +24,7 @@ __all__ = [
 ]
 
 HERE = Path(__file__).resolve().parents[1]
-REPO = HERE.parents[1]
+REPO = PROJECT_ROOT
 console = Console("轨迹")
 
 

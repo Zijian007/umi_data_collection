@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from software import settings as operational
+from software.configuration import operational_settings as operational
 
 from dataclasses import replace
 from pathlib import Path
@@ -11,7 +11,7 @@ import json
 import math
 import re
 
-from software.storage import write_json
+from software.infrastructure.file_store import write_json
 from software.vision import runtime
 from software.vision.models import AtlasMap, LensLocalization, LensVideo, MapAtlas, VisualContext, ProcessingError
 
@@ -53,11 +53,12 @@ def relocalize_all_maps(atlases: tuple[MapAtlas, ...], context: VisualContext,
                 localize_map(atlas, item.index, lens_dir / f'loc_m{item.index}', context, directory)
         merged = lens_dir / 'loc/frames.csv'
         merged.parent.mkdir()
-        command = [context.settings.tools_python, str(runtime.TOOLS / 'merge_frames.py'), '--out', str(merged)]
+        command = [context.settings.tools_python, '-m', 'software.vision.tools.merge_frames', '--out', str(merged)]
         for item in maps:
             command += ['--src', f'm{item.index}:{item.keyframes}:{lens_dir / f"loc_m{item.index}" / "frames.csv"}']
         log = directory / 'logs' / f'{atlas.video.lens}_merge.log'
-        runtime.run_logged(command, log, stage=f'合并定位（{atlas.video.lens}）', environment=context.settings.environment)
+        runtime.run_logged(command, log, stage=f'合并定位（{atlas.video.lens}）', environment=context.settings.environment,
+                           cwd=runtime.REPO)
         append_run(directory, log.read_text(encoding='utf-8').strip())
         results.append(LensLocalization(atlas.video.lens, merged))
     return tuple(results)

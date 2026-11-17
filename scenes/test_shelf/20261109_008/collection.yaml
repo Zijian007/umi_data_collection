@@ -1,0 +1,17 @@
+schema_version: 1
+scene:
+  layout: auto
+  map_reference_arm: left
+  description: test shelf
+  tags:
+    enabled: true
+    layout: ../../hardware/calibration_targets/environment_poster.json
+    mapping:
+      enabled: false
+      scale:
+        enabled: false
+    fusion:
+      enabled: false
+kit: kit_001
+arms: [left, right]
+map_policy: latest_prior

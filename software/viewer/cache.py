@@ -12,7 +12,7 @@ import os
 import tempfile
 import threading
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 
 def bounded(setting: str):

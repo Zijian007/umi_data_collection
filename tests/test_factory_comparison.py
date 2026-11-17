@@ -1,4 +1,4 @@
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 """Factory optical diagnostics: geometry, held-out evidence and workflow isolation."""
 import copy
 import json

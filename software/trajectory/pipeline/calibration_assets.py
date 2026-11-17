@@ -7,9 +7,10 @@ from typing import Any
 import json
 import shutil
 
-from software import provenance, registry
+from software.infrastructure import provenance
+from software.camera import registry
 from software.camera import calibration_source, rear_fallback
-from software.storage import write_json
+from software.infrastructure.file_store import write_json
 from software.trajectory.calibration.selection import SelectedCalibration
 from software.trajectory.models import TrajectoryRequest
 from software.vision import tag_board

@@ -1,4 +1,4 @@
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.gripper_width import calibration as gripper_calibration
 """真实 KB4 投影下的中心间距、拒绝条件、尺寸配置、缓存和场景输出。"""
 from software.scene.management import camera_assets
@@ -14,13 +14,14 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from software import registry
+from software.camera import registry
 from software.gripper_width import detection, tag_distance
 from software.gripper_width import sampled_detection
 from software.gripper_width.tag_geometry import TagPoseEstimator
 from software.gripper_width.tag_models import TagDistanceRequest, TagDistanceResult, TagDistanceSeries, TagPoseQuality
-from software.scene.management import inputs
-from software.storage import write_json
+from software.infrastructure.file_store import read_yaml
+from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
+from software.infrastructure.file_store import write_json
 from software.viewer.readers import read_tag_distance
 from software.viewer.errors import ViewerDataError
 
@@ -110,7 +111,7 @@ class DistanceConfigurationTests(unittest.TestCase):
         path=f.width.parent/'tags.json';write_json(path,SIZES)
         f.arms['left']['gripper']['tag_distance']='tags.json'
         write_kit('rig',f.arms)
-        batch=inputs.read_batch(write_batch(f.scene,'tags',kit='rig'))
+        batch=batch_inputs.read_batch(write_batch(f.scene,'tags',kit='rig'))
         scene=replace(batch.scene,devices=batch.devices)
         with patch.object(registry,'read_insv_serial',return_value='CAMERA_A'):
             camera=camera_assets.select_camera(f.f.root/'raw.insv',scene)
@@ -139,11 +140,11 @@ class DistanceConfigurationTests(unittest.TestCase):
     def test_kit_paths_stay_inside_kit(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)
-            result=inputs.gripper_paths(dict(tcp='tcp.json',tag_distance='tags.json'), root)
+            result=kit_inputs.gripper_paths(dict(tcp='tcp.json',tag_distance='tags.json'), root)
             self.assertEqual(result['tag_distance'],str(root/'tags.json'))
             for name in ('../tags.json','/tmp/tags.json','tags.yaml'):
                 with self.assertRaises(ValueError):
-                    inputs.gripper_paths(dict(tcp='tcp.json',tag_distance=name), root)
+                    kit_inputs.gripper_paths(dict(tcp='tcp.json',tag_distance=name), root)
 
 
 class DistancePipelineTests(unittest.TestCase):
@@ -159,7 +160,11 @@ class DistancePipelineTests(unittest.TestCase):
         arms={episodes.recording_key(paths['left']):data([0.,.1,.2,.3],[10.,11.,None,13.]),
               episodes.recording_key(paths['right']):data([.1,.2,.3,.4],[20.,21.,22.,23.])}
         catalog=SimpleNamespace(load=lambda key:arms[key],contains=lambda path:True)
-        with patch.object(episodes,'read_episode',return_value=(dict(frame_id='scene/v1',scene=scene),paths)):
+        from software.scene.result_io import scene_map_identity
+        inputs=dict(map_mode='shared_front',scene_assets={},
+                    scene_map_sha256=scene_map_identity(dict(scene,mode='shared_front',assets={})))
+        metadata=dict(schema_version=4,frame_id='scene/v1',scene=scene,inputs=inputs)
+        with patch.object(episodes,'read_episode',return_value=(metadata,paths)):
             result=episodes.load_episode(catalog,'episode',Path('/fixture/results'))
         self.assertEqual(result['times'],[.1,.2,.3])
         self.assertEqual(result['tag_distance']['distance_mm'],[11.,None,13.])
@@ -226,7 +231,8 @@ class DistanceWorkflowTests(unittest.TestCase):
             values[2]=np.nan;source[2]='missing'
             return TagDistanceResult(TagDistanceSeries(times+offset,values,source),
                 dict(valid_fraction=float(np.isfinite(values).mean()),tag_sizes_mm=measurement['tag_sizes_mm']))
-        with patch.object(tag_distance,'process',side_effect=measure) as process:
+        with patch.object(tag_distance,'process',side_effect=measure) as process, \
+                patch('software.vision.decoding.VideoDecode.run', return_value=[]):
             workflow.run_episode(f.episode_path)
             self.assertEqual(process.call_count,2)
             self.assertEqual(workflow.run_episode(f.episode_path)['status'],'skipped')

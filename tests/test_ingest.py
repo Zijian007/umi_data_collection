@@ -1,16 +1,17 @@
 """套件限定、单手身份、缺一路、重复入库和只读预览的回归。"""
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from dataclasses import replace
 import json
 from pathlib import Path
 import unittest
-from registry_fakes import write_task
+from registry_fakes import write_task, write_task_configuration, read_task_configuration
 from unittest.mock import patch
 
-from software import registry
+from software.camera import registry
 from software.scene import layout
-from software.scene.management import inputs, ingest
-from software.storage import write_json, write_yaml
+from software.infrastructure.file_store import read_yaml
+from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs, ingest
+from software.infrastructure.file_store import write_json, write_yaml
 import test_scene as fixtures
 
 
@@ -27,12 +28,12 @@ class IngestTests(unittest.TestCase):
             item.start(); self.addCleanup(item.stop)
         # 预置流程测试里的任务与本次入库无关。
         self.f.episode_path.unlink(); self.f.episode_path.parent.rmdir(); self.f.task_root.rmdir()
-        data = inputs.read_yaml(self.f.session_path)
+        data = read_yaml(self.f.session_path)
         data.pop('mapping')
         write_yaml(self.f.session_path, data)
 
     def run_ingest(self, **kwargs):
-        return ingest.register_recordings(inputs.read_batch(self.f.session_path), **kwargs)
+        return ingest.register_recordings(batch_inputs.read_batch(self.f.session_path), **kwargs)
 
     def test_pairing_is_limited_to_explicit_kit_and_ambiguous_pairs_are_retained(self):
         other = replace(self.infos[1], serial='OTHER_KIT', sha256='f'*64)
@@ -50,7 +51,7 @@ class IngestTests(unittest.TestCase):
         first = self.run_ingest()
         self.assertEqual(first['status'], 'ok')
         path = Path(first['episodes'][0]['path'])
-        episode = inputs.read_episode(path)
+        episode = episode_inputs.read_episode(path)
         self.assertEqual(layout.owner(path).parent, self.f.batch_root)
         self.assertFalse((self.f.batch_root / 'episodes').exists())
         self.assertEqual(episode.recordings['left'].parent.parent,
@@ -77,14 +78,14 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(len(list((self.f.batch_root).rglob('*.insv'))), 2)
 
     def test_right_only_kit_and_left_only_task_keep_actual_arm(self):
-        data = inputs.read_yaml(self.f.session_path)
-        arms = inputs.read_batch(self.f.session_path).kit['arms']
+        data = read_yaml(self.f.session_path)
+        arms = batch_inputs.read_batch(self.f.session_path).kit['arms']
         arms.pop('left'); data['expected_arms']=['right']
         data['kit'] = self.f.write_kit('test_kit', arms)
         write_yaml(self.f.session_path,data)
         self.items = self.infos
         result = self.run_ingest()
-        episode = inputs.read_episode(Path(result['episodes'][0]['path']))
+        episode = episode_inputs.read_episode(Path(result['episodes'][0]['path']))
         self.assertEqual(episode.expected_arms, ('right',))
         self.assertEqual(set(episode.recordings), {'right'})
         self.assertEqual(len(result['ignored']), 1)
@@ -109,21 +110,20 @@ class IngestTests(unittest.TestCase):
         self.assertFalse((self.f.batch_root/'imports').exists())
 
     def test_automatic_registration_fills_missing_hand_without_replacing_original(self):
-        session = inputs.read_batch(self.f.session_path)
+        session = batch_inputs.read_batch(self.f.session_path)
         path = write_task(session, 'take_001', {'left': self.f.recording_paths['left']})
         with self.assertRaisesRegex(ValueError, '录像不完整'):
-            inputs.read_episode(path).offsets()
-        left_video = inputs.read_episode(path).recordings['left']
+            episode_inputs.read_episode(path).offsets()
+        left_video = episode_inputs.read_episode(path).recordings['left']
         before = left_video.read_bytes(), left_video.stat().st_ino
         self.run_ingest()
-        self.assertEqual(inputs.read_episode(path).offsets(), {'left': 0., 'right': 0.})
+        self.assertEqual(episode_inputs.read_episode(path).offsets(), {'left': 0., 'right': 0.})
         self.assertEqual((left_video.read_bytes(), left_video.stat().st_ino), before)
 
     def test_repeated_automatic_registration_keeps_description_and_review_unchanged(self):
         first = self.run_ingest()
         path = Path(first['episodes'][0]['path'])
-        configuration_path = layout.owner(path) / 'task.yaml'
-        write_yaml(configuration_path, dict(instruction='取出商品'))
+        configuration_path = write_task_configuration(layout.owner(path), dict(instruction='取出商品'))
         state_path = layout.metadata(layout.owner(path), 'state.json')
         write_json(state_path, dict(review=dict(decision='accepted', reviewer='reviewer')))
         before = {entry: (entry.read_bytes(), entry.stat().st_mtime_ns) for entry in (path, configuration_path, state_path)}
@@ -133,46 +133,46 @@ class IngestTests(unittest.TestCase):
     def test_manual_instruction_edit_is_validated(self):
         result = self.run_ingest()
         path = Path(result['episodes'][0]['path'])
-        configuration_path = layout.owner(path) / 'task.yaml'
+        configuration_path = layout.owner(path) / 'collection.yaml'
         data = dict(instruction='取出货架商品')
-        write_yaml(configuration_path, data)
-        self.assertEqual(inputs.read_episode(path).instruction, '取出货架商品')
+        write_task_configuration(layout.owner(path), data)
+        self.assertEqual(episode_inputs.read_episode(path).instruction, '取出货架商品')
         self.assertNotIn('timing', data)
         self.assertNotIn('task', data)
         data['instruction'] = ['invalid description']
-        write_yaml(configuration_path, data)
+        write_task_configuration(layout.owner(path), data)
         with self.assertRaisesRegex(ValueError, 'instruction'):
-            inputs.read_episode(path)
+            episode_inputs.read_episode(path)
 
     def test_automatic_completion_preserves_manual_task_description(self):
-        session = inputs.read_batch(self.f.session_path)
+        session = batch_inputs.read_batch(self.f.session_path)
         path = write_task(session, 'take_001', {'left': self.f.recording_paths['left']}, instruction='货架取放')
         result = self.run_ingest()
         self.assertEqual(len(result['episodes']), 1)
-        self.assertEqual(inputs.read_episode(path).instruction, '货架取放')
-        self.assertEqual(inputs.read_yaml(layout.owner(path) / 'task.yaml')['instruction'], '货架取放')
-        self.assertNotIn('instruction', inputs.read_yaml(path))
-        self.assertEqual(set(inputs.read_episode(path).recordings), {'left', 'right'})
+        self.assertEqual(episode_inputs.read_episode(path).instruction, '货架取放')
+        self.assertEqual(read_task_configuration(layout.owner(path))['instruction'], '货架取放')
+        self.assertNotIn('instruction', read_yaml(path))
+        self.assertEqual(set(episode_inputs.read_episode(path).recordings), {'left', 'right'})
 
     def test_task_cannot_expand_the_hands_declared_by_its_session(self):
-        data = inputs.read_yaml(self.f.session_path)
+        data = read_yaml(self.f.session_path)
         data['expected_arms'] = ['right']
         write_yaml(self.f.session_path, data)
-        session = inputs.read_batch(self.f.session_path)
+        session = batch_inputs.read_batch(self.f.session_path)
         path = write_task(session, 'left_task', {'left': self.f.recording_paths['left']}, expected_arms=['left'])
         with self.assertRaisesRegex(ValueError, '预期使用的手'):
-            inputs.read_episode(path)
+            episode_inputs.read_episode(path)
         with self.assertRaisesRegex(ValueError, '预期使用的手'):
-            inputs.read_arms(['left'], session.expected_arms)
+            kit_inputs.read_arms(['left'], session.expected_arms)
 
     def test_manual_task_names_cannot_shadow_internal_directories(self):
-        for name in inputs.INTERNAL_DIRECTORIES:
+        for name in scene_inputs.INTERNAL_DIRECTORIES:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, '内部目录'):
-                inputs.validate_episode_name(name)
+                scene_inputs.validate_episode_name(name)
         self.assertFalse(list(self.f.batch_root.rglob('*.insv')))
 
     def test_ingest_ignores_internal_and_hidden_directories(self):
-        for name in (*inputs.INTERNAL_DIRECTORIES, '.hidden'):
+        for name in (*scene_inputs.INTERNAL_DIRECTORIES, '.hidden'):
             write_yaml(self.f.batch_root / name / 'episode.yaml', {})
         result = self.run_ingest()
         self.assertEqual([item['name'] for item in result['episodes']], ['take_001'])

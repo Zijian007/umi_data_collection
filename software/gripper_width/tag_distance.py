@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 from dataclasses import asdict
 from contextlib import closing
@@ -14,13 +14,13 @@ import time
 
 import numpy as np
 
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.gripper_width import detection
 from software.gripper_width.tag_geometry import TagPoseEstimator
 from software.gripper_width.tag_models import TagDistanceRequest, TagDistanceResult, TagDistanceSeries, missing_runs
 from software.gripper_width.sampled_detection import (
     DetectionProgress, ProgressCallback, SampledDetectionCache, recovery_order)
-from software.storage import atomic_file, mark_used, write_json
+from software.infrastructure.file_store import atomic_file, mark_used, write_json
 
 
 def identity() -> dict:
@@ -48,7 +48,7 @@ class TagDistanceAcceptanceError(ValueError):
             reasons.append(f'连续缺失 {acceptance["longest_missing_frames"]} 帧'
                            f'（录像 {start:.2f}–{end:.2f} 秒）'
                            f'超过上限 {acceptance["maximum_missing_frames"]} 帧')
-        super().__init__('标签中心距验收失败：' + '；'.join(reasons))
+        super().__init__('夹爪标签中心距验收失败：' + '；'.join(reasons))
 
 
 def acceptance_report(valid: np.ndarray, request: TagDistanceRequest) -> dict:
@@ -80,14 +80,14 @@ def _recovery_batch(valid: np.ndarray, detections: SampledDetectionCache, limit:
         return available
     gaps = [(begin, end) for begin, end in missing_runs(valid) if end - begin > limit]
     if not gaps:
-        return recovery_order(available, detections.quick_corners)[:settings.values('tag_detection')['recovery_batch_size']]
+        return recovery_order(available, detections.quick_corners)[:settings.values('gripper_tag_detection')['recovery_batch_size']]
     begin, end = max(gaps, key=lambda interval: interval[1] - interval[0])
     candidates = available[(available >= begin) & (available < end)]
     if not len(candidates):
         return candidates
     centre = int(candidates[np.argmin(np.abs(candidates - (begin + end) // 2))])
     # 先修复长缺口中间的一小段；若连续 limit+1 帧完成补检仍无效，其他帧无法桥接它。
-    window_size = min(settings.values('tag_detection')['recovery_batch_size'], limit + 1, int(end - begin))
+    window_size = min(settings.values('gripper_tag_detection')['recovery_batch_size'], limit + 1, int(end - begin))
     left = max(int(begin), min(centre - window_size // 2, int(end) - window_size))
     return candidates[(candidates >= left) & (candidates < left + window_size)]
 
@@ -187,7 +187,7 @@ def process(request: TagDistanceRequest, cache: Path, *,
         detection=dict(output_frames=len(distances_mm), recovery_attempted=int(detections.attempted.sum()),
                        stop_reason=stop_reason, elapsed_s=time.monotonic() - started))
     if progress:
-        progress(f'标签中心距验收：{valid_count}/{len(distances_mm)} 帧'
+        progress(f'夹爪标签中心距验收：{valid_count}/{len(distances_mm)} 帧'
                  f'（{report["valid_fraction"]:.1%}），最长连续缺失 '
                  f'{report["acceptance"]["longest_missing_frames"]} 帧，'
                  f'耗时 {report["detection"]["elapsed_s"]:.1f} 秒')

@@ -24,7 +24,7 @@ cli.main() → workflow.run_batch() → workflow.run_recording()
     results.cleanup_debug()              成功后按需清理中间产物
 ```
 
-原片校验和设备选择发生在清理旧输出之前。每个镜头只裁切一次，所有重建尝试复用；可疑结果默认最多重建三轮。先检查每个有位置约束的分段相对自身初始化的尺度变化，双向倍率超过 `retry.maximum_scale_change_ratio`（默认 2）或证据无效时，该轮不能选中；全部轮次因此被拒绝则执行失败并保留现场。其余轮次优先选择独立地图放置更少、位置约束覆盖更高的结果。各轮拒绝原因保存在 `tries`，融合证据包含 `scale_consistency`。该保护不估计真实误差，也不保证视觉地图正确；2 倍上限仍需多录像验证。参数位于 `config/trajectory.yaml`。
+原片校验和设备选择发生在清理旧输出之前。每个镜头只裁切一次，所有重建尝试复用；可疑结果默认最多重建三轮。先检查每个有位置约束的分段相对自身初始化的尺度变化，双向倍率超过 `retry.maximum_scale_change_ratio`（默认 2）或证据无效时，该轮不能选中；全部轮次因此被拒绝则执行失败并保留现场。其余轮次优先选择独立地图放置更少、位置约束覆盖更高的结果。各轮拒绝原因保存在 `tries`，融合证据包含 `scale_consistency`。该保护不估计真实误差，也不保证视觉地图正确；2 倍上限仍需多录像验证。参数位于 `config/algorithms/trajectory.yaml`。
 
 独立初始化保留原尺度求解，并以起点偏移 `0`、`step//3`、`2*step//3` 的独立窗口复核每个足够长的连续段。尺度相对跨度、自由重力向量差沿用 `maximum_relative_scale_std` 和 `gravity_tolerance_m_s2`；原先合格的段若在复核窗口失效，也会被拒绝。不平均重叠窗口来降低不确定度，不选择恰好通过的窗口替代主解。短段无法提供至少两个窗口时标为 `insufficient_evidence`，仍执行原来的尺度/重力门限；全部窗口齐全且一致才标为 `stable`。检查只用于独立轨迹初始化，共享场景地图保留其原有验收流程。
 
@@ -53,7 +53,7 @@ software/trajectory/
 ├── workflow.py                独立录像与批处理端到端编排
 ├── models.py                  强类型模型、请求与上下文契约
 ├── calibration/               设备规格与实测标定资产管理
-│   ├── assets.py              标定包读取、测量到 SLAM 设置、旧包验证
+│   ├── assets.py              标定包读取、测量到 SLAM 设置与当前格式校验
 │   └── selection.py           设备注册表与处理流程的边界
 ├── pipeline/                  重建调度与执行环境
 │   ├── inputs.py              独立 CLI 输入发现和默认输出目录
@@ -66,7 +66,7 @@ software/trajectory/
 │   ├── plots.py               轨迹预览图
 │   ├── quality.py             跟踪统计、逐帧约束和可重评的质量提醒
 │   ├── reports.py             用户报告和终端摘要
-│   └── results.py             结果布局、旧结果迁移、发布与清理
+│   └── results.py             当前结果布局、发布与清理
 └── algorithms/                图优化求解器内核
     ├── fusion.py              四阶段顺序入口 solve(...)
     ├── fusion_alignment.py    跟踪段细分、可靠段筛选与镜头选择
@@ -81,7 +81,7 @@ software/trajectory/
     └── postprocess.py         编排 IMU → 相机/TCP、指标与预览
 ```
 
-`ReconstructionContext.visual` 将独立请求转换成不携带业务请求的 `VisualContext`。视觉程序、错误与路径由 `software/vision` 管理；外参和逐帧位姿右乘由 `software/camera/geometry.py` 管理；公共 TUM 读写位于 `software/pose_io.py`。
+`ReconstructionContext.visual` 将独立请求转换成不携带业务请求的 `VisualContext`。视觉程序、错误与路径由 `software/vision` 管理；外参和逐帧位姿右乘由 `software/camera/geometry.py` 管理；公共 TUM 读写位于 `software/trajectory/io/tum.py`。
 
 ## 融合模块
 
@@ -96,7 +96,7 @@ algorithms/
 ├── fusion_diagnostics.py  错位采样复核；只依赖求解层
 ├── fusion_refinement.py 实验初始化细化；不反向调用初始化编排
 ├── fusion_placement.py  地图段放置和分段 → MapPlacements
-├── fusion_graph.py      构建、优化因子图 → OptimizedGraph
+├── fusion_graph.py      构建、优化因子图 → TrajectoryOptimizationResult
 ├── fusion_recovery.py   恢复节点之间的全帧率状态 → FusionSolution
 ├── fusion_factors.py    因子与解析 Jacobian，自检 selftest()
 └── postprocess.py       编排 IMU → 相机/TCP、指标、配置与预览输出
@@ -116,17 +116,17 @@ algorithms/
 .deps/env/bin/python -m software.trajectory.algorithms.fusion_cli --selftest
 ```
 
-## 运行记录与兼容
+## 运行记录与结果读取
 
-每轮 `logs/run.json` 记录运行身份、引擎哈希及完成状态；`logs/tracking.json` 记录各镜头各视觉阶段统计。结果生成优先读取结构化记录，历史结果仍可解析文本日志。原始文本日志继续保留。
+每轮 `logs/run.json` 记录运行身份、引擎哈希及完成状态；`logs/tracking.json` 记录各镜头各视觉阶段统计。结果读取只接受当前结构化布局；原始文本日志继续保留用于审计。
 
 项目构建的 `x3_mono_slam` 默认逐帧同步完成局部建图和闭环，并按稳定 ID 处理观测及共视权重平分，减少同一输入重复建图的差异。离线最小关键帧间隔默认 0.2 秒，按配置帧率向上取整为帧数，避免局部建图始终空闲时过密插帧。各阶段 `execution.json` 记录 `offline_sync`、`offline_keyframe_interval_s` 和实际最小帧数；旧引擎缺少标记时为 `null`。底层 `--async_mapping`、`--offline_keyframe_interval` 用于调度对照。同步处理可能增加耗时；同一录像的可复现性不等于轨迹精度。源码升级后需要通过 `setup/orbslam3/build_orbslam3.sh` 重编译，已安装的旧二进制不会仅因 Python 代码更新而改变。
 
 ORB 金字塔各层的特征、方向和描述子并行计算，随后按原层级顺序合并；最多使用 4 个工作线程，`OMP_THREAD_LIMIT=1` 可用于串行对照。离线驱动关闭 OpenMP 动态缩减，避免运行库把请求的 4 个线程缩成 1 个。OpenMP 只编译到特征提取文件，BA 求解和关键帧策略保持原值。视觉启动器默认设置 `OMP_WAIT_POLICY=PASSIVE`，让特征线程在串行建图期间休眠。无原生窗口的纯单目模式在初始化完成后不再检测仅供初始化使用的标签，地图重置后恢复；原生窗口显示、IMU 单目路径和独立夹爪标签检测保持原行为。构建时自动检查串行/并行角点及描述子逐项相同，以及标签检测关闭与恢复。
 
-`results.attempt_paths()` 统一解析选中轮次的当前与历史目录。旧平铺/diagnostics 结果迁移时保留独有文件并修复视频软链接；发布视频、摘要和报告成功后才能清理新运行的临时数据。
+`results.attempt_paths()` 只解析当前轮次目录。发布视频、摘要和报告成功后才能清理新运行的临时数据。
 
-解释器使用 `UMI_PY`、`UMI_PY_TOOLS`；未显式设置基础解释器时，启动脚本使用当前依赖目录的 `env/bin/python`。历史序列化字段 `source: factory` 表示样例测量，不是厂家标定。设备资产中的旧脚本仅用于 v1 外参校验，不执行。
+解释器使用 `UMI_PY`、`UMI_PY_TOOLS`；未显式设置基础解释器时，启动脚本使用当前依赖目录的 `env/bin/python`。历史序列化字段 `source: factory` 表示样例测量，不是厂家标定。设备资产只接受当前校验格式。
 
 ## 输出
 
@@ -158,7 +158,7 @@ umi_traj_out/VID_20261003_182246_00_067/
 
 `details/map.json` 保存选中轮次的工作镜头稀疏点云、关键帧和展示对齐信息。它独立于被清理的 `.osa`，可直接由 `umi-view` 查看；每图最多展示 50000 点。对齐只用于展示，不改动轨迹或地图，拟合残差不代表真实精度。导出失败只增加提醒，不改变轨迹抽取的成功状态，详细原因见 `debug/logs/map_export_error.log`。
 
-旧 `diagnostics/` 与平铺结果仍能读取；输入匹配而跳过计算时会自动整理为上述目录。整理旧结果只搬迁文件、发布根视频并修复引用，不重新建图、不改变轨迹数值，也不删除已有独有中间数据。
+结果发布只接受上述当前布局。`details/` 保存发布结果，`debug/` 保存当前运行的日志与中间数据；旧的 `diagnostics/`、平铺结果和 `work/kiwi*` 不会被自动迁移或读取。
 
 ### details/summary.json
 
@@ -209,7 +209,7 @@ umi_traj_out/VID_20261003_182246_00_067/
 
 ### debug/ 中间数据
 
-新运行仅在 `--keep-work`、失败或中断时保留；迁移旧结果时保留原有独有数据。
+新运行仅在 `--keep-work`、失败或中断时保留。
 
 | 路径 | 内容 |
 |---|---|
@@ -244,7 +244,7 @@ python -m software.trajectory /path/to/task.insv --mode dual --rear-calibration 
 
 ## 环境海报
 
-独立 `handheld` / `dual` 支持 `--tag-layout FILE`，可加 `--rear-calibration measured` 选择本设备已登记的完整 rear 标定，要求序列号、参数来源和验收匹配。省略时按上述规则兜底，显式绑定损坏则拒绝。两种路径均冻结 rear 参数和来源到 `devices/rear/`；工厂转换不合格或元数据缺失时在预检失败，保留旧结果。指定资产默认只诊断；通过 YAML `environment_tags.tag_fusion_enabled: true` 显式启用。阈值在 `config/trajectory.yaml` 的 `environment_tags` 内，默认值尚待实拍调参。
+独立 `handheld` / `dual` 支持 `--tag-layout FILE`，可加 `--rear-calibration measured` 选择本设备已登记的完整 rear 标定，要求序列号、参数来源和验收匹配。省略时按上述规则兜底，显式绑定损坏则拒绝。两种路径均冻结 rear 参数和来源到 `devices/rear/`；工厂转换不合格或元数据缺失时在预检失败，保留旧结果。指定资产默认只诊断；通过 YAML `environment_tags.tag_fusion_enabled: true` 显式启用。共享默认阈值在 `config/algorithms/environment_tags.yaml`，实验覆盖写在 `--expert-config` 的 `trajectory.environment_tags` 内。
 
 `pipeline/poster_assets.py` 冻结已选布局并缓存原始角点，不再选择镜头版本；`algorithms/fusion_poster.py` 在原生图中添加单板角点因子。原有地图分段尺度仍是变量，不把上一轮融合轨迹作为固定地图先验再平滑一次。真实 rear 观测时刻插入 IMU 节点；恢复全帧轨迹时使用这些实际时间节点。dual 地图定位也按镜头时差重采样，不跨丢帧/地图切换。没有海报观测时保持原图输出；仍需通过惯性初始化和原有质量验收。
 

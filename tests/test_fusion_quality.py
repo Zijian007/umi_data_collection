@@ -1,7 +1,7 @@
 """A scale guard measures within-map optimization change, not arbitrary map scale."""
 import json
 import unittest
-from software import config
+from software.configuration import loader as config
 from software.trajectory.algorithms.fusion_quality import scale_consistency, scale_failure
 
 

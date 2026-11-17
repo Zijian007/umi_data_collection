@@ -9,7 +9,9 @@ from scipy.spatial.transform import Rotation
 
 from software.camera.geometry import imu_from_camera
 from software.scene.spatial.fusion import sample_observations
-from software.vision.poster_pose import camera_model, estimate_board, project_observations, PosterGeometryError
+from software.scene.spatial.poster import cull_threshold, isolated_cull, without_sightings, corner_sigma_px
+from software.vision.poster_pose import (camera_model, estimate_board, project_observations,
+                                         PosterGeometryError)
 
 
 class PosterScaleConflict(ValueError):
@@ -50,15 +52,30 @@ def estimate_scale(observations, map_lens_measurement, rear_measurement, detecti
 
     model = camera_model(rear_measurement)
     pixels = detections.corners_px[selected]
-    radius = np.linalg.norm(pixels-[model.cx, model.cy], axis=2)
-    sigma = np.hypot(parameters.tag_corner_sigma_px,
-                     parameters.tag_sigma_per_radius_px*np.maximum(0., radius/720.-1.))
+    sigma = corner_sigma_px(pixels, model, parameters)
+    frame_ids = detections.sample_indices[selected]
+    tag_ids = detections.tag_ids[selected]
     try:
-        seed, _ = estimate_board(cameras(initial_scale), points, pixels, model, float('inf'),
-                                 frame_ids=detections.sample_indices[selected],
-                                 tag_ids=detections.tag_ids[selected])
+        seed, seed_rms, seed_metrics = estimate_board(
+            cameras(initial_scale), points, pixels, model, float('inf'),
+            frame_ids=frame_ids, tag_ids=tag_ids, return_metrics=True)
     except PosterGeometryError as error:
         raise PosterScaleConflict(str(error), dict(evidence, status='conflict')) from error
+
+    seed_cameras = cameras(initial_scale)
+    seed_prediction, _ = project_observations(seed, seed_cameras, points, model)
+    corner_errors = np.linalg.norm(seed_prediction - pixels, axis=2)
+    sighting_rms = np.sqrt(np.mean(corner_errors ** 2, axis=1))
+    cull_limit = cull_threshold(parameters)
+    cull_mask = sighting_rms > cull_limit
+    if isolated_cull(cull_mask, frame_ids, parameters.tag_mapping_minimum_frames):
+        refined = estimate_scale(observations, map_lens_measurement, rear_measurement,
+                                 without_sightings(detections, selected, cull_mask), board, initial_scale, parameters)
+        refined.update(culled_observations=int(np.sum(cull_mask)),
+                       cull_threshold_px=float(cull_limit),
+                       pre_cull_reprojection_rms_px=float(seed_rms),
+                       pre_cull_reprojection_metrics=seed_metrics)
+        return refined
 
     def unpack(state):
         pose = np.eye(4)
@@ -117,7 +134,7 @@ def combine_scales(imu_scale, imu_std, tag_scale, tag_std, parameters):
                 scale=float(np.exp(weights @ logs)), relative_scale_std=float(1./np.linalg.norm(1./std)))
 
 
-def correct_placement(placement, observations, lens, recording, scene, data):
+def correct_placement(placement, observations, lens, recording, scene, poster_observation_bundle):
     """先诊断，显式开启才合并；几何不足保持原尺度，有效来源冲突则拒绝。"""
     from software.scene.spatial.geometry import metric_alignment, MapAlignmentError
     from software.trajectory.algorithms.inertial import estimate_gyro_bias
@@ -128,8 +145,8 @@ def correct_placement(placement, observations, lens, recording, scene, data):
     report = dict(status='missing_rear_calibration', applied=False, actual_error='not_measured')
     result = deepcopy(placement)
     try:
-        if data is not None:
-            board, detections = data
+        if poster_observation_bundle is not None:
+            board, detections = poster_observation_bundle
             report = estimate_scale(observations, recording.camera.measurements[lens], recording.camera.measurements['rear'],
                                     detections, board, placement['scale'], parameters)
             report['applied'] = False

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 import json
 import shutil
@@ -10,18 +10,19 @@ import uuid
 
 import numpy as np
 
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.camera.geometry import imu_from_camera
 from software.camera.timing import video_to_imu_seconds
 from software.scene import layout
 from software.scene.management import camera_assets
-from software.scene.management import inputs
+from software.scene.asset_identity import validate_assets
 from software.scene.map_cache import MapBuildCache, source_identity
 from software.scene.models import FusedTrajectory, CalibratedCamera, Episode, PreparedRecording
 from software.scene.pipeline import diagnostics, recordings
 from software.scene.spatial import fusion, slam
 from software.scene.spatial.geometry import VisualObservations
-from software.storage import mark_used, write_json
+from software.scene.spatial.poster import PosterInputs
+from software.infrastructure.file_store import mark_used, write_json
 
 
 def prepare_cached(episode, arm, camera, scene, cores, *, work_dir: Path, cache_audit=None):
@@ -40,15 +41,22 @@ def localize_cached(episode, arm, recording, lens, map_archive, map_index, map_m
         metric_scale=metric_scale, engines=artifact_identity.engine_identity('trajectory')))[:20]
     cache_dir = layout.metadata(episode.root, 'cache/localization') / key
     cache_manifest_path = cache_dir / 'ready.json'
+    reused = False
     if cache_manifest_path.exists():
-        inputs.validate_assets(cache_dir, json.loads(cache_manifest_path.read_text())['assets'])
-        mark_used(cache_dir)
-        with np.load(cache_dir / 'observations.npz') as cached_observations:
-            visual_observations = VisualObservations(cached_observations['times'], cached_observations['poses'], cached_observations['indices'], 'visual_map')
-        if cache_audit is not None:
-            cache_audit.record(stage='localize', key=key, path=str(cache_dir), status='reused',
-                               reason='ready.json 资产哈希校验通过')
-    else:
+        try:
+            validate_assets(cache_dir, json.loads(cache_manifest_path.read_text())['assets'])
+            mark_used(cache_dir)
+            with np.load(cache_dir / 'observations.npz') as cached_observations:
+                visual_observations = VisualObservations(cached_observations['times'], cached_observations['poses'], cached_observations['indices'], 'visual_map')
+            reused = True
+            if cache_audit is not None:
+                cache_audit.record(stage='localize', key=key, path=str(cache_dir), status='reused',
+                                   reason='ready.json 资产哈希校验通过')
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            if cache_audit is not None:
+                cache_audit.record(stage='localize', key=key, path=str(cache_dir), status='invalidated',
+                                   reason=f'缓存校验失败：{error}')
+    if not reused:
         # 定位引擎的工作目录放在条目外，缓存条目只含 ready.json 列出的文件。失败时保留
         # 供错误信息中的日志路径排查；以点开头，下次成功处理后由自动清理删除。
         attempt_dir = cache_dir.with_name(f'.{key}-{uuid.uuid4().hex}')
@@ -83,15 +91,50 @@ def prepare_episode_recordings(episode: Episode, cameras: dict[str, CalibratedCa
     return prepared
 
 
+def _frame_provenance(scene, arm: str, observations: dict, imu_times, map_manifest: dict) -> list[dict]:
+    """每个融合节点的视觉来源；多镜头按 localization_lenses 顺序取主来源，无视觉先验标为 imu。"""
+    sampled_indices = {
+        lens: set(fusion.sample_observations(observed, imu_times,
+                                             scene.parameters.alignment_max_gap_s).indices.tolist())
+        for lens, observed in observations.items()
+    }
+    provenance = []
+    for frame_index in range(len(imu_times)):
+        lenses = [lens for lens in scene.localization_lenses(arm) if frame_index in sampled_indices[lens]]
+        primary = lenses[0] if lenses else None
+        item = dict(frame=frame_index,
+                    constraint='full' if primary is not None else 'imu',
+                    visual_lens=primary,
+                    visual_lenses=lenses,
+                    map_role=None, map_index=None, map_epoch=None,
+                    map_version=map_manifest.get('version'),
+                    map_frame_id=map_manifest.get('frame_id'))
+        if primary is not None:
+            role = scene.role(arm, primary)
+            item.update(map_role=role, map_index=map_manifest['maps'][role].get('index'),
+                        map_epoch=map_manifest.get('map_epoch'))
+        provenance.append(item)
+    return provenance
+
+
+@dataclass(frozen=True)
+class ArmReconstruction:
+    trajectory: FusedTrajectory
+    # 仅 share_poster=True 且本手可做海报融合时提供，由调用方联合求解后替换 trajectory。
+    poster_inputs: PosterInputs | None = None
+
+
 def reconstruct_arm_in_scene(episode: Episode, arm: str, recording: PreparedRecording,
                              map_dir: Path, map_manifest: dict,
-                             *, diagnostic_dir: Path | None = None, cache_audit=None) -> FusedTrajectory:
+                             *, diagnostic_dir: Path | None = None, cache_audit=None,
+                             share_poster: bool = False) -> ArmReconstruction:
     """在已固定的场景系内求单手 T_reference_imu；不重新建图或重置原点。
 
     每个镜头先定位于自己的视觉地图，再用建图时冻结的尺度和刚体变换
     转为 T_scene_cam。融合使用相机–IMU 外参得到 T_reference_imu。
     此处只加本机 cam_time_offset；跨设备偏移仅在写输出时使用。
-    左右手各调用一次，彼此之间没有联合优化约束。
+    share_poster=True（双手共享海报）时不在此处融合海报：返回基线和
+    PosterInputs，由调用方联合求解。
     """
     scene, camera = episode.scene, recording.camera
     observations = {}
@@ -105,31 +148,35 @@ def reconstruct_arm_in_scene(episode: Episode, arm: str, recording: PreparedReco
     imu_times = video_to_imu_seconds(recording.video_times_s, camera.measurements['front']['cam_time_offset_ns'])
     try:
         baseline = fusion.fuse(imu_times, recording.imu, observations, T_cam_imu, scene.trajectory.values, scene.parameters)
-        if scene.tag_layout is None:
-            return baseline
-        from dataclasses import replace
-        from software.console import Console
+        baseline = replace(baseline, evidence=dict(baseline.evidence, frame_provenance=_frame_provenance(
+            scene, arm, observations, imu_times, map_manifest)))
+        if not scene.environment_tag_detection:
+            return ArmReconstruction(baseline)
+        from software.infrastructure.terminal import Console
         from software.scene.spatial import poster
-        from software.vision import tag_board, tags
+        from software.vision import environment_tags, tag_board
         board = tag_board.load(scene.tag_layout)
         cache_dir = layout.metadata(episode.root, 'cache/environment_tags') / arm
-        detection_report = tags.cached(episode.recordings[arm], cache_dir,
-            tags.DetectionSettings(border_bits=board.border_bits, ids=board.ids, dictionary=board.dictionary,
+        detection_report = environment_tags.cached(episode.recordings[arm], cache_dir,
+            environment_tags.DetectionSettings(border_bits=board.border_bits, ids=board.ids, dictionary=board.dictionary,
                                    minimum_side_px=scene.parameters.tag_minimum_side_px),
-            layout=board, progress=Console('环境标签').write)
+            layout=board, progress=Console('环境标签').write, cache_audit=cache_audit)
         if diagnostic_dir is not None:
             write_json(diagnostic_dir / 'environment_tags.json', detection_report)
         if 'rear' not in camera.measurements:
             if scene.parameters.tag_fusion_enabled:
                 raise poster.PosterGeometryError('环境海报融合需要 rear 标定')
-            return replace(baseline, evidence=dict(baseline.evidence,
+            return ArmReconstruction(replace(baseline, evidence=dict(baseline.evidence,
                 environment_poster=dict(status='missing_rear_calibration', enabled=False,
-                                        layout=board.record(), actual_error='not_measured')))
+                                        layout=board.record(), actual_error='not_measured'))))
         with np.load(cache_dir / 'observations.npz', allow_pickle=False) as data:
-            detections = tags.TagObservations(**{key: data[key] for key in tags.TagObservations.__dataclass_fields__})
-        return poster.refine(baseline, imu_times, recording.imu, observations, T_cam_imu,
-                             scene.trajectory.values, scene.parameters, detections, board,
-                             camera.measurements['rear'])
+            detections = environment_tags.TagObservations(**{key: data[key] for key in environment_tags.TagObservations.__dataclass_fields__})
+        inputs = PosterInputs(arm, baseline, imu_times, recording.imu, observations, T_cam_imu,
+                              scene.trajectory.values, scene.parameters, detections, board,
+                              camera.measurements['rear'])
+        if share_poster:
+            return ArmReconstruction(baseline, inputs)
+        return ArmReconstruction(poster.fuse_poster(inputs))
     except Exception:
         if diagnostic_dir is not None:
             try:

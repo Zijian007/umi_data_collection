@@ -39,10 +39,12 @@ def capture_status(directory: Path) -> dict:
     episode = read_yaml(episode_path)
     episode.update(layout.task_configuration(directory))
     session = read_yaml(session_path)
-    scene_path = session_dir.parent / 'scene.yaml'
-    scene = read_yaml(scene_path) if scene_path.is_file() else {}
-    if scene.get('name', scene_path.parent.name) != scene_path.parent.name:
-        raise ViewerDataError('场景目录与配置名称不一致')
+    collection_path = session_dir / 'collection.yaml'
+    collection = read_yaml(collection_path) if collection_path.is_file() else {}
+    scene = collection.get('scene', {}) if isinstance(collection, dict) else {}
+    scene_path = collection_path
+    if not collection_path.is_file() or not isinstance(scene, dict):
+        raise ViewerDataError('批次缺少有效 collection.yaml')
     if ('scene' in session and (session_dir / session['scene']).resolve() != scene_path
             or 'session' in episode and layout.manifest((directory / episode['session']).resolve(), 'manifest.yaml') != session_path):
         raise ViewerDataError('采集清单与所属目录不一致')
@@ -58,7 +60,7 @@ def capture_status(directory: Path) -> dict:
         status = 'incomplete'
     elif fresh and attempt.get('task_configuration_sha256', hashlib.sha256(b'{}').hexdigest()) == layout.task_configuration_hash(directory):
         status = attempt.get('status', 'pending')
-    return dict(scene=scene_path.parent.name, kit=session['kit']['id'], session=session_dir.name, name=directory.name,
+    return dict(scene=session_dir.parent.name, kit=session['kit']['id'], session=session_dir.name, name=directory.name,
         expected_arms=expected_arms, status=status, attempt=attempt,
         review=state.get('review', {}) if status in ('ok', 'skipped') else {})
 

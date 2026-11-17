@@ -1,4 +1,4 @@
-"""Camera measurements and read-only legacy bundle validation.
+"""Camera measurements and read-only calibration bundle validation.
 
 Bundles contain measured Basalt JSON and provenance. SLAM settings are generated
 for each run; fusion always executes the shared algorithm, never a bundle script.
@@ -7,7 +7,6 @@ for each run; fusion always executes the shared algorithm, never a bundle script
 from __future__ import annotations
 
 from pathlib import Path
-import ast
 import hashlib
 import json
 import os
@@ -18,10 +17,11 @@ from scipy.spatial.transform import Rotation as Rot
 import numpy as np
 
 from software.camera.x3.frame import CROP, scale_intrinsics, validate_video_size, video_intrinsics, output_frame_rate
+from software.infrastructure.paths import PROJECT_ROOT
 
 
 HERE = Path(__file__).resolve().parents[1]
-REPO = HERE.parents[1]
+REPO = PROJECT_ROOT
 SAMPLE_CAMERA_JSON = HERE / "assets" / "calib" / "calibration_r1440.json"
 FRONT_SETTINGS_TEMPLATE = HERE / "assets" / "config" / "front_x3_r1440_720.yaml"
 FUSION_SCRIPT = HERE / "algorithms" / "fusion_cli.py"
@@ -132,7 +132,7 @@ def make_bundle(calib_json: Path, out_dir: Path, note: dict | None = None) -> di
 
 def make_result(calib_json: Path, out_dir: Path, *, provenance: dict) -> dict:
     """新标定结果只携带最终参数和身份清单，不复制数值摘要或算法。"""
-    from software.storage import write_json
+    from software.infrastructure.file_store import write_json
     measured = read_basalt(calib_json)
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / 'calibration.json'
@@ -150,39 +150,6 @@ def calibration_path(directory: Path) -> Path:
     return directory / ('calibration.json' if (directory / 'manifest.json').is_file() else 'calibration_r1440.json')
 
 
-def _check_legacy(bundle_dir: Path, calib_info: dict) -> None:
-    """Read literal extrinsics from v1 code without importing or executing it.
-
-    Legacy algorithm copies are retired. Verify the measurement-bearing fields;
-    differences in old algorithm implementations no longer prevent using a camera.
-    """
-    yaml_path = bundle_dir / 'front_x3_r1440_720.yaml'
-    fuser_path = bundle_dir / 'kiwi_fuse3s.py'
-    for path in (yaml_path, fuser_path):
-        if not path.is_file():
-            raise CalibrationError(f'旧标定包缺少 {path.name}：{bundle_dir}')
-    expected = yaml_text(calib_info)
-    for key in ('fx', 'fy', 'cx', 'cy', 'k1', 'k2', 'k3', 'k4'):
-        pattern = rf'(?m)^Camera1\.{key}: (\S+)$'
-        actual, want = re.findall(pattern, yaml_path.read_text()), re.findall(pattern, expected)
-        if len(actual) != 1 or not np.isclose(float(actual[0]), float(want[0]), rtol=0, atol=1e-9):
-            raise CalibrationError(f'旧标定包 {bundle_dir} 的 YAML 内参与原始标定不一致')
-    try:
-        tree = ast.parse(fuser_path.read_text())
-        literals = {}
-        for node in tree.body:
-            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-                name = node.targets[0].id
-                if name == 'P_CfinI':
-                    literals[name] = ast.literal_eval(node.value.args[0])
-                elif name == 'R_ICf':
-                    literals[name] = ast.literal_eval(node.value.func.value.args[0])
-        if not np.allclose(literals['P_CfinI'], calib_info['p'], rtol=0, atol=1e-12) or not np.allclose(literals['R_ICf'], calib_info['q_xyzw'], rtol=0, atol=1e-12):
-            raise ValueError('相机–IMU 外参不一致')
-    except (ValueError, KeyError, AttributeError, TypeError, SyntaxError) as error:
-        raise CalibrationError(f'旧标定包 {bundle_dir} 的融合外参与原始标定不一致：{error}') from error
-
-
 def describe(bundle_dir: Path, source: str) -> dict:
     json_path = SAMPLE_CAMERA_JSON if source == 'factory' else calibration_path(bundle_dir)
     calib_info = read_basalt(json_path)
@@ -195,7 +162,7 @@ def describe(bundle_dir: Path, source: str) -> dict:
             if not isinstance(meta, dict):
                 raise ValueError('标定包元数据必须是对象')
             version = meta.get('schema_version', 1)
-            if type(version) is not int or version not in ((3,) if modern else (1, 2)):
+            if type(version) is not int or version not in ((3,) if modern else (2,)):
                 raise ValueError(f'不支持标定包版本 {version}')
             if modern and (meta.get('kind') != 'umi_camera_calibration_result'
                            or not isinstance(meta.get('camera_serial'), str) or not meta['camera_serial']
@@ -204,8 +171,6 @@ def describe(bundle_dir: Path, source: str) -> dict:
             digest = meta['files']['calibration.json'] if modern else meta['calibration_sha256']
             if digest != hashlib.sha256(json_path.read_bytes()).hexdigest():
                 raise ValueError('原始标定 JSON 校验失败')
-            if version == 1:
-                _check_legacy(bundle_dir, calib_info)
         except (OSError, ValueError, KeyError) as error:
             raise CalibrationError(f'无法读取标定包 {bundle_dir}：{error}') from error
     from software.camera import calibration_source
@@ -250,7 +215,7 @@ def slam_settings_text(calib_info: dict, parameters, *, rear: bool = False) -> s
 
 
 def active() -> dict:
-    """Engineer override only. The trajectory engine normally calls ``software.registry.resolve_insv``."""
+    """Engineer override only. The trajectory engine normally calls ``software.camera.registry.resolve_insv``."""
     env = os.environ.get("UMI_TRAJ_CALIB", "").strip()
     if env == "factory":
         return describe(HERE, "factory")

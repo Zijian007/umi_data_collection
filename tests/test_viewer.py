@@ -25,37 +25,31 @@ class ViewerDataTests(unittest.TestCase):
     def fixture(self, layout="details", chosen=1):
         output = self.root / 'M4CP/tasks/umi_traj_out/VID_001'
         output.mkdir(parents=True)
-        details = output if layout == 'flat' else output / layout
-        details.mkdir(exist_ok=True)
+        details = output / 'details'
+        details.mkdir()
         (output / 'traj_tcp.txt').write_text(TUM)
         for name in ('camera', 'imu'):
             (details / f'traj_{name}.txt').write_text(TUM)
         (details / 'frames.csv').write_text('row,video_frame,t_video_s,constraint,front_lens_tracked\n0,0,0,full,1\n1,2,0.5,rot,1\n2,4,1,imu,0\n')
         (details / 'summary.json').write_text(json.dumps(dict(status='ok', duration_s=1, rows=3, chosen_try=chosen, calibration_used=dict(serial='camera', id='test'))))
-        attempt = 'kiwi' if chosen == 1 else f'kiwi_try{chosen}'
-        video = output / 'front.mp4' if layout == 'details' else details / 'work' / attempt / 'front/front.mp4'
+        video = output / 'debug/reconstruction' / f'try_{chosen}' / 'front/front.mp4'
         video.parent.mkdir(parents=True, exist_ok=True)
         video.write_bytes(b'0123456789')
         return output, details, video
 
     def test_all_layouts_and_selected_attempt_video(self):
-        for layout in ('flat', 'diagnostics', 'details'):
-            with self.subTest(layout=layout):
-                if self.root.exists():
-                    import shutil
-                    shutil.rmtree(self.root)
-                output, details, video = self.fixture(layout=layout, chosen=2)
-                catalog = RecordingCatalog(self.root)
-                listing = catalog.scan()
-                self.assertEqual(len(listing['recordings']), 1)
-                key = listing['recordings'][0]['id']
-                data = catalog.load(key)
-                self.assertEqual(set(data['tracks']), {'tcp', 'camera', 'imu'})
-                self.assertEqual(data['times'], [0, .5, 1])
-                self.assertEqual(data['tracks']['tcp']['path_length'], 1)
-                self.assertEqual(data['tracks']['tcp']['speed'], [0, 1, 1])
-                self.assertEqual([f['constraint'] for f in data['frames']], ['full', 'rot', 'imu'])
-                self.assertEqual(catalog.video_path(key), video)
+        output, details, video = self.fixture(chosen=2)
+        catalog = RecordingCatalog(self.root)
+        listing = catalog.scan()
+        self.assertEqual(len(listing['recordings']), 1)
+        key = listing['recordings'][0]['id']
+        data = catalog.load(key)
+        self.assertEqual(set(data['tracks']), {'tcp', 'camera', 'imu'})
+        self.assertEqual(data['times'], [0, .5, 1])
+        self.assertEqual(data['tracks']['tcp']['path_length'], 1)
+        self.assertEqual(data['tracks']['tcp']['speed'], [0, 1, 1])
+        self.assertEqual([f['constraint'] for f in data['frames']], ['full', 'rot', 'imu'])
+        self.assertEqual(catalog.video_path(key), video)
 
     def test_nonmonotonic_and_nonfinite_trajectories_are_rejected(self):
         path = self.root / 'traj_tcp.txt'
@@ -108,7 +102,9 @@ class HTTPContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / 'traj_tcp.txt').write_text(TUM)
-            path = root / 'work/kiwi/front/front.mp4'
+            (root / 'details').mkdir()
+            (root / 'details/summary.json').write_text(json.dumps(dict(status='ok')))
+            path = root / 'debug/reconstruction/try_1/front/front.mp4'
             path.parent.mkdir(parents=True)
             path.write_bytes(b'0123456789')
             catalog = RecordingCatalog(root)

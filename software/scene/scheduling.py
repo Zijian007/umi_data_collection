@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 
 def arm_cores(arms: tuple[str, ...], cores: str, *, parallel: bool) -> dict[str, str] | None:

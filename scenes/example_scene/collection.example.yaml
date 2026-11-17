@@ -1,0 +1,35 @@
+# 复制到 scenes/<scene>/<batch>/collection.yaml；示例文件不会被自动发现。
+schema_version: 1
+scene:
+  layout: auto
+  map_reference_arm: left
+  description: example scene
+  tags:
+    # 总开关：false 时只保留布局声明，不检测环境海报。
+    enabled: false
+    # 环境海报布局 JSON；路径相对场景根目录。
+    layout: ../../hardware/calibration_targets/environment_poster.json
+    mapping:
+      # 建图阶段检测并记录海报诊断；不应用尺度修正。
+      enabled: false
+      scale:
+        # 将海报尺度与 IMU 尺度合并，并重新验收地图。
+        enabled: false
+    fusion:
+      # 将任务中的海报角点加入视觉–IMU 融合。
+      enabled: false
+      # staged：先地图+IMU再海报；joint：初值图直接联合地图、IMU和海报。
+      method: staged
+kit: kit_001
+arms: [left, right]
+map_policy: latest_prior
+# 可选：冻结本批次默认使用的已发布地图；填写后不需要 mapping/ 原片。
+# map_version: 20261113_100000-a1b2c3d4
+tasks:
+  take_001:
+    instruction: 拿起物体并放到指定位置
+    expected_arms: [left, right]
+    synchronization: assumed_simultaneous
+    # 可选：按采集阶段或具体版本固定该任务使用的地图。
+    # map_epoch: epoch_001
+    # map_version: 20261113_100000-a1b2c3d4

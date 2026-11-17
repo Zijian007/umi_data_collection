@@ -1,0 +1,25 @@
+# 用户日常配置入口。算法细节仍在 trajectory.yaml、scene_parameters.yaml、
+# environment_tags.yaml 等内部文件；这里列出全部可填写字段。
+schema_version: 2  # 用户配置格式版本。
+
+features:  # 用户日常功能开关。
+  # 双手任务没有在 collection.yaml.tasks.<take> 单独声明同步方式时，
+  # 是否通过两段录像的音频自动估计相对偏移。false 表示假设同时开始。
+  audio_sync:  # 双手任务的音频自动同步。
+    enabled: false  # 未显式配置任务同步时，是否启用 audio_auto。
+  # 是否全局优先使用 kit 中的 factory 内参；false 表示沿用 kit.yaml 的选择。
+  factory_intrinsics:  # 全局内参来源选择。
+    enabled: false  # 是否优先使用 kit 中的 factory 内参。
+
+runtime:  # 用户可控制的运行并发和 CPU 范围。
+  # 是否允许一次处理多个 take。单个 take 的左右手并行仍由程序自动判断。
+  parallel_tasks:  # 是否并行处理多个 take。
+    enabled: false  # false 时强制一次处理一个 take。
+    jobs: 1  # enabled 为 true 时允许的并发任务数。
+  # auto 表示使用当前进程可用 CPU；也可填写 0-7 或 0-3,8。
+  cores: auto  # auto 使用当前可用 CPU，也可填写 CPU 编号范围。
+
+viewer:  # 查看器监听地址覆盖；null 使用 viewer.yaml 默认值。
+  # null 表示沿用 config/operations/viewer.yaml；host/port 只影响本机查看器监听地址。
+  host: null  # HTTP 监听地址。
+  port: null  # HTTP 监听端口；0 表示自动选择空闲端口。

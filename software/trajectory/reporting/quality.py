@@ -8,7 +8,7 @@ import json
 
 import numpy as np
 
-from software import parameters as parameter_models
+from software.configuration import parameter_models
 
 
 def frame_constraints(fuse_info: dict, n: int) -> np.ndarray:

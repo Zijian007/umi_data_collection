@@ -1,14 +1,52 @@
 # 命令行、配置与测量资产
 
+配置层在整体业务中的位置见[业务心智模型](../docs/业务心智模型.md)；本页说明各配置文件的权威范围和覆盖顺序。
+
+## 配置心智模型
+
+配置按“谁决定、决定什么、影响多久”分成四层：
+
+| 层级 | 权威入口 | 负责内容 | 典型修改者 |
+|---|---|---|---|
+| 用户意图 | `config/user.yaml` | 音频同步、factory 内参、并发和查看器是否启用 | 日常用户 |
+| 采集声明 | 批次 `collection.yaml`、套件 `kits/<kit>/kit.yaml` | 场景、任务、使用手、环境标签布局、设备和实测资产 | 数据采集者 |
+| 算法默认值 | `algorithms/trajectory.yaml`、`algorithms/scene_parameters.yaml`、`algorithms/calibration.yaml`、`algorithms/environment_tags.yaml` | 视觉、惯性、建图、定位、海报几何和验收门限 | 算法维护者 |
+| 执行与诊断 | `operations/runtime.yaml`、`operations/viewer.yaml`、`operations/gripper_tag_detection.yaml` | 线程、超时、查看器缓存和夹爪标签检测预算 | 工程维护者 |
+
+`config/` 中的 YAML 是项目默认值和用户入口；批次/套件中的声明才是具体数据的权威来源；`--expert-config` 只覆盖本次算法实验。运行结果会冻结本次实际配置和来源，不能通过修改默认 YAML 追溯或改写历史结果。
+
+## 用户日常配置
+
+普通使用只维护项目根目录的 `config/user.yaml`。用户只需要打开或关闭功能；算法细节仍在内部配置文件中。`schema_version: 2` 是当前格式，旧的 schema 1 仍可读取。
+
+```yaml
+schema_version: 2
+features:
+  audio_sync:
+    enabled: false
+  factory_intrinsics:
+    enabled: false
+runtime:
+  parallel_tasks:
+    enabled: false
+    jobs: 1
+  cores: auto
+viewer:
+  host: null
+  port: null
+```
+
+`features.audio_sync.enabled` 只影响没有任务级同步声明的双手 take；`features.factory_intrinsics.enabled` 为 true 时全局优先选择 factory 内参，否则沿用 kit.yaml。`runtime.parallel_tasks.enabled` 为 false 时强制任务并发为 1；为 true 时使用 `jobs`。`null` 表示沿用 `config/operations/viewer.yaml` 的默认值。`config/algorithms/` 保存算法参数，`config/operations/` 保存机器、查看器和检测预算；这些文件属于内部/专家配置，日常用户只维护 `user.yaml`。
+
 日常运行先选输入目录；算法调参写 YAML；设备和实测几何写入各自的资产声明。三个程序的分工如下：
 
 | 入口 | 命令行输入 | YAML / 资产 |
 |---|---|---|
-| `umi-scene run / build` | 路径、`--cores`、`--force`、`--dry-run`；run 另有 `--jobs`、`--skip-preflight`，build 另有 `--keep-work` | `trajectory.yaml`、`scene_parameters.yaml` 提供算法默认值；`scene.yaml` 保存场景模式、标签布局引用和长期参数覆盖；`batch.yaml` 选择 kit、手和地图；`kit.yaml` 固定设备版本与测量文件；`<任务>/task.yaml` 写指令、使用手和同步 |
-| `umi-calib run / verify` | 录像、输出路径、`--tag-size-mm` 实测板边长、CPU/线程、继续/重算、保留中间文件 | `calibration.yaml` 保存求解与验收参数；C 验证读取 `trajectory.yaml`；板布局和版本化测量是独立资产 |
-| `umi-view` | 结果根目录、`--host`、`--port` | `viewer.yaml` 管理服务、预览和缓存；读取已有结果，不重新计算轨迹 |
+| `umi-scene run / build` | 路径、`--cores`、`--force`、`--dry-run`；run 另有 `--jobs`、`--skip-preflight`，build 另有 `--keep-work` | `algorithms/trajectory.yaml`、`algorithms/scene_parameters.yaml` 提供算法默认值；批次日常配置统一写 `collection.yaml`（场景、kit、手和任务）；专家调参使用 `--expert-config`；`kit.yaml` 固定设备版本与测量文件；旧的 `scene.yaml`、`batch.yaml`、`task.yaml` 已移除 |
+| `umi-calib run / verify` | 录像、输出路径、`--tag-size-mm` 实测板边长、CPU/线程、继续/重算、保留中间文件 | `algorithms/calibration.yaml` 保存求解与验收参数；C 验证读取 `algorithms/trajectory.yaml`；板布局和版本化测量是独立资产 |
+| `umi-view` | 结果根目录、`--host`、`--port` | `operations/viewer.yaml` 管理服务、预览和缓存；读取已有结果，不重新计算轨迹 |
 
-`--config` 选择本次算法覆盖文件；`--intrinsics-source` 选择已有标定来源（标定 run 中选择求解来源）；`--map-version` 为场景 run 显式选图。来源和地图的长期选择可以写在 batch / kit 声明里。逐个子命令的完整选项、默认值与互斥关系见[命令行参数参考](../docs/命令行参数.md)，也可用 `<入口> <子命令> --help` 查阅。
+`--expert-config` 仅用于本次专家算法实验；内参来源读取 `config/user.yaml`，地图阶段读取 `collection.yaml.tasks` 和 `.pipeline/map_epochs.yaml`。逐个子命令的完整选项、默认值与互斥关系见[命令行参数参考](../docs/命令行参数.md)，也可用 `<入口> <子命令> --help` 查阅。
 
 独立诊断工具的参数仍由该次命令传入：`umi-scene detect-tags` 的检测采样/投影尺寸、`umi-calib preview-width / detect-width` 的 ROI/对比度/检测频率、`umi-scene export` 的导出格式/采样频率。它们只作用于本次诊断或导出，不改正式轨迹流程的 YAML。
 
@@ -20,30 +58,30 @@
 ./umi-view scenes/test_shelf --port 9092 --show-config
 ```
 
-`--show-config` 输出 JSON，展示配置值、来源和执行选项，然后退出；不读取视频内容、不启动求解环境、不扫描查看器结果或监听端口。场景与标定入口可以同时使用 `--config`。它优先于 `--dry-run`；配置展示成功不代表录像、标定资产和地图已满足运行条件，输入检查继续使用 `--dry-run`。标定 run / verify 仍需填写目录/录像位置参数，但展示时不访问它们。run 的输入目录末级名称必须为 front / rear，由目录名选择镜头；两者都使用 run，详见[标定目录约定](../docs/标定.md#52-算标定)。
+`--show-config` 输出 JSON，展示配置值、来源和执行选项，然后退出；不读取视频内容、不启动求解环境、不扫描查看器结果或监听端口。场景与标定入口可以同时使用 `--expert-config`。它优先于 `--dry-run`；配置展示成功不代表录像、标定资产和地图已满足运行条件，输入检查继续使用 `--dry-run`。标定 run / verify 仍需填写目录/录像位置参数，但展示时不访问它们。run 的输入目录末级名称必须为 front / rear，由目录名选择镜头；两者都使用 run，详见[标定目录约定](../docs/标定.md#52-算标定)。
 
 ## 运行与查看器默认值
 
-以下配置由 `software/settings.py` 读取。项目默认值只在 YAML 中定义；机器配置写到同目录的 `*.local.yaml`，不提交 Git。文件不存在就使用项目默认值；修改后重启程序生效。未知字段、错误类型、负数预算、重复键会在启动时报错。
+以下配置由 `software/configuration/operational_settings.py` 读取。项目默认值只在 YAML 中定义；机器配置写到同目录的 `*.local.yaml`，不提交 Git。文件不存在就使用项目默认值；修改后重启程序生效。未知字段、错误类型、负数预算、重复键会在启动时报错。
 
 | 配置 | 主要参数与初始值 | 是否影响结果缓存 |
 |---|---|---|
-| [runtime.yaml](runtime.yaml) | 解码 4 线程、场景 OpenCV 4 线程、标定/宽度诊断 OpenCV 1 线程；标定默认预留 1 核、上限 24 worker，转 bag 上限 4 线程；双手并行每手至少 4 核；SLAM 超时 `floor(帧数/30) × 16 + 300` 秒，地图导出 180 秒 | 修改数值不使已完成的算法结果失效 |
-| [viewer.yaml](viewer.yaml) | `127.0.0.1:9092`；画面解码并发 2，预览并发 1、含运行中最多 2 个任务；画面内存缓存 64 张、地图缓存 4 份；预览 720 宽、1500 kbps、CRF 12、GOP 30；每图显示最多 50000 点 | 画质、尺寸、码率、GOP 只影响对应查看器派生缓存；线程、超时和缓存容量不改变内容身份 |
-| [tag_detection.yaml](tag_detection.yaml) | 夹爪双标签全区域搜索间隔 30、候选上限 96、补检候选上限 16、每批补检 32 帧 | 检测缓存和使用夹爪测量的最终任务结果均重新计算；不重建场景地图 |
+| [runtime.yaml](operations/runtime.yaml) | 解码 4 线程、场景 OpenCV 4 线程、标定/宽度诊断 OpenCV 1 线程；标定默认预留 1 核、上限 24 worker，转 bag 上限 4 线程；双手并行每手至少 4 核；SLAM 超时 `floor(帧数/30) × 16 + 300` 秒，地图导出 180 秒 | 修改数值不使已完成的算法结果失效 |
+| [viewer.yaml](operations/viewer.yaml) | `127.0.0.1:9092`；画面解码并发 2，预览并发 1、含运行中最多 2 个任务；画面内存缓存 64 张、地图缓存 4 份；预览 720 宽、1500 kbps、CRF 12、GOP 30；每图显示最多 50000 点 | 画质、尺寸、码率、GOP 只影响对应查看器派生缓存；线程、超时和缓存容量不改变内容身份 |
+| [gripper_tag_detection.yaml](operations/gripper_tag_detection.yaml) | 夹爪双标签全区域搜索间隔 30、候选上限 96、补检候选上限 16、每批补检 32 帧 | 检测缓存和使用夹爪测量的最终任务结果均重新计算；不重建场景地图 |
 
 覆盖顺序为 **项目 YAML → 同名 `.local.yaml` → 已支持的环境变量 → CLI 显式值**。目前运行参数的环境覆盖为 `UMI_OPENCV_THREADS`，只覆盖场景 OpenCV；CLI 的 `--workers` 覆盖标定自动 worker 预算，但仍受 `--cores` 与当前 CPU affinity 限制。`--jobs` 控制同时处理的任务数；仅 `jobs=1` 且满足双手 CPU 预算时并行处理两手。查看器的 `--host` / `--port` 覆盖 YAML，`--port 0` 仍表示自动分配。
 
 例如，只调整当前机器：
 
 ```yaml
-# config/runtime.local.yaml
+# config/operations/runtime.local.yaml
 calibration_max_workers: 12
 decode_threads: 2
 ```
 
 ```yaml
-# config/viewer.local.yaml
+# config/operations/viewer.local.yaml
 port: 9092
 preview_workers: 2
 preview_pending: 3  # 运行中 + 排队；不能小于 preview_workers
@@ -52,29 +90,30 @@ map_max_points: 20000
 
 `--show-config` 的 `operational`（场景/标定）或 `configuration`（查看器）列出全部生效值、每项来源和覆盖次序。场景/标定还显示实际可用 CPU 列表、自动/显式 worker 计算结果及双手并行资格；资格不代表输入一定包含两只手。启动终端打印精简资源摘要，JSON 结果仍单独输出到 stdout。
 
-配置在进程内冻结，派生 Python 子进程继承同一份快照；不会在每帧重新读取文件。`--config` 仍仅覆盖算法参数，不接收这三份操作配置。`UMI_VIEW_CACHE` 与 `XDG_CACHE_HOME` 保持原有缓存目录规则，查看器 `--show-config` 会给出实际缓存路径，以及旧地图转换所用的 `runtime.map_export_timeout_s` 和来源。降低地图显示点数只抽样浏览器响应，不改写已发布地图及其哈希；提高预算最多显示已发布的 50000 点。
+配置在进程内冻结，派生 Python 子进程继承同一份快照；不会在每帧重新读取文件。`--expert-config` 仍仅覆盖算法参数，不接收这三份操作配置。`UMI_VIEW_CACHE` 与 `XDG_CACHE_HOME` 保持原有缓存目录规则，查看器 `--show-config` 会给出实际缓存路径，以及旧地图转换所用的 `runtime.map_export_timeout_s` 和来源。降低地图显示点数只抽样浏览器响应，不改写已发布地图及其哈希；提高预算最多显示已发布的 50000 点。
 
 保留为代码常量的内容包括 X3 原片尺寸/镜头半幅/标定区域、实际标签字典与 ID、底层 ArUco 阈值组合、内部后台流水线的调度策略，以及页面轮询节奏。它们分别属于硬件约定、已验证检测实现或内部实现细节，暂不作为日常调参入口。诊断 ROI、对比度、采样频率和导出采样率继续由已有 CLI 控制；轨迹视频编码继续放在 `trajectory.yaml`。
 
 ## 算法参数归属
 
-标定和单段轨迹抽取共用 [software/config.py](../software/config.py) 加载配置。场景流程另由 `software/scene/management/inputs.py` 加载场景参数，并复用轨迹配置。数值默认值集中在下面的 YAML 中。
+标定和单段轨迹抽取共用 [software/configuration/loader.py](../software/configuration/loader.py) 加载配置。场景流程由 `software/scene/management/scene_inputs.py` 加载场景参数，并复用轨迹配置。数值默认值集中在下面的 YAML 中。
 
 | 内容 | 管理位置 | 生效范围 |
 |---|---|---|
-| [calibration.yaml](calibration.yaml) | 标定算法、板检测、D 静止窗口、验收规则 | `umi-calib run / verify / recheck` |
-| [trajectory.yaml](trajectory.yaml) | 视频尺寸与编码、ORB、重建重试、IMU 融合、ZUPT、质量提醒 | `umi-scene`、内部逐段轨迹引擎及标定 C 段验证 |
-| [scene_parameters.yaml](scene_parameters.yaml) | 场景尺度/放置验收、固定坐标融合、原片配对、宽度处理与录制检查规则 | `umi-scene`；操作和覆盖方式见 [场景指南](../docs/场景处理.md) |
+| [calibration.yaml](algorithms/calibration.yaml) | 标定算法、板检测、D 静止窗口、验收规则 | `umi-calib run / verify / recheck` |
+| [trajectory.yaml](algorithms/trajectory.yaml) | 视频尺寸与编码、ORB、重建重试、IMU 融合、ZUPT、质量提醒 | `umi-scene`、内部逐段轨迹引擎及标定 C 段验证 |
+| [scene_parameters.yaml](algorithms/scene_parameters.yaml) | 场景尺度/放置验收、固定坐标融合、原片配对、宽度处理与录制检查规则 | `umi-scene`；操作和覆盖方式见 [场景指南](../docs/场景处理.md) |
+| [environment_tags.yaml](algorithms/environment_tags.yaml) | 环境海报共享几何数值：角点噪声、观测筛选和重投影门槛 | `umi-scene`、独立轨迹、标定 C；不承载流程策略开关 |
 | 相机内参、实测相机–IMU 参数与时间差 | `registry/` 中的版本化相机标定；含实测/工厂内参来源 | 按序列号及套件的前后镜头来源选择当前参数，通过验收后统一执行 `install` |
 | TCP、宽度、遮手图 | 套件引用的测量文件；未自定义遮手图时用项目通用图 | 按 `kit.yaml` 选择，更新后重新运行 |
 | 输入/输出路径、CPU、并行数、保留中间文件 | 命令行请求 | 只影响执行方式，不写入算法配置 |
 | 原片规格、标定区域、像素变换与派生帧率规则 | `software/camera/x3/frame.py` | 相机图像规格；在结果中记录 |
 
-`config/scene_parameters.yaml` 保存算法默认参数；`scenes/<场景>/scene.yaml` 保存具体场景的地图模式和算法覆盖；建图原片位于各批次 `mapping/`，设备与地图快照保存在该批次 `.pipeline/manifest.yaml`。场景定义中的 `trajectory` 和 `parameters` 直接保存该场景的参数改动。
+`config/algorithms/scene_parameters.yaml` 保存算法默认参数；推荐由批次 `collection.yaml` 的 `scene` 保存具体布局、地图参考手、标签布局和描述，并用 `map_policy: latest_prior` 固定多地图选择规则；一次专家实验的算法覆盖写入 `--expert-config` 指定的文件。建图原片位于各批次 `mapping/`，设备与地图快照保存在该批次 `.pipeline/manifest.yaml`。
 
 每个批次只有一个 `.pipeline/`：`maps/` 保存本批次的地图版本、当前指针和建图缓存，`tasks/<任务>/` 保存任务原片清单、状态、缓存和运行历史。不同批次不自动选择彼此的地图；显式指定 `map_version` 时冻结该版本到本批次。
 
-人工任务选项写在外层 `<任务>/task.yaml`，无需编辑隐藏清单：
+人工任务选项推荐写在批次 `collection.yaml` 的 `tasks.<任务名>` 下，无需编辑隐藏清单：
 
 ```yaml
 instruction: 拿起盒子，放到托盘上
@@ -82,11 +121,13 @@ instruction: 拿起盒子，放到托盘上
 expected_arms: [right]
 ```
 
+任务人工选项只能写在批次根目录 `collection.yaml.tasks.<take>`；`.pipeline/tasks/<take>/episode.yaml` 由程序生成并冻结原片身份。
+
 同步配置见[训练数据指南](../docs/训练数据.md#2-核验双手同步)。修改任务选项后重跑即可复用兼容地图和阶段缓存；旧验收会失效。
 
 ## 第一次阅读从哪里开始
 
-三份算法 YAML 都按处理流程编号。编号和小节标题是注释，字段路径保持稳定：`trajectory.yaml` 的融合参数仍直接放在 `fusion` 下；`scene_parameters.yaml` 的参数仍平铺，没有额外的分组映射。
+算法 YAML 都按处理流程编号。编号和小节标题是注释；`scene_parameters.yaml` 按配对、预检、建图、放置、定位、融合、测量和诊断分组，加载器会将它们统一展开为内部 `SceneParameters`。
 
 | 当前要理解的流程 | 阅读顺序 |
 |---|---|
@@ -104,8 +145,8 @@ expected_arms: [right]
 |---|---|---|
 | 采样与计算预算 | `video.frame_step`、`fusion.node_stride`、`lm_iterations` | 改变观测密度或计算量；更多迭代不保证更准确 |
 | 优化权重与先验 | `position_sigma_m`、`acc_noise`、`scale_prior_sigma` | 改变观测与初值在求解中的影响；sigma 越小通常约束越强，不是误差上限 |
-| 筛选、验收与选轮 | `minimum_localization_fraction`、`checks`、`retry` | 决定保留哪些观测或结果；放宽门限不会修复观测，也不能证明精度提高 |
-| 提醒与诊断输出 | `notes`、`export_auxiliary_trajectories` | 提醒风险或保留排障证据，不增加轨迹约束 |
+| 筛选、验收与选轮 | `parameters.localization.minimum_fraction`、`checks`、`retry` | 决定保留哪些观测或结果；放宽门限不会修复观测，也不能证明精度提高 |
+| 提醒与诊断输出 | `trajectory.notes`、`parameters.diagnostics.export_auxiliary_trajectories` | 提醒风险或保留排障证据，不增加轨迹约束 |
 
 以字段注释为准：独立轨迹的 `retry.minimum_full_fraction` 和 `maximum_placements` 是选轮目标，耗尽次数仍可采用最佳有效结果；`maximum_scale_change_ratio` 是硬性保护，超限轮次不能采用。`factory` 内也分开列出了候选生成约束和 A 验收项。
 
@@ -120,32 +161,34 @@ expected_arms: [right]
 ./umi-scene run scenes/shelf/20261105_001 --dry-run
 ```
 
-调整默认配置会影响以后使用默认配置的运行。针对某个场景做实验时，直接在它的 `scene.yaml` 中写改动项：
+调整默认配置会影响以后使用默认配置的运行。针对某个场景做实验时，单独创建专家配置文件：
 
 ```yaml
+# experiment.yaml（仅供 --expert-config 使用）
 trajectory:
   video:
     size_px: 960
   fusion:
     node_stride: 3
-parameters:
-  minimum_localization_fraction: 0.6
+  parameters:
+    localization:
+      minimum_fraction: 0.6
 ```
 
-`trajectory` 覆盖本页的 `trajectory.yaml`，`parameters` 覆盖 `scene_parameters.yaml`；不需要额外的场景参数文件。场景配置版本默认 3，可省略 schema_version；历史 schema 2 的文件引用仍可读取，迁移时将原覆盖文件内容放入这两个映射。场景配置不再保存设备和建图录像，分别从 kit.yaml 和批次 mapping/ 读取。
+`trajectory` 覆盖本页的 `trajectory.yaml`，`parameters` 覆盖 `scene_parameters.yaml`，环境海报数值默认来自 `environment_tags.yaml`。这两个顶层映射只能出现在 `--expert-config` 文件中，不能写入 `collection.yaml`。场景配置只保存身份和业务语义；设备和建图录像分别从 kit.yaml 和批次 `mapping/` 读取。
 
-场景算法优先级为 **项目默认 YAML → scene.yaml 内联覆盖 → 本次 --config 文件**。临时实验不必修改场景声明：把上面的 `trajectory` / `parameters` 两部分保存为 `experiment.yaml`，然后运行：
+场景算法优先级为 **项目默认 YAML → 本次 `--expert-config` 文件**。临时实验不会修改场景声明：把上面的 `trajectory` / `parameters` 两部分保存为 `experiment.yaml`，然后运行：
 
 ```bash
-./umi-scene run scenes/test_shelf/20261109_002 --config experiment.yaml --show-config
-./umi-scene run scenes/test_shelf/20261109_002 --config experiment.yaml
+./umi-scene run scenes/test_shelf/20261109_002 --expert-config experiment.yaml --show-config
+./umi-scene run scenes/test_shelf/20261109_002 --expert-config experiment.yaml
 ```
 
-`build` 同样支持 `--config`。覆盖文件顶层只允许 `trajectory` 和 `parameters`；不接受设备、地图模式、标签布局或运行选项。最终参数与覆盖文件的路径、内容和哈希记录在新地图/任务结果中，不回写 scene / batch / kit 声明。数值相同的配置换路径或改注释不会触发重算；只改变任务参数时仍复用兼容地图。复用结果保留其原计算记录。
+`build` 同样支持 `--expert-config`。覆盖文件顶层只允许 `trajectory` 和 `parameters`；不接受设备、地图模式、标签布局或运行选项。最终参数与覆盖文件的路径、内容和哈希记录在新地图/任务结果中，不回写 scene / batch / kit 声明。数值相同的配置换路径或改注释不会触发重算；只改变任务参数时仍复用兼容地图。复用结果保留其原计算记录。
 
-验收和导出使用结果冻结的覆盖内容，临时 YAML 删除后仍能进行；当前原片、资产和基础配置变化仍会触发失效检查。仅有批次快照时，`--intrinsics-source` 只能核对已有版本的来源；切换版本需要 batch / kit 中对应的完整声明。带建图原片的旧快照也会按显式 `--config` 检查地图兼容性。
+验收和导出使用结果冻结的覆盖内容，临时 YAML 删除后仍能进行；当前原片、资产和基础配置变化仍会触发失效检查。内参来源由 `config/user.yaml` 和 kit 解析；带建图原片的快照也会按显式 `--expert-config` 检查地图兼容性。
 
-标定的 `--config` 文件直接使用 `board`、`imu`、`checks` 等 calibration 字段，不包一层 `calibration:`，也不使用场景的 `trajectory:` / `parameters:` 外层。C 的轨迹实验配置通过下面的 `trajectory_validation.config` 引用。`--jobs`、`--cores`、`--force` 等执行选项不写入算法 YAML。
+标定的 `--expert-config` 文件直接使用 `board`、`imu`、`checks` 等 calibration 字段，不包一层 `calibration:`，也不使用场景的 `trajectory:` / `parameters:` 外层。C 的轨迹实验配置通过下面的 `trajectory_validation.config` 引用。`--jobs`、`--cores`、`--force` 等执行选项不写入算法 YAML。
 
 ## 参数按流程组织
 
@@ -168,7 +211,7 @@ parameters:
 
 `calibration.board` 只配置板检测和评估算法。板布局由 [`hardware/calibration_targets/aprilgrid.json`](../hardware/calibration_targets/aprilgrid.json) 定义，打印文件见 [标定板说明](../hardware/calibration_targets/README.md)；本次实测标签边长通过 `--tag-size-mm` 输入，无需修改板配置。
 
-表中的 `calibration.*`、`trajectory.*` 表示所属文件；文件内直接写 `board:`、`fusion:` 等映射，参数使用两个空格缩进。字段名尽量带单位：`_m`、`_mm`、`_px`、`_s`、`_deg`、`_rad_s`。IMU 噪声使用现有 Basalt/GTSAM 连续时间模型的单位，四个 noise/RW 值不能为零。
+表中的 `calibration.*`、`trajectory.*` 表示所属文件；文件内直接写 `board:`、`fusion:` 等映射，参数使用两个空格缩进。场景专家覆盖使用 `parameters.pairing`、`parameters.mapping`、`parameters.placement`、`parameters.localization`、`parameters.fusion`、`parameters.measurements` 和 `parameters.diagnostics`。字段名尽量带单位：`_m`、`_mm`、`_px`、`_s`、`_deg`、`_rad_s`。IMU 噪声使用现有 Basalt/GTSAM 连续时间模型的单位，四个 noise/RW 值不能为零。
 
 C 段可以独立指定轨迹实验配置。在标定覆盖文件中写：
 
@@ -185,11 +228,11 @@ C 固定覆盖 `input.mode: handheld` 和 `environment_tags.tag_fusion_enabled: 
 
 ## 场景和单段轨迹的参数边界
 
-固定地图任务的双向定位由 `scene_parameters.yaml` 控制：`localization_bidirectional` 默认 true，仅在正向有缺帧时反向处理；`localization_minimum_overlap_frames` 默认 3，要求每个反向连续段有足够的共同观测；`localization_max_position_difference_m` 默认 0.03，`localization_max_rotation_difference_deg` 默认 3.0，约束全部共同观测的最大差异。位置差使用冻结的地图尺度转换成米，不拟合新的坐标变换。参数、地图尺度和引擎身份参与任务定位缓存校验。设置 false 可恢复仅正向定位，原有覆盖率和最长视觉中断门限均保留。
+固定地图任务的双向定位由 `scene_parameters.yaml` 控制：`localization.bidirectional` 默认 true，仅在正向有缺帧时反向处理；`localization.minimum_overlap_frames` 默认 3，要求每个反向连续段有足够的共同观测；`localization.max_position_difference_m` 默认 0.03，`localization.max_rotation_difference_deg` 默认 3.0，约束全部共同观测的最大差异。位置差使用冻结的地图尺度转换成米，不拟合新的坐标变换。参数、地图尺度和引擎身份参与任务定位缓存校验。设置 `localization.bidirectional: false` 可恢复仅正向定位，原有覆盖率和最长视觉中断门限均保留。
 
-`localization_reverse_context_s` 默认 1.0，必须为正数：优先处理覆盖全部缺口及两侧上下文的反向范围。范围达到全片的 75% 时直接执行全片；短范围未完全补齐时自动回退全片，仍以原始正向观测核验，不能用短范围恢复帧充当新的独立锚点。
+`localization.reverse_context_s` 默认 1.0，必须为正数：优先处理覆盖全部缺口及两侧上下文的反向范围。范围达到全片的 75% 时直接执行全片；短范围未完全补齐时自动回退全片，仍以原始正向观测核验，不能用短范围恢复帧充当新的独立锚点。
 
-标签中心三维间距使用 `tag_distance_max_reprojection_error_px`（默认 2.0 原始像素 RMS）和 `tag_distance_max_center_ambiguity_mm`（默认 2.0 mm），均为正数。平面两解的重投影误差相差 <=0.25 px、中心差超过后者时拒绝观测。标签实际边长属于套件资产，在 `gripper.tag_distance` 引用的 JSON 内分别填写 ID 0/1 的 `tag_sizes_mm`，不借用 AprilGrid 或 ORB 初始化标签尺寸。
+标签中心三维间距使用 `parameters.measurements.gripper_tags.max_reprojection_error_px`（默认 2.0 原始像素 RMS）和 `parameters.measurements.gripper_tags.max_center_ambiguity_mm`（默认 2.0 mm），均为正数。平面两解的重投影误差相差 <=0.25 px、中心差超过后者时拒绝观测。标签实际边长属于套件资产，在 `gripper.tag_distance` 引用的 JSON 内分别填写 ID 0/1 的 `tag_sizes_mm`，不借用 AprilGrid 或 ORB 初始化标签尺寸。
 
 场景复用轨迹算法中的部分计算步骤，但场景地图的验收门限和固定坐标融合模型由 `scene_parameters.yaml` 管理。下面按实际生效位置列出，不能只根据相似字段名选择要修改的文件。
 
@@ -201,7 +244,7 @@ C 固定覆盖 `input.mode: handheld` 和 `environment_tags.tag_fusion_enabled: 
 | 场景任务：IMU 噪声、bias 随机游走、初始 bias、速度/bias 先验、LM 迭代和 ZUPT | 复用 `trajectory.fusion` 中对应字段及 `trajectory.zupt` |
 | 内部单段轨迹及工作镜头标定 C | 使用 `trajectory.fusion` 自己的链/分段、尺度/放置和视觉噪声参数；不读取场景门限 |
 
-这里的 `scene.*` 表示 `scene_parameters.yaml`，不是文件中的额外嵌套层。场景建图的内容指纹记录场景门限及实际复用的轨迹参数，单独修改被场景覆盖的轨迹门限不要求重新建图。
+这里的 `scene.*` 表示 `scene_parameters.yaml` 的规范化参数。场景建图的内容指纹记录场景门限及实际复用的轨迹参数，单独修改被场景覆盖的轨迹门限不要求重新建图。
 
 标定 B 的 `calibration.imu` 与轨迹/场景融合的 `trajectory.fusion` 噪声先验分别传给 Basalt 和 GTSAM，允许独立调节；当前相同的默认值不表示二者会自动同步。D 静止诊断与融合的重力参考也分别生效。`retry.minimum_full_fraction` 控制重试，`notes.minimum_full_fraction` 只控制提醒；D 静止筛选与 ZUPT 同样各有用途。
 
@@ -217,13 +260,13 @@ C 固定覆盖 `input.mode: handheld` 和 `environment_tags.tag_fusion_enabled: 
 
 ## 夹爪宽度处理参数
 
-config/scene_parameters.yaml 管理宽度的处理策略，可在 scene.yaml 的 parameters 中直接覆盖。测量 JSON 只保存 anchors、verified 等实测信息。
+`config/algorithms/scene_parameters.yaml` 管理宽度的处理策略；需要实验性调整时，在 `--expert-config` 的 `parameters` 下覆盖。测量 JSON 只保存 anchors、verified 等实测信息。
 
 | 参数 | 默认值 | 作用 |
 |---|---|---|
-| gripper_width_max_gap_s | 0.2 | 宽度缺口两端最大间隔，秒；0 表示不填补 |
-| gripper_width_closed_threshold_mm | 3.0 | 闭合判定阈值，毫米；非负且小于该手标定最大开口 |
-| gripper_width_diagnostics | false | 输出原片逐帧诊断 CSV |
+| `parameters.measurements.gripper_width.max_gap_s` | 0.2 | 宽度缺口两端最大间隔，秒；0 表示不填补 |
+| `parameters.measurements.gripper_width.closed_threshold_mm` | 3.0 | 闭合判定阈值，毫米；非负且小于该手标定最大开口 |
+| `parameters.diagnostics.gripper_width` | false | 输出原片逐帧诊断 CSV |
 
 这些参数参与任务结果身份，不参与建图身份。原片检测缓存仅由原片内容和检测器决定；测量、阈值和输出时间轴变化会复用检测。宽度报告统一保存在 episode.json，格式见[训练数据](../docs/训练数据.md#夹爪宽度标定与接入)。
 
@@ -231,11 +274,11 @@ config/scene_parameters.yaml 管理宽度的处理策略，可在 scene.yaml 的
 
 `trajectory.retry.maximum_scale_change_ratio` 控制重建的尺度发散保护：每个有位置约束的分段比较融合后尺度与自身初始化，使用 `max(后/前, 前/后)`，不同地图之间不直接比较。默认上限为 2 倍，超限轮次重试且不得选中，全部轮次不合格则失败。它不修改融合解，也不放宽 `calibration.checks`；当前上限是粗粒度保护，尚需多录像检验。C 的运行记录保存每轮视觉、对齐和尺度诊断，验收前保留子进程工作数据。
 
-YAML 使用 1.2 规则，开关写 `true` / `false`，空覆盖写 `{}`；重复字段会报错。未知字段、类型错误、NaN/Inf、无效枚举、非正噪声/计数、越界比例、倒置的 WARN/FAIL 阈值都会在清理旧输出和执行算法之前报错。配置结构版本为 `schema_version: 1`。
+YAML 使用 1.2 规则，开关写 `true` / `false`，空覆盖写 `{}`；重复字段会报错。未知字段、类型错误、NaN/Inf、无效枚举、非正噪声/计数、越界比例、倒置的 WARN/FAIL 阈值都会在清理旧输出和执行算法之前报错。场景参数文件使用 `schema_version: 2`，标定和轨迹算法文件继续使用各自声明的 schema 版本。
 
 ## 视频处理参数
 
-`config/trajectory.yaml` 的 `video:` 统一配置 INSV → 镜头视频的处理。默认仍为：**3840×1920 原片 → 工作/环境镜头的已标定 1440×1440 区域 → 720×720 H.264 视频，每两帧取一帧**。在 scene.yaml 的 trajectory.video 中覆盖时也使用相同字段。
+`config/algorithms/trajectory.yaml` 的 `video:` 统一配置 INSV → 镜头视频的处理。默认仍为：**3840×1920 原片 → 工作/环境镜头的已标定 1440×1440 区域 → 720×720 H.264 视频，每两帧取一帧**。实验性覆盖写在 `--expert-config` 的 `trajectory.video` 下。
 
 ```yaml
 video:
@@ -281,7 +324,7 @@ ORB 引擎要求 `Camera.fps` 为整数，因此自动使用四舍五入且至�
 ## 结果里记录什么
 
 - 标定：`run/record.json` 的 `computation` 保存计算配置，`evaluation` 保存验收配置。
-- 场景任务：统一保存在任务 `episode.json`；`inputs.trajectory_parameters.video` 保存视频参数，`arm_results.<手>.frame_geometry` 保存实际画面几何，`inputs` 保存处理身份与参数快照。旧结果继续支持各手 `details/run_settings.json`。
+- 场景任务：统一保存在任务 `episode.json`；`inputs.trajectory_parameters.video` 保存视频参数，`arm_results.<手>.frame_geometry` 保存实际画面几何，`inputs` 保存处理身份与参数快照。
 - 内部逐段轨迹：`details/run_settings.json` 的 `parameters`、`frame_geometry`，以及摘要中的运行指纹。
 - TXT 报告：算法配置 ID、验收/提醒 ID、相对默认值的覆盖项和完整记录路径。
 
@@ -296,7 +339,7 @@ ORB 引擎要求 `Camera.fps` 为整数，因此自动使用四舍五入且至�
 **标定**：`run` 仍按原规则保护已有输出，需要重算时显式 `--force`。只有验收规则变化时，可以单独重新验收：
 
 ```bash
-./umi-calib recheck recordings/calibration/IAQEB26097M4CP/20261022/front/calibration_result --config /tmp/umi-calib-checks.yaml
+./umi-calib recheck recordings/calibration/IAQEB26097M4CP/20261022/front/calibration_result --expert-config /tmp/umi-calib-checks.yaml
 ```
 
 这里的覆盖文件需自行准备。`recheck` 校验算法设置与原运行一致，仅修改验收项、结论和报告，保存完整先前验收及配置历史。若原运行用了算法覆盖，重验时需包含相同的算法覆盖。不支持的记录格式、缺少完整原始指标或未完成的执行不能重验；拒绝时保留原报告，需先完成计算。验收使用原始指标，`recheck` 不启用设备标定。
@@ -312,37 +355,53 @@ Basalt/ORB/OpenCV/GTSAM 内部尚未暴露的参数，通过当前引擎内容/�
 
 ## 运行解释器
 
-项目入口优先使用 `UMI_PY`；视频工具可由 `UMI_PY_TOOLS` 单独指定。旧安装生成的 `KIWI_PY`、`KIWI_PY_TOOLS` 在 `software/environment.py` 中兼容，同用途的新变量优先。已有 `.deps/env.sh` 无需为此重新安装。新安装生成 `UMI_PY`。这些变量选择解释器，不覆盖算法参数。
+项目入口优先使用 `UMI_PY`；视频工具可由 `UMI_PY_TOOLS` 单独指定。已有 `.deps/env.sh` 无需为此重新安装。新安装生成 `UMI_PY`。这些变量选择解释器，不覆盖算法参数。
 
-标定运行记录使用 schema 3，和 YAML 的 `schema_version: 1`、资产清单 schema 3 分别管理。`checks.minimum_board_extent_m` 不足使验收为 INCOMPLETE。D 的 `checks.gravity_residual_m_s2` 只影响 WARN，工具始终以 REPORT_ONLY 测量，因此只改该阈值可直接 recheck。
+标定运行记录使用 schema 3，和 YAML 的 `schema_version`、资产清单 schema 3 分别管理。`checks.minimum_board_extent_m` 不足使验收为 INCOMPLETE。D 的 `checks.gravity_residual_m_s2` 只影响 WARN，工具始终以 REPORT_ONLY 测量，因此只改该阈值可直接 recheck。
 
 标定配置的 `factory` 负责工厂来源的转换和独立 A 验证：转换 RMS/P99 与原片射线一致性属于候选生成约束；`minimum_holdout_frames`、`holdout_warn_rms_px` 属于可通过 `umi-calib recheck` 重新判定的 A 证据/提醒规则。后两项不会改变已生成的参数，缺 A 证据不能安装。
 
-算法参数类型位于 [`software/parameters.py`](../software/parameters.py)；覆盖合并、校验和快照由 [`software/config.py`](../software/config.py) 管理。规范 JSON、文件、源代码及引擎身份统一由 [`software/provenance.py`](../software/provenance.py) 计算，修改结构时保留序列化字段和单位。
+算法参数类型位于 [`software/configuration/parameter_models.py`](../software/configuration/parameter_models.py)；覆盖合并、校验和快照由 [`software/configuration/loader.py`](../software/configuration/loader.py) 管理。规范 JSON、文件、源代码及引擎身份统一由 [`software/infrastructure/provenance.py`](../software/infrastructure/provenance.py) 计算，修改结构时保留序列化字段和单位。
 
 ## 维护布局的约定
 
 新增参数放在实际消费它的流程小节，注释说明作用、单位、特殊值和调大/调小的影响；共享参数注明哪些模式使用、哪些模式另有配置。多个字段共同作用时，在相邻位置说明关系，避免让读者只凭字段名猜测。
 
-分区使用注释，不为展示分组新增 YAML 层级。修改字段路径需要同时考虑类型模型、覆盖文件、校验、结果快照和内容指纹；纯粹调整顺序与注释则应保持解析后的字段、类型、数值以及配置指纹不变。场景参数的类型与校验分别位于 `software/scene/models.py` 和 `software/scene/management/inputs.py`。
+分区使用注释，不为展示分组新增 YAML 层级。修改字段路径需要同时考虑类型模型、覆盖文件、校验、结果快照和内容指纹；纯粹调整顺序与注释则应保持解析后的字段、类型、数值以及配置指纹不变。场景参数的类型与校验分别位于 `software/scene/models.py` 和 `software/scene/parameter_schema.py`。
 
 
 ### 环境海报参与任务融合
 
-在 `scene.yaml` 顶层添加 `tags: {layout: ../../hardware/calibration_targets/environment_poster.json}`（路径相对 scene.yaml）。仅声明布局时运行检测与位姿诊断，轨迹保持原值；在 `parameters` 内设置 `tag_fusion_enabled: true` 才加入角点因子，使用套件绑定的正式 rear 参数，未绑定时尝试上述工厂兜底；兜底不代表 rear 已独立验收。
+在批次 `collection.yaml` 的 `scene.tags` 中声明环境标签布局和用途开关（路径相对场景根目录）。用户配置统一使用 `enabled` 字段：
+
+```yaml
+scene:
+  tags:
+    enabled: false   # 环境标签总开关
+    layout: ../../hardware/calibration_targets/environment_poster.json
+    mapping:
+      enabled: false # 建图阶段检测并记录海报诊断
+      scale:
+        enabled: false # 应用海报尺度修正
+    fusion:
+      enabled: false # 任务阶段加入视觉–IMU 融合
+      method: staged  # staged：先地图+IMU再海报；joint：初值图直接联合地图、IMU和海报
+```
+
+`enabled` 是总开关；`mapping.enabled`、`mapping.scale.enabled` 和 `fusion.enabled` 是三个独立用途，`fusion.method` 可选 `staged` 或 `joint`，任一用途开启时必须同时开启总开关；尺度修正还要求 `mapping.enabled`。布局可以先声明而全部开关保持关闭，此时不检测环境标签。旧批次中的扁平 `detection/scale/fusion` 仍可读取，但新文件不再使用它们。
 
 `tag_minimum_side_px` / `tag_minimum_frames` 筛选像素尺寸和独立观测时刻；`tag_corner_sigma_px` / `tag_sigma_per_radius_px` 设置角点噪声；`tag_huber` 是每 ID 四角点共同的鲁棒核阈值；`tag_maximum_reprojection_rms_px` 检查初始化和最终像素残差。默认值只经合成数据验证。无足够观测保留基线，启用后的几何冲突明确失败。每段录像独立求解海报位姿，海报在录像内须静止、平整；任务融合本身不会改变已发布地图尺度；建图修正由下述开关单独控制。打印尺寸状态仍为 PDF 设计值，需核对成品尺寸后评估实拍效果。
 
 
 ### 建图海报尺度
 
-同样需要 `tags.layout`。`tag_mapping_enabled: true` 开启建图尺度诊断；`tag_mapping_scale_enabled: true` 才将海报与 IMU 尺度在对数域按方差合并，且要求前者同时开启、建图设备可解析正式 rear 参数或工厂兜底。默认两项关闭。修正后固定新尺度重求重力与零偏，并复核整图惯性残差；地图形状保持原值。
+`tags.mapping.scale.enabled: true` 开启建图阶段的标签尺度诊断和尺度融合；它要求 `tags.enabled: true` 与 `tags.mapping.enabled: true`，并要求建图设备可解析正式 rear 参数或工厂兜底。修正后固定新尺度重求重力与零偏，并复核整图惯性残差；地图形状保持原值。
 
 `tag_mapping_minimum_frames`、`tag_mapping_minimum_motion_m`、`tag_mapping_minimum_board_extent_m` 和 `tag_mapping_maximum_relative_std` 控制海报尺度可用性；`tag_mapping_imu_std_floor` / `tag_mapping_tag_std_floor` 为相对标准差地板；`tag_mapping_compatibility_sigma` 与 `tag_mapping_maximum_scale_difference` 同时约束两尺度差异。这些默认值仍待实拍调参。几何不足保持原尺度；有效来源冲突或修正后惯性复核失败时拒绝发布新地图。布局、角点和诊断随地图版本保存；海报位姿不跨录像使用。
 
 
 ### 独立模式与回退的海报配置
 
-独立命令用 `--tag-layout` 指定布局，可用 `--rear-calibration rear_<hash>` 绑定正式 rear，省略时尝试工厂兜底，在 `trajectory.yaml` 的 `environment_tags` 中设置 `tag_fusion_enabled`、`tag_minimum_side_px`、`tag_minimum_frames`、`tag_corner_sigma_px`、`tag_sigma_per_radius_px`、`tag_huber` 和 `tag_maximum_reprojection_rms_px`。默认只诊断，启用需要本设备可用的 rear 参数（正式标定或工厂兜底）；这些参数不自动开启标定 C 验证或共享场景的标签约束。
+独立命令用 `--tag-layout` 指定布局，可用 `--rear-calibration rear_<hash>` 绑定正式 rear，省略时尝试工厂兜底；环境海报数值默认来自 `environment_tags.yaml`，需要实验时通过 `--expert-config` 的 `trajectory.environment_tags` 覆盖。默认只诊断，启用需要本设备可用的 rear 参数（正式标定或工厂兜底）；这些参数不自动开启标定 C 验证或共享场景的标签约束。
 
-共享任务仍使用 `scene_parameters.yaml` 的扁平 `tag_*` 配置；单手质量失败后的独立回退显式将其映射到独立图的 `environment_tags`，沿用冻结资产，避免回退时悄悄丢掉已启用的海报约束。独立图联合优化分段尺度，不使用共享地图建图阶段的两个 `tag_mapping_*enabled` 开关。
+共享任务的日常开关使用 `collection.yaml.scene.tags.enabled`、`mapping.enabled`、`mapping.scale.enabled` 和 `fusion.enabled`；`fusion.method` 可选 `staged` 或 `joint`，默认 `staged`。`staged` 先完成地图+IMU 基线，再进行海报优化；`joint` 用视觉种子直接构建包含地图先验、IMU 和海报角点的最终图。环境海报几何数值统一来自 `environment_tags.yaml`，场景专属建图参数仍由 `scene_parameters.yaml` 提供。单手质量失败后的独立回退显式沿用同一套标签策略，避免回退时悄悄丢掉已启用的海报约束。

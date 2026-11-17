@@ -16,24 +16,24 @@ import time
 import traceback
 import uuid
 
-from ruamel.yaml.error import YAMLError
 
-from software import provenance as artifact_identity
-from software.console import Console
+from software.infrastructure import provenance as artifact_identity
+from software.infrastructure.terminal import Console
 from software.scene import layout, scheduling
 from software.scene.configuration import SceneOverrides
 from software.scene.layout import locked
 from software.scene.management import camera_assets
-from software.scene.management import cleanup, episodes, inputs
-from software.scene.models import Episode
-from software.scene.models import EpisodeRunResult
-from software.scene.result_io import scene_reference
-from software.scene.pipeline import map_lifecycle, reconstruction, fallback, reporting
-from software.scene.spatial.fusion import SceneFusionQualityError
-from software.scene.pipeline import recording_checks, results, measurements, cache_audit
+from software.scene.management import cleanup, episodes
+from software.scene.asset_identity import validate_assets
+from software.scene.management.episode_inputs import episode_inputs, read_episode
+from software.infrastructure.file_store import read_yaml, write_json
+from software.scene.models import Episode, EpisodeRunResult
+from software.scene.result_io import is_local_scene, scene_reference
+from software.scene.pipeline import map_lifecycle, reconstruction, reporting, episode_execution
+from software.scene.pipeline import episode_publication, recording_checks, trajectory_writers, cache_audit
 from software.scene.pipeline import synchronization
-from software.storage import publish_link, write_json
 from software.vision import runtime
+from software.scene.errors import ITEM_FAILURES
 
 
 console = Console('场景')
@@ -46,7 +46,7 @@ def record_failure(episode: Episode, directory: Path, reason: str, *, identity: 
     target = directory.parent / ('failed-' + key)
     write_json(directory / 'error.json', dict(status=status, reason=reason,
         traceback=''.join(traceback.format_exception(error)) if error else '', input_hash=artifact_identity.canonical_hash(identity),
-        inputs=identity, batch=inputs.read_yaml(episode.session.path)))
+        inputs=identity, batch=read_yaml(episode.session.path)))
     if target.exists():
         shutil.rmtree(directory)
     else:
@@ -55,42 +55,178 @@ def record_failure(episode: Episode, directory: Path, reason: str, *, identity: 
     cleanup.after_task(episode.root)
 
 
+def _resolve_episode_synchronization(episode, *, force: bool, dry_run: bool):
+    """Resolve audio-auto offsets and return the cache audit status."""
+    if episode.synchronization.get('method') != 'audio_auto':
+        if len(episode.expected_arms) > 1:
+            console.write(
+                f'双手同步：{episode.synchronization["method"]}；'
+                f'offsets_s={synchronization.format_offsets(episode.synchronization["offsets_s"])}',
+                recording=episode.root.name,
+            )
+        return episode, 'not_applicable', '任务未启用 audio_auto'
+
+    sync_path = layout.metadata(episode.root, 'sync.json')
+    console.write('双手音频同步：检查 sync.json', recording=episode.root.name)
+    try:
+        ready = synchronization.load_ready_audio_sync(sync_path, episode.recordings)
+    except ValueError:
+        if not force:
+            raise
+        ready = None
+    if ready is not None:
+        console.write(
+            f'双手音频同步：复用；offsets_s={synchronization.format_offsets(ready["offsets_s"])}',
+            recording=episode.root.name,
+            state='复用',
+        )
+        return (replace(episode, synchronization=ready), 'reused',
+                'sync.json 指纹匹配且 specialist session-clock 偏移已 ready')
+
+    console.write('双手音频同步：开始估计', recording=episode.root.name)
+    synced = synchronization.estimate_audio_sync(
+        episode.recordings, output=None if dry_run else sync_path, force=force)
+    resolved = dict(
+        method='audio_auto', mode='audio_auto',
+        offsets_s=synced['offsets_s'], confirmed=True,
+        note=synced.get('note', 'specialist session-clock sync'),
+        raw_audio_offset_s=synced.get('raw_audio_offset_s'),
+        peak_ratio=synced.get('peak_ratio'),
+        peak_value=synced.get('peak_value'),
+        video_offset_status=synced.get('video_offset_status'),
+        fine_method=synced.get('fine_method'),
+        sync_record_sha256=(artifact_identity.file_hash(sync_path)
+                            if sync_path.is_file() else None),
+    )
+    peak_ratio = synced.get('peak_ratio')
+    peak_text = f'{float(peak_ratio):.2f}' if peak_ratio is not None else 'n/a'
+    console.write(
+        f'双手音频同步：完成；offsets_s={synchronization.format_offsets(resolved["offsets_s"])}；'
+        f'峰值比={peak_text}',
+        recording=episode.root.name,
+        state='完成',
+    )
+    return replace(episode, synchronization=resolved), 'computed', '首次生成 specialist session-clock 偏移并写入 sync.json'
+
+
+def _reuse_existing_result(episode: Episode, input_identity: dict, *, force: bool) -> dict | None:
+    """Return a valid published result with the same input identity, if one exists."""
+    if force:
+        return None
+    local_output = episode.root / 'local_results'
+    candidates = [(episode.output, 'umi_scene_episode', 'skipped')]
+    if len(episode.expected_arms) == 1:
+        candidates.append((local_output, 'umi_local_episode', 'local_skipped'))
+        if layout.read_state(episode.root).get('attempt', {}).get('status') in ('local_ok', 'local_skipped'):
+            candidates.reverse()
+    for output, kind, status in candidates:
+        previous = output / 'episode.json'
+        if not previous.is_file():
+            continue
+        old = json.loads(previous.read_text())
+        if old.get('kind') != kind or old.get('inputs') != input_identity:
+            continue
+        reference = scene_reference(old)
+        validate_assets(output.resolve(), old['assets'])
+        episodes.record_attempt(episode, status, output.resolve())
+        cleanup.after_task(episode.root)
+        quality_path = output / 'run_report.json'
+        quality = None
+        if quality_path.is_file():
+            quality = json.loads(quality_path.read_text()).get('quality')
+        return dict(status=status, output=str(output), frame_id=reference['frame_id'],
+                    synchronization=old.get('synchronization'),
+                    **({'quality': quality} if quality is not None else {}))
+    return None
+
+
+def _requested_map_version(episode: Episode, command_map_version: str | None) -> str | None:
+    """Resolve one task's map declaration against the command-line override."""
+    requested = command_map_version
+    selection = episode.map_selection or {}
+    explicit = selection.get('selection') in {
+        'explicit_task', 'explicit_override', 'explicit_epoch'
+    }
+    if episode.map_version is not None and explicit:
+        if requested is not None and requested != episode.map_version:
+            raise ValueError('命令行 map_version 与 collection.yaml.tasks 的 map_version 不一致')
+        requested = episode.map_version
+    return requested
+
+
+def _reject_preflight(episode: Episode, check_report, *, dry_run: bool):
+    """原片预检未通过：留下预检现场（非预览）后拒绝该任务。"""
+    message = '原片检查未通过：' + '；'.join(check_report.reasons)
+    if not dry_run:
+        with locked(episode.root):
+            run_dir = layout.metadata(episode.root, 'runs') / uuid.uuid4().hex
+            write_json(run_dir / 'preflight_report.json', asdict(check_report))
+            record_failure(episode, run_dir, message, status='rejected_preflight',
+                identity=dict(episode=artifact_identity.file_hash(episode.path),
+                              session=artifact_identity.file_hash(episode.session.path),
+                              preflight=asdict(check_report)))
+    raise recording_checks.RecordingCheckError(message)
+
+
+def _require_map_views(scene, cameras: dict, map_manifest: dict) -> None:
+    for arm in cameras:
+        for lens in scene.localization_lenses(arm):
+            if scene.role(arm, lens) not in map_manifest['maps']:
+                raise ValueError(f'场景地图缺少 {arm}/{lens} 可定位的视角')
+
+
+def _task_cache_events(episode: Episode, cameras: dict, sync_status: str, sync_reason: str) -> cache_audit.CacheAudit:
+    """记录本次任务不经阶段缓存、但需要审计来源的输入：同步、标定和 TCP。"""
+    events = cache_audit.CacheAudit()
+    events.record(stage='synchronization', key=artifact_identity.canonical_hash(episode.synchronization),
+                  path=str(layout.metadata(episode.root, 'sync.json')),
+                  status=sync_status, reason=sync_reason)
+    for arm, camera in cameras.items():
+        events.record(stage='calibration',
+                      key=artifact_identity.canonical_hash(camera_assets.camera_identity(camera)),
+                      path=str(camera.selected.assets.camera_json), status='reused',
+                      reason='registry 不可变标定版本已固定到本次任务快照')
+        if 'tcp' not in camera.files:
+            events.record(stage='tcp', key=f'{arm}:none', path='', status='not_applicable',
+                          reason='套件未配置 TCP 几何资产')
+    return events
+
+
+def _freeze_tag_layout(episode: Episode, run_dir: Path, input_identity: dict) -> Episode:
+    """把海报布局复制进运行目录并核对身份；之后的计算只引用这份副本。"""
+    if episode.scene.tag_layout is None:
+        return episode
+    from software.vision.tag_board import load as load_tag_board
+    frozen_layout = run_dir / 'devices/environment_poster.json'
+    frozen_layout.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(episode.scene.tag_layout, frozen_layout)
+    if load_tag_board(frozen_layout).asset_hash != input_identity['environment_tags']['asset_hash']:
+        raise ValueError('海报布局在预检后发生变化，请重新运行')
+    return replace(episode, session=replace(episode.session,
+                   scene=replace(episode.scene, tag_layout=frozen_layout)))
+
+
 def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recordings=True,
                 map_version: str | None = None, overrides: SceneOverrides | None = None,
-                parallel_arms: bool = True, batch_map: map_lifecycle.BatchMap | None = None) -> EpisodeRunResult:
+                parallel_arms: bool = True, batch_map: map_lifecycle.BatchMap | None = None,
+                map_epoch: str | None = None, _preloaded_episode: Episode | None = None) -> EpisodeRunResult:
     """预检并固定地图 → 准备录像 → 各手独立求解 → 核对输入 → 发布结果。
 
     锁、缓存复用、失败记录与成功指针由本层管理；算法与结果写入分别
     交给 reconstruct_arm_in_scene() 和 results。失败保留已有成功入口。
     """
-    episode = inputs.read_episode(path, overrides=overrides)
-    if episode.synchronization.get('method') == 'audio_auto':
-        sync_path = layout.metadata(episode.root, 'sync.json')
-        raw = synchronization.estimate_audio_sync(episode.recordings,
-            output=None if dry_run else sync_path)
-        raise ValueError(
-            f'audio_auto 已生成原始音频偏移 {raw["raw_audio_offset_s"]}，'
-            f'记录在 {sync_path}；完成 recording-mode A/V 修正后才能运行轨迹抽取')
+    episode = (_preloaded_episode if _preloaded_episode is not None else
+               read_episode(path, overrides=overrides, map_epoch_override=map_epoch))
+    episode, sync_cache_status, sync_cache_reason = _resolve_episode_synchronization(
+        episode, force=force, dry_run=dry_run)
     video_offsets_s = episode.offsets()
     name = episode.root.name
-    requested_map_version = map_version
-    if episode.map_version is not None:
-        if requested_map_version is not None and requested_map_version != episode.map_version:
-            raise ValueError('命令行 map_version 与 task.yaml 的 map_version 不一致')
-        requested_map_version = episode.map_version
+    requested_map_version = _requested_map_version(episode, map_version)
 
     # --- 阶段 0: 原片录像预检 (Preflight Check) ---
     check_report = recording_checks.check_episode(episode) if check_recordings else None
     if check_report is not None and not check_report.passed:
-        message = '原片检查未通过：' + '；'.join(check_report.reasons)
-        if not dry_run:
-            with locked(episode.root):
-                run_dir = layout.metadata(episode.root, 'runs') / uuid.uuid4().hex
-                write_json(run_dir / 'preflight_report.json', asdict(check_report))
-                record_failure(episode, run_dir, message, status='rejected_preflight',
-                    identity=dict(episode=artifact_identity.file_hash(episode.path), session=artifact_identity.file_hash(episode.session.path),
-                                  preflight=asdict(check_report)))
-        raise recording_checks.RecordingCheckError(message)
+        _reject_preflight(episode, check_report, dry_run=dry_run)
 
     with nullcontext() if dry_run else locked(episode.root):
         # --- 阶段 1: 地图版本绑定与输入指纹比对 (Bind Map & Verify Cache) ---
@@ -106,35 +242,18 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
         )
         cameras = camera_assets.select_cameras(episode.recordings, device_scene, episode.serials)
         map_lifecycle.validate_map_calibrations(cameras, map_manifest)
-        input_identity = inputs.episode_inputs(episode, cameras, map_manifest)
+        input_identity = episode_inputs(episode, cameras, map_manifest)
 
         if dry_run:
-            return dict(status='planned', inputs=input_identity, output=str(episode.output))
+            return dict(status='planned', inputs=input_identity, output=str(episode.output),
+                        synchronization=episode.synchronization)
 
         runtime.validate_engines(dict(os.environ))
-        for arm in cameras:
-            for lens in scene.localization_lenses(arm):
-                if scene.role(arm, lens) not in map_manifest['maps']:
-                    raise ValueError(f'场景地图缺少 {arm}/{lens} 可定位的视角')
+        _require_map_views(scene, cameras, map_manifest)
 
-        # 检查是否可秒级复用已有结果
-        local_output = episode.root / 'local_results'
-        candidates = [(episode.output, 'umi_scene_episode', 'skipped')]
-        if len(episode.expected_arms) == 1:
-            candidates.append((local_output, 'umi_local_episode', 'local_skipped'))
-            if layout.read_state(episode.root).get('attempt', {}).get('status') in ('local_ok', 'local_skipped'):
-                candidates.reverse()
-        for output, kind, status in candidates if not force else ():
-            previous = output / 'episode.json'
-            if not previous.is_file():
-                continue
-            old = json.loads(previous.read_text())
-            if old.get('kind') == kind and old['inputs'] == input_identity:
-                reference = scene_reference(old)
-                inputs.validate_assets(output.resolve(), old['assets'])
-                episodes.record_attempt(episode, status, output.resolve())
-                cleanup.after_task(episode.root)
-                return dict(status=status, output=str(output), frame_id=reference['frame_id'])
+        reused = _reuse_existing_result(episode, input_identity, force=force)
+        if reused is not None:
+            return reused
 
         # --- 阶段 2: 独立计算隔离运行 (Isolated Run) ---
         run_dir = layout.metadata(episode.root, 'runs') / uuid.uuid4().hex
@@ -142,28 +261,19 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
         # 解码产物从缓存链接到运行期工作目录，结束即删；发布结果只保留自包含文件。
         work_dir = layout.metadata(episode.root, 'work') / run_dir.name
         started, started_at = time.monotonic(), time.time()
-        cache_events = cache_audit.CacheAudit()
+        cache_events = _task_cache_events(episode, cameras, sync_cache_status, sync_cache_reason)
 
         try:
             if check_report is not None:
                 write_json(run_dir / 'preflight_report.json', asdict(check_report))
 
             cameras = camera_assets.snapshot_cameras(cameras, run_dir)
-            if scene.tag_layout is not None:
-                from software.vision.tag_board import load as load_tag_board
-                frozen_layout = run_dir / 'devices/environment_poster.json'
-                frozen_layout.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(scene.tag_layout, frozen_layout)
-                if load_tag_board(frozen_layout).asset_hash != input_identity['environment_tags']['asset_hash']:
-                    raise ValueError('海报布局在预检后发生变化，请重新运行')
-                episode = replace(episode, session=replace(episode.session,
-                    scene=replace(episode.scene, tag_layout=frozen_layout)))
+            episode = _freeze_tag_layout(episode, run_dir, input_identity)
             # Step 1: 准备录像与公共时间区间
             console.write('准备任务录像与时间轴', recording=name, step=(1, 3))
             allocation = scheduling.arm_cores(tuple(episode.recordings), cores, parallel=parallel_arms)
             prepared_recordings = reconstruction.prepare_episode_recordings(episode, cameras, video_offsets_s,
                 work_dir=work_dir, cores=cores, arm_cores=allocation, cache_audit=cache_events)
-            display_map_path = map_dir / 'map.json'
             scene_metadata = dict(
                 name=scene.name,
                 version=map_manifest['version'],
@@ -171,101 +281,49 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
                 session=episode.session.name,
             )
 
-            # Step 2: 各手独立求解轨迹与夹爪宽度
-            tracks = {}
-            widths = {}
-            distances = {}
-            def run_arm(arm):
-                recording = prepared_recordings[arm]
-                arm_scene = scene_metadata
-                measurements.prepare_detections(episode, arm, recording)
-                console.write(f'{arm}：已有场景地图定位 → 固定场景系融合', recording=name, step=(2, 3))
-                try:
-                    fusion_result = reconstruction.reconstruct_arm_in_scene(
-                        episode, arm, recording, map_dir, map_manifest,
-                        diagnostic_dir=run_dir / arm, cache_audit=cache_events)
-                except SceneFusionQualityError as shared_error:
-                    if len(episode.expected_arms) != 1 or len(prepared_recordings) != 1:
-                        raise
-                    console.write(f'{arm}：{shared_error}；自动回退到独立局部轨迹', recording=name, state='回退')
-                    write_json(run_dir / 'fallback.json', dict(shared_failure=str(shared_error), shared_scene=scene_metadata))
-                    try:
-                        fusion_result = fallback.reconstruct(episode, arm, recording, run_dir / arm / 'independent')
-                    except Exception as local_error:
-                        raise ValueError(f'共享场景失败：{shared_error}；独立回退失败：{local_error}') from local_error
-                    arm_scene = dict(name=scene.name, session=episode.session.name, version=None,
-                        frame_id=f'local:{run_dir.name}:{arm}', scope='local',
-                        fallback=dict(shared_failure=str(shared_error), shared_frame_id=map_manifest['frame_id']))
-                measured = measurements.measure(episode, arm, recording, video_offsets_s[arm], run_dir / arm)
-                track = results.write_arm(
-                    arm, recording, fusion_result, video_offsets_s[arm], arm_scene, run_dir / arm,
-                    width=measured.width, tag_distance=measured.tag_distance,
-                    export_auxiliary_trajectories=scene.parameters.export_auxiliary_trajectories,
-                    localization_lenses=('front',) if arm_scene.get('scope') == 'local' else scene.localization_lenses(arm),
-                )
-                return arm, track, measured, arm_scene
-
-            if allocation:
-                console.write('左右手并行重建', recording=name, step=(2, 3))
-                with cf.ThreadPoolExecutor(max_workers=len(prepared_recordings), thread_name_prefix='scene-arm') as executor:
-                    arm_results = list(executor.map(run_arm, prepared_recordings))
-            else:
-                arm_results = [run_arm(arm) for arm in prepared_recordings]
-            for arm, track, measured, arm_scene in arm_results:
-                tracks[arm] = track
-                if measured.width is not None:
-                    widths[arm] = measured.width.report
-                if measured.tag_distance is not None:
-                    distances[arm] = measured.tag_distance.report
-                if arm_scene.get('scope') == 'local':
-                    scene_metadata, display_map_path = arm_scene, None
+            # Step 2: 各手独立求解轨迹、夹爪测量与共享海报融合
+            arm_execution = episode_execution.execute_arm_tracks(
+                episode=episode,
+                prepared_recordings=prepared_recordings,
+                video_offsets_s=video_offsets_s,
+                map_dir=map_dir,
+                map_manifest=map_manifest,
+                run_dir=run_dir,
+                scene=scene,
+                name=name,
+                allocation=allocation,
+                cache_events=cache_events,
+                scene_metadata=scene_metadata,
+                console=console,
+            )
+            tracks = arm_execution.tracks
+            scene_metadata = arm_execution.scene_metadata
+            # 局部回退结果不引用共享地图。
+            display_map_path = None if is_local_scene(scene_metadata) else map_dir / 'map.json'
 
             # Step 3: 双手对齐、防篡改校验与原子发布
             console.write('写入轨迹、报告并发布结果', recording=name, step=(3, 3))
-            common_interval_s = results.write_bimanual(tracks, run_dir)
+            common_interval_s = trajectory_writers.write_bimanual_trajectory(tracks, run_dir)
 
-            # 安装资产已冻结；结束时只核对原片身份，不重新解析配置和校验标定。
-            current_recordings = {arm: inputs.recording_identity(video) for arm, video in episode.recordings.items()}
-            if input_identity['recordings'] != current_recordings:
-                raise ValueError('任务期间录像发生变化，拒绝发布')
-            epoch_plan = layout.metadata(episode.session.root, 'map_epochs.yaml')
-            current_epoch_plan = artifact_identity.file_hash(epoch_plan) if epoch_plan.is_file() else None
-            if input_identity.get('map_epoch_plan_sha256') != current_epoch_plan:
-                raise ValueError('地图 epoch 清单在任务期间发生变化，拒绝发布')
-            if batch_map is not None:
-                batch_map.validate(check_configuration=False)
-
-            reporting.write_run_report(
-                run_dir,
+            publication = episode_publication.publish_episode(
                 episode=episode,
-                map_manifest=map_manifest,
                 input_identity=input_identity,
+                map_manifest=map_manifest,
                 tracks=tracks,
                 video_offsets_s=video_offsets_s,
                 scene_record=scene_metadata,
-                gripper_width=widths,
-                tag_distance=distances,
-                cache_audit=cache_events,
-            )
-            results.write_episode(
-                episode,
-                tracks,
-                run_dir,
-                common_interval_s=common_interval_s,
-                scene_record=scene_metadata,
-                input_identity=input_identity,
-                video_offsets_s=video_offsets_s,
-                elapsed_s=time.monotonic() - started,
+                run_dir=run_dir,
                 map_path=display_map_path,
-                gripper_width=widths,
-                tag_distance=distances,
+                widths=arm_execution.widths,
+                distances=arm_execution.distances,
+                cache_events=cache_events,
+                common_interval_s=common_interval_s,
+                elapsed_s=time.monotonic() - started,
+                started_at=started_at,
+                batch_map=batch_map,
             )
-            # 原子更新结果指针：创建 results 软链接指向本次 run_dir
-            is_local = scene_metadata.get('scope') == 'local'
-            output = local_output if is_local else episode.output
-            publish_link(run_dir, output)
-            episodes.record_attempt(episode, 'local_ok' if is_local else 'ok', run_dir)
-            cleanup.after_task(episode.root, used_since=started_at)
+            is_local = publication.is_local
+            output = publication.output
         except Exception as error:
             record_failure(episode, run_dir, str(error), identity=input_identity, error=error)
             raise
@@ -279,10 +337,14 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             output=str(output),
             frame_id=scene_metadata['frame_id'],
             common_interval_s=common_interval_s,
+            synchronization=episode.synchronization,
+            quality=reporting.quality_summary(tracks, scene_metadata, common_interval_s),
         )
 
 
-def run_episodes(paths: list[Path], *, jobs: int = 1, force=False, cores='', dry_run=False, check_recordings=True, map_version: str | None = None, overrides: SceneOverrides | None = None) -> list[dict]:
+def run_episodes(paths: list[Path], *, jobs: int = 1, force=False, cores='', dry_run=False, check_recordings=True,
+                 map_version: str | None = None, map_epoch: str | None = None,
+                 overrides: SceneOverrides | None = None) -> list[dict]:
     """批量处理任务；支持多任务并发调度与幂等断点续跑 (resume)。"""
     if jobs < 1:
         raise ValueError('--jobs 必须 >= 1')
@@ -292,40 +354,45 @@ def run_episodes(paths: list[Path], *, jobs: int = 1, force=False, cores='', dry
 
     console.write(f'共 {len(resolved)} 个任务；并发数 {jobs}')
     batch_maps = {}
+    valid = []
+    rejected = []
     for path in resolved:
-        batch_root = layout.owner(path).parent
-        task_map_version = inputs.read_episode(path, verify=False).map_version
-        requested = map_version
-        if task_map_version is not None:
-            if requested is not None and requested != task_map_version:
-                raise ValueError('命令行 map_version 与 task.yaml 的 map_version 不一致')
-            requested = task_map_version
-        batch_maps.setdefault((batch_root, requested), map_lifecycle.BatchMap(requested, dry_run, cores=cores))
+        try:
+            task_episode = read_episode(path, overrides=overrides, map_epoch_override=map_epoch)
+            batch_root = layout.owner(path).parent
+            requested = _requested_map_version(task_episode, map_version)
+            batch_maps.setdefault((batch_root, requested), map_lifecycle.BatchMap(requested, dry_run, cores=cores))
+            valid.append((path, requested, task_episode))
+        except ITEM_FAILURES as error:
+            console.write(f'{path.parent.name}：{error}', recording=path.parent.name, state='失败')
+            rejected.append(dict(path=str(path), name=path.parent.name, status='failed', error=str(error)))
 
-    def _execute(path: Path) -> dict:
+    def _execute(path: Path, requested: str | None, task_episode: Episode) -> dict:
         name = layout.owner(path).name
         try:
             episode_result = run_episode(path, force=force, cores=cores, dry_run=dry_run, check_recordings=check_recordings, map_version=map_version,
+                                         map_epoch=map_epoch,
                                          overrides=overrides, parallel_arms=jobs == 1,
-                                         batch_map=batch_maps[(layout.owner(path).parent,
-                                                               inputs.read_episode(path, verify=False).map_version or map_version)])
+                                         batch_map=batch_maps[(layout.owner(path).parent, requested)],
+                                         _preloaded_episode=task_episode)
             return dict(path=str(path), name=name, **episode_result)
-        except (OSError, ValueError, KeyError, TypeError, RuntimeError, YAMLError) as error:
+        except ITEM_FAILURES as error:
             if not dry_run and path.is_file():
                 try:
-                    episode = inputs.read_episode(path, verify=False)
                     state = layout.read_state(layout.owner(path))
                     if state.get('attempt', {}).get('status') not in ('rejected_preflight', 'failed'):
-                        episodes.record_attempt(episode, 'failed', None, reason=str(error))
-                except (OSError, ValueError, KeyError, RuntimeError, YAMLError):
+                        episodes.record_attempt(task_episode, 'failed', None, reason=str(error))
+                except ITEM_FAILURES:
                     pass
             console.write(f'{name}：{error}', recording=name, state='失败')
             return dict(path=str(path), name=name, status='failed', error=str(error))
 
-    if jobs == 1 or len(resolved) == 1:
-        return [_execute(p) for p in resolved]
+    if jobs == 1 or len(valid) == 1:
+        return rejected + [_execute(path, requested, task_episode)
+                           for path, requested, task_episode in valid]
     with cf.ThreadPoolExecutor(max_workers=jobs) as executor:
-        return list(executor.map(_execute, resolved))
+        return rejected + list(executor.map(
+            lambda item: _execute(*item), valid))
 
 
 def format_batch_summary(summaries: list[dict]) -> str:
@@ -335,30 +402,56 @@ def format_batch_summary(summaries: list[dict]) -> str:
         '=' * 80,
         f'场景任务批量处理结果 (共 {len(summaries)} 个任务)',
         '=' * 80,
-        f'{"任务名":<15} {"状态":<10} {"有效时长":<15} {"详细信息/输出目录"}',
+        f'{"任务名":<15} {"状态":<10} {"有效时长":<15} {"质量摘要/输出目录"}',
         '-' * 80,
     ]
     ok_count = 0
     skipped_count = 0
     failed_count = 0
     local_count = 0
+
+    def interval_text(summary_item: dict) -> str:
+        interval = summary_item.get('common_interval_s')
+        return f'{interval[1] - interval[0]:.2f}s' if interval else '-'
+
+    def with_quality(summary_item: dict, tail: str) -> str:
+        quality = quality_text(summary_item)
+        return f'{quality}；{tail}' if quality else tail
+
+    def quality_text(summary_item: dict) -> str:
+        quality = summary_item.get('quality')
+        if not quality:
+            return ''
+        parts = []
+        for arm, arm_quality in quality.get('arms', {}).items():
+            visual_fraction = arm_quality.get('visual_constraint_fraction')
+            longest_gap = arm_quality.get('longest_visual_gap_s')
+            fields = [arm]
+            if visual_fraction is not None:
+                fields.append(f'视觉 {visual_fraction:.1%}')
+            if longest_gap is not None:
+                fields.append(f'最长无视觉 {longest_gap:.2f}s')
+            poster_status = arm_quality.get('environment_poster_status')
+            if poster_status:
+                fields.append(f'海报 {poster_status}')
+            parts.append('，'.join(fields))
+        return '；'.join(parts)
+
     for summary_item in summaries:
         name = summary_item.get('name', Path(summary_item['path']).parent.name)
         status = summary_item.get('status', 'unknown').upper()
         if status == 'OK':
             ok_count += 1
-            interval = summary_item.get('common_interval_s')
-            duration_str = f'{interval[1] - interval[0]:.2f}s' if interval else '-'
-            detail = summary_item.get('output', '')
+            duration_str = interval_text(summary_item)
+            detail = with_quality(summary_item, summary_item.get('output', ''))
         elif status in ('LOCAL_OK', 'LOCAL_SKIPPED'):
             local_count += 1
-            interval = summary_item.get('common_interval_s')
-            duration_str = f'{interval[1] - interval[0]:.2f}s' if interval else '-'
-            detail = f'独立局部坐标（不与场景共享）: {summary_item.get("output", "")}'
+            duration_str = interval_text(summary_item)
+            detail = with_quality(summary_item, f'独立局部坐标（不与场景共享）: {summary_item.get("output", "")}')
         elif status == 'SKIPPED':
             skipped_count += 1
             duration_str = '-'
-            detail = f'已完成复用: {summary_item.get("output", "")}'
+            detail = with_quality(summary_item, f'已完成复用: {summary_item.get("output", "")}')
         elif status == 'PLANNED':
             duration_str = '-'
             detail = '预检完成 (dry-run)'

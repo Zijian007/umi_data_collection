@@ -11,12 +11,13 @@ import av
 import cv2
 import numpy as np
 
-from software import config
+from software.configuration import loader as config
 from software.scene.cli import build_parser
-from software.scene.management.inputs import load_scene_parameters
+from software.scene.management.scene_inputs import load_scene_parameters
 from software.scene.spatial import fusion
 from software.scene.spatial.geometry import VisualObservations
-from software.vision import tags
+from software.vision import environment_tags
+tags = environment_tags
 
 
 def poster(markers):
@@ -44,7 +45,7 @@ def recording(path, rear, *, front=None, count=4):
 class PosterDetectionTests(unittest.TestCase):
     def test_detects_ids_beyond_gripper_dictionary_and_rejects_duplicates(self):
         image = poster([(12, 400, 400), (88, 700, 400), (25, 1000, 400), (25, 1300, 400), (99, 400, 800)])
-        found, duplicate, unknown = tags.PosterDetector(tags.DetectionSettings(border_bits=1)).detect(image)
+        found, duplicate, unknown = environment_tags.PosterDetector(environment_tags.DetectionSettings(border_bits=1)).detect(image)
         self.assertEqual([item[0] for item in found], [12, 88])
         self.assertEqual((duplicate, unknown), (1, 1))
         np.testing.assert_allclose(found[0][1], [[400, 400], [519, 400], [519, 519], [400, 519]], atol=1)
@@ -53,15 +54,15 @@ class PosterDetectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             video = Path(temporary) / 'packed.mkv'
             recording(video, poster([(12, 400, 400), (88, 100, 100)]), front=poster([(55, 700, 700)]))
-            settings = tags.DetectionSettings(border_bits=1)
-            result = tags.detect(video, settings)
+            settings = environment_tags.DetectionSettings(border_bits=1)
+            result = environment_tags.detect(video, settings)
             np.testing.assert_array_equal(result.source_frame_indices, [0, 2])
             self.assertGreater(result.video_times_s[0], 1.)
             self.assertEqual(result.tag_ids.tolist(), [12, 88, 12, 88])
             self.assertEqual(result.usable.tolist(), [True, False, True, False])
             np.testing.assert_allclose(result.corners_px[0, 0], [160, 160], atol=1)
             np.testing.assert_allclose(result.imu_times_s(12000000), result.video_times_s[result.sample_indices]+.012)
-            report = tags.report(result, settings)
+            report = environment_tags.report(result, settings)
             self.assertEqual(report['sampled_frames'], 2)
             self.assertEqual(report['at_least_one_usable']['frames'], 2)
             self.assertEqual(report['usable_ids_per_frame'], [1, 1])
@@ -72,46 +73,62 @@ class PosterDetectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             video = Path(temporary) / 'blank.mkv'
             recording(video, poster([]))
-            settings = tags.DetectionSettings(border_bits=1)
-            result = tags.detect(video, settings)
+            settings = environment_tags.DetectionSettings(border_bits=1)
+            result = environment_tags.detect(video, settings)
             self.assertEqual(result.corners_px.shape, (0, 4, 2))
-            report = tags.report(result, settings)
+            report = environment_tags.report(result, settings)
             self.assertEqual(report['at_least_one_usable']['fraction'], 0)
             self.assertIsNone(report['outside_calibrated_crop_fraction'])
             self.assertAlmostEqual(report['at_least_one_usable']['maximum_sampled_gap_s'],
-                result.video_times_s[-1]-result.video_times_s[0]+2/tags.FPS_SRC)
+                result.video_times_s[-1]-result.video_times_s[0]+2/environment_tags.FPS_SRC)
 
     def test_cache_checks_source_parameters_and_payload_hash(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             video, output = root / 'source.mkv', root / 'detection'
             recording(video, poster([(88, 500, 500)]))
-            settings = tags.DetectionSettings(border_bits=1)
-            first = tags.cached(video, output, settings)
+            settings = environment_tags.DetectionSettings(border_bits=1)
+            first = environment_tags.cached(video, output, settings)
             self.assertFalse(first['cache_reused'])
             with patch.object(tags, 'detect', side_effect=AssertionError('cache must avoid decoding')):
-                second = tags.cached(video, output, settings)
+                second = environment_tags.cached(video, output, settings)
             self.assertTrue(second['cache_reused'])
             self.assertEqual(first['identity_hash'], second['identity_hash'])
-            changed = tags.cached(video, output, replace(settings, minimum_side_px=200.))
+            changed = environment_tags.cached(video, output, replace(settings, minimum_side_px=200.))
             self.assertFalse(changed['cache_reused'])
             self.assertEqual(changed['at_least_one_usable']['fraction'], 0.)
             (output / 'observations.npz').write_bytes(b'broken')
-            self.assertFalse(tags.cached(video, output, replace(settings, minimum_side_px=200.))['cache_reused'])
+            self.assertFalse(environment_tags.cached(video, output, replace(settings, minimum_side_px=200.))['cache_reused'])
             recording(video, poster([(12, 500, 500)]))
-            latest = tags.cached(video, output, settings)
+            latest = environment_tags.cached(video, output, settings)
             self.assertFalse(latest['cache_reused'])
             self.assertNotEqual(first['identity_hash'], latest['identity_hash'])
             self.assertEqual(latest['per_id']['88']['usable']['frames'], 0)
 
     def test_rejects_bad_settings_and_requires_border_on_cli(self):
         for kwargs in (dict(border_bits=0), dict(border_bits=True), dict(border_bits=1, frame_step=0),
+                       dict(border_bits=1, full_frame_every=0),
                        dict(border_bits=1, minimum_side_px=float('nan')), dict(border_bits=1, ids=(100,)),
                        dict(border_bits=1, ids=(12, 12)), dict(border_bits=1, dictionary='DICT_4X4_50')):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
-                tags.DetectionSettings(**kwargs)
+                environment_tags.DetectionSettings(**kwargs)
         args = build_parser().parse_args(['detect-tags', 'raw.insv', '--out', '/tmp/poster', '--border-bits', '1'])
         self.assertEqual((args.frame_step, args.border_bits), (2, 1))
+
+    def test_follow_window_is_periodically_reset_by_full_frame_scan(self):
+        settings = environment_tags.DetectionSettings(border_bits=1, full_frame_every=2)
+        consumer = environment_tags.PosterDetection(settings)
+        polygon = np.array([[400., 400.], [519., 400.], [519., 519.], [400., 519.]])
+        with patch.object(consumer.detector, 'detect', side_effect=[([(12, polygon)], 0, 0)] * 3) as detect:
+            for index in range(3):
+                frame = type('Frame', (), {
+                    'pts': index, 'time_base': 1,
+                    'to_ndarray': lambda self, format: np.zeros((1920, 1920), np.uint8),
+                })()
+                consumer.consume(index * 2, frame)
+        self.assertEqual(detect.call_args_list[0].kwargs['roi'], None)
+        self.assertIsNotNone(detect.call_args_list[1].kwargs['roi'])
+        self.assertEqual(detect.call_args_list[2].kwargs['roi'], None)
 
 
 class FusionBeforeTagsTests(unittest.TestCase):

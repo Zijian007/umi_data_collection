@@ -5,7 +5,7 @@ from typing import NotRequired, TypedDict
 
 from ruamel.yaml.error import YAMLError
 
-from software import registry
+from software.camera import registry
 from software.camera import calibration_source
 
 
@@ -94,11 +94,27 @@ def device_inventory() -> list[DeviceStatus]:
                 registry.get(serial, calibration=version, intrinsics_source=source, allow_retired=True)
         except READ_ERRORS as error:
             device_status['errors'].append(str(error))
-        front = device_record.get('calibration_sources') or {None: device_record.get('calibration')}
-        for lens, selected in (('front', front), ('rear', device_record.get('rear_calibration_sources', {}))):
-            for source, identity in selected.items():
+        # Inventory reports every immutable version, while the index only stores
+        # one current pointer per lens/source.  A damaged historical asset is
+        # visible in the report but does not alter the current kit selection.
+        for lens in ('front', 'rear'):
+            current = device_record.get('calibration_sources' if lens == 'front' else 'rear_calibration_sources', {})
+            current_by_version = {identity: source for source, identity in current.items()}
+            for source, directory in registry._iter_version_directories(serial, lens):
+                identity = directory.name
+                version = lens_version(serial, identity, lens,
+                                       expected_source=current_by_version.get(identity, source))
+                version['default'] = (lens == 'front' and device_status['calibration_owner'] == serial
+                                      and identity == device_status['front_default'])
+                device_status['versions'].append(version)
+            # Keep a clear failure row when an index pointer references a
+            # missing version, instead of silently hiding the broken binding.
+            seen = {row['version'] for row in device_status['versions'] if row['lens'] == lens}
+            for source, identity in current.items():
+                if identity in seen:
+                    continue
                 version = lens_version(serial, identity, lens, expected_source=source)
-                version['default'] = lens == 'front' and device_status['calibration_owner'] == serial and identity == device_status['front_default']
+                version['default'] = lens == 'front' and identity == device_status['front_default']
                 device_status['versions'].append(version)
         device_status['ok'] = not device_status['errors'] and all(version['ok'] for version in device_status['versions'])
         device_statuses.append(device_status)
@@ -106,7 +122,7 @@ def device_inventory() -> list[DeviceStatus]:
 
 
 def kit_status(name: str, *, intrinsics_source: str | None = None, require_rear: bool = False) -> KitStatus:
-    from software.scene.management.inputs import read_kit
+    from software.scene.management.kit_inputs import read_kit
 
     kit_report = dict(id=name, arms={}, errors=[], require_rear=require_rear,
                   scope='camera_calibration_bindings', combination_validation='not_checked')
@@ -144,7 +160,7 @@ def kit_status(name: str, *, intrinsics_source: str | None = None, require_rear:
 def report(*, kit: str | None = None, intrinsics_source: str | None = None,
            require_rear: bool = False) -> InventoryReport:
     if (require_rear or intrinsics_source) and kit is None:
-        raise ValueError('--require-rear / --intrinsics-source 需要同时指定 --kit')
+        raise ValueError('来源选择或 --require-rear 需要同时指定 --kit')
     inventory_report: InventoryReport = dict(schema_version=1, devices=device_inventory(), ok=False)
     if kit is not None:
         inventory_report['kit'] = kit_status(kit, intrinsics_source=intrinsics_source, require_rear=require_rear)

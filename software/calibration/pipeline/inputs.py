@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 import math
 
-from software import registry
+from software.camera import registry
 from software.calibration.models import CalibrationInputs, CalibrationRequest, SegmentPaths, VerificationInputs, VerificationRequest
 from software.calibration.pipeline import runtime
 

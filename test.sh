@@ -17,13 +17,28 @@ done
 RUN_CHECKS=0
 RUN_UNIT=1
 RUN_JS=1
+RUN_QUICK=0
 TEST_TARGETS=()
+
+# The quick profile contains pure numerical, schema, timing and cache-contract
+# tests.  End-to-end calibration, mapping, scene and viewer workflows remain
+# in the full suite.
+QUICK_MODULES=(
+    test_audio_sync test_batch_configuration test_calibration_bag
+    test_calibration_directory test_calibration_evidence test_calibration_metrics
+    test_camera_frame test_camera_geometry test_compact_manifests
+    test_coordinate_contracts test_effective_configuration test_file_hash
+    test_fusion test_fusion_quality test_fusion_stability test_map_epochs
+    test_operational_settings test_relocalization test_shared_alignment
+    test_tag_board test_user_config test_video_parameters test_vision_boundaries
+)
 
 usage() {
     echo "用法: $0 [选项] | $0 --unit [测试模块或用例 ...]"
     echo ""
     echo "选项:"
     echo "  --unit       运行 Python 测试；可指定 test_rear_assets 或 模块.类.方法"
+    echo "  --quick      运行快速内循环测试；端到端建图/任务回归仍由 --unit 覆盖"
     echo "  --js         仅运行查看器前端测试 (node --test)"
     echo "  --checks     仅运行 CLI 运行时健康检查 (umi-calib check, umi-scene check, KB4 C++ 回归)"
     echo "  --all        运行全部（单元测试 + 前端测试 + CLI 检查 + KB4 C++ 回归）"
@@ -40,6 +55,12 @@ fi
 if [ $# -gt 0 ]; then
     case "$1" in
         --unit) RUN_JS=0; shift; TEST_TARGETS=("$@") ;;
+        --quick) RUN_JS=0; RUN_QUICK=1; shift
+            if [ $# -gt 0 ]; then
+                echo "--quick 不接受额外测试目标；请使用 --unit 指定目标" >&2
+                exit 2
+            fi
+            ;;
         --js) RUN_UNIT=0 ;;
         --checks) RUN_UNIT=0; RUN_JS=0; RUN_CHECKS=1 ;;
         --all) RUN_CHECKS=1 ;;
@@ -62,11 +83,20 @@ echo "=================================================="
 # 1. 主单元测试
 if [ "$RUN_UNIT" -eq 1 ]; then
     echo ""
-    echo "[单元] 运行主单元测试套件 (tests/)..."
-    if [ ${#TEST_TARGETS[@]} -gt 0 ]; then
+    if [ "$RUN_QUICK" -eq 1 ]; then
+        echo "[快速] 运行快速内循环测试 (tests/，跳过端到端工作流)..."
+        QUICK_TARGETS=()
+        for module in "${QUICK_MODULES[@]}"; do
+            QUICK_TARGETS+=("tests/${module}.py")
+        done
+        PYTHONPATH="$ROOT_DIR/tests${PYTHONPATH:+:$PYTHONPATH}" \
+            "$TEST_PY" -m unittest -q "${QUICK_TARGETS[@]}"
+    elif [ ${#TEST_TARGETS[@]} -gt 0 ]; then
+        echo "[单元] 运行指定测试..."
         PYTHONPATH="$ROOT_DIR/tests${PYTHONPATH:+:$PYTHONPATH}" \
             "$TEST_PY" -m unittest -q "${TEST_TARGETS[@]}"
     else
+        echo "[单元] 运行主单元测试套件 (tests/)..."
         "$TEST_PY" -m unittest discover -s tests -q
     fi
     echo "✓ 主单元测试通过"

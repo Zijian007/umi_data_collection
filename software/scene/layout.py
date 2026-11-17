@@ -4,12 +4,25 @@ from pathlib import Path
 import json
 import os
 
-from software import provenance
-from software.storage import locked as storage_lock, read_yaml
+from software.infrastructure import provenance
+from software.infrastructure.file_store import locked as storage_lock, read_yaml
 
 
 INTERNAL = '.pipeline'
-TASK_FIELDS = {'instruction', 'expected_arms', 'synchronization', 'map_version'}
+TASK_FIELDS = {'instruction', 'expected_arms', 'synchronization', 'map_version', 'map_epoch'}
+LEGACY_USER_FILES = {'scene.yaml', 'batch.yaml', 'task.yaml'}
+
+
+def reject_legacy_user_file(path: Path) -> None:
+    """Reject the retired split YAML entry points.
+
+    Historical result directories remain readable through their frozen
+    ``.pipeline`` manifests, but a new run must never silently migrate a
+    split scene/batch/task declaration.
+    """
+    if path.name in LEGACY_USER_FILES:
+        raise ValueError(
+            f'{path.name} 已移除；请将场景、批次和任务配置合并到批次根目录的 collection.yaml')
 
 
 def owner(path: Path) -> Path:
@@ -19,15 +32,14 @@ def owner(path: Path) -> Path:
         return parent.parent.parent.parent / parent.name
     if parent.name == INTERNAL and path.name != 'episode.yaml':
         return parent.parent
-    if path.name in {'batch.yaml', 'scene.yaml', 'task.yaml'}:
+    if path.name == 'collection.yaml':
         return parent
+    reject_legacy_user_file(path)
     raise ValueError(f'不支持旧清单位置，请使用批次 {INTERNAL}/ 下的清单：{path}')
 
 
 def is_batch(root: Path) -> bool:
-    return any(path.is_file() for path in (
-        root / 'batch.yaml', root / INTERNAL / 'manifest.yaml',
-    ))
+    return any(path.is_file() for path in (root / 'collection.yaml', root / INTERNAL / 'manifest.yaml'))
 
 
 def internal(root: Path) -> Path:
@@ -58,14 +70,27 @@ def locked(root: Path, *, blocking: bool = False):
 
 
 def task_configuration(root: Path) -> dict:
-    """人工选项只从任务目录的 task.yaml 读取。"""
-    path = root / 'task.yaml'
-    if path.is_file():
-        declaration = read_yaml(path)
-        if declaration.keys() - TASK_FIELDS:
-            raise ValueError('task.yaml 只允许 instruction、expected_arms、synchronization 和 map_version')
-        return declaration
-    return {}
+    """读取任务选项；collection.yaml 是新的单文件用户入口。"""
+    if (root / 'task.yaml').is_file():
+        reject_legacy_user_file(root / 'task.yaml')
+    batch = root
+    if batch.parent.name == 'tasks' and batch.parent.parent.name == INTERNAL:
+        batch = batch.parent.parent.parent
+    elif (batch.parent / 'collection.yaml').is_file():
+        # Raw task directories live directly under the batch root.
+        batch = batch.parent
+    collection = batch / 'collection.yaml'
+    if not collection.is_file():
+        return {}
+    tasks = read_yaml(collection).get('tasks', {})
+    if not isinstance(tasks, dict):
+        raise ValueError('collection.yaml 的 tasks 必须是配置表')
+    declaration = tasks.get(root.name, {})
+    if not isinstance(declaration, dict):
+        raise ValueError(f'collection.yaml 的 tasks.{root.name} 必须是配置表')
+    if declaration.keys() - TASK_FIELDS:
+        raise ValueError('collection.yaml 的任务只允许 instruction、expected_arms、synchronization、map_epoch 和 map_version')
+    return declaration
 
 
 def task_configuration_hash(root: Path) -> str:

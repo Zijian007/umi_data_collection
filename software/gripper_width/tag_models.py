@@ -1,4 +1,4 @@
-"""双标签测距的输入、质量策略和时间序列。"""
+"""夹爪双标签测距的输入、质量策略和时间序列。"""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ class TagPoseQuality:
     def __post_init__(self) -> None:
         for threshold in (self.max_reprojection_error_px, self.max_center_ambiguity_mm):
             if not np.isfinite(threshold) or threshold <= 0:
-                raise ValueError('标签测距质量门限必须为正')
+                raise ValueError('夹爪标签测距质量门限必须为正')
 
 
 @dataclass(frozen=True)
@@ -44,9 +44,9 @@ class TagDistanceRequest:
 
     def __post_init__(self) -> None:
         if not np.isfinite(self.min_valid_fraction) or not 0 < self.min_valid_fraction <= 1:
-            raise ValueError('标签中心距最低有效比例必须在 (0, 1] 内')
+            raise ValueError('夹爪标签中心距最低有效比例必须在 (0, 1] 内')
         if type(self.max_missing_frames) is not int or self.max_missing_frames < 0:
-            raise ValueError('标签中心距最大连续缺失帧数必须为非负整数')
+            raise ValueError('夹爪标签中心距最大连续缺失帧数必须为非负整数')
         validate_roi(self.roi_px)
 
 

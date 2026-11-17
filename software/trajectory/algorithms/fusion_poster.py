@@ -1,15 +1,31 @@
 """独立图的单板角点约束；复用 KB4 几何，保留分段地图尺度变量。"""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import gtsam
 import numpy as np
 from gtsam.symbol_shorthand import X
+from scipy.spatial.transform import Rotation
 
 from software.camera.geometry import imu_from_camera, resample_pose_series
 from software.vision.poster_pose import (camera_model, estimate_board, project_observations,
-                                        residual_and_jacobians, residual_metrics, PosterGeometryError)
+                                        residual_and_jacobians, residual_metrics, PosterGeometryError,
+                                        rotation_correction_jacobian)
 
 BOARD_KEY = gtsam.symbol('h', 0)  # l0 已被独立图的 rear 杆臂占用。
+REAR_SEAT_KEY = gtsam.symbol('s', 0)
+REAR_SEAT_PRIOR_SIGMA_RAD = 0.2
+
+
+def _rear_rotation_error(state, pose_key, base_ext, corners, observed, model):
+    body = state.atPose3(pose_key).matrix()
+    board = state.atPose3(BOARD_KEY).matrix()
+    correction = state.atRot3(REAR_SEAT_KEY).matrix()
+    ext = base_ext.copy()
+    ext[:3, :3] = correction @ base_ext[:3, :3]
+    residual, body_jac, board_jac, projection, in_body = residual_and_jacobians(
+        body, board, ext, corners, observed, model, return_projection=True)
+    seat_jac = rotation_correction_jacobian(correction, base_ext[:3, :3], in_body, projection)
+    return residual, body_jac, board_jac, seat_jac
 
 
 @dataclass(frozen=True)
@@ -55,6 +71,10 @@ class PosterContext:
 
     def add_factors(self, graph, values):
         values.insert(BOARD_KEY,gtsam.Pose3(self.board_pose))
+        values.insert(REAR_SEAT_KEY, gtsam.Rot3())
+        graph.add(gtsam.PriorFactorRot3(
+            REAR_SEAT_KEY, gtsam.Rot3(),
+            gtsam.noiseModel.Isotropic.Sigma(3, REAR_SEAT_PRIOR_SIGMA_RAD)))
         for key,points,pixels in zip(self.node_keys,self.points,self.pixels):
             radius = np.linalg.norm(pixels-[self.model.cx,self.model.cy],axis=1)
             sigma = np.hypot(self.parameters.tag_corner_sigma_px,
@@ -62,16 +82,18 @@ class PosterContext:
             noise = gtsam.noiseModel.Robust.Create(gtsam.noiseModel.mEstimator.Huber.Create(self.parameters.tag_huber),
                         gtsam.noiseModel.Diagonal.Sigmas(np.repeat(sigma,2)))
             def error(factor,state,jacobians,points=points,pixels=pixels):
-                residual,jbody,jboard = residual_and_jacobians(state.atPose3(factor.keys()[0]).matrix(),
-                    state.atPose3(BOARD_KEY).matrix(),self.camera_from_imu,points,pixels,self.model)
-                if jacobians is not None: jacobians[0],jacobians[1] = jbody,jboard
+                residual,jbody,jboard,jseat = _rear_rotation_error(
+                    state, factor.keys()[0], self.camera_from_imu, points, pixels, self.model)
+                if jacobians is not None: jacobians[0],jacobians[1],jacobians[2] = jbody,jboard,jseat
                 return residual
-            graph.add(gtsam.CustomFactor(noise,[X(key),BOARD_KEY],error))
+            graph.add(gtsam.CustomFactor(noise,[X(key),BOARD_KEY,REAR_SEAT_KEY],error))
 
     def measure(self, values, initial_error, final_error):
         board = values.atPose3(BOARD_KEY).matrix()
         bodies = np.array([values.atPose3(X(k)).matrix() for k in self.node_keys])
-        pixels,points = project_observations(board,bodies @ np.linalg.inv(self.camera_from_imu),self.points,self.model)
+        ext = self.camera_from_imu.copy()
+        ext[:3,:3] = values.atRot3(REAR_SEAT_KEY).matrix() @ ext[:3,:3]
+        pixels,points = project_observations(board,bodies @ np.linalg.inv(ext),self.points,self.model)
         metrics = residual_metrics(pixels, self.pixels,
                                    frame_ids=self.frame_ids, tag_ids=self.tag_ids)
         rms = metrics['rms_px']
@@ -79,10 +101,12 @@ class PosterContext:
                 or rms > self.parameters.tag_maximum_reprojection_rms_px or np.any(points[:,:,2] <= 0)):
             raise PosterGeometryError('独立海报融合未通过正深度、像素残差或优化下降检查')
         return dict(self.evidence, status='fused', final_reprojection_rms_px=rms,
-                    final_reprojection_metrics=metrics, T_world_board=board.tolist())
+                    final_reprojection_metrics=metrics, T_world_board=board.tolist(),
+                    rear_rotation_correction_deg=float(np.degrees(
+                        Rotation.from_matrix(values.atRot3(REAR_SEAT_KEY).matrix()).magnitude())))
 
 
-def prepare(inputs, baseline, parameters):
+def prepare(inputs, baseline, parameters, *, _allow_cull=True):
     tags = inputs.poster
     observations = tags.observations
     observations.validate()
@@ -120,6 +144,28 @@ def prepare(inputs, baseline, parameters):
         if getattr(error, 'metrics', None) is not None:
             rejected['reprojection_metrics'] = error.metrics
         return None, rejected
+    prediction, _ = project_observations(
+        pose, bodies @ np.linalg.inv(camera_from_imu), points, model)
+    errors = np.linalg.norm(prediction - pixels, axis=2)
+    sighting_rms = np.sqrt(np.mean(errors ** 2, axis=1))
+    cull_limit = max(3. * p.tag_corner_sigma_px, 2. * p.tag_maximum_reprojection_rms_px)
+    cull_mask = sighting_rms > cull_limit
+    if (_allow_cull and p.tag_fusion_enabled and np.any(cull_mask)
+            and len(np.unique(frame_ids[~cull_mask])) >= p.tag_minimum_frames):
+        usable = observations.usable.copy()
+        usable[selected[cull_mask]] = False
+        filtered = replace(inputs.poster, observations=replace(observations, usable=usable))
+        refined, refined_evidence = prepare(
+            replace(inputs, poster=filtered), baseline, parameters, _allow_cull=False)
+        refined_evidence = dict(refined_evidence,
+                                culled_observations=int(np.sum(cull_mask)),
+                                cull_threshold_px=float(cull_limit),
+                                pre_cull_reprojection_rms_px=float(rms),
+                                pre_cull_reprojection_metrics=metrics)
+        if refined is None:
+            return None, refined_evidence
+        return replace(refined, evidence=dict(refined.evidence,
+                       environment_poster=refined_evidence)), refined_evidence
     evidence.update(status='diagnostics_only', initial_reprojection_rms_px=rms,
                     initial_reprojection_metrics=metrics,
                     T_world_board_initial=pose.tolist(),

@@ -24,7 +24,6 @@ class SharedMapTests(unittest.TestCase):
         self.scene = self.root / 'lab'
         self.directory = self.scene / 'tasks/take/left'
         self.directory.mkdir(parents=True)
-        (self.scene / 'scene.yaml').write_text('name: lab\n')
         self.path = self.scene / '.pipeline/maps/versions/abcdef-12345678/map.json'
         self.path.parent.mkdir(parents=True)
         self.data = dict(kind='umi_map_view', schema_version=1, maps=[])
@@ -113,7 +112,8 @@ class MapExportTests(unittest.TestCase):
         locations.parent.mkdir()
         locations.write_text('frame_idx,t,ok,tx,ty,tz\n'+''.join(
             f'{i},{i*.1:.9f},1,{p[0]},{p[1]},{p[2]}\n' for i,p in enumerate(self.points)))
-        (self.output/'traj_camera.txt').write_text(''.join(
+        (self.output/'details').mkdir()
+        (self.output/'details/traj_camera.txt').write_text(''.join(
             f'{i*.1:.9f} {2*p[0]+1} {2*p[1]} {2*p[2]} 0 0 0 1\n' for i,p in enumerate(self.points)))
 
     def export(self):
@@ -182,7 +182,7 @@ class MapExportTests(unittest.TestCase):
     def test_prepared_map_loads_without_exporter_and_rejects_outside_symlink(self):
         data = self.export()
         prepared = self.output/'details/map.json'
-        prepared.parent.mkdir()
+        prepared.parent.mkdir(exist_ok=True)
         prepared.write_text(json.dumps(data))
         with patch.object(maps, '_convert') as convert:
             self.assertEqual(maps.load(self.output, {}), data)
@@ -198,7 +198,7 @@ class MapExportTests(unittest.TestCase):
         locations = self.attempt/'front/loc_m0/frames.csv'
         # 用明确的两张图构造合并表，另一张图的坐标不可参与拟合。
         locations.write_text('t,ok,tx,ty,tz,map\n0,1,1,2,3,m0\n0.1,1,4,5,6,m1\n')
-        source, target = map_data._correspondences(locations, self.output/'traj_camera.txt', 0)
+        source, target = map_data._correspondences(locations, self.output/'details/traj_camera.txt', 0)
         self.assertEqual(source, [[1., 2., 3.]])
         self.assertEqual(len(target), 1)
 

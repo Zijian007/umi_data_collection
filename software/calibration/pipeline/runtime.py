@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 from concurrent.futures import CancelledError
 from contextlib import contextmanager
@@ -13,14 +13,15 @@ import sys
 import time
 
 from software.calibration.models import RunPaths
-from software.console import Console
-from software.storage import locked
+from software.infrastructure.terminal import Console
+from software.infrastructure.file_store import locked
+from software.infrastructure.paths import PROJECT_ROOT, deps_root
 
 
 HERE = Path(__file__).resolve().parents[1]
 TOOLS = HERE / "tools"
-REPO = HERE.parents[1]
-DEPS = Path(os.environ.get("UMI_DEPS", REPO / ".deps"))
+REPO = PROJECT_ROOT
+DEPS = deps_root(os.environ)
 BASALT = Path(os.environ.get("UMI_BASALT_DIR", DEPS / "basalt" / "umi-basalt-0.1.7-fsoffset-linux-x86_64"))
 console = Console("标定")
 

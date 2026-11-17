@@ -1,3 +1,4 @@
+from software.infrastructure.file_store import read_yaml
 """集中存储与去重保持原片/结果身份；旧布局不再读取。"""
 import json
 from pathlib import Path
@@ -6,13 +7,14 @@ import unittest
 from unittest.mock import patch
 
 from software.scene import layout, workflow
-from software.scene.management import episodes, inputs, processing
-from software.storage import write_json, write_yaml
+from software.scene.management import episodes, processing, batch_inputs, episode_inputs, scene_inputs
+from software.infrastructure.file_store import write_json, write_yaml
 from software.viewer.data import RecordingCatalog
 from software.viewer.episodes import capture_status
 from software.scene.pipeline import map_lifecycle
 import test_processing
 import test_scene
+from registry_fakes import write_task_configuration, read_task_configuration
 
 
 class InternalLayoutTests(unittest.TestCase):
@@ -24,12 +26,15 @@ class InternalLayoutTests(unittest.TestCase):
             write_yaml(batch / 'manifest.yaml', {})
             self.assertFalse(layout.is_batch(batch))
             write_yaml(batch / 'batch.yaml', {})
+            self.assertFalse(layout.is_batch(batch))
+            write_yaml(batch / 'collection.yaml', dict(schema_version=1,
+                       scene=dict(layout='shared', map_reference_arm='left'), kit='rig'))
             for old in (task / 'episode.yaml', task / '.pipeline/episode.yaml'):
                 write_yaml(old, {})
                 with self.subTest(path=old), self.assertRaisesRegex(ValueError, '旧清单位置'):
-                    inputs.read_episode(old)
+                    episode_inputs.read_episode(old)
             with self.assertRaisesRegex(ValueError, '旧清单位置'):
-                inputs.read_batch(batch / 'manifest.yaml')
+                batch_inputs.read_batch(batch / 'manifest.yaml')
             current = batch / '.pipeline/tasks/take_001/episode.yaml'
             self.assertEqual(layout.manifest(task, 'episode.yaml'), current)
             self.assertFalse(current.exists())
@@ -39,6 +44,8 @@ class InternalLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             batch = Path(temporary) / 'shelf/batch_001'
             task = batch / 'take_001'
+            write_yaml(batch / 'collection.yaml', dict(schema_version=1,
+                       scene=dict(layout='shared', map_reference_arm='left'), kit='rig'))
             write_yaml(batch / 'batch.yaml', {})
             for old in (task / 'state.json', task / '.pipeline/state.json'):
                 write_json(old, dict(attempt=dict(status='ok')))
@@ -55,26 +62,26 @@ class InternalLayoutTests(unittest.TestCase):
                 attempt=dict(run=layout.run_reference(task, current))))
             self.assertEqual(layout.read_state(task)['attempt']['reason'], 'current diagnostic')
 
-    def test_task_annotations_must_be_in_task_yaml(self):
+    def test_task_annotations_live_in_collection_yaml(self):
         fixture = test_scene.SceneWorkflowTests()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
-        record = inputs.read_yaml(fixture.episode_path)
+        record = read_yaml(fixture.episode_path)
         for field, value in dict(instruction='拿起盒子', expected_arms=['right'],
                                  synchronization={}).items():
             write_yaml(fixture.episode_path, dict(record, **{field: value}))
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'episode 字段'):
-                inputs.read_episode(fixture.episode_path)
+                episode_inputs.read_episode(fixture.episode_path)
         write_yaml(fixture.episode_path, record)
-        write_yaml(fixture.task_root / 'task.yaml', dict(instruction='拿起盒子'))
-        self.assertEqual(inputs.read_episode(fixture.episode_path).instruction, '拿起盒子')
+        write_task_configuration(fixture.task_root, dict(instruction='拿起盒子'))
+        self.assertEqual(episode_inputs.read_episode(fixture.episode_path).instruction, '拿起盒子')
 
     def test_video_discovery_only_uses_arm_directories(self):
         with tempfile.TemporaryDirectory() as temporary:
             task = Path(temporary)
             for name in ('videos', 'left', 'right'):
                 (task / name).mkdir()
-            self.assertEqual(inputs.task_video_sources(task), [task / 'left', task / 'right'])
+            self.assertEqual(batch_inputs.task_video_sources(task), [task / 'left', task / 'right'])
 
     def test_unchanged_import_does_not_write_another_report_or_visible_metadata(self):
         fixture = test_processing.ProcessingTests()
@@ -85,7 +92,7 @@ class InternalLayoutTests(unittest.TestCase):
         before = (report.read_bytes(), report.stat().st_mtime_ns)
         processing.prepare_batch(fixture.batch)
         self.assertEqual((report.read_bytes(), report.stat().st_mtime_ns), before)
-        self.assertEqual({p.name for p in fixture.batch.iterdir()}, {'batch.yaml', 'mapping', 'take_001', '.pipeline'})
+        self.assertEqual({p.name for p in fixture.batch.iterdir()}, {'collection.yaml', 'mapping', 'take_001', '.pipeline'})
         take = fixture.batch / 'take_001'
         self.assertEqual({p.name for p in take.iterdir()}, {'left', 'right'})
         self.assertTrue((layout.metadata(take, 'episode.yaml')).is_file())
@@ -99,7 +106,7 @@ class InternalLayoutTests(unittest.TestCase):
         self.addCleanup(fixture.doCleanups)
         fixture.build_scene()
         workflow.run_episode(fixture.episode_path)
-        episode = inputs.read_episode(fixture.episode_path)
+        episode = episode_inputs.read_episode(fixture.episode_path)
         success = episode.output.resolve()
         with patch('software.scene.spatial.fusion.fuse', side_effect=ValueError('same failure')):
             for _ in range(2):
@@ -123,13 +130,13 @@ class InternalLayoutTests(unittest.TestCase):
         self.addCleanup(fixture.doCleanups)
         self.assertEqual(processing.run([fixture.batch])[0]['status'], 'ok')
         take = fixture.batch / 'take_001'
-        configuration = take / 'task.yaml'
-        map_version = inputs.read_batch(fixture.batch).map_version
-        write_yaml(configuration, dict(instruction='拿起盒子'))
+        configuration = fixture.batch / 'collection.yaml'
+        map_version = batch_inputs.read_batch(fixture.batch).map_version
+        write_task_configuration(take, dict(instruction='拿起盒子'))
         self.assertEqual(episodes.task_status(take)['status'], 'pending')
         self.assertEqual(capture_status(take)['status'], 'pending')
         self.assertEqual(processing.run([take])[0]['status'], 'ok')
-        self.assertEqual(inputs.read_batch(fixture.batch).map_version, map_version)
+        self.assertEqual(batch_inputs.read_batch(fixture.batch).map_version, map_version)
         self.assertEqual(json.loads((take / 'results/episode.json').read_text())['instruction'], '拿起盒子')
         configuration.write_text('# 注释不改变任务\n' + configuration.read_text())
         self.assertEqual(processing.run([take])[0]['status'], 'skipped')
@@ -147,11 +154,11 @@ class InternalLayoutTests(unittest.TestCase):
         self.addCleanup(fixture.doCleanups)
         take = fixture.batch / 'take_001'
         (take / 'left/VID.insv').unlink()
-        write_yaml(take / 'task.yaml', dict(expected_arms=['right']))
+        write_task_configuration(take, dict(expected_arms=['right']))
         imported = processing.prepare_batch(fixture.batch)
         self.assertEqual(imported['pending'], [])
-        self.assertEqual(inputs.read_episode(take).expected_arms, ('right',))
-        self.assertEqual(set(inputs.read_episode(take).recordings), {'right'})
+        self.assertEqual(episode_inputs.read_episode(take).expected_arms, ('right',))
+        self.assertEqual(set(episode_inputs.read_episode(take).recordings), {'right'})
         # A contradictory declaration must not silently discard the other camera.
         (take / 'left/VID.insv').write_text('left')
         with self.assertRaisesRegex(ValueError, '预期使用的手'):

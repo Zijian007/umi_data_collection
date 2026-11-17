@@ -25,7 +25,7 @@ def read(path: Path) -> WidthCalibration:
     if not isinstance(width_calibration_document, dict):
         raise ValueError('夹爪宽度标定必须为 JSON 对象')
     if {'closed_threshold_mm', 'max_gap_s'} & width_calibration_document.keys():
-        raise ValueError('宽度处理参数请移到 scene.yaml 的 parameters.gripper_width_*，测量文件只保存实测关系')
+        raise ValueError('宽度处理参数请移到 --expert-config 的 parameters.gripper_width_*，测量文件只保存实测关系')
     mapping = width_calibration_document.get('mapping', width_calibration_document)
     if not isinstance(mapping, dict) or not isinstance(mapping.get('anchors'), list) or len(mapping['anchors']) < 2:
         raise ValueError('宽度标定需要至少两个 anchors，每项包含 x（像素）和 mm')

@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import argparse
 import json
 import sys
-
-
-if __package__ in (None, ''):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from pathlib import Path
 
 
 def main(argv=None) -> int:
@@ -41,7 +37,7 @@ def main(argv=None) -> int:
         if index+1 < len(argv) and ',' in argv[index+1]:
             argv[index:index+2] = ['--lever_prior='+argv[index+1]]
     args = parser.parse_args(argv)
-    from software import config
+    from software.configuration import loader as config
     from software.trajectory.algorithms.fusion import solve
     from software.trajectory.algorithms.fusion_alignment import AlignmentError
     from software.trajectory.algorithms.fusion_data import load_inputs, write_solution

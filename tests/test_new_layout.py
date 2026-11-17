@@ -1,17 +1,19 @@
+from software.infrastructure.file_store import read_yaml
+from software.scene.management import kit_inputs
 """全局套件复用、扁平场景批次以及原片到训练包的业务回归。"""
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 import json
 from pathlib import Path
 import unittest
-from registry_fakes import write_kit, write_batch, write_task
+from registry_fakes import write_kit, write_batch, write_task, write_task_configuration
 from unittest.mock import patch
 
-from software import registry
+from software.camera import registry
 from software.scene import layout
 from software.dataset.export import build, load_episode
-from software.scene.management import episodes, ingest, inputs
+from software.scene.management import episodes, ingest, batch_inputs, episode_inputs, scene_inputs
 from software.scene import workflow
-from software.storage import write_yaml
+from software.infrastructure.file_store import write_yaml
 from software.viewer.data import RecordingCatalog
 from software.viewer.episodes import capture_status
 from software.scene.management import processing
@@ -29,10 +31,10 @@ class ExampleTemplateTests(unittest.TestCase):
             write_yaml(root / 'kits/example_kit/kit.example.yaml', dict(arms={'right': dict(serial='EXAMPLE', calibration='001', gripper=dict(tcp='tcp_camera.json'))}))
             shutil.copytree(project / 'scenes/example_scene', root / 'scenes/example_scene')
             for path in root.rglob('*.example.yaml'):
-                self.assertIsInstance(inputs.read_yaml(path), dict)
-            with patch.object(inputs, 'KITS', root / 'kits'):
+                self.assertIsInstance(read_yaml(path), dict)
+            with patch.object(kit_inputs, 'KITS', root / 'kits'):
                 with self.assertRaises(OSError):
-                    inputs.read_kit('example_kit')
+                    kit_inputs.read_kit('example_kit')
             self.assertEqual(processing.configured_batches([root / 'scenes/example_scene']), [])
             self.assertEqual(episodes.episode_paths([root / 'scenes']), [])
             self.assertEqual(RecordingCatalog(root / 'scenes').scan()['recordings'], [])
@@ -44,7 +46,7 @@ class NewLayoutTests(unittest.TestCase):
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         for item in (
-            patch.object(inputs, 'KITS', self.f.root / 'kits'),
+            patch.object(kit_inputs, 'KITS', self.f.root / 'kits'),
             patch.object(registry, 'get', return_value={}),
             patch.object(registry, 'pin', side_effect=lambda serial: self.f.device_pins[serial]),
             patch.object(registry, 'read_insv_serial', side_effect=lambda path: 'SERIAL_'+Path(path).read_text()),
@@ -54,31 +56,31 @@ class NewLayoutTests(unittest.TestCase):
         self.kit = write_kit('rig', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(left='SERIAL_left', right='SERIAL_right')).items()})
 
     def session(self, name='20261104_001', *, scene=None, kit='rig'):
-        selected = inputs.read_scene(scene or self.f.scene.root)
+        selected = scene_inputs.read_scene(scene or self.f.scene_path)
         version = self.f.bound_map_version() if selected.root == self.f.scene.root else None
-        return write_batch(scene or self.f.scene.root, name, kit=kit, map_version=version)
+        return write_batch(scene or self.f.scene_path, name, kit=kit, map_version=version)
 
     def prepare_imported(self, path):
-        for arm, video in inputs.read_episode(path).recordings.items():
+        for arm, video in episode_inputs.read_episode(path).recordings.items():
             original = self.f.recording_paths[arm]
             self.f.cameras[video] = self.f.cameras[original]
             self.f.prepared_recordings[video] = self.f.prepared_recordings[original]
 
     def test_global_kit_reused_across_scenes_and_snapshots_survive_updates(self):
         first = self.session()
-        other_scene = self.f.root / 'counter/scene.yaml'
-        data = inputs.read_yaml(self.f.scene_path)
+        other_scene = self.f.root / 'counter/seed/collection.yaml'
+        data = read_yaml(self.f.scene_path)
         write_yaml(other_scene, data)
         other = self.session(scene=other_scene)
         self.assertEqual(first, self.f.scene.root / '20261104_001/.pipeline/manifest.yaml')
-        self.assertEqual(inputs.read_batch(first).kit, inputs.read_batch(other).kit)
-        self.assertEqual(inputs.read_kit('rig'), self.kit)
+        self.assertEqual(batch_inputs.read_batch(first).kit, batch_inputs.read_batch(other).kit)
+        self.assertEqual(kit_inputs.read_kit('rig'), self.kit)
         updated = write_kit('rig', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(right='SERIAL_right')).items()})
         later = self.session('20261104_002')
-        self.assertEqual(inputs.read_batch(later).kit, updated)
-        (inputs.KITS / 'rig/kit.yaml').unlink()
-        self.assertEqual(inputs.read_batch(layout.owner(first)).kit, self.kit)
-        self.assertEqual(inputs.read_batch(other).kit, self.kit)
+        self.assertEqual(batch_inputs.read_batch(later).kit, updated)
+        (kit_inputs.KITS / 'rig/kit.yaml').unlink()
+        self.assertEqual(batch_inputs.read_batch(layout.owner(first)).kit, self.kit)
+        self.assertEqual(batch_inputs.read_batch(other).kit, self.kit)
         with self.assertRaises(OSError):
             self.session('20261104_003')
 
@@ -86,8 +88,8 @@ class NewLayoutTests(unittest.TestCase):
         self.session()
         write_kit('other', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(right='SERIAL_right')).items()})
         other = self.session('20261104_002', kit='other')
-        self.assertEqual(inputs.read_batch(other).kit['id'], 'other')
-        for name in (*inputs.INTERNAL_DIRECTORIES, 'kits', 'sessions'):
+        self.assertEqual(batch_inputs.read_batch(other).kit['id'], 'other')
+        for name in (*scene_inputs.INTERNAL_DIRECTORIES, 'kits', 'sessions'):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, '批次名'):
                 self.session(name)
 
@@ -96,8 +98,9 @@ class NewLayoutTests(unittest.TestCase):
         write_kit('single', {'right': dict(serial='SERIAL_right', calibration='test',
                                          gripper=dict(tcp='tcp_camera.json'))})
         batch = scene / 'morning'
-        declaration = batch / 'batch.yaml'
-        write_yaml(declaration, dict(kit='single'))
+        declaration = batch / 'collection.yaml'
+        write_yaml(declaration, dict(schema_version=1,
+                     scene=dict(layout='shared', map_reference_arm='right'), kit='single'))
         mapping = batch / 'mapping/map.insv'
         mapping.parent.mkdir()
         mapping.write_text('right_mapping')
@@ -112,10 +115,10 @@ class NewLayoutTests(unittest.TestCase):
             result = processing.prepare_batch(batch)
         task = Path(result['episodes'][0]['path'])
         manifest = layout.metadata(batch, 'manifest.yaml')
-        self.assertEqual(inputs.read_batch(manifest).expected_arms, ('right',))
+        self.assertEqual(batch_inputs.read_batch(manifest).expected_arms, ('right',))
         self.assertEqual(episodes.episode_paths([manifest]), [task])
         self.assertEqual({p: (p.read_bytes(), p.stat().st_ino) for p in before}, before)
-        self.assertFalse((scene / 'scene.yaml').exists())
+        self.assertFalse((scene / 'collection.yaml').exists())
 
     def test_ingest_run_view_review_export_and_training_package(self):
         for recording in self.f.prepared_recordings.values():
@@ -125,23 +128,23 @@ class NewLayoutTests(unittest.TestCase):
         infos = [ingest.RecordingMetadata(video, 'SERIAL_'+arm, artifact_identity.file_hash(video), 1000., 8.)
                  for arm, video in self.f.recording_paths.items()]
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
-            imported = ingest.register_recordings(inputs.read_batch(layout.owner(manifest)))
+            imported = ingest.register_recordings(batch_inputs.read_batch(layout.owner(manifest)))
             path = Path(imported['episodes'][0]['path'])
             self.assertEqual(path, layout.metadata(layout.owner(manifest) / 'take_001', 'episode.yaml'))
-            repeated = ingest.register_recordings(inputs.read_batch(manifest))
+            repeated = ingest.register_recordings(batch_inputs.read_batch(manifest))
         self.assertEqual(repeated['skipped'], ['take_001'])
         self.assertEqual(capture_status(layout.owner(path))['status'], 'pending')
         self.assertEqual(episodes.episode_paths([manifest]), [path])
-        episode = inputs.read_episode(path)
+        episode = episode_inputs.read_episode(path)
         for video in episode.recordings.values():
             self.assertEqual(video.parent.parent, self.f.scene.root / '20261104_001/take_001')
         self.prepare_imported(path)
         data = dict(instruction='双手把盒子放入托盘', synchronization=dict(
             offsets_s=dict(left=0., right=-.12), confirmed=True, note='共同事件，首尾已核验'))
-        write_yaml(layout.owner(path) / 'task.yaml', data)
+        write_task_configuration(layout.owner(path), data)
         workflow.run_episode(path)
         self.assertEqual(capture_status(layout.owner(path))['status'], 'ok')
-        self.assertIsNotNone(inputs.read_batch(manifest).map_version)
+        self.assertIsNotNone(batch_inputs.read_batch(manifest).map_version)
         episodes.review(path, accept=True, reviewer='test')
         names = [item['name'] for item in RecordingCatalog(self.f.scene.root).scan()['recordings']]
         self.assertIn('lab/rig/20261104_001/take_001', names)
@@ -160,11 +163,11 @@ class NewLayoutTests(unittest.TestCase):
 
     def test_manual_episode_references_new_manifest_and_reports_missing_hand(self):
         manifest = self.session()
-        session = inputs.read_batch(manifest)
+        session = batch_inputs.read_batch(manifest)
         path = write_task(session, 'take_001', dict(left=self.f.recording_paths['left']))
-        self.assertNotIn('session', inputs.read_yaml(path))
+        self.assertNotIn('session', read_yaml(path))
         self.assertEqual(capture_status(layout.owner(path))['status'], 'incomplete')
-        current = inputs.read_episode(path)
+        current = episode_inputs.read_episode(path)
         clips = dict(current.recordings, right=self.f.recording_paths['right'])
         metadata = [ingest.RecordingMetadata(clip, 'SERIAL_' + arm, artifact_identity.file_hash(clip), 1000., 8.)
                     for arm, clip in clips.items()]

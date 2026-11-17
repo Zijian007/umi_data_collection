@@ -8,11 +8,11 @@ import sys
 
 import numpy as np
 
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.calibration.algorithms import board_pnp, trajectory_metrics
 from software.calibration.pipeline import runtime
 from software.calibration.validation import trajectory_diagnostics
-from software.environment import python_executable
+from software.infrastructure.runtime_environment import python_executable
 from software.trajectory.calibration.selection import DEFAULT_FRONT_MASK
 from software.trajectory.reporting import results as trajectory_results
 
@@ -37,7 +37,7 @@ def generate_trajectory(video: Path, execution, *, trajectory_configuration,
     command = [trajectory_python, "-m", "software.trajectory", str(video), "--out", str(output), "--force", "--keep-work"]
     trajectory_config = execution.paths.work / "trajectory.yaml"
     # Child CLI reads the exact resolved trajectory configuration, not ambient defaults.
-    from software.config import write_yaml
+    from software.configuration.loader import write_yaml
     write_yaml(trajectory_config, trajectory_configuration.values)
     command += ["--config", str(trajectory_config)]
     if execution.cores:

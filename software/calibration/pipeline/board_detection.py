@@ -12,10 +12,10 @@ import zipfile
 import cv2
 import numpy as np
 
-from software import config
-from software import provenance as artifact_identity
+from software.configuration import loader as config
+from software.infrastructure import provenance as artifact_identity
 from software.calibration.algorithms import aprilgrid_detect
-from software.storage import atomic_file
+from software.infrastructure.file_store import atomic_file
 
 
 def detect_all(euroc: Path, make_detector, step: int = 1, workers: int = 4, up: float | None = None, *, cancelled=None) -> dict:

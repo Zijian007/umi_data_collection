@@ -21,7 +21,7 @@ from software.calibration.algorithms import aprilgrid_detect
 from software.calibration.pipeline.steps import StageRunner
 from software.calibration.models import Step
 from software.calibration import result_io
-from software.storage import write_json
+from software.infrastructure.file_store import write_json
 
 
 class BackgroundProcessTests(unittest.TestCase):

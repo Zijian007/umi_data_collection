@@ -10,12 +10,13 @@ import shutil
 import subprocess
 import threading
 
-from software import settings
+from software.configuration import operational_settings as settings
 from software.viewer import cache
 from software.viewer.errors import ViewerDataError
+from software.infrastructure.paths import PROJECT_ROOT, deps_root
 
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = PROJECT_ROOT
 _jobs = {}
 _jobs_lock = threading.Lock()
 
@@ -64,7 +65,7 @@ def video_version(video: Path) -> str:
 
 
 def find_ffmpeg() -> str:
-    deps = Path(os.environ.get('UMI_DEPS', REPO / '.deps'))
+    deps = deps_root(os.environ)
     bundled = deps / 'env/bin/ffmpeg'
     if bundled.is_file() and os.access(bundled, os.X_OK):
         return str(bundled)

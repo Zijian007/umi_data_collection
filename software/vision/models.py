@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from software import parameters as parameter_models
+from software.configuration import parameter_models
 
 
 @dataclass(frozen=True)

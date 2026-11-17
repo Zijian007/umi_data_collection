@@ -6,15 +6,20 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 import os
 
-from . import inputs
-from software import provenance as artifact_identity
-from software import registry
+from software.infrastructure import provenance as artifact_identity
+from software.camera import registry
+from software.configuration import user_settings as user_config
 from software.scene import layout
 from software.scene.configuration import SceneOverrides
 from software.scene.models import ARMS, Scene
 from software.scene.pipeline import map_lifecycle
 from software.scene.pipeline import recordings
-from software.storage import write_yaml
+from software.infrastructure.file_store import read_yaml, write_yaml
+from software.scene.management.scene_inputs import (
+    read_scene, require_keys, validate_batch_name, validate_episode_name, validate_name,
+)
+from software.scene.management.kit_inputs import read_arms, read_kit
+from software.scene.management.batch_inputs import mapping_records, task_video_sources
 
 
 @dataclass(frozen=True)
@@ -26,7 +31,33 @@ class BatchInputs:
     expected_arms: tuple[str, ...]
     scene: Scene
     mapping_records: dict[str, dict]
-    intrinsics_source: str | None = None
+    intrinsics_source: str | None
+    declaration_path: Path
+    source_document: dict
+
+
+def _declaration(batch: Path) -> tuple[Path, dict, dict | None]:
+    """Return the single-file collection declaration when present."""
+    collection = batch / 'collection.yaml'
+    retired = batch / 'batch.yaml'
+    if retired.is_file():
+        layout.reject_legacy_user_file(retired)
+    if collection.is_file():
+        document = read_yaml(collection)
+        if document.get('schema_version') != 1:
+            raise ValueError('collection.yaml 需要 schema_version: 1')
+        if not isinstance(document.get('scene'), dict):
+            raise ValueError('collection.yaml 必须包含 scene 配置表')
+        allowed = {'schema_version', 'scene', 'kit', 'arms', 'map_version', 'map_policy', 'tasks'}
+        require_keys(document, allowed, {'kit', 'scene'}, 'collection')
+        if document.get('map_policy', 'latest_prior') != 'latest_prior':
+            raise ValueError('collection.map_policy 目前只能是 latest_prior（按采集顺序选择此前最近地图）')
+        if not isinstance(document.get('tasks', {}), dict):
+            raise ValueError('collection.yaml 的 tasks 必须是配置表')
+        declaration = {key: value for key, value in document.items() if key not in {'schema_version', 'scene', 'tasks'}}
+        declaration.setdefault('map_policy', 'latest_prior')
+        return collection, declaration, document.get('scene')
+    raise ValueError(f'批次缺少 collection.yaml：{batch}')
 
 
 @dataclass(frozen=True)
@@ -38,35 +69,34 @@ class KitSelection:
 
 def select_kit(declaration: dict, *, intrinsics_source: str | None = None) -> KitSelection:
     """执行与配置展示共用同一套来源优先级，不读取录像或创建批次。"""
-    inputs.require_keys(declaration, {'kit', 'arms', 'map_version', 'intrinsics_source'}, {'kit'}, 'batch')
-    inputs.validate_name(declaration['kit'])
+    require_keys(declaration, {'kit', 'arms', 'map_version', 'map_policy'}, {'kit'}, 'batch')
+    validate_name(declaration['kit'])
     if 'map_version' in declaration:
         registry.validate_id(declaration['map_version'])
     from software.camera.calibration_source import validate
-    if 'intrinsics_source' in declaration:
-        validate(declaration['intrinsics_source'])
     if intrinsics_source is not None:
         validate(intrinsics_source)
-    selected_source = intrinsics_source or declaration.get('intrinsics_source')
-    kit = inputs.read_kit(declaration['kit'], intrinsics_source=selected_source)
-    expected_arms = inputs.read_arms(declaration.get('arms', list(kit['arms'])), kit['arms'])
+    selected_source = (intrinsics_source or user_config.current().values['calibration']['intrinsics_source'])
+    kit = read_kit(declaration['kit'], intrinsics_source=selected_source)
+    expected_arms = read_arms(declaration.get('arms', list(kit['arms'])), kit['arms'])
     return KitSelection(kit, expected_arms, selected_source)
 
 
 def _validate_unregistered_directory(directory: Path) -> None:
     for entry in directory.iterdir():
-        if entry.name in ('.scene.lock', layout.INTERNAL) or entry.name == 'batch.yaml' and entry.is_file():
+        if entry.name in ('.scene.lock', layout.INTERNAL) or entry.name in {'collection.yaml', 'import_manifest.json'} and entry.is_file():
             continue
         if entry.name in {'pending', 'mapping'} and entry.is_dir():
             continue
         try:
-            inputs.validate_episode_name(entry.name)
+            validate_episode_name(entry.name)
         except ValueError:
             raise ValueError(f'未登记批次只允许 mapping/、pending/ 或 <任务>/left/、right/：{directory}') from None
-        if (not entry.is_dir() or not inputs.task_video_sources(entry) or
-                any(not (child.name in ARMS and child.is_dir()
-                         or child.name == 'task.yaml' and child.is_file()) for child in entry.iterdir())):
-            raise ValueError(f'未登记任务只允许预先放置 left/、right/ 原片目录及 task.yaml：{entry}')
+        if (not entry.is_dir() or not task_video_sources(entry) or
+                any(not (child.name in ARMS and child.is_dir()) for child in entry.iterdir())):
+            if (entry / 'task.yaml').is_file():
+                layout.reject_legacy_user_file(entry / 'task.yaml')
+            raise ValueError(f'未登记任务只允许预先放置 left/、right/ 原片目录：{entry}')
 
 
 def _mapping_paths(batch: Path, mode: str) -> dict[str, Path]:
@@ -89,23 +119,67 @@ def _mapping_paths(batch: Path, mode: str) -> dict[str, Path]:
     return mapping_paths
 
 
-def read_inputs(batch: Path, *, require_mapping: bool = True, intrinsics_source: str | None = None, overrides: SceneOverrides | None = None) -> BatchInputs:
-    inputs.validate_batch_name(batch.name)
-    inputs.validate_name(batch.parent.name)
-    declaration = inputs.read_yaml(batch / 'batch.yaml')
+def _infer_mode(batch: Path, declaration: dict) -> str:
+    """Infer the internal map topology from the recordings or frozen map."""
+    clips = recordings.insv_files(batch / 'mapping')
+    if clips:
+        mapping_root = (batch / 'mapping').resolve()
+        relative = [clip.resolve().relative_to(mapping_root).parts for clip in clips]
+        if len(clips) == 1 and len(relative[0]) == 1:
+            return 'shared_front'
+        if len(clips) == 2 and all(len(parts) == 2 and parts[0] in ARMS for parts in relative):
+            if {parts[0] for parts in relative} == set(ARMS):
+                return 'dual'
+        # Epoch recordings add an epoch directory before the camera role:
+        # mapping/<epoch>/left|right/<video>.  Shared-front epochs use
+        # mapping/<epoch>/<video>.  The role position, rather than the
+        # number of files in the whole mapping tree, determines the layout.
+        if relative and all(len(parts) >= 3 and parts[1] in ARMS for parts in relative):
+            return 'dual'
+        if relative and all(len(parts) >= 2 for parts in relative):
+            return 'shared_front'
+        raise ValueError('scene.layout=auto 无法从 mapping/ 确定布局；请使用 mapping/单段录像或 mapping/left、right 两段录像')
+
+    plan_path = layout.metadata(batch, 'map_epochs.yaml')
+    if plan_path.is_file():
+        plan = read_yaml(plan_path)
+        for item in plan.get('maps', []) if isinstance(plan, dict) else []:
+            recording = item.get('recording') if isinstance(item, dict) else None
+            if isinstance(recording, dict) and set(recording) == set(ARMS):
+                return 'dual'
+            if isinstance(recording, str):
+                return 'shared_front'
+
+    version = declaration.get('map_version')
+    if version:
+        manifest = layout.metadata(batch, 'maps') / 'versions' / version / 'manifest.json'
+        if manifest.is_file():
+            mode = read_yaml(manifest).get('mode')
+            if mode in ('shared_front', 'dual'):
+                return mode
+    raise ValueError('scene.layout=auto 无法确定地图布局；请先放置 mapping/ 或生成 map_epochs.yaml')
+
+
+def read_inputs(batch: Path, *, require_mapping: bool = True, include_mapping: bool = True,
+                intrinsics_source: str | None = None, overrides: SceneOverrides | None = None) -> BatchInputs:
+    validate_batch_name(batch.name)
+    validate_name(batch.parent.name)
+    declaration_path, declaration, scene_document = _declaration(batch)
     selected_kit = select_kit(declaration, intrinsics_source=intrinsics_source)
     record_path = layout.metadata(batch, 'manifest.yaml')
-    previous_record = inputs.read_yaml(record_path) if record_path.is_file() else {}
+    previous_record = read_yaml(record_path) if record_path.is_file() else {}
     if not previous_record:
         _validate_unregistered_directory(batch)
-    intrinsics_source = selected_kit.intrinsics_source
     kit, expected_arms = selected_kit.kit, selected_kit.expected_arms
-    scene = replace(inputs.read_scene(batch.parent / 'scene.yaml', overrides=overrides), batch_root=batch)
-    mapping_paths = _mapping_paths(batch, scene.mode)
+    scene = replace(read_scene(declaration_path, document=scene_document, overrides=overrides),
+                    batch_root=batch)
+    if scene.mode == 'auto':
+        scene = replace(scene, mode=_infer_mode(batch, declaration))
+    mapping_paths = _mapping_paths(batch, scene.mode) if include_mapping else {}
     if mapping_paths and 'map_version' in declaration:
         raise ValueError('本轮建图原片与 map_version 不能同时提供')
     if require_mapping and not mapping_paths and 'map_version' not in declaration:
-        raise ValueError(f'请将本轮建图原片放入 {batch / "mapping"}，或在 batch.yaml 明确指定 map_version')
+        raise ValueError(f'请将本轮建图原片放入 {batch / "mapping"}，或在批次配置中明确指定 map_version')
     kit_serials = {camera['serial'] for camera in kit['arms'].values()}
     mapping_records = {}
     for arm, clip in mapping_paths.items():
@@ -114,12 +188,17 @@ def read_inputs(batch: Path, *, require_mapping: bool = True, intrinsics_source:
         if metadata['serial'] not in kit_serials:
             camera_binding.update(registry.pin(metadata['serial']))
         mapping_records[arm] = dict(camera_binding, path=os.path.relpath(clip, batch), sha256=metadata['sha256'])
-    return BatchInputs(batch, declaration, previous_record, kit, expected_arms, scene, mapping_records, intrinsics_source)
+    return BatchInputs(batch, declaration, previous_record, kit, expected_arms, scene, mapping_records,
+                       selected_kit.intrinsics_source, declaration_path, read_yaml(declaration_path))
 
 
 def make_record(batch: BatchInputs) -> dict:
     kit_snapshot = {field: value for field, value in batch.kit.items() if field != 'description'}
     record = dict(schema_version=5, kit=kit_snapshot)
+    # The collection owns both the batch declaration and the scene block.
+    record['scene'] = os.path.relpath(batch.declaration_path, batch.root)
+    record['resolved_mode'] = batch.scene.mode
+    record['map_policy'] = batch.declaration.get('map_policy', 'latest_prior')
     if batch.intrinsics_source: record['intrinsics_source'] = batch.intrinsics_source
     if batch.mapping_records:
         mapping_refs = batch.mapping_records
@@ -128,14 +207,22 @@ def make_record(batch: BatchInputs) -> dict:
         if len(mapping_refs) > 1 and reference_arm != next(iter(mapping_refs)):
             record['mapping_reference_arm'] = reference_arm
         if (batch.previous_record.get('map') and batch.previous_record.get('kit') == kit_snapshot
-                and inputs.mapping_records(batch.previous_record.get('mapping', {}))
+                and mapping_records(batch.previous_record.get('mapping', {}))
                 == mapping_refs):
             record['map'] = batch.previous_record['map']
     elif 'map_version' in batch.declaration:
         directory, published_map = map_lifecycle.load_published(batch.scene, version=batch.declaration['map_version'], allow_import=True)
         map_lifecycle.validate_map_bindings(batch.kit, published_map)
         record['map'] = dict(version=published_map['version'], manifest_sha256=artifact_identity.file_hash(directory / 'manifest.json'))
-    if batch.expected_arms != inputs.read_arms(list(batch.kit['arms'])):
+    elif batch.previous_record.get('mapping'):
+        # Epoch 建图可能有多段 mapping/ 原片，不能把它们误解释成一次普通建图；
+        # 保留已经登记的快照，epoch 自己在 map_epochs.yaml 中声明实际来源。
+        record['mapping'] = batch.previous_record['mapping']
+        if batch.previous_record.get('mapping_reference_arm'):
+            record['mapping_reference_arm'] = batch.previous_record['mapping_reference_arm']
+        if batch.previous_record.get('map'):
+            record['map'] = batch.previous_record['map']
+    if batch.expected_arms != read_arms(list(batch.kit['arms'])):
         record['expected_arms'] = list(batch.expected_arms)
     return record
 
@@ -144,10 +231,10 @@ def save_record(batch: BatchInputs) -> Path:
     record = make_record(batch)
     record_path = layout.metadata(batch.root, 'manifest.yaml')
     with layout.locked(batch.root, blocking=True):
-        if (inputs.read_yaml(batch.root / 'batch.yaml') != batch.declaration or
-                inputs.read_kit(batch.declaration['kit'], intrinsics_source=batch.intrinsics_source) != batch.kit):
-            raise ValueError('batch.yaml 或 kit.yaml 在准备期间发生变化，请重新运行')
-        previous_record = inputs.read_yaml(record_path) if record_path.is_file() else {}
+        if (read_yaml(batch.declaration_path) != batch.source_document or
+                read_kit(batch.declaration['kit'], intrinsics_source=batch.intrinsics_source) != batch.kit):
+            raise ValueError('collection.yaml 或 kit.yaml 在准备期间发生变化，请重新运行')
+        previous_record = read_yaml(record_path) if record_path.is_file() else {}
         if previous_record != batch.previous_record:
             raise ValueError('批次记录在准备期间发生变化，请重新运行')
         if previous_record != record:

@@ -8,13 +8,13 @@ from zoneinfo import ZoneInfo
 import json
 import shutil
 
-from software import provenance as artifact_identity
-from software import registry
+from software.infrastructure import provenance as artifact_identity
+from software.camera import registry
 from software.calibration import reports
 from software.calibration import result_io
 from software.calibration.models import Decision, Step
 from software.calibration.pipeline import runtime
-from software.storage import locked
+from software.infrastructure.file_store import locked
 from software.trajectory.calibration import assets as trajectory_calibration
 
 

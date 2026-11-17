@@ -1,4 +1,4 @@
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 """Boundary tests for evidence freshness, installed identity and checkpoint dependencies."""
 import json
 import os
@@ -8,13 +8,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from software import config, registry
+from software.configuration import loader as config
+from software.camera import registry
 from software.calibration import workflow, devices, result_io
 from software.calibration.models import Step, RunPaths, ExecutionOptions
 from software.calibration.pipeline import inputs, runtime
 from software.calibration.validation import gravity
 from software.trajectory.calibration import assets
-from software.storage import locked
+from software.infrastructure.file_store import locked
 import test_calibration_workflow as workflow_fixtures
 
 
@@ -28,7 +29,7 @@ class CheckpointContractTests(unittest.TestCase):
             commands.clear()
             self.assertEqual(workflow.run(inputs.parse_run_args(args)),0)
             self.assertEqual(len(commands),1)
-            self.assertIn('imu_calib_physical_check.py',commands[0][1])
+            self.assertIn('software.calibration.tools.imu_calib_physical_check', commands[0])
             timing=result_io.read(Path(args.out))['execution']['timings']
             for step in (Step.INTRINSICS,Step.CAMERA_IMU,Step.TRAJECTORY):
                 self.assertEqual(timing[step]['status'],'reused')

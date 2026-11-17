@@ -7,7 +7,7 @@
 - [`aprilgrid.json`](aprilgrid.json)：唯一的板布局定义，包含标签族、黑边、行列数和间距比例，不包含纸张或标签的物理尺寸。当前检测器仅支持其中的 tag36h11 和 2 格黑边。
 - [`prints/`](prints/)：可打印 PDF、用于预览/检测的 PNG，以及对应的 `*_meta.json` 生成与自检记录。元数据描述打印资产，不作为求解参数。
 - `--tag-size-mm`：本次使用的板上，**实测单个标签外黑框的边长**，单位 mm；包含黑边、不包含外侧白边。程序将其换算为米，与布局合并后生成求解器所需的 `run/work/aprilgrid.json`，并记录在本次运行输入中。
-- [`config/calibration.yaml`](../../config/calibration.yaml)：检测、PnP、覆盖评估和验收参数。它不定义打印尺寸。
+- [`config/algorithms/calibration.yaml`](../../config/algorithms/calibration.yaml)：检测、PnP、覆盖评估和验收参数。它不定义打印尺寸。
 
 无需编辑 JSON/YAML 来选择 A4 或 A3；本目录不再维护 Kalibr YAML 和各纸张的重复板配置。需要给外部工具使用时，按该工具的格式从布局和实测尺寸生成。
 

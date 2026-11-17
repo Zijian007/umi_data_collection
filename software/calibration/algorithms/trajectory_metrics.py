@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from software import config
+from software.configuration import loader as config
 
 
 # Text timestamp precision and a numerical degeneracy guard, not accuracy thresholds.

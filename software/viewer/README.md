@@ -51,7 +51,7 @@ software/viewer/
 
 首次显示通过版本化 poster URL 读取缓存首帧。已有 WebM 预览时，轨迹 API 直接返回其地址，浏览器不再先读取大 MP4。没有预览时先显示原视频或兼容画面；支持 VP8 的浏览器通过 `/preview` 启动后台生成，准备好后保持当前时间和播放状态切换。用户主动选择兼容模式时不自动切走；录像切换取消旧轮询，旧响应不能覆盖新画面。
 
-以下均为 `config/viewer.yaml` 的初始值，可通过 `config/viewer.local.yaml` 覆盖。预览只读原视频，最大 720 像素宽、不放大小图，保持帧率和视野，约 1.5 Mbps，关键帧间隔 30 帧。最多一份编码任务运行、一份排队；生成失败保留原视频/兼容播放。首帧缓存到磁盘，最近 64 张兼容 JPEG 在内存复用，不生成整段抽帧目录。WebM 支持 Range 与版本化不可变 URL；原视频支持 ETag 重新验证。
+以下均为 `config/operations/viewer.yaml` 的初始值，可通过 `config/operations/viewer.local.yaml` 覆盖。预览只读原视频，最大 720 像素宽、不放大小图，保持帧率和视野，约 1.5 Mbps，关键帧间隔 30 帧。最多一份编码任务运行、一份排队；生成失败保留原视频/兼容播放。首帧缓存到磁盘，最近 64 张兼容 JPEG 在内存复用，不生成整段抽帧目录。WebM 支持 Range 与版本化不可变 URL；原视频支持 ETag 重新验证。
 
 缓存默认在 `$XDG_CACHE_HOME/umi-view`（通常为 `~/.cache/umi-view`），`UMI_VIEW_CACHE` 可指定其他目录。`maps/`、`previews/`、`posters/` 都是可再生数据，与录像目录隔离。大文件以路径、尺寸、mtime、ctime、inode 识别变更，预览编码选项及 FFmpeg 身份也进入缓存键；跨进程文件锁防重复生成，原子发布避免读取半成品。缓存可以清理，之后按需重建；不自动删除用户录像或轨迹。
 

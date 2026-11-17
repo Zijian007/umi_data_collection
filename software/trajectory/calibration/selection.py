@@ -63,8 +63,8 @@ class SelectedCalibration:
                     serial=self.camera_serial,
                     status=self.status, selection=self.selection, intrinsics_source=self.intrinsics_source)
 
-    def as_postprocess_dict(self, hashes: dict[str, str]) -> dict:
-        """Compatibility adapter: numerical postprocessing keeps its established API."""
+    def postprocess_record(self, hashes: dict[str, str]) -> dict:
+        """Build the explicit record consumed by trajectory postprocessing."""
         return dict(self.summary(), json=str(self.assets.camera_json),
                     fuser=str(FUSION_SCRIPT),
                     tcp_json=str(self.assets.tcp_geometry) if self.assets.tcp_geometry else None,
@@ -75,7 +75,7 @@ class SelectedCalibration:
 def select_calibration(video: Path, *, device: str = "", tcp: Path | None = None,
                        mask: Path = DEFAULT_FRONT_MASK, intrinsics_source: str | None = None) -> SelectedCalibration:
     """独立引擎默认输出相机轨迹；TCP 必须由调用者明确提供安装外参。"""
-    from software.registry import resolve_insv
+    from software.camera.registry import resolve_insv
 
     record = (resolve_insv(video, device=device or None, intrinsics_source=intrinsics_source)
               if intrinsics_source else resolve_insv(video, device=device or None))

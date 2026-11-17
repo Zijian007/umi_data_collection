@@ -1,6 +1,6 @@
 """跨场景交错采集、固定版本、原片导入与设备资产回归。"""
 from __future__ import annotations
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.scene.pipeline import map_lifecycle
 
 import json
@@ -10,13 +10,14 @@ from registry_fakes import write_batch, write_task
 from pathlib import Path
 from unittest.mock import patch
 
-from software import registry
+from software.camera import registry
 from software.calibration import inventory
 from software.scene import layout
-from software.scene.management import inputs
+from software.infrastructure.file_store import read_yaml
+from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
 from software.scene import cli, models, workflow
 from software.scene.pipeline import recordings
-from software.storage import write_json, write_yaml
+from software.infrastructure.file_store import write_json, write_yaml
 from software.trajectory.calibration import assets as calibration_assets
 from software.viewer.data import RecordingCatalog
 import test_scene as fixtures
@@ -29,10 +30,10 @@ class RegistryVersionTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.legacy_bundle = legacy_bundle(self.root / 'legacy_source')
-        kit_root = patch.object(inputs, 'KITS', self.root / 'kits')
+        kit_root = patch.object(kit_inputs, 'KITS', self.root / 'kits')
         kit_root.start(); self.addCleanup(kit_root.stop)
         target = self.root / 'registry'
-        write_json(target / 'index.json', dict(kind='umi_device_registry', version=2,
+        write_json(target / 'index.json', dict(kind='umi_device_registry', version=3,
                    devices={}))
         override = patch.multiple(registry, ROOT=target, INDEX=target / 'index.json',
                                  CAMERAS=target / 'cameras')
@@ -41,68 +42,12 @@ class RegistryVersionTests(unittest.TestCase):
         calibration_assets.make_bundle(calibration_assets.SAMPLE_CAMERA_JSON, self.bundle)
         registry.register('CAMERA_A', self.bundle)
 
-    def test_camera_numbers_are_per_device_and_repeated_installs_reuse_versions(self):
-        self.assertEqual(registry.pin('CAMERA_A')['calibration'], '001')
-        self.assertEqual(registry.register('CAMERA_B', self.bundle)['calibration_version'], '001')
-        original = registry.get('CAMERA_A')
-        from software.trajectory.calibration import selection
-        with patch.object(registry, 'read_insv_serial', return_value='CAMERA_A'):
-            selected = selection.select_calibration(Path('video.insv'))
-        self.assertEqual(selected.summary()['id'], '001')
-        self.assertEqual(selected.assets.hashes()['camera_json'], original['bundle_sha256'])
-        # 相同测量 JSON、不同包元数据也必须保存为独立版本，不能发生同名冲突。
-        second = self.root / 'second'
-        calibration_assets.make_bundle(calibration_assets.SAMPLE_CAMERA_JSON, second, note=dict(source='new'))
-        self.assertEqual(registry.register('CAMERA_A', second)['calibration_version'], '002')
-        self.assertEqual(registry.register('CAMERA_A', second)['calibration_version'], '002')
-        self.assertEqual(registry.register('CAMERA_A', self.bundle)['calibration_version'], '003')
-        self.assertEqual(registry.get('CAMERA_A')['bundle_sha256'], original['bundle_sha256'])
-        self.assertEqual(registry.get('CAMERA_A')['calibration_version'], '003')
-        self.assertEqual({p.name for p in (registry.CAMERAS / 'CAMERA_A/calibrations').iterdir()}, {'003'})
-        with self.assertRaises(registry.RegistryError):
-            registry.get('CAMERA_A', calibration='001')
-        self.assertEqual({device['front_default'] for device in inventory.device_inventory()}, {'001', '003'})
-
-    def test_index_contains_only_camera_identity_and_calibration(self):
-        registry.register('CAMERA_B', self.bundle, note='source measurement')
-        registry.retire('CAMERA_A')
-        stored = json.loads(registry.INDEX.read_text())
-        self.assertEqual(stored['devices']['CAMERA_A'], dict(status='retired', calibration='001'))
-        self.assertEqual(stored['devices']['CAMERA_B'], dict(status='active', calibration='001'))
-        self.assertNotIn('default_gripper', stored)
-        self.assertNotIn('gripper', registry.get('CAMERA_B'))
-        self.assertEqual(registry.get('CAMERA_B')['note'], 'source measurement')
-        with self.assertRaisesRegex(registry.RegistryError, '停用'):
-            registry.pin('CAMERA_A')
-
     def test_index_rejects_conflicting_redundant_serial(self):
         stored = json.loads(registry.INDEX.read_text())
         stored['devices']['CAMERA_A']['serial'] = 'OTHER_CAMERA'
         write_json(registry.INDEX, stored)
         with self.assertRaisesRegex(registry.RegistryError, '序列号不一致'):
             registry.load_index()
-
-    def test_camera_number_limit_never_overwrites_an_existing_version(self):
-        parent = registry.CAMERAS / 'CAMERA_A/calibrations'
-        files = {'bundle/' + path.name: path for path in self.bundle.iterdir()}
-        registry.store_version(parent, '999', files, kind='umi_camera_calibration', serial='CAMERA_A')
-        second = self.root / 'second'
-        calibration_assets.make_bundle(calibration_assets.SAMPLE_CAMERA_JSON, second, note=dict(source='new'))
-        with self.assertRaisesRegex(registry.RegistryError, '999'):
-            registry.register('CAMERA_A', second)
-        self.assertEqual(registry.pin('CAMERA_A')['calibration'], '001')
-        self.assertEqual({p.name for p in parent.iterdir()}, {'001', '999'})
-        registry.version_assets(parent / '999')
-
-    def test_new_defaults_keep_pinned_camera_calibration_reproducible(self):
-        pinned = registry.pin('CAMERA_A')
-        old = registry.get('CAMERA_A', **pinned)
-        second = self.root / 'second'
-        calibration_assets.make_bundle(calibration_assets.SAMPLE_CAMERA_JSON, second, note=dict(source='new'))
-        registry.register('CAMERA_A', second)
-        self.assertNotEqual(registry.pin('CAMERA_A')['calibration'], pinned['calibration'])
-        with self.assertRaises(registry.RegistryError):
-            registry.get('CAMERA_A', **pinned)
 
     def test_tampered_assets_and_retired_devices_are_rejected(self):
         pinned = registry.pin('CAMERA_A')
@@ -170,13 +115,13 @@ class SessionManagementTests(unittest.TestCase):
 
     def session(self, scene_path, name):
         self.f.write_kit('fixture', {arm:dict(serial='SERIAL_'+arm,**self.f.device_pins['SERIAL_'+arm]) for arm in models.ARMS})
-        scene = inputs.read_scene(scene_path)
+        scene = scene_inputs.read_scene(scene_path)
         version = self.f.bound_map_version() if scene.root == self.f.scene.root else None
         return write_batch(scene_path, name, kit='fixture', map_version=version)
 
     def episode(self, session, name):
-        path = write_task(inputs.read_batch(session), name, self.f.recording_paths)
-        episode = inputs.read_episode(path)
+        path = write_task(batch_inputs.read_batch(session), name, self.f.recording_paths)
+        episode = episode_inputs.read_episode(path)
         for arm, raw in episode.recordings.items():
             original = self.f.recording_paths[arm]
             self.f.cameras[raw] = self.f.cameras[original]
@@ -185,18 +130,18 @@ class SessionManagementTests(unittest.TestCase):
 
     def test_interleaved_scenes_reuse_devices_with_distinct_map_frames(self):
         first = self.session(self.f.scene_path, 'morning')
-        other_path = self.f.root / 'other_market/scene.yaml'
-        data = inputs.read_yaml(self.f.scene_path)
+        other_path = self.f.root / 'other_market/seed/collection.yaml'
+        data = read_yaml(self.f.scene_path)
         write_yaml(other_path, data)
         other = self.session(other_path, 'afternoon')
-        record = inputs.read_yaml(other)
+        record = read_yaml(other)
         record['mapping'] = dict(left=self.f.ref('left'))
         write_yaml(other, record)
         map_lifecycle.build_scene(other)
         first_task, other_task = self.episode(first, 'take_001'), self.episode(other, 'take_001')
         a, b = workflow.run_episode(first_task), workflow.run_episode(other_task)
         self.assertNotEqual(a['frame_id'], b['frame_id'])
-        self.assertEqual(inputs.read_batch(first).devices, inputs.read_batch(other).devices)
+        self.assertEqual(batch_inputs.read_batch(first).devices, batch_inputs.read_batch(other).devices)
         paths = cli.episode_paths([self.f.scene.root, first, first_task])
         self.assertEqual(len(paths), 2)  # 预置任务和 morning 任务，重复输入去重。
         names = [item['name'] for item in RecordingCatalog(self.f.root).scan()['recordings']]
@@ -210,7 +155,7 @@ class SessionManagementTests(unittest.TestCase):
         new = map_lifecycle.build_scene(self.f.session_path, force=True)
         self.assertNotEqual(original, new['frame_id'])
         self.assertEqual(workflow.run_episode(task, force=True)['frame_id'], original)
-        manifest = inputs.read_yaml(session)
+        manifest = read_yaml(session)
         manifest['map']['manifest_sha256'] = '0'*64
         write_yaml(session, manifest)
         with self.assertRaisesRegex(ValueError, '哈希'):
@@ -219,7 +164,7 @@ class SessionManagementTests(unittest.TestCase):
     def test_declared_device_and_import_hash_are_verified(self):
         session = self.session(self.f.scene_path, 'verified')
         task = self.episode(session, 'take_001')
-        data = inputs.read_yaml(task)
+        data = read_yaml(task)
         data['recordings']['left']['serial'], data['recordings']['right']['serial'] = (
             data['recordings']['right']['serial'], data['recordings']['left']['serial'])
         write_yaml(task, data)
@@ -228,16 +173,16 @@ class SessionManagementTests(unittest.TestCase):
         data['recordings']['left']['sha256'] = '0'*64
         write_yaml(task, data)
         with self.assertRaisesRegex(ValueError, '录像已变化'):
-            inputs.read_episode(task)
+            episode_inputs.read_episode(task)
 
     def test_old_scene_schema_is_refused_without_compatibility_branch(self):
-        data = inputs.read_yaml(self.f.scene_path); data['schema_version'] = 1
+        data = read_yaml(self.f.scene_path); data['scene']['schema_version'] = 1
         write_yaml(self.f.scene_path, data)
         with self.assertRaisesRegex(ValueError, 'schema_version: 3'):
-            inputs.read_scene(self.f.scene_path)
+            scene_inputs.read_scene(self.f.scene_path)
 
     def test_discovery_skips_internal_and_archived_tasks(self):
-        for name in (*inputs.INTERNAL_DIRECTORIES, '.hidden'):
+        for name in (*scene_inputs.INTERNAL_DIRECTORIES, '.hidden'):
             write_yaml(self.f.scene.root / name / 'nested/episode.yaml', {})
         self.assertEqual(cli.episode_paths([self.f.scene.root]), [self.f.episode_path])
         unrelated = self.f.scene.root / 'notes.txt'

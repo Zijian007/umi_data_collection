@@ -1,0 +1,21 @@
+# 浏览器查看器默认值；当前机器覆盖写入 viewer.local.yaml，不提交 Git。
+host: 127.0.0.1  # HTTP 监听地址。
+port: 9092  # HTTP 监听端口；0 表示自动选择空闲端口。
+decode_concurrency: 2  # 同时解码原始视频的任务数。
+preview_workers: 1  # 同时生成预览视频的 worker 数量。
+preview_pending: 2  # 预览任务总数上限，包含运行中和排队任务。
+frame_cache_entries: 64  # 内存中保留的最近帧数量。
+map_cache_entries: 4  # 内存中保留的地图数量。
+frame_width: 720  # 单帧查看图像的最大宽度，单位 px。
+frame_quality: 4  # 单帧 JPEG 质量参数，范围由配置校验约束。
+preview_width: 720  # 预览视频宽度，单位 px。
+preview_bitrate_kbps: 1500  # 预览视频目标码率，单位 kbps。
+preview_crf: 12  # 预览视频 H.264 CRF，数值越小画质越高。
+preview_gop: 30  # 预览视频关键帧间隔，单位帧。
+preview_encode_threads: 4  # 预览视频编码线程数。
+preview_decode_threads: 2  # 预览视频解码线程数。
+decode_wait_s: 5  # 等待视频解码资源的最长时间，单位 s。
+frame_timeout_s: 15  # 单帧生成超时时间，单位 s。
+preview_timeout_s: 600  # 预览视频生成超时时间，单位 s。
+map_timeout_s: 240  # 地图加载和转换超时时间，单位 s。
+map_max_points: 50000  # 每个子地图允许发送到查看器的最大点数。

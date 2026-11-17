@@ -11,14 +11,15 @@ import math
 import os
 import re
 
-from . import inputs
 from .episodes import invalidate_task_state
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.scene import layout
 from software.scene.layout import locked
 from software.scene.models import SceneParameters, Session
 from software.scene.pipeline import recordings
-from software.storage import write_json, write_yaml
+from software.infrastructure.file_store import read_yaml, write_json, write_yaml
+from software.scene.management.batch_inputs import batch_task_directories, batch_video_sources, read_arms, task_video_sources
+from software.scene.management.episode_inputs import read_episode
 
 
 @dataclass(frozen=True)
@@ -83,7 +84,7 @@ def scan_raw_videos(paths: list[Path]) -> tuple[list[RecordingMetadata], list[di
 
 def plan_episodes(recording_infos: list[RecordingMetadata], arms: dict[str, str], parameters: SceneParameters) -> tuple[list[dict], list[dict]]:
     """时间只用于产生唯一配对；左右身份完全来自套件，不跨套件猜测。"""
-    expected = inputs.read_arms(list(arms))
+    expected = read_arms(list(arms))
     selected = [item for item in recording_infos if item.serial in arms.values()]
     if len(expected) == 1:
         return [{expected[0]: item} for item in selected], []
@@ -114,19 +115,19 @@ def plan_tasks(recording_infos: list[RecordingMetadata], arms: dict[str, str], p
     existing = existing or {}
     grouped, unassigned = {}, []
     task_sources = [(source.resolve(), layout.manifest(task, 'episode.yaml'))
-                    for task in inputs.batch_task_directories(batch) for source in inputs.task_video_sources(task)]
+                    for task in batch_task_directories(batch) for source in task_video_sources(task)]
     for item in recording_infos:
         owner = next((manifest for source, manifest in task_sources if item.path.is_relative_to(source)), None)
         if owner is not None:
             grouped.setdefault(owner, []).append(item)
         else:
             unassigned.append(item)
-    expected = inputs.read_arms(list(arms))
+    expected = read_arms(list(arms))
     plans, pending = [], []
     for path, items in sorted(grouped.items()):
-        task_expected = inputs.read_arms(layout.task_configuration(layout.owner(path)).get('expected_arms', expected), expected)
+        task_expected = read_arms(layout.task_configuration(layout.owner(path)).get('expected_arms', expected), expected)
         if any(item.serial not in {arms[arm] for arm in task_expected} for item in items):
-            raise ValueError(f'{layout.owner(path).name} 原片与 task.yaml 预期使用的手不一致')
+            raise ValueError(f'{layout.owner(path).name} 原片与 collection.yaml.tasks 预期使用的手不一致')
         plan = {arm: [item for item in items if item.serial == arms[arm]] for arm in task_expected}
         if path.exists() and any(not values for values in plan.values()):
             unassigned.extend(items)
@@ -172,8 +173,8 @@ def _remove_pending_source(source: Path, target: Path, pending: Path, digest: st
 
 def _write_episode(path: Path, recording_refs: dict) -> None:
     """保存自动登记结果；相同内容不改清单和验收，补片保留任务描述。"""
-    previous_record = inputs.read_yaml(path) if path.exists() else {}
-    task_record = dict(schema_version=previous_record.get('schema_version', 5), recordings=recording_refs)
+    previous_record = read_yaml(path) if path.exists() else {}
+    task_record = dict(schema_version=5, recordings=recording_refs)
     if task_record != previous_record:
         write_yaml(path, task_record)
         invalidate_task_state(path)
@@ -185,7 +186,7 @@ def register_recordings(session: Session, *, dry_run: bool = False) -> dict:
     batch = session.root
     pending_root = batch / 'pending'
     with nullcontext() if dry_run else locked(session.root):
-        sources = inputs.batch_video_sources(batch)
+        sources = batch_video_sources(batch)
         recordings_metadata, scan_errors = scan_raw_videos(sources)
         mapping_hashes = {recording['sha256'] for recording in session.mapping.values()}
         recordings_metadata = [recording for recording in recordings_metadata if recording.sha256 not in mapping_hashes
@@ -196,11 +197,10 @@ def register_recordings(session: Session, *, dry_run: bool = False) -> dict:
                               for recording in recordings_metadata if recording.serial not in arm_serials.values()]
         recordings_metadata = [recording for recording in recordings_metadata if recording.serial in arm_serials.values()]
         recording_owners, incomplete_tasks = {}, {}
-        for path in (layout.manifest(task, 'episode.yaml') for task in inputs.batch_task_directories(batch)
+        # batch_task_directories 已按任务名校验，内部目录与隐藏目录不会出现。
+        for path in (layout.manifest(task, 'episode.yaml') for task in batch_task_directories(batch)
                      if layout.manifest(task, 'episode.yaml').is_file()):
-            if layout.owner(path).name.startswith('.') or layout.owner(path).name in inputs.INTERNAL_DIRECTORIES:
-                continue
-            episode = inputs.read_episode(path, verify=False)
+            episode = read_episode(path, verify=False)
             for recording in episode.recording_refs.values():
                 if recording['sha256'] in recording_owners:
                     raise ValueError('同一原片已属于多个任务，请先核对任务清单')
@@ -239,8 +239,8 @@ def register_recordings(session: Session, *, dry_run: bool = False) -> dict:
                 _write_episode(path, recording_refs)
                 for recording in plan.values():
                     _remove_pending_source(recording.path, imported_recordings[recording.sha256].path, pending_root, recording.sha256)
-        task_sources = [source.resolve() for task in inputs.batch_task_directories(batch)
-                        for source in inputs.task_video_sources(task)]
+        task_sources = [source.resolve() for task in batch_task_directories(batch)
+                        for source in task_video_sources(task)]
         for recording in pending:
             if recording['sha256'] in imported_recordings:
                 recording['path'] = str(imported_recordings[recording['sha256']].path)

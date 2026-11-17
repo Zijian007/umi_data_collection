@@ -9,7 +9,7 @@ import tempfile
 
 import numpy as np
 
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.calibration.models import GravityResult
 from software.calibration.pipeline import runtime
 
@@ -23,13 +23,13 @@ def validate_gravity(dataset: Path, calibration_json: Path, parameters, executio
     calibration_hash = artifact_identity.file_hash(calibration_json)
     imu_csv = dataset / 'mav0/imu0/data.csv'
     input_hash = artifact_identity.file_hash(imu_csv)
-    return_code = runtime.run_logged([sys.executable, runtime.TOOLS / 'imu_calib_physical_check.py', '--calib', calibration_json,
+    return_code = runtime.run_logged([sys.executable, '-m', 'software.calibration.tools.imu_calib_physical_check', '--calib', calibration_json,
                 '--euroc', dataset,
                 '--window-s', str(p.window_s), '--gyro-max-dps', str(p.maximum_gyro_deg_s),
                 '--acc-std-max', str(p.maximum_acc_norm_std_m_s2), '--min-window-samples', str(p.minimum_samples),
                 '--gravity', str(p.gravity_m_s2), '--distinct-dir-cos', str(p.distinct_direction_cosine),
                 '--min-window-span-fraction', str(p.minimum_window_span_fraction), '--out', destination],
-               execution.paths.logs / 'gravity_check.log')
+               execution.paths.logs / 'gravity_check.log', cwd=runtime.REPO)
     path = destination / 'imu_calib_physical_check.json'
     if return_code not in (0, 4) or not path.is_file():
         raise RuntimeError(f'D 工具执行失败（退出码 {return_code}），见 {execution.paths.logs / "gravity_check.log"}')

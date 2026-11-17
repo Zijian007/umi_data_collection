@@ -9,15 +9,17 @@ import unittest
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software import provenance
+from software.infrastructure import provenance
 from software.scene import workflow
-from software.scene.management import inputs
+from software.scene.configuration import SceneOverrides
+from software.scene.management import episode_inputs
 from software.scene.result_io import scene_reference
-from software.storage import write_yaml
+from software.infrastructure.file_store import write_yaml
 from software.viewer.data import RecordingCatalog
 from software.viewer.poses import derive_body_tracks
 
 import test_scene as fixtures
+from software.scene import asset_identity
 
 
 class BodyTrackTests(unittest.TestCase):
@@ -65,21 +67,21 @@ class CompactResultTests(unittest.TestCase):
 
     def test_output_policy_preserves_poses_and_map_and_replaces_previous_run(self):
         fixture = self.fixture
-        declaration = inputs.read_yaml(fixture.scene_path)
-        declaration['parameters'] = dict(export_auxiliary_trajectories=True)
-        write_yaml(fixture.scene_path, declaration)
+        expert = fixture.root / 'compact-expert.yaml'
+        write_yaml(expert, dict(parameters=dict(diagnostics=dict(export_auxiliary_trajectories=True))))
+        fixture.scene_overrides = SceneOverrides.load(expert)
         built = fixture.build_scene()
-        workflow.run_episode(fixture.episode_path)
+        workflow.run_episode(fixture.episode_path, overrides=fixture.scene_overrides)
         output = fixture.task_root / 'results'
         original = output.resolve()
         trajectory = (output / 'left/trajectory.csv').read_bytes()
         expected_camera = np.loadtxt(output / 'left/details/traj_camera.txt')
         expected_imu = np.loadtxt(output / 'left/details/traj_imu.txt')
 
-        declaration['parameters']['export_auxiliary_trajectories'] = False
-        write_yaml(fixture.scene_path, declaration)
+        write_yaml(expert, dict(parameters=dict(diagnostics=dict(export_auxiliary_trajectories=False))))
+        fixture.scene_overrides = SceneOverrides.load(expert)
         self.assertEqual(fixture.build_scene()['status'], 'skipped')
-        workflow.run_episode(fixture.episode_path)
+        workflow.run_episode(fixture.episode_path, overrides=fixture.scene_overrides)
         metadata = json.loads((output / 'episode.json').read_text())
         self.assertEqual(metadata['schema_version'], 4)
         self.assertNotEqual(output.resolve(), original)
@@ -88,7 +90,7 @@ class CompactResultTests(unittest.TestCase):
         for filename in ('traj_camera.txt', 'traj_imu.txt'):
             self.assertFalse((output / 'left/details' / filename).exists())
         self.assertFalse(original.exists())  # 被取代的运行由自动清理删除
-        inputs.validate_assets(output, metadata['assets'])
+        asset_identity.validate_assets(output, metadata['assets'])
         catalog = RecordingCatalog(output)
         loaded = catalog.load(catalog.scan()['recordings'][0]['id'])
         for name, expected in (('camera', expected_camera), ('imu', expected_imu)):
@@ -108,15 +110,13 @@ class CompactResultTests(unittest.TestCase):
         self.assertNotIn('tag_distance', metadata)
         for duplicate in ('frame_id', 'scene_version', 'session', 'synchronization', 'trajectory_code'):
             self.assertNotIn(duplicate, metadata['inputs'])
-        required_sources = {**inputs.algorithm_identity(), **provenance.code_identity('trajectory')}
+        required_sources = {**episode_inputs.algorithm_identity(), **provenance.code_identity('trajectory')}
         self.assertEqual(metadata['inputs']['code'], required_sources)
         with (output / 'left/trajectory.csv').open() as stream:
             self.assertEqual(csv.DictReader(stream).fieldnames,
                              ['row', 't_video_s', 't_episode_s', 'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw'])
 
-    def test_schema_three_scene_reference_remains_readable_and_checks_conflicts(self):
+    def test_retired_schema_three_results_are_rejected(self):
         legacy = dict(schema_version=3, frame_id='scene/old', scene=dict(frame_id='scene/old', version='old'))
-        self.assertEqual(scene_reference(legacy), legacy['scene'])
-        legacy['frame_id'] = 'other'
-        with self.assertRaisesRegex(ValueError, '场景坐标'):
+        with self.assertRaisesRegex(ValueError, 'schema_version: 4'):
             scene_reference(legacy)

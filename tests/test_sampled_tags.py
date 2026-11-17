@@ -15,8 +15,9 @@ import numpy as np
 
 from software.gripper_width import detection, sampled_detection, tag_distance
 from software.gripper_width.tag_models import TagDistanceRequest, TagDistanceResult, TagDistanceSeries, TagPoseQuality
-from software.scene.management import inputs
-from software.storage import write_json
+from software.infrastructure.file_store import read_yaml
+from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
+from software.infrastructure.file_store import write_json
 from test_tag_distance import CAMERA, SIZES, projected
 
 
@@ -269,20 +270,20 @@ class SourceFrameSelectionTests(unittest.TestCase):
 
 class TagDistanceAcceptanceTests(unittest.TestCase):
     def test_default_threshold_and_configuration_bounds(self):
-        self.assertEqual(inputs.load_scene_parameters().tag_distance_min_valid_fraction, .5)
-        self.assertEqual(inputs.load_scene_parameters().tag_distance_max_missing_frames, 15)
-        self.assertEqual(inputs.load_scene_parameters().tag_distance_roi_px, [600, 980, 1350, 1250])
+        self.assertEqual(scene_inputs.load_scene_parameters().tag_distance_min_valid_fraction, .5)
+        self.assertEqual(scene_inputs.load_scene_parameters().tag_distance_max_missing_frames, 15)
+        self.assertEqual(scene_inputs.load_scene_parameters().tag_distance_roi_px, [600, 980, 1350, 1250])
         for value in (0., -1., 1.01, float('nan'), True):
             with self.subTest(value=value), self.assertRaises(ValueError):
-                inputs.load_scene_parameters(overrides={'tag_distance_min_valid_fraction': value})
+                scene_inputs.load_scene_parameters(overrides={'tag_distance_min_valid_fraction': value})
         for value in (-1, 1.5, True):
             with self.subTest(gap=value), self.assertRaises(ValueError):
-                inputs.load_scene_parameters(overrides={'tag_distance_max_missing_frames': value})
-        self.assertEqual(inputs.load_scene_parameters(overrides={
+                scene_inputs.load_scene_parameters(overrides={'tag_distance_max_missing_frames': value})
+        self.assertEqual(scene_inputs.load_scene_parameters(overrides={
             'tag_distance_max_missing_frames': 0}).tag_distance_max_missing_frames, 0)
         for roi in ([1, 2, 3], [600., 980, 1350, 1250], [1350, 980, 600, 1250], [0, 0, 2000, 1920]):
             with self.subTest(roi=roi), self.assertRaises(ValueError):
-                inputs.load_scene_parameters(overrides={'tag_distance_roi_px': roi})
+                scene_inputs.load_scene_parameters(overrides={'tag_distance_roi_px': roi})
 
     def test_cli_and_scene_share_the_requested_default_roi(self):
         from software.calibration.cli import build_parser
@@ -362,6 +363,7 @@ class TagDistanceAcceptanceTests(unittest.TestCase):
                                                        np.full(len(times), 'two_tags')), {})
 
         with patch.object(tag_distance, 'process', side_effect=measure), \
+                patch('software.vision.decoding.VideoDecode.run', return_value=[]), \
                 self.assertRaisesRegex(ValueError, 'right.*40.0%.*50.0%'):
             workflow.run_episode(fixture.episode_path)
         self.assertEqual(output.resolve(), previous)

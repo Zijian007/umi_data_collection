@@ -11,7 +11,7 @@ import unittest
 import cv2
 import numpy as np
 
-from software import provenance
+from software.infrastructure import provenance
 from software.vision.tag_board import DEFAULT_LAYOUT, load
 
 

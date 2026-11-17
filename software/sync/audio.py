@@ -1,9 +1,9 @@
 """Estimate a constant offset between two recordings from their audio.
 
 The estimator deliberately has no scene or manifest dependencies.  It returns
-the physical relationship ``other_started_later_s``; conversion to UMI's
-additive episode offset belongs to the pipeline layer, where A/V calibration is
-available.
+the physical relationship ``other_started_later_s``; the scene pipeline turns
+that value into specialist's additive session-clock offset and records the
+assumption in ``sync.json``.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import functools
 from pathlib import Path
+import shutil
 import subprocess
 
 import numpy as np
@@ -36,6 +37,8 @@ class AudioSyncEstimate:
     peak_value: float
     sample_rate_hz: int
     max_offset_s: float
+    method: str = "specialist_audio_envelope_xcorr_v1"
+    coarse_offset_s: float | None = None
 
 
 _DEFAULT_SAMPLE_RATE = 16_000
@@ -53,7 +56,10 @@ def _ffmpeg() -> str:
     try:
         import imageio_ffmpeg
     except ImportError as error:  # pragma: no cover - environment dependent
-        raise AudioSyncError("imageio-ffmpeg is required to decode recording audio") from error
+        system_ffmpeg = shutil.which('ffmpeg')
+        if system_ffmpeg:
+            return system_ffmpeg
+        raise AudioSyncError("imageio-ffmpeg or a system ffmpeg is required to decode recording audio") from error
     return str(imageio_ffmpeg.get_ffmpeg_exe())
 
 
@@ -133,12 +139,17 @@ def _correlation(a: np.ndarray, b: np.ndarray, sample_rate_hz: int,
             f"audio alignment is ambiguous: peak ratio {ratio:.3f} "
             f"is below {min_peak_ratio:.3f}"
         )
+    coarse_offset = float(offsets[peak] + correction / effective_rate)
+    # Keep the accepted offset equal to the bounded envelope-correlation peak;
+    # this is the session-clock convention used by the current pipeline.
+    refined_offset = coarse_offset
     return AudioSyncEstimate(
-        other_started_later_s=float(offsets[peak] + correction / effective_rate),
+        other_started_later_s=refined_offset,
         peak_ratio=ratio,
         peak_value=height,
         sample_rate_hz=sample_rate_hz,
         max_offset_s=max_offset_s,
+        coarse_offset_s=coarse_offset,
     )
 
 

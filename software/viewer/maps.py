@@ -13,12 +13,13 @@ import sys
 import tempfile
 import threading
 
-from software.environment import python_executable
+from software.infrastructure.runtime_environment import python_executable
 from software.scene import layout
 from software.trajectory.reporting import map_data
 from software.trajectory.reporting.results import result_path
-from software import settings
+from software.configuration import operational_settings as settings
 from software.viewer import cache
+from software.infrastructure.paths import deps_root
 
 
 _export_lock = threading.Lock()
@@ -81,7 +82,7 @@ def _convert(directory: Path, identity: tuple) -> dict:
 
 
 def _export(directory: Path) -> dict:
-    deps = Path(os.environ.get('UMI_DEPS') or map_data.ROOT / '.deps')
+    deps = deps_root(os.environ)
     project_python = deps / 'env/bin/python'
     python = python_executable(os.environ, default=str(project_python) if project_python.is_file() else sys.executable)
     with tempfile.TemporaryDirectory(prefix='umi-view-map-') as temporary_atlas:

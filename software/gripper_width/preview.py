@@ -11,8 +11,8 @@ import numpy as np
 from . import detection
 from .frame_processing import detect_frame
 from software.camera.x3.frame import SRC_H, SRC_W, FPS_SRC_RATE
-from software.console import Console
-from software.storage import atomic_file
+from software.infrastructure.terminal import Console
+from software.infrastructure.file_store import atomic_file
 
 
 PREVIEW_SIZE = 960

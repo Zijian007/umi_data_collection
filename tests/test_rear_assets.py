@@ -7,8 +7,10 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software import config, provenance, registry
-from software.storage import write_json
+from software.configuration import loader as config
+from software.infrastructure import provenance
+from software.camera import registry
+from software.infrastructure.file_store import write_json
 from software.trajectory.algorithms import fusion
 from software.trajectory.calibration import assets, selection
 from software.trajectory.models import TrajectoryRequest
@@ -43,19 +45,19 @@ class RearAssetsTests(RecordingFixture):
         manifest = calibration_assets.freeze_rear_calibration(rear, self.output/'devices/rear')
         self.assertEqual(calibration_assets.load_frozen_rear(manifest)['cam_time_offset_ns'], assets.read_basalt(rear.path)['cam_time_offset_ns'])
         self.successful_result()
-        write_json(self.output/'summary.json', dict(status='ok', run_fingerprint=fingerprint))
+        write_json(self.output/'details/summary.json', dict(status='ok', run_fingerprint=fingerprint))
         self.assertIsNotNone(reuse.reuse_decision(self.output, fingerprint, notes=self.request.configuration.values.notes).summary)
         (manifest.parent/'calibration.json').write_text('{}')
         self.assertIsNone(reuse.reuse_decision(self.output, fingerprint, notes=self.request.configuration.values.notes).summary)
 
     def test_missing_rear_refuses_before_force_can_remove_old_result(self):
         self.successful_result()
-        before = (self.output/'summary.json').read_bytes()
+        before = (self.output/'details/summary.json').read_bytes()
         with patch.object(selection, 'select_calibration', return_value=self.selected):
             result = workflow.run_recording(self.video, self.output.parent, TrajectoryRequest(mode='dual', force=True))
         self.assertEqual(result['status'], 'failed')
         self.assertIn('无法读取 INSV 工厂参数', result['reason'])
-        self.assertEqual(before, (self.output/'summary.json').read_bytes())
+        self.assertEqual(before, (self.output/'details/summary.json').read_bytes())
 
     def test_rejects_unused_rear_and_frozen_source_changes(self):
         with self.assertRaisesRegex(ValueError, '未使用'):

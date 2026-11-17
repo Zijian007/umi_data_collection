@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from software.vision import recordings as visual_recordings, runtime as visual_runtime, slam as visual_slam
-from software import config
+from software.configuration import loader as config
 from software.trajectory.calibration import assets as calibration_assets
 from software.trajectory.pipeline import reconstruction, runtime
 from software.trajectory.models import FusionArtifacts, RecordingPaths, ReconstructionContext, TrajectoryRequest
@@ -59,7 +59,7 @@ class ReconstructionTests(unittest.TestCase):
         self.assertIn(str(self.paths.attempt(1) / 'front/loc/frames.csv'), fusion)
         self.assertIn(str(self.data.imu_csv), fusion)
         self.assertEqual(json.loads(self.settings.parameters_file.read_text())['input']['mode'], 'handheld')
-        self.assertIn('fusion_cli.py ', (result.directory / 'logs/run.txt').read_text())
+        self.assertIn('software.trajectory.algorithms.fusion_cli', (result.directory / 'logs/run.txt').read_text())
 
     def test_measured_lens_settings_are_preserved_without_sample_rear_fallback(self):
         front = calibration_assets.read_basalt(calibration_assets.SAMPLE_CAMERA_JSON)
@@ -146,8 +146,8 @@ class ReconstructionTests(unittest.TestCase):
 
         def execute(command, **options):
             result = self.engines(command, **options)
-            if any(Path(arg).name == 'fusion_cli.py' for arg in command):
-                pos = next(i for i, arg in enumerate(command) if Path(arg).name == 'fusion_cli.py')
+            if 'software.trajectory.algorithms.fusion_cli' in command:
+                pos = command.index('software.trajectory.algorithms.fusion_cli')
                 directory = Path(command[pos+6])
                 directory.mkdir()
                 (directory/'alignment_failure.json').write_text(json.dumps(dict(code='NO_USABLE_LENS')))
@@ -165,8 +165,8 @@ class ReconstructionTests(unittest.TestCase):
 
         def execute(command, **options):
             result = self.engines(command, **options)
-            if any(Path(arg).name == 'fusion_cli.py' for arg in command):
-                pos = next(i for i, arg in enumerate(command) if Path(arg).name == 'fusion_cli.py')
+            if 'software.trajectory.algorithms.fusion_cli' in command:
+                pos = command.index('software.trajectory.algorithms.fusion_cli')
                 directory = Path(command[pos+6])
                 directory.mkdir()
                 (directory/'alignment_failure.json').write_text(json.dumps(dict(code='NO_USABLE_LENS')))

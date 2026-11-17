@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from software import config
+from software.configuration import loader as config
 from software.camera.x3 import extraction
 from software.camera.x3.frame import LENS_HALF, STEP
 from software.vision import runtime
@@ -41,9 +41,9 @@ def prepare_lens_videos(video: Path, context: VisualContext, *, lenses: tuple[st
         output = paths.lens_videos / f'{lens}.mp4'
         log = paths.logs / f'{lens}_video.log'
         runtime.run_logged(
-            [settings.tools_python, str(runtime.TOOLS / 'make_lens_video.py'), str(video),
+            [settings.tools_python, '-m', 'software.vision.tools.make_lens_video', str(video),
              str(paths.dataset / 'mav0'), str(output), LENS_HALF[lens], '--config', str(resolved_config)],
-            log, stage=stage, environment=settings.environment, failure_code=3,
+            log, stage=stage, environment=settings.environment, cwd=runtime.REPO, failure_code=3,
         )
         if not output.is_file() or output.stat().st_size == 0:
             raise ProcessingError(stage, f'未生成镜头视频；日志：{log}', return_code=3)

@@ -8,7 +8,7 @@ import json
 from scipy.spatial.transform import Rotation as Rot
 import numpy as np
 
-from software import parameters as parameter_models
+from software.configuration import parameter_models
 from software.camera.x3.frame import output_frame_rate
 from software.trajectory.algorithms.fusion_alignment import AlignmentResult
 

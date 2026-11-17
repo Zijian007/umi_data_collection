@@ -15,7 +15,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from software import config
+from software.configuration import loader as config
 
 
 BLACK_BORDER_BITS = 2  # Kalibr / Basalt blackTagBorder

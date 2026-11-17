@@ -14,7 +14,7 @@
 | 三维查看 | [查看器代码指南](../../software/viewer/README.md)：`server.main()` → `RecordingCatalog` → 浏览器播放状态 |
 | 共用视觉 | [视觉代码指南](../../software/vision/README.md)：录像准备、ORB 建图/定位、视觉上下文与执行验收 |
 | 相机数据 | [extraction.py](../../software/camera/x3/extraction.py) 提取时间戳和 IMU；[frame.py](../../software/camera/x3/frame.py) 定义录制几何、裁剪、帧率和时钟约定 |
-| 设备选择 | [registry.py](../../software/registry.py) 读取内部序列号、选择标定与夹爪并核对哈希 |
+| 设备选择 | [registry.py](../../software/camera/registry.py) 读取内部序列号、选择标定与夹爪并核对哈希 |
 
 `workflow.py` 展示顺序、阶段衔接与失败收尾；阶段函数返回具名结果。标定的 `acceptance.py` 决定验收，`result_io.py` 保存和校验记录，`reports.py` 只负责展示。标定第三方进程、依赖与日志放在 `pipeline/runtime.py`，Basalt 适配在 `solve/basalt.py`，数值计算在 `algorithms/`，独立命令在 `tools/`，安装资源在 `setup/`。
 
@@ -22,13 +22,13 @@
 
 ## 参数管理
 
-见 [统一参数配置](../../config/README.md)。数值默认值写在 `config/*.yaml`，不可变模型位于 `software/parameters.py`，加载、校验、覆盖和快照位于 `software/config.py`。源代码、引擎、文件内容及规范 JSON 的身份计算集中在 `software/provenance.py`；设备登记、场景和标定共用同一实现。workflow 加载一次，向阶段传递不可变参数。修改参数后同时核对复用、报告与默认数值回归。
+见 [统一参数配置](../../config/README.md)。数值默认值写在 `config/*.yaml`，不可变模型位于 `software/configuration/parameter_models.py`，加载、校验、覆盖和快照位于 `software/configuration/loader.py`。源代码、引擎、文件内容及规范 JSON 的身份计算集中在 `software/infrastructure/provenance.py`；设备登记、场景和标定共用同一实现。workflow 加载一次，向阶段传递不可变参数。修改参数后同时核对复用、报告与默认数值回归。
 
 ## 命名和终端约定
 
-外围代码使用 `request`、`camera_serial`、`keep_work`、`return_code`、`reason`、`error`。数学符号使用对应领域的惯例。场景日常流程统一为手写 kit.yaml/batch.yaml、放置视频，再执行 run；内部自动登记逻辑位于 ingest.py，无独立登记 CLI。历史 JSON 与第三方接口继续按各自协议读取，例如 `serial` / `why`、`subprocess.returncode`；内部 Session/Episode 类型和 episode.json 文件名不表示还支持旧 CLI。
+外围代码使用 `request`、`camera_serial`、`keep_work`、`return_code`、`reason`、`error`。数学符号使用对应领域的惯例。场景日常流程统一为手写 kit.yaml/collection.yaml、放置视频，再执行 run；内部自动登记逻辑位于 ingest.py，无独立登记 CLI。历史 JSON 与第三方接口继续按各自协议读取，例如 `serial` / `why`、`subprocess.returncode`；内部 Session/Episode 类型和 episode.json 文件名不表示还支持旧 CLI。
 
-[console.py](../../software/console.py) 统一输出格式，调用为 `runtime.console.write(...)`。阶段负责进度，报告负责结果；标签依次表示工具、录像、步骤、重建次数和执行状态。标定验收 `PASS` / `FAIL` 与执行“完成 / 失败”分别展示。引擎原始日志保留原文。
+[terminal.py](../../software/infrastructure/terminal.py) 统一输出格式，调用为 `runtime.console.write(...)`。阶段负责进度，报告负责结果；标签依次表示工具、录像、步骤、重建次数和执行状态。标定验收 `PASS` / `FAIL` 与执行“完成 / 失败”分别展示。引擎原始日志保留原文。
 
 ## 验证
 
@@ -37,6 +37,7 @@
 ```bash
 ./test.sh        # 一键测试：主单元测试 (unittest，含宽度映射) + 前端测试 (node)
 ./test.sh --all  # 包含 CLI check 运行时检查与 KB4 C++ 数值回归
+./test.sh --quick  # 快速内循环：数值、schema、时序与缓存契约测试（约 26 秒）
 ./test.sh --unit test_rear_assets test_calibration_inventory  # 日常改动：只跑相关模块
 ./test.sh --unit test_config.ConfigTests.test_c_isolates_task_poster_and_dual_mode_but_keeps_solver_parameters
 ```
@@ -52,7 +53,7 @@ node --test tests/js/viewer.test.mjs
 
 Node 只用于查看器前端测试，运行查看器不需要 Node。Python 测试覆盖输入、标定验收、流程、复用、重建协议、产物布局与查看器；涉及求解器和 SLAM 的单元测试使用替代引擎。真实录像端到端回归和独立误差评估需另外记录输入、设备标定、版本及结果。
 
-`--unit` 不带模块时仍运行全部 Python 测试；带模块时接受 `test_模块` 或 `test_模块.测试类.方法`，从 `tests/` 解析。定位和迭代时运行相关模块，涉及公共配置、登记表或融合接口的改动收尾再跑全量。选跑不会自动推断依赖，也不会替代最后的跨模块回归。
+`--quick` 用于日常内循环，跳过建图、任务、场景和查看器等端到端工作流；`--unit` 不带模块时仍运行全部 Python 测试。`--unit` 带模块时接受 `test_模块` 或 `test_模块.测试类.方法`，从 `tests/` 解析。定位和迭代时运行快速档或相关模块，涉及公共配置、登记表或融合接口的改动收尾再跑全量。选跑不会自动推断依赖，也不会替代最后的跨模块回归。
 
 复用测试夹具时导入模块或独立 fixture，避免把其他文件的 `TestCase` 类直接导入测试模块顶层：unittest 会再次收集该类。查重应比较源码文件、类和方法；仅按测试 ID 检查会漏掉 `tests.test_x` 与 `test_x` 的别名重复。
 

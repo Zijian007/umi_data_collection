@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from software import settings
+from software.configuration import operational_settings as settings
 
 from pathlib import Path
 import argparse
@@ -13,9 +13,10 @@ import tempfile
 
 from .results import attempt_paths, load_summary, result_path
 from software.vision.paths import exporter_paths
+from software.infrastructure.paths import PROJECT_ROOT
 
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = PROJECT_ROOT
 MAX_POINTS = 50000  # 每张子地图的浏览器绘制预算；完整点云仍在 .osa 中。
 
 
@@ -24,7 +25,7 @@ class MapDataError(ValueError):
 
 
 def attempt_directory(output: Path, summary: dict) -> Path | None:
-    """只选摘要采用的轮次，兼容旧布局；不会把其他轮次的地图混进结果。"""
+    """只选摘要采用的重建轮次，不会把其他轮次的地图混进结果。"""
     try:
         candidates = attempt_paths(output, summary)
     except ValueError as error:

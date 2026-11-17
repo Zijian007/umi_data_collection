@@ -13,7 +13,8 @@ import json
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software import config, provenance
+from software.configuration import loader as config
+from software.infrastructure import provenance
 from software.camera.x3.frame import output_frame_rate
 from software.trajectory.algorithms.fusion_alignment import AlignmentError, align_recording
 from software.trajectory.algorithms.inertial import integrate_gyro_rotation

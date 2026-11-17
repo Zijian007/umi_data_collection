@@ -11,7 +11,7 @@ import numpy as np
 
 from software.camera.geometry import resample_pose_series
 from software.gripper_width import series
-from software.pose_io import read_tum
+from software.trajectory.io.tum import read_tum
 from software.scene.result_io import TCP_COLUMNS, trajectory_path
 
 

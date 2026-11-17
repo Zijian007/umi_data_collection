@@ -11,14 +11,17 @@ import os
 import shutil
 import tempfile
 
-from . import inputs
-from software import provenance as artifact_identity
+from software.infrastructure import provenance as artifact_identity
 from software.scene import layout
 from software.scene.configuration import SceneOverrides, apply_overrides
 from software.scene.layout import locked
 from software.scene.management import camera_assets
+from software.scene.management.scene_inputs import INTERNAL_DIRECTORIES, validate_name
+from software.scene.management.batch_inputs import batch_task_directories
+from software.scene.asset_identity import validate_assets
+from software.scene.management.episode_inputs import episode_inputs, read_episode
 from software.scene.result_io import scene_reference, trajectory_path
-from software.storage import write_json
+from software.infrastructure.file_store import write_json
 
 
 def episode_paths(paths: list[Path], *, exclude: Iterable[Path] = ()) -> list[Path]:
@@ -30,7 +33,8 @@ def episode_paths(paths: list[Path], *, exclude: Iterable[Path] = ()) -> list[Pa
         if any(path.is_relative_to(root) for root in excluded):
             continue
         if path.is_file():
-            if path.name not in ('scene.yaml', 'batch.yaml', 'manifest.yaml', 'episode.yaml', 'task.yaml'):
+            layout.reject_legacy_user_file(path)
+            if path.name not in ('collection.yaml', 'manifest.yaml', 'episode.yaml'):
                 raise ValueError(f'请指定场景、套件、批次、任务目录或对应清单：{path}')
             if path.name == 'episode.yaml':
                 found.append(path)
@@ -40,11 +44,11 @@ def episode_paths(paths: list[Path], *, exclude: Iterable[Path] = ()) -> list[Pa
             raise ValueError(f'任务路径不存在：{path}')
         for current, children, files in os.walk(path):
             children[:] = sorted(name for name in children if not name.startswith('.')
-                                 and name not in inputs.INTERNAL_DIRECTORIES
+                                 and name not in INTERNAL_DIRECTORIES
                                  and Path(current) / name not in excluded)
             if layout.is_batch(Path(current)):
                 found.extend(layout.manifest(task, 'episode.yaml')
-                             for task in inputs.batch_task_directories(Path(current))
+                             for task in batch_task_directories(Path(current))
                              if task not in excluded and layout.manifest(task, 'episode.yaml').is_file())
             manifest = layout.manifest(Path(current), 'episode.yaml')
             if manifest.is_file():
@@ -55,7 +59,7 @@ def episode_paths(paths: list[Path], *, exclude: Iterable[Path] = ()) -> list[Pa
 
 def invalidate_task_state(path: Path) -> None:
     """清单变化使处理和验收失效；身份和使用手始终从清单读取。"""
-    inputs.read_episode(path, verify=False)
+    read_episode(path, verify=False)
     root = layout.owner(path)
     layout.metadata(root, 'state.json').unlink(missing_ok=True)
 
@@ -79,7 +83,7 @@ def record_attempt(episode, status: str, target: Path | None, *, reason='') -> N
 
 
 def task_status(path: Path) -> dict:
-    episode = inputs.read_episode(path, verify=False)
+    episode = read_episode(path, verify=False)
     state = layout.read_state(episode.root)
     attempt = state.get('attempt', {})
     status = 'pending'
@@ -110,7 +114,7 @@ def successful_run(episode) -> tuple[Path, dict]:
     run_manifest = json.loads((run_dir / 'episode.json').read_text())
     if run_manifest['status'] != 'ok':
         raise ValueError('任务结果未完成')
-    inputs.validate_assets(run_dir, run_manifest['assets'])
+    validate_assets(run_dir, run_manifest['assets'])
     if 'runtime_overrides' in run_manifest:
         overrides = SceneOverrides.from_snapshot(run_manifest['runtime_overrides'])
         trajectory, parameters = apply_overrides(episode.scene.trajectory, episode.scene.parameters, overrides)
@@ -121,17 +125,17 @@ def successful_run(episode) -> tuple[Path, dict]:
     scene_record = scene_reference(run_manifest)
     map_manifest = dict(version=scene_record['version'], frame_id=scene_record['frame_id'],
                         assets=run_manifest['inputs']['scene_assets'], mode=run_manifest['inputs']['map_mode'])
-    if inputs.episode_inputs(episode, cameras, map_manifest) != run_manifest['inputs']:
+    if episode_inputs(episode, cameras, map_manifest) != run_manifest['inputs']:
         raise ValueError('输入或算法配置已变化，请重新处理后验收')
     return run_dir, run_manifest
 
 
 def review(path: Path, *, accept: bool, reviewer: str, reason='') -> dict:
-    episode = inputs.read_episode(path)
+    episode = read_episode(path)
     with locked(episode.root):
         run_dir, _ = successful_run(episode)
         state = layout.read_state(episode.root)
-        decision = dict(decision='accepted' if accept else 'rejected', reviewer=inputs.validate_name(reviewer), reason=reason,
+        decision = dict(decision='accepted' if accept else 'rejected', reviewer=validate_name(reviewer), reason=reason,
             run=layout.run_reference(episode.root, run_dir), result_sha256=artifact_identity.file_hash(run_dir / 'episode.json'),
             checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
         state['review'] = decision
@@ -157,7 +161,7 @@ def export(paths: list[Path], export_dir: Path, *, with_video=False) -> dict:
         raise ValueError(f'导出目录已存在，拒绝覆盖：{export_dir}')
     accepted_episodes = []
     for path in paths:
-        episode = inputs.read_episode(path)
+        episode = read_episode(path)
         run_dir, run_manifest, review_record = accepted_run(episode)
         accepted_episodes.append((episode, run_dir, run_manifest, review_record))
     if not accepted_episodes:

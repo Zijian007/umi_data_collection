@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from software import config
-from software import parameters as parameter_models
+from software.configuration import loader as config
+from software.configuration import parameter_models
 from software.vision.models import RecordingPaths as VisualPaths, VisualSettings, VisualContext
 
 

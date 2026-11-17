@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from software.calibration import cli
 from software.calibration.pipeline import inputs
+from software.camera import registry
 
 
 class CalibrationDirectoryTests(unittest.TestCase):
@@ -25,7 +26,7 @@ class CalibrationDirectoryTests(unittest.TestCase):
                             video.write_bytes(b'original recording')
                         arguments = cli.build_parser().parse_args(['run', str(folder)])
                         request = inputs.parse_run_args(arguments)
-                        with patch.object(inputs.registry, 'read_insv_serial', return_value='CAMERA'), \
+                        with patch.object(registry, 'read_insv_serial', return_value='CAMERA'), \
                              patch.object(inputs.runtime.console, 'write') as messages:
                             recordings = inputs.prepare_inputs(request)
                         self.assertEqual(request.lens, lens)
@@ -54,20 +55,17 @@ class CalibrationDirectoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for lens in ('front', 'rear'):
-                for source in ('measured', 'factory'):
-                    with self.subTest(lens=lens, source=source), \
-                         patch.object(inputs, 'prepare_inputs') as prepare, \
-                         patch.object(cli.runtime, 'use_calibration_environment') as environment, \
-                         redirect_stdout(io.StringIO()) as output:
-                        folder = root/lens
-                        self.assertEqual(cli.main(['run', str(folder), '--show-config',
-                            '--intrinsics-source', source], prepare_environment=True), 0)
-                    report = json.loads(output.getvalue())
-                    self.assertEqual(report['selection']['lens'], lens)
-                    suffix = '_factory' if source == 'factory' else ''
-                    self.assertEqual(report['effective']['output'], str(folder/('calibration_result'+suffix)))
-                    prepare.assert_not_called()
-                    environment.assert_not_called()
+                with self.subTest(lens=lens), \
+                     patch.object(inputs, 'prepare_inputs') as prepare, \
+                     patch.object(cli.runtime, 'use_calibration_environment') as environment, \
+                     redirect_stdout(io.StringIO()) as output:
+                    folder = root/lens
+                    self.assertEqual(cli.main(['run', str(folder), '--show-config'], prepare_environment=True), 0)
+                report = json.loads(output.getvalue())
+                self.assertEqual(report['selection']['lens'], lens)
+                self.assertEqual(report['effective']['output'], str(folder/'calibration_result'))
+                prepare.assert_not_called()
+                environment.assert_not_called()
             self.assertEqual(list(root.iterdir()), [])
 
     def test_rear_rejects_front_sample_comparison_before_environment_preparation(self):

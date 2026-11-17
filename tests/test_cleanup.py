@@ -1,3 +1,4 @@
+from software.infrastructure.file_store import read_yaml
 """批次 .pipeline/ 保留规则：取代的运行、未引用的地图版本和未用到的缓存会被删除。"""
 
 from pathlib import Path
@@ -9,9 +10,9 @@ import time
 import unittest
 
 from software.scene import layout, workflow
-from software.scene.management import cleanup, processing
+from software.scene.management import cleanup, processing, batch_inputs, episode_inputs, scene_inputs
 from software.scene.pipeline import reconstruction
-from software.storage import mark_used, write_yaml
+from software.infrastructure.file_store import mark_used, write_yaml
 import test_scene as fixtures
 
 
@@ -147,7 +148,9 @@ class MapCleanupTests(unittest.TestCase):
     def test_clean_command_dry_run_lists_without_deleting_and_cache_option_empties_caches(self):
         self.f.build_scene()
         workflow.run_episode(self.f.episode_path, parallel_arms=False)
-        write_yaml(self.batch / 'batch.yaml', dict(kit='test_kit'))
+        collection = read_yaml(self.batch / 'collection.yaml')
+        collection['scene']['parameters'] = {'placement_position_sigma_m': .123}
+        write_yaml(self.batch / 'collection.yaml', collection)
         cache = layout.metadata(self.f.task_root, 'cache')
         (cache / 'prepare/entry').mkdir(parents=True)
         (self.versions / '00000000_000000-orphaned').mkdir()
