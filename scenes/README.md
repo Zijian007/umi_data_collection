@@ -46,7 +46,7 @@ reconstruction:
 
 `shared_front` 支持左手、右手和双手采集；`dual` 表示工作/环境镜头双路处理，需要双路建图原片，优先使用套件绑定的正式环境镜头标定；未绑定时尝试 X3 INSV 工厂参数 + 本设备 front B 兜底，标记未经 rear 独立验收（见[标定指南](../docs/标定.md#双镜头标定与海报接入)）。场景名称由目录名确定；版本字段可省略。
 
-标定来源由根目录 `config/user.yaml` 的 `calibration.intrinsics_source` 选择；套件须先绑定对应的完整版本，详见[双来源套件配置](../kits/README.md#同时保存实测与工厂来源)。
+标定来源由套件 `kit.yaml` 的 `intrinsics.front/rear` 选择；需要全局 factory 覆盖时使用 `config/user.yaml.features.factory_intrinsics.enabled`；套件须先绑定对应的完整版本，详见[双来源套件配置](../kits/README.md#同时保存实测与工厂来源)。
 
 算法参数默认来自 `config/algorithms/trajectory.yaml` 和 `config/algorithms/scene_parameters.yaml`；实验性覆盖只能写入专家文件，通过 `--expert-config experiment.yaml` 传入。新场景配置只管理选项；建图原片归批次 `mapping/`，设备版本归套件。
 

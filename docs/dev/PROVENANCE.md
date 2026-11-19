@@ -1362,3 +1362,11 @@ rear measured 缺少当前参数时拒绝；rear factory 优先使用当前已�
 - 为轨迹、标定、scene_parameters 的未充分说明字段补充单位、正数/范围、枚举、零值语义和字段关系说明；运行、查看器和夹爪检测 YAML 的资源范围与特殊值也明确写在字段旁。
 - 新增文档契约：扫描 config、kit、scene collection 的所有 scalar YAML key，若未提供行尾注释则测试失败；现有 YAML 解析后语义与注释前快照完全一致。
 - YAML 注释检查相关 **37 项通过（1.231 秒）**，quick **242 项通过（46.900 秒）**；Ruff、compileall 与 `git diff --check` 通过。注释不会改变配置指纹或运行行为。
+
+
+## 2026-11-19：SSOT 最终核对与 epoch 地图绑定修正
+
+- 对照 SSOT 表逐项核查 collection、kit/registry、user defaults、task resolution、map epochs、manifest、episode 与结果边界。确认当前用户声明、设备来源、使用手、任务后端/同步和地图选择均有单一解析入口；快照/结果/缓存只承担冻结、审计和复现。
+- 发现并修正 workflow 的一个边界：`Episode.map_selection` 由 epoch 规划选出 `collection_sequence` 地图版本时，旧 `_requested_map_version()` 没有把该版本传给 scene-map 绑定层，可能回退到批次旧地图。现在 collection sequence、显式 task version/epoch 都传递同一个解析版本；batch_default 仍由批次绑定层管理。
+- 扫描并修正文档中残留的旧 `collection.yaml.scene.tags`、旧 `config/user.yaml.calibration.intrinsics_source` 和过时的 scene/vision/标定说明；代码内部 `scene.tags` 仅作为 normalize 后的内部结构，不再作为用户入口。
+- 相关 task resolution、地图规划、scene workflow 与文档契约 **62 项通过（25.622 秒）**，此前完整 Python 回归 **1069 项通过**；工作流修正后执行/配置展示对照通过。Ruff、compileall、`git diff --check` 通过。

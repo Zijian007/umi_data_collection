@@ -143,7 +143,7 @@ Basalt 保留 bag 输入、KB4、噪声先验和 `--fixed-scale-opt-offset`。�
 
 ## 内参来源选择
 
-工作镜头 `run <front目录>` 和环境镜头 `run <rear目录>` 均读取 `config/user.yaml` 的 `calibration.intrinsics_source`，默认 measured。factory 表示“出厂 MEI 拟合的 KB4 + 用该 KB4 重新实测的 B”，不使用工厂相机–IMU 外参替代 B。仍要求 A/B/C/D：A 仅做固定内参的留出标签验证，B 求外参与时间偏移，C/D 按原规则验收。
+工作镜头 `run <front目录>` 和环境镜头 `run <rear目录>` 均读取套件的 `intrinsics.front/rear` 来源，默认 front measured、rear factory；全局 factory 覆盖使用 `config/user.yaml.features.factory_intrinsics.enabled`。factory 表示“出厂 MEI 拟合的 KB4 + 用该 KB4 重新实测的 B”，不使用工厂相机–IMU 外参替代 B。仍要求 A/B/C/D：A 仅做固定内参的留出标签验证，B 求外参与时间偏移，C/D 按原规则验收。
 
 两来源使用独立结果目录，factory 默认增加 `_factory` 后缀；`--resume` 拒绝切换来源。正式结果的 `manifest.json` 标明 `intrinsics_source`、工厂 B 原片及哈希、镜头编号、有效视野和 B 输入内参哈希。工厂原始参数与拟合/A 验证证据保存在 `factory/intrinsics.json`、`run/record.json`。C 原片自动对照仍是诊断，不能把选用的工厂 KB4 标成实测 A。
 

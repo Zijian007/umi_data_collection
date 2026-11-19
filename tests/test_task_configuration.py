@@ -8,6 +8,7 @@ from software.scene import layout
 from software.scene.management.effective_config import effective_report
 from software.scene.management.inputs.episode import read_episode
 from software.scene.pipeline.maps.epoch_selection import MapEpochError
+from software.scene.workflow import _requested_map_version
 
 
 class TaskConfigurationTests(unittest.TestCase):
@@ -57,6 +58,7 @@ class TaskConfigurationTests(unittest.TestCase):
             self.assertEqual(report['selection']['map_version'], version)
             self.assertEqual(report['effective']['map_selection'], episode.map_selection)
             self.assertEqual(episode.map_selection['reason'], reason)
+            self.assertEqual(_requested_map_version(episode, None), version)
 
     def test_frozen_batch_default_matches_execution(self):
         self.configure(task={'instruction': 'pick'})

@@ -153,9 +153,10 @@ def _requested_map_version(episode: Episode, command_map_version: str | None) ->
     explicit = selection.get('selection') in {
         'explicit_task', 'explicit_override', 'explicit_epoch'
     }
-    if episode.map_version is not None and explicit:
+    planned = selection.get('selection') not in (None, 'batch_default')
+    if episode.map_version is not None and (explicit or planned):
         if requested is not None and requested != episode.map_version:
-            raise ValueError('命令行 map_version 与 collection.yaml.tasks.<take>.map.version 不一致')
+            raise ValueError('命令行 map_version 与任务解析出的地图版本不一致')
         requested = episode.map_version
     return requested
 
