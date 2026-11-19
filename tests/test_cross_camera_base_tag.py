@@ -201,14 +201,16 @@ class BaseTagWorkflowTests(unittest.TestCase):
         removed = [row for round_ in audit['rounds'] for row in round_['removed'] if row['kind'] == 'base_tag']
         self.assertEqual([row['observation'] for row in removed], [2])
 
-    def test_production_preparation_freezes_working_lens_pixels_and_mounts(self):
-        from pathlib import Path
+    def production_fixture(self, *, pairs=(), self_frames=None, single=False, outside_only=False):
         from test_poster_vio_workflow import PosterVioWorkflowTests
         from software.scene.pipeline.tasks.backends import poster_vio_inputs
         from software.vision.poster import geometry
         helper = PosterVioWorkflowTests('runTest')
         helper.setUp()
         self.addCleanup(helper.doCleanups)
+        if single:
+            helper.inputs.episode.expected_arms = ('left',)
+            helper.inputs.recordings.pop('right')
         mounts = {}
         for index, arm in enumerate(helper.inputs.episode.expected_arms):
             camera = helper.inputs.recordings[arm].camera
@@ -223,32 +225,140 @@ class BaseTagWorkflowTests(unittest.TestCase):
                 return helper.detect(video, cache, settings, **kwargs)
             arm = video.stem
             data = helper.detections[arm]
-            sample_count = len(data.video_times_s)
-            ids = np.full(sample_count, helper.inputs.recordings[arm].camera.base_tag['id'], int)
             camera = helper.inputs.recordings[arm].camera
             ext = np.linalg.inv(poster_vio_inputs.imu_from_camera(camera.measurements['front']))
             model = geometry.camera_model(camera.measurements['front'])
-            corners = model.project(factors.transform(ext @ mounts[arm], factors.base_tag_corners_m(.08)))
-            measured = replace(data, sample_indices=np.arange(sample_count), tag_ids=ids,
-                corners_half_px=np.tile(corners[None] + 240., (sample_count, 1, 1)),
-                side_px=np.full(sample_count, 80.), in_calibrated_crop=np.ones(sample_count, bool),
-                usable=np.ones(sample_count, bool))
+            rows = []
+            for sample, video_time in enumerate(data.video_times_s):
+                time = video_time + .023
+                for target in mounts:
+                    if target == arm:
+                        if sample >= (self_frames or {}).get(arm, len(data.video_times_s)):
+                            continue
+                    elif (arm, target) not in pairs or (outside_only and sample != 0):
+                        continue
+                    owner_time = time + helper.inputs.offsets_s[arm] - helper.inputs.offsets_s[target]
+                    camera_tag = (ext @ np.linalg.inv(helper.poses(arm, np.array([time]))[0])
+                                  @ helper.poses(target, np.array([owner_time]))[0] @ mounts[target])
+                    corners = model.project(factors.transform(camera_tag, factors.base_tag_corners_m(.08)))
+                    rows.append((sample, helper.inputs.recordings[target].camera.base_tag['id'], corners))
+            count = len(rows)
+            measured = replace(data, sample_indices=np.array([r[0] for r in rows], dtype=int),
+                tag_ids=np.array([r[1] for r in rows], dtype=int),
+                corners_half_px=np.array([r[2] for r in rows]).reshape(count, 4, 2) + 240.,
+                side_px=np.full(count, 80.), in_calibrated_crop=np.ones(count, bool),
+                usable=np.ones(count, bool))
             cache.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(cache / 'observations.npz', **measured.__dict__)
+        return helper, mounts, detect
+
+    def test_production_preparation_freezes_working_lens_pixels_and_mounts(self):
+        from pathlib import Path
         from unittest.mock import patch
+        from software.scene.pipeline.tasks.backends import poster_vio_inputs
+        helper, mounts, detect = self.production_fixture(pairs=(('left', 'right'), ('right', 'left')))
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect):
             request, arms, _ = poster_vio_inputs.prepare_task_inputs(helper.inputs)
         for item in arms:
             np.testing.assert_allclose(item.T_imu_base_tag, mounts[item.arm], atol=1e-5)
-            self.assertAlmostEqual(request.clock_offsets_s[item.arm],
-                helper.inputs.offsets_s[item.arm] - .023)
+            self.assertAlmostEqual(request.clock_offsets_s[item.arm], helper.inputs.offsets_s[item.arm] - .023)
             path = helper.inputs.directory / 'poster_vio' / item.arm / 'numerical_inputs.npz'
             with np.load(path, allow_pickle=False) as archive:
                 self.assertTrue(archive['base_tag_present'])
                 self.assertEqual(len(archive['base_tag_times_s']), len(archive['base_tag_ids']))
-                self.assertEqual(set(archive['base_tag_target_arms']), {item.arm})
+                self.assertEqual(set(archive['base_tag_target_arms']), {'left', 'right'})
                 self.assertEqual(archive['base_tag_corners_px'].shape[1:], (4, 2))
             self.assertTrue((Path(path).parent / 'base_tag_observations.npz').is_file())
+
+    def test_single_hand_skips_base_detection_and_fitting_with_declared_tag(self):
+        from unittest.mock import patch
+        from software.scene.pipeline.tasks.backends import poster_vio_inputs
+        helper, _, detect = self.production_fixture(single=True)
+        with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect) as detector, \
+                patch.object(poster_vio_inputs, 'estimate_static_tag_extrinsic') as fit:
+            request, arms, seed = poster_vio_inputs.prepare_task_inputs(helper.inputs)
+        self.assertTrue(all(call.args[2].lens != 'front' for call in detector.call_args_list))
+        fit.assert_not_called()
+        self.assertEqual(request.arms, ('left',))
+        self.assertEqual(len(request.observations[0].base_tag_times_s), 0)
+        self.assertIsNone(arms[0].T_imu_base_tag)
+        self.assertFalse((helper.inputs.directory / 'poster_vio/left/base_tag_observations.npz').exists())
+        result = solve_joint_poster_imu(request, arms, seed)
+        self.assertEqual(result.quality.status, 'solved')
+        self.assertFalse(result.arm_evidence['left']['base_tag_extrinsics_optimized'])
+
+    def test_self_only_sparse_observations_do_not_fit_or_reject_trajectories(self):
+        from unittest.mock import patch
+        from software.scene.pipeline.tasks.backends import poster_vio_inputs
+        helper, _, detect = self.production_fixture(self_frames={'left': 1, 'right': 1})
+        with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
+                patch.object(poster_vio_inputs, 'estimate_static_tag_extrinsic') as fit:
+            request, arms, seed = poster_vio_inputs.prepare_task_inputs(helper.inputs)
+        fit.assert_not_called()
+        result = solve_joint_poster_imu(request, arms, seed)
+        self.assertEqual(result.quality.status, 'solved')
+        for item in arms:
+            self.assertIsNone(item.T_imu_base_tag)
+            self.assertEqual(len(item.base_tag_indices), 0)
+            evidence = result.arm_evidence[item.arm]
+            self.assertFalse(evidence['base_tag_extrinsics_optimized'])
+            self.assertEqual(evidence['base_tag']['observations'][0]['reason'], 'no_cross_camera_observations')
+
+    def test_one_way_cross_sighting_only_fits_owner_mount(self):
+        from unittest.mock import patch
+        from software.scene.pipeline.tasks.backends import poster_vio_inputs
+        helper, mounts, detect = self.production_fixture(pairs=(('left', 'right'),), self_frames={'left': 1})
+        with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
+                patch.object(poster_vio_inputs, 'estimate_static_tag_extrinsic',
+                             wraps=poster_vio_inputs.estimate_static_tag_extrinsic) as fit:
+            request, arms, seed = poster_vio_inputs.prepare_task_inputs(helper.inputs)
+        self.assertEqual(fit.call_count, 1)
+        self.assertIsNone(arms[0].T_imu_base_tag)
+        np.testing.assert_allclose(arms[1].T_imu_base_tag, mounts['right'], atol=1e-5)
+        result = solve_joint_poster_imu(request, arms, seed)
+        self.assertEqual(result.quality.status, 'solved')
+        self.assertFalse(result.arm_evidence['left']['base_tag_extrinsics_optimized'])
+        self.assertTrue(result.arm_evidence['right']['base_tag_extrinsics_optimized'])
+        self.assertGreater(result.arm_evidence['left']['base_tag']['cross']['count'], 0)
+        self.assertLess(result.arm_evidence['left']['base_tag']['cross']['rms_px'], .01)
+
+    def test_cross_sighting_outside_overlap_does_not_require_mount(self):
+        from unittest.mock import patch
+        from software.scene.pipeline.tasks.backends import poster_vio_inputs
+        helper, _, detect = self.production_fixture(pairs=(('left', 'right'),), outside_only=True,
+                                                   self_frames={'left': 1, 'right': 1})
+        with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
+                patch.object(poster_vio_inputs, 'estimate_static_tag_extrinsic') as fit:
+            request, arms, seed = poster_vio_inputs.prepare_task_inputs(helper.inputs)
+        fit.assert_not_called()
+        result = solve_joint_poster_imu(request, arms, seed)
+        self.assertEqual(result.quality.status, 'solved')
+        cross = [r for r in result.arm_evidence['left']['base_tag']['observations'] if r['kind'] == 'cross']
+        self.assertEqual([r['reason'] for r in cross], ['outside_common_time_span'])
+        self.assertTrue(all(not e['base_tag_extrinsics_optimized'] for e in result.arm_evidence.values()))
+
+    def test_required_owner_still_needs_sufficient_self_observations(self):
+        from unittest.mock import patch
+        from software.scene.pipeline.tasks.backends import poster_vio_inputs
+        helper, _, detect = self.production_fixture(pairs=(('left', 'right'),), self_frames={'right': 1})
+        with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
+                self.assertRaisesRegex(ValueError, 'right.*自身观测'):
+            poster_vio_inputs.prepare_task_inputs(helper.inputs)
+
+    def test_numerical_replay_ignores_self_only_mounts_and_bad_self_residuals(self):
+        request, arms, seed, _ = self.prepared()
+        observations = []
+        for obs in request.observations:
+            keep = np.array([target == obs.arm for target in obs.base_tag_target_arms])
+            observations.append(replace(obs, base_tag_target_arms=tuple(np.array(obs.base_tag_target_arms)[keep]),
+                base_tag_times_s=obs.base_tag_times_s[keep], base_tag_ids=obs.base_tag_ids[keep],
+                base_tag_corners_px=obs.base_tag_corners_px[keep] + 400.))
+        result = solve_joint_poster_imu(replace(request, observations=tuple(observations)), arms, seed)
+        self.assertEqual(result.quality.status, 'solved')
+        for evidence in result.arm_evidence.values():
+            self.assertFalse(evidence['base_tag_extrinsics_optimized'])
+            self.assertIsNone(evidence['base_tag']['corrections'])
+            self.assertTrue(all(r['status'] == 'skipped' for r in evidence['base_tag']['observations']))
 
 
 class BaseTagDetectionTests(unittest.TestCase):

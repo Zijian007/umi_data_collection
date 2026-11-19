@@ -45,7 +45,7 @@ def prepare_task_inputs(inputs: TaskInputs):
     owners_by_tag_id = {spec['id']: arm for arm, spec in base_tag_specs.items()}
     if len(owners_by_tag_id) != len(base_tag_specs):
         raise ValueError('双手 base tag ID 必须唯一')
-    if set(owners_by_tag_id) & set(board.ids):
+    if len(arms) > 1 and set(owners_by_tag_id) & set(board.ids):
         raise ValueError('base tag ID 不能与环境海报 ID 冲突')
     for arm in arms:
         recording = inputs.recordings[arm]
@@ -84,7 +84,7 @@ def prepare_task_inputs(inputs: TaskInputs):
         base_ids = np.empty(0, dtype=int)
         base_pixels = np.empty((0, 4, 2), dtype=float)
         base_frame_polygons = {}
-        if base_tag_specs:
+        if len(arms) > 1 and base_tag_specs:
             base_cache = layout.metadata(episode.root, 'cache/base_tags') / arm
             detection.cached(episode.recordings[arm], base_cache,
                 detection.DetectionSettings(border_bits=1, ids=tuple(sorted(owners_by_tag_id)),
@@ -123,7 +123,7 @@ def prepare_task_inputs(inputs: TaskInputs):
         held_times = np.unique(np.round(raw_times[holdout], 9))
         feature_selected = selected & ~np.isin(np.round(all_rear_times, 9), held_times)
         # Output and rear-feature nodes are included even where no tag is visible.
-        node_times = np.unique(np.round(np.r_[output_times, rear_times, base_times], 9))
+        node_times = np.unique(np.round(np.r_[output_times, rear_times], 9))
         seed = interpolate_seed(training_times, tag_seeds, node_times)
         node_velocities = np.column_stack([np.interp(node_times, training_times, velocities[:, i]) for i in range(3)])
         tag_indices = np.searchsorted(node_times, np.round(raw_times, 9))
@@ -135,19 +135,6 @@ def prepare_task_inputs(inputs: TaskInputs):
             lens: NaturalCamera(np.linalg.inv(imu_from_camera(camera.measurements[lens])),
                                  camera_model(camera.measurements[lens]))
             for lens in ('front', 'rear')}
-        own_base = None
-        own_base_evidence = None
-        if arm in base_tag_specs:
-            own_rows = np.array([target == arm for target in base_target_arms], dtype=bool)
-            if np.count_nonzero(own_rows):
-                if len(np.unique(base_times[own_rows])) < scene.parameters.poster_vio_base_tag_minimum_self_frames:
-                    raise ValueError(f'{arm} base tag 自身观测时刻不足')
-                own_base, own_base_evidence = estimate_static_tag_extrinsic(
-                    base_pixels[own_rows], natural_cameras['front'].T_cam_imu,
-                    natural_cameras['front'].model, base_tag_specs[arm]['size_m'],
-                    maximum_rms_px=scene.parameters.tag_maximum_reprojection_rms_px,
-                    maximum_cull_fraction=scene.parameters.tag_maximum_cull_fraction,
-                    minimum_frames=scene.parameters.poster_vio_base_tag_minimum_self_frames)
         front_selection = select_indices(output_times, seed[np.searchsorted(node_times, np.round(output_times, 9))], scene.parameters)
         rear_samples = np.flatnonzero(feature_selected)
         rear_nodes = np.searchsorted(node_times, np.round(all_rear_times[rear_samples], 9))
@@ -179,9 +166,7 @@ def prepare_task_inputs(inputs: TaskInputs):
             scene.trajectory.values, scene.parameters, natural_tracks,
             gravity_m_s2=gravity, initial_acc_bias=acc_bias, seed_velocities=node_velocities,
             initial_gyro_bias=np.asarray(inertial['initial_gyro_bias_rad_s']), natural_cameras=natural_cameras,
-            tag_holdout_mask=holdout, tag_initialization_mask=initialization_mask,
-            T_imu_base_tag=own_base,
-            base_tag_indices=np.searchsorted(node_times, base_times)))
+            tag_holdout_mask=holdout, tag_initialization_mask=initialization_mask))
         camera_assets[arm] = dict(asset_hashes=camera.asset_hashes)
         imu_assets[arm] = dict(sample_count=len(recording.imu), time_start=float(recording.imu[0, 0]),
                                time_end=float(recording.imu[-1, 0]))
@@ -190,7 +175,7 @@ def prepare_task_inputs(inputs: TaskInputs):
                                 frontend=frontend_diagnostics,
                                 feature_tracks=len(natural_tracks), tag_frames=len(tag_times),
                                 base_tag_observations=len(base_times),
-                                base_tag_self_evidence=own_base_evidence,
+                                base_tag_self_evidence=None,
                                 initialization_tag_frames=len(training_times),
                                 holdout_tag_frames=len(np.unique(raw_times[holdout])),
                                 feature_tracks_by_camera={lens: len(tracks) for lens, tracks in tracks_by_camera.items()})
@@ -201,7 +186,7 @@ def prepare_task_inputs(inputs: TaskInputs):
         raise ValueError(f'poster_vio 双手海报坐标重力方向不一致：{difference:.3f} deg')
     shared_gravity = np.mean(gravity_vectors, axis=0)
     shared_gravity *= scene.trajectory.values.fusion.gravity_m_s2 / np.linalg.norm(shared_gravity)
-    solve_inputs = tuple(replace(item, gravity_m_s2=shared_gravity) for item in solve_inputs)
+    solve_inputs = [replace(item, gravity_m_s2=shared_gravity) for item in solve_inputs]
     coordinate = dict(name=scene.name, session=episode.session.name, version=None,
                        scope='task_poster', frame_id=f'poster:{inputs.directory.name}',
                        axes='board_layout', units='metres', gravity_difference_deg=difference)
@@ -212,6 +197,27 @@ def prepare_task_inputs(inputs: TaskInputs):
                      for arm in arms}
     request = PosterVioRequest(arms, board.asset_hash, tuple(observations), camera_assets, imu_assets,
                                coordinate, base_tag_specs=base_tag_specs, clock_offsets_s=clock_offsets)
+    # Discover cross-hand use before fitting any mount: self pixels alone do
+    # not constrain a trajectory with fixed camera calibration and TCP geometry.
+    owners = base_tags.active_owners(request, solve_inputs)
+    for index, item in enumerate(solve_inputs):
+        diagnostics[item.arm]['base_tag_mount_status'] = ('enabled' if item.arm in owners
+                                                         else 'no_cross_camera_observations')
+        if item.arm not in owners:
+            continue
+        observation = observations[index]
+        own_rows = np.array([target == item.arm for target in observation.base_tag_target_arms], dtype=bool)
+        if len(np.unique(observation.base_tag_times_s[own_rows])) < scene.parameters.poster_vio_base_tag_minimum_self_frames:
+            raise ValueError(f'{item.arm} base tag 跨手约束需要足够的自身观测时刻')
+        front = item.natural_cameras['front']
+        mount, evidence = estimate_static_tag_extrinsic(
+            observation.base_tag_corners_px[own_rows], front.T_cam_imu, front.model,
+            base_tag_specs[item.arm]['size_m'],
+            maximum_rms_px=scene.parameters.tag_maximum_reprojection_rms_px,
+            maximum_cull_fraction=scene.parameters.tag_maximum_cull_fraction,
+            minimum_frames=scene.parameters.poster_vio_base_tag_minimum_self_frames)
+        solve_inputs[index] = replace(item, T_imu_base_tag=mount)
+        diagnostics[item.arm]['base_tag_self_evidence'] = evidence
     solve_inputs = base_tags.expand_nodes(request, solve_inputs)
     assets = {}
     for item in solve_inputs:

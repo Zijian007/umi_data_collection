@@ -25,6 +25,23 @@ def observation_times(request, observer, target, time):
                     - request.clock_offsets_s[target], 9)
 
 
+def active_owners(request, arms):
+    """Only mounts seen by another hand within both native time spans are needed."""
+    by_arm = {item.arm: item for item in arms}
+    owners = set()
+    for obs in request.observations:
+        observer = by_arm[obs.arm]
+        for target, time in zip(obs.base_tag_target_arms, obs.base_tag_times_s):
+            if target == obs.arm:
+                continue
+            owner = by_arm[target]
+            owner_time = observation_times(request, obs.arm, target, time)
+            if (observer.times_s[0] <= time <= observer.times_s[-1]
+                    and owner.times_s[0] <= owner_time <= owner.times_s[-1]):
+                owners.add(target)
+    return owners
+
+
 def expand_nodes(request, arms):
     """Add exact cross-observation times to both chains before graph selection.
 
@@ -35,17 +52,17 @@ def expand_nodes(request, arms):
     if not any(len(obs.base_tag_times_s) for obs in request.observations):
         return tuple(arms)
     by_arm = {item.arm: item for item in arms}
-    extra = {item.arm: list(item.times_s[item.base_tag_indices]) for item in arms}
+    extra = {item.arm: [] for item in arms}
     for obs in request.observations:
         for target, time in zip(obs.base_tag_target_arms, obs.base_tag_times_s):
             observer = by_arm[obs.arm]
             if not observer.times_s[0] <= time <= observer.times_s[-1]:
                 raise ValueError('base tag 观察时刻超出观察者时间范围')
-            extra[obs.arm].append(float(time))
             if target != obs.arm:
                 owner_time = observation_times(request, obs.arm, target, time)
                 owner = by_arm[target]
                 if owner.times_s[0] <= owner_time <= owner.times_s[-1]:
+                    extra[obs.arm].append(float(time))
                     extra[target].append(float(owner_time))
     result = []
     for item in arms:
@@ -72,9 +89,12 @@ def add_graph(request, arms, graph, values, keys, camera_for):
     """Return mount keys and all used/skipped observations, preserving row IDs."""
     tag_keys, records = {}, []
     by_arm = {item.arm: item for item in arms}
+    owners = active_owners(request, arms)
     for arm_index, item in enumerate(arms):
-        if item.T_imu_base_tag is None:
+        if item.arm not in owners:
             continue
+        if item.T_imu_base_tag is None:
+            raise ValueError(f'{item.arm} base tag 有跨手观测但缺少经自身观测验证的安装初值')
         key = gtsam.symbol('t', arm_index)
         tag_keys[item.arm] = key
         params = item.scene_parameters
@@ -83,19 +103,20 @@ def add_graph(request, arms, graph, values, keys, camera_for):
             translation_sigma_m=params.poster_vio_base_tag_prior_translation_sigma_m)
     for obs in request.observations:
         observer = by_arm[obs.arm]
-        camera = camera_for(observer, 'front') if len(obs.base_tag_times_s) else None
         for row, (target, time, pixels) in enumerate(zip(
                 obs.base_tag_target_arms, obs.base_tag_times_s, obs.base_tag_corners_px)):
             record = dict(observer=obs.arm, owner=target, observation=row, imu_time_s=float(time),
                           status='used', kind='self' if obs.arm == target else 'cross')
             records.append(record)
-            if target not in tag_keys:
-                raise ValueError(f'{target} base tag 有观测但缺少经自身观测验证的安装初值')
+            if target == obs.arm and target not in owners:
+                record.update(status='skipped', reason='no_cross_camera_observations')
+                continue
             owner = by_arm[target]
             owner_time = observation_times(request, obs.arm, target, time)
             if not owner.times_s[0] <= owner_time <= owner.times_s[-1]:
                 record.update(status='skipped', reason='outside_common_time_span')
                 continue
+            camera = camera_for(observer, 'front')
             spec = request.base_tag_specs[target]
             record.update(pixels=pixels, size_m=spec['size_m'], tag_key=tag_keys[target],
                           camera=camera, owner_imu_time_s=float(owner_time))

@@ -61,7 +61,7 @@ poster_independent:  # 本录像独立引擎海报后端的支持与重力验收
   maximum_gravity_difference_deg: 5.0  # 两手在海报坐标中的重力夹角上限，单位 deg。
 
 poster_vio:  # 实验性联合图的观测门槛；与独立引擎后端分开配置。
-  base_tag:  # 可选夹爪基座安装变量；kit 声明标签后启用。
+  base_tag:  # 双手有效跨手观测使用的夹爪基座安装变量；kit 声明标签。
     prior_rotation_sigma_rad: 0.2
     prior_translation_sigma_m: 0.03
     maximum_rotation_correction_deg: 10.0
