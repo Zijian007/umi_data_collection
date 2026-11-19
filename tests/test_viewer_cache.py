@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from software.viewer import cache, maps, media
+from software.viewer.resources import cache, maps, video as media
 
 
 class ViewerCacheTests(unittest.TestCase):

@@ -19,8 +19,12 @@ from software.vision.models import LensVideo, VisualContext
 ARMS = ('left', 'right')
 
 if TYPE_CHECKING:
+    from software.trajectory.poster_vio.models import PosterVioRequest
+    from software.trajectory.poster_vio.solver import ArmSolveInput
     from software.camera.rear_fallback import FactoryRearCalibration
-    from software.scene.configuration import SceneOverrides
+    from software.infrastructure.terminal import Console
+    from software.scene.overrides import SceneOverrides
+    from software.scene.pipeline.cache_audit import CacheAudit
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,34 @@ class SceneParameters:
     maximum_placement_rotation_deg: float
     minimum_localization_fraction: float
     maximum_visual_gap_s: float
+    poster_maximum_position_support_gap_s: float
+    poster_maximum_gravity_difference_deg: float
+    poster_vio_minimum_tag_frames: int
+    poster_vio_maximum_observation_gap_s: float
+    poster_vio_minimum_time_span_s: float
+    poster_vio_maximum_position_support_gap_s: float
+    poster_vio_maximum_gravity_difference_deg: float
+    poster_vio_maximum_features: int
+    poster_vio_maximum_tracks: int
+    poster_vio_minimum_track_length: int
+    poster_vio_maximum_track_length: int
+    poster_vio_maximum_cull_rounds: int
+    poster_vio_maximum_natural_cull_fraction: float
+    poster_vio_natural_cull_threshold_px: float
+    poster_vio_holdout_stride: int
+    poster_vio_natural_holdout_stride: int
+    poster_vio_maximum_holdout_rms_px: float
+    poster_vio_initialization_maximum_hypotheses: int
+    poster_vio_geometric_threshold_px: float
+    poster_vio_revisit_enabled: bool
+    poster_vio_revisit_maximum_bank: int
+    poster_vio_revisit_maximum_gap_s: float
+    poster_vio_revisit_match_ratio: float
+    poster_vio_revisit_maximum_reprojection_px: float
+    poster_vio_keyframe_maximum_dt_s: float
+    poster_vio_keyframe_minimum_translation_m: float
+    poster_vio_keyframe_minimum_rotation_deg: float
+    poster_vio_precull_iterations: int
     localization_bidirectional: bool
     localization_reverse_context_s: float
     localization_minimum_overlap_frames: int
@@ -58,6 +90,13 @@ class SceneParameters:
     tag_sigma_per_radius_px: float
     tag_huber: float
     tag_maximum_reprojection_rms_px: float
+    tag_maximum_position_std_m: float
+    tag_maximum_rotation_std_deg: float
+    tag_maximum_cull_fraction: float
+    tag_minimum_retained_time_fraction: float
+    tag_rear_rotation_refinement_enabled: bool
+    tag_rear_rotation_prior_sigma_rad: float
+    tag_rear_rotation_maximum_correction_deg: float
     tag_mapping_enabled: bool
     tag_mapping_scale_enabled: bool
     tag_mapping_minimum_frames: int
@@ -104,6 +143,7 @@ class Scene:
     overrides: SceneOverrides | None = None
     batch_root: Path | None = None
     environment_tags_enabled: bool = False
+    reconstruction_mode: str = 'scene_map'
 
     @property
     def root(self) -> Path:
@@ -128,7 +168,7 @@ class Scene:
 
     @property
     def environment_tag_detection(self) -> bool:
-        """是否运行环境标签检测：collection.yaml 的 scene.tags.enabled，且必须有布局。"""
+        """是否运行环境标签检测：collection.yaml 的 environment_poster.detection.enabled。"""
         return self.tag_layout is not None and self.environment_tags_enabled
 
     @property
@@ -258,6 +298,32 @@ class PreparedRecording:
 
     def lens_video(self, lens: str):
         return next(video for video in self.lens_videos if video.lens == lens)
+
+
+@dataclass(frozen=True)
+class TaskInputs:
+    """各后端共用的冻结任务输入；场景和任务身份从 episode 读取。"""
+    episode: Episode
+    recordings: dict[str, PreparedRecording]
+    offsets_s: dict[str, float]
+    directory: Path
+    arm_cpu_sets: dict[str, str] | None
+    cache_audit: CacheAudit | None
+    console: Console
+    # Optional frozen numerical replay. Normal poster-VIO runs prepare these
+    # from task recordings; replay callers must supply all three together.
+    poster_vio_request: PosterVioRequest | None = None
+    poster_vio_arms: tuple[ArmSolveInput, ...] | None = None
+    poster_vio_board_seed: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class ArmExecutionResult:
+    """所有任务后端共同返回的轨迹、测量和实际输出坐标。"""
+    tracks: dict[str, ArmTrajectory]
+    width_reports: dict[str, dict]
+    tag_distance_reports: dict[str, dict]
+    coordinate_record: dict
 
 
 class BuildSceneResult(TypedDict, total=False):

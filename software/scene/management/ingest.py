@@ -18,8 +18,13 @@ from software.scene.layout import locked
 from software.scene.models import SceneParameters, Session
 from software.scene.pipeline import recordings
 from software.infrastructure.file_store import read_yaml, write_json, write_yaml
-from software.scene.management.batch_inputs import batch_task_directories, batch_video_sources, read_arms, task_video_sources
-from software.scene.management.episode_inputs import read_episode
+from software.scene.management.inputs.batch import (
+    batch_task_directories,
+    batch_video_sources,
+    read_arms,
+    task_video_sources,
+)
+from software.scene.management.inputs.episode import read_episode
 
 
 @dataclass(frozen=True)

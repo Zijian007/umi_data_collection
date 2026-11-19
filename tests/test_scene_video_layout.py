@@ -8,7 +8,14 @@ from unittest.mock import patch
 
 from software.camera import registry
 from software.scene import layout
-from software.scene.management import batches, ingest, kit_inputs, processing, batch_inputs, episode_inputs, scene_inputs
+from software.scene.management.batch import snapshot as batches
+from software.scene.management import ingest, processing
+from software.scene.management.inputs import (
+    kit as kit_inputs,
+    batch as batch_inputs,
+    episode as episode_inputs,
+    scene as scene_inputs,
+)
 from software.scene.pipeline import recordings
 from software.infrastructure.file_store import write_yaml
 import test_scene as fixtures
@@ -42,9 +49,10 @@ class SceneVideoLayoutTests(unittest.TestCase):
             path.write_text(arm)
             infos.append(ingest.RecordingMetadata(path, 'SERIAL_' + arm, artifact_identity.file_hash(path), 1000., 8.))
         before = {path: (path.read_bytes(), path.stat().st_ino) for path in scene.rglob('*.insv')}
-        write_yaml(batch / 'collection.yaml', dict(schema_version=1,
-                   scene=dict(layout='auto', map_reference_arm='left'), kit='rig',
-                   map_policy='latest_prior'))
+        write_yaml(batch / 'collection.yaml', dict(scene=dict(description=''), kit='rig',
+                   recording=dict(arms=['left', 'right']),
+                   map=dict(layout='auto', reference_arm='left', selection=dict(policy='latest_prior')),
+                   reconstruction=dict(backend='scene_map')))
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
             preview = processing.prepare_batch(batch, dry_run=True)
         self.assertEqual(len(preview['episodes']), 1)

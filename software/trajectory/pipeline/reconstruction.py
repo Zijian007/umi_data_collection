@@ -10,11 +10,15 @@ from pathlib import Path
 import hashlib
 import json
 import time
+import numpy as np
 
 from . import runtime
 from software.infrastructure.file_store import write_json
-from software.trajectory.algorithms.fusion_quality import scale_failure
+from software.trajectory.algorithms.fusion.quality import scale_failure
 from software.trajectory.models import AttemptResult, FusionArtifacts, ReconstructionContext
+from software.camera.timing import canonical_to_video_seconds
+from software.trajectory.io.tum import read_tum
+from software.trajectory.reporting.quality import frame_constraints, position_support_summary
 from software.vision import runtime as visual_runtime, slam
 from software.vision.models import LensLocalization, LensVideo, RecordingData, ProcessingError
 from software.vision.runtime import write_error_log
@@ -37,7 +41,7 @@ def run_attempts(videos: tuple[LensVideo, ...], run_inputs: RecordingData,
         try:
             fusion = run_attempt(videos, run_inputs, context, directory, recording_name=recording_name, attempt=number,
                                  alignment_failures=alignment_failures)
-            quality = assess_try(fusion, context.parameters.retry)
+            quality = assess_try(fusion, context.parameters.retry, environment_tags=context.parameters.environment_tags)
         except Exception as error:
             last_stage = error.stage if isinstance(error, ProcessingError) else '轨迹重建'
             return_code = error.return_code if isinstance(error, ProcessingError) else 1
@@ -66,7 +70,9 @@ def run_attempts(videos: tuple[LensVideo, ...], run_inputs: RecordingData,
             break
         if number < context.request.max_tries:
             retry_reason = f'{last_stage}: {reason}' if reason else quality.get('reason') or (
-                f"{quality['placements']} 个独立地图放置，地图位置约束覆盖 {100 * quality['full_fraction']:.0f}% 的帧"
+                f"{quality['placements']} 个独立地图放置，自然视觉位置覆盖 {100 * quality['full_fraction']:.0f}%"
+                + (f"，共同位置支持最大缺口 {quality['maximum_position_support_gap_s']:.3f} s"
+                   if quality.get('coverage_basis') == 'visual_and_poster' else '')
             )
             runtime.console.write(f'{retry_reason}；重新执行建图、定位与融合', recording=Path(recording_name).stem, attempt=number, state='重试')
     if best is None:
@@ -116,7 +122,7 @@ def fuse_visual_imu(localization: tuple[LensLocalization, ...], run_inputs: Reco
         extra += ['--poster',str(settings.poster_manifest)]
     if settings.rear_manifest is not None:
         extra += ['--rear-calibration', str(settings.rear_manifest)]
-    command = [settings.fusion_python, '-m', 'software.trajectory.algorithms.fusion_cli',
+    command = [settings.fusion_python, '-m', 'software.trajectory.algorithms.fusion.cli',
                str(frames.get('rear', frames['front'])), str(frames['front']), str(run_inputs.imu_csv),
                settings.time_offset_ns, settings.rear_q_ic, str(directory / 'fuse'),
                '--lever_prior', settings.rear_lever, '--calibration', str(settings.camera_json),
@@ -176,7 +182,7 @@ def _start_run(directory: Path, context: ReconstructionContext, recording_name: 
     (directory / 'logs').mkdir()
     settings = context.settings
     lines = [f'UMI_START {_utc_time()} insv={recording_name} frames={context.frame_count} mode={context.request.mode} cores={context.request.cores or "all"}',
-             f'software.trajectory.algorithms.fusion_cli {_asset_hash(settings.fusion_script)} front_setting {_asset_hash(settings.front_settings)} cam_imu_offset_ns {settings.time_offset_ns}',
+             f'software.trajectory.algorithms.fusion.cli {_asset_hash(settings.fusion_script)} front_setting {_asset_hash(settings.front_settings)} cam_imu_offset_ns {settings.time_offset_ns}',
              f'x3_mono_slam {_asset_hash(visual_runtime.orb_executable(settings.orb_directory))} lib {_asset_hash(settings.orb_directory / "lib/libORB_SLAM3.so")}']
     (directory / 'logs/run.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
     write_json(directory / 'logs/run.json', dict(kind='umi_reconstruction_run', schema_version=1,
@@ -189,10 +195,11 @@ def _start_run(directory: Path, context: ReconstructionContext, recording_name: 
                   'libORB_SLAM3.so': _asset_hash(settings.orb_directory / 'lib/libORB_SLAM3.so')}))
 
 
-def assess_try(fusion: FusionArtifacts, parameters=None) -> dict:
+def assess_try(fusion: FusionArtifacts, parameters=None, *, environment_tags=None) -> dict:
     """返回本轮质量；读取或计算失败时保留实际原因，由重试入口统一处理。"""
     from software.configuration import loader as config
     parameters = parameters or config.load("trajectory").values.retry
+    environment_tags = environment_tags or config.load('trajectory').values.environment_tags
     try:
         attempt_diagnostics = json.loads(fusion.quality_report.read_text(encoding='utf-8'))
         lens = attempt_diagnostics.get('init_lens') or 'front'
@@ -202,17 +209,37 @@ def assess_try(fusion: FusionArtifacts, parameters=None) -> dict:
         placements = max(1, len(full) - len(grouped))
         n = max(1, int(attempt_diagnostics.get('frames') or 1))
         full_fraction = sum(int(c[0][1]) - int(c[0][0]) + 1 for c in full) / n
+        support = {}
+        basis = 'natural_visual'
+        coverage_passed = full_fraction >= parameters.minimum_full_fraction
+        poster = attempt_diagnostics.get('environment_poster') or {}
+        # 历史结果没有精确几何支持时间，仍沿用原来的视觉覆盖重试规则。
+        if (parameters.use_poster_position_support and environment_tags.tag_fusion_enabled
+                and poster.get('status') == 'fused'
+                and 'position_support_video_times_s' in poster and 'observation_video_times_s' in poster):
+            timestamps, _, _ = read_tum(fusion.trajectory)
+            times = canonical_to_video_seconds(timestamps)
+            if len(times) != n or len(times) < 2 or not np.isfinite(times).all() or np.any(np.diff(times) <= 0):
+                raise ValueError('轨迹与位置支持证据的时间轴不一致')
+            visual = frame_constraints(attempt_diagnostics, n) == 'full'
+            support = position_support_summary(times, visual, poster)
+            if support['poster_supported_frames'] >= environment_tags.tag_minimum_frames:
+                basis = 'visual_and_poster'
+                coverage_passed = support['maximum_position_support_gap_s'] <= parameters.maximum_position_support_gap_s
     except Exception as error:
         raise ProcessingError('重建质量检查', f'无法读取融合质量指标：{error}；指标文件：{fusion.quality_report}') from error
     scale = attempt_diagnostics.get('scale_consistency')
     failure = scale_failure(scale, parameters.maximum_scale_change_ratio)
     quality = dict(placements=placements, full_fraction=round(full_fraction, 4),
+        coverage_basis=basis, position_coverage_passed=coverage_passed, **support,
         scale_consistency=scale, usable=failure is None,
-        suspicious=bool(failure or placements > parameters.maximum_placements or full_fraction < parameters.minimum_full_fraction))
+        suspicious=bool(failure or placements > parameters.maximum_placements or not coverage_passed))
     if failure:
         quality.update(reason=failure, failed_stage='重建质量检查')
     return quality
 
 
 def try_key(q: dict) -> tuple:
-    return (q['placements'], -q['full_fraction'])
+    fraction = (q.get('position_support_fraction', q['full_fraction'])
+                if q.get('coverage_basis') == 'visual_and_poster' else q['full_fraction'])
+    return (q['placements'], not q.get('position_coverage_passed', True), -fraction, -q['full_fraction'])

@@ -68,19 +68,22 @@ class CodeIdentityScopeTests(unittest.TestCase):
 
     def test_presentation_and_orchestration_files_do_not_invalidate_results(self):
         from software.infrastructure.file_store import read_yaml
-        from software.scene.management import episode_inputs
+        from software.scene.management.inputs import episode as episode_inputs
         trajectory = provenance.code_identity('trajectory')
         self.assertFalse(provenance.PRESENTATION_SOURCES & trajectory.keys())
-        self.assertIn('software/trajectory/algorithms/fusion_graph.py', trajectory)
+        self.assertIn('software/trajectory/algorithms/fusion/graph.py', trajectory)
         scene = episode_inputs.algorithm_identity()
         for name in ('processing.py', 'diagnostics.py', 'cli.py'):
             self.assertFalse([path for path in scene if path.endswith('/' + name) and '/scene/' in path], name)
         self.assertIn('software/scene/spatial/fusion.py', scene)
+        self.assertNotIn('software/scene/management/batch/snapshot.py', scene)
+        self.assertIn('software/scene/management/inputs/scene.py', scene)
+        self.assertIn('software/scene/management/inputs/batch.py', scene)
 
     def test_task_caches_follow_their_stage_sources(self):
-        from software.scene.map_cache import source_identity
+        from software.scene.cache.identity import source_identity
         prepare, localize = source_identity('prepare'), source_identity('localize')
-        self.assertNotIn('software/trajectory/algorithms/fusion_graph.py', localize)
+        self.assertNotIn('software/trajectory/algorithms/fusion/graph.py', localize)
         self.assertLessEqual(prepare.keys(), localize.keys())
         self.assertIn('software/scene/spatial/relocalization.py', localize)
 

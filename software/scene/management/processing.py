@@ -8,17 +8,44 @@ import os
 
 from . import camera_assets, cleanup, episodes
 from software.scene import layout
-from software.scene.configuration import SceneOverrides
+from software.scene.overrides import SceneOverrides
 from software.scene import workflow
-from software.scene.management.batch_inputs import read_batch
+from software.scene.management.inputs.batch import read_batch
 from software.scene.errors import ITEM_FAILURES
-from .batch_discovery import configured_batches
-from .batch_processing import build, prepare_batch
-from .epoch_processing import build_epochs, plan_epoch_draft, run_epoch_pipeline
+from software.scene.management.batch.discovery import configured_batches
+from software.scene.management.batch.execution import build, prepare_batch
+from software.scene.management.batch.epochs import build_epochs, plan_epoch_draft, run_epoch_pipeline
 
 # 批次处理的对外入口；cli 与配置展示只从这里导入。
 __all__ = ['build', 'build_epochs', 'clean', 'configured_batches', 'plan_epoch_draft',
            'prepare_batch', 'run', 'run_epoch_pipeline']
+
+
+class _BatchInputError(ValueError):
+    """已准备批次仍有原片问题；整批阻断，并保留结构化原因。"""
+
+    def __init__(self, problems: list[dict]):
+        self.problems = problems
+        detail = '; '.join(f'{item["path"]}: {item.get("reason") or item.get("status", "待确认")}'
+                           for item in problems)
+        super().__init__('存在无法读取、设备不匹配或待补齐的原片：' + detail)
+
+
+def _prepare_for_run(batch: Path, *, dry_run: bool, intrinsics_source: str | None,
+                     overrides: SceneOverrides | None) -> dict:
+    imported = prepare_batch(batch, dry_run=dry_run,
+                             intrinsics_source=intrinsics_source, overrides=overrides)
+    problems = imported['errors'] + imported['pending'] + imported['ignored']
+    if problems:
+        raise _BatchInputError(problems)
+    return imported
+
+
+def _failed_item(path: Path, error: Exception, *, name: str | None = None) -> dict:
+    result = dict(path=str(path), name=path.name if name is None else name, status='failed', error=str(error))
+    if isinstance(error, _BatchInputError):
+        result['details'] = error.problems
+    return result
 
 
 def clean(paths: list[Path], *, dry_run: bool = False, cache: bool = False) -> dict:
@@ -43,19 +70,12 @@ def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '
     summaries, ready = [], []
     for batch in batch_roots:
         try:
-            imported = prepare_batch(batch, dry_run=dry_run,
-                                     intrinsics_source=intrinsics_source, overrides=overrides)
-            problems = imported['errors'] + imported['pending'] + imported['ignored']
-            if problems:
-                detail = '; '.join(f'{item["path"]}: {item.get("reason") or item.get("status", "待确认")}'
-                                   for item in problems)
-                summaries.append(dict(path=str(batch), name=batch.name, status='failed',
-                    error='存在无法读取、设备不匹配或待补齐的原片：' + detail, details=problems))
-                continue
+            imported = _prepare_for_run(batch, dry_run=dry_run,
+                                        intrinsics_source=intrinsics_source, overrides=overrides)
             registered = episodes.episode_paths([batch])
             if dry_run:
                 for item in imported['episodes']:
-                    summaries.append(dict(item, status='planned', stages=['登记原片', '固定或构建批次地图', '抽取轨迹']))
+                    summaries.append(dict(item, status='planned', stages=['登记原片', '选择轨迹估计后端', '抽取轨迹']))
                 # 已登记任务可能全部被入库复用，仍列出处理计划。
                 planned = {item['path'] for item in imported['episodes']}
                 for path in registered:
@@ -63,31 +83,35 @@ def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '
                         summaries.append(dict(path=str(path), name=layout.owner(path).name, status='planned'))
             else:
                 ready.extend(registered)
-            if not imported['episodes'] and not registered and not problems:
+            if not imported['episodes'] and not registered:
                 raise ValueError(f'没有任务原片，请放入 {batch}/take_001/left/ 或 right/')
         except ITEM_FAILURES as error:
-            summaries.append(dict(path=str(batch), name=batch.name, status='failed', error=str(error)))
+            summaries.append(_failed_item(batch, error))
     # 已登记批次和显式任务路径继续使用相同的处理引擎。
     direct = episodes.episode_paths(paths, exclude=batch_roots)
-    for batch in sorted({layout.owner(path).parent for path in direct
-                         if (layout.owner(path).parent / 'collection.yaml').is_file()}):
-        selected = [path for path in direct if layout.owner(path).parent == batch]
+    task_roots = {path: layout.owner(path) for path in direct}
+    tasks_by_batch: dict[Path, list[Path]] = {}
+    for path, task_root in task_roots.items():
+        tasks_by_batch.setdefault(task_root.parent, []).append(path)
+    handled = set()
+    for batch, selected in sorted(tasks_by_batch.items()):
+        if not (batch / 'collection.yaml').is_file():
+            continue
         try:
-            imported = prepare_batch(batch, dry_run=dry_run,
-                                     intrinsics_source=intrinsics_source, overrides=overrides)
-            if imported['errors'] or imported['pending'] or imported['ignored']:
-                raise ValueError('当前批次存在无法读取、设备不匹配或待补齐的原片，请先核对')
+            _prepare_for_run(batch, dry_run=dry_run,
+                             intrinsics_source=intrinsics_source, overrides=overrides)
             if dry_run:
-                summaries.extend(dict(path=str(path), name=layout.owner(path).name, status='planned') for path in selected)
-                direct = [path for path in direct if path not in selected]
+                summaries.extend(dict(path=str(path), name=task_roots[path].name, status='planned') for path in selected)
+                handled.update(selected)
         except ITEM_FAILURES as error:
-            summaries.extend(dict(path=str(path), name=layout.owner(path).name, status='failed', error=str(error)) for path in selected)
-            direct = [path for path in direct if path not in selected]
+            summaries.extend(_failed_item(path, error, name=task_roots[path].name) for path in selected)
+            handled.update(selected)
+    direct = [path for path in direct if path not in handled]
     if intrinsics_source:
         checked = []
         source_errors: dict[Path, str | None] = {}
         for path in direct:
-            batch = layout.owner(path).parent
+            batch = task_roots[path].parent
             if batch not in source_errors:
                 try:
                     session = read_batch(batch, overrides=overrides)
@@ -98,7 +122,7 @@ def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '
             if source_errors[batch] is None:
                 checked.append(path)
             else:
-                summaries.append(dict(path=str(path), name=layout.owner(path).name, status='failed',
+                summaries.append(dict(path=str(path), name=task_roots[path].name, status='failed',
                     error=f'{source_errors[batch]}；来源切换需要 collection.yaml 和套件中对应的完整标定配置'))
         direct = checked
     ready.extend(direct)

@@ -4,12 +4,14 @@
 
 最近的全项目结构检查、已完成重构及剩余重点见[架构扫描与重构](架构扫描与重构.md)。
 
+无预建场景地图的双手轨迹后端、鲁棒标签初始化、联合视觉惯性优化及自动回退见[无场景地图的双手轨迹重建方案](无场景地图的双手轨迹重建方案.md)。`poster_independent` 与实验性 `poster_vio` 已接入；真实录像、TCP 和独立精度验收仍是后续工作。
+
 ## 从入口沿流程阅读
 
 | 流程 | 阅读入口 |
 |---|---|
 | 标定 | [标定代码指南](../../software/calibration/README.md)：`cli.main()` → `workflow.run()` / `verify()` |
-| 共享场景 | [场景代码指南](../../software/scene/README.md)：`cli.main()` → `management.processing.run()` / `build()` → `pipeline.map_lifecycle.build_scene()` / `workflow.run_episode()` |
+| 共享场景 | [场景代码指南](../../software/scene/README.md)：`cli.main()` → `management.processing.run()` / `build()` → `pipeline.maps.lifecycle.build_scene()` / `workflow.run_episode()` |
 | 轨迹抽取 | [轨迹代码指南](../../software/trajectory/README.md)：`cli.main()` → `workflow.run_batch()` → `run_recording()`（架构子包：`calibration/`, `pipeline/`, `reporting/`, `algorithms/`） |
 | 三维查看 | [查看器代码指南](../../software/viewer/README.md)：`server.main()` → `RecordingCatalog` → 浏览器播放状态 |
 | 共用视觉 | [视觉代码指南](../../software/vision/README.md)：录像准备、ORB 建图/定位、视觉上下文与执行验收 |
@@ -37,7 +39,7 @@
 ```bash
 ./test.sh        # 一键测试：主单元测试 (unittest，含宽度映射) + 前端测试 (node)
 ./test.sh --all  # 包含 CLI check 运行时检查与 KB4 C++ 数值回归
-./test.sh --quick  # 快速内循环：数值、schema、时序与缓存契约测试（约 26 秒）
+./test.sh --quick  # 快速内循环：数值、schema、时序与缓存契约测试
 ./test.sh --unit test_rear_assets test_calibration_inventory  # 日常改动：只跑相关模块
 ./test.sh --unit test_config.ConfigTests.test_c_isolates_task_poster_and_dual_mode_but_keeps_solver_parameters
 ```
@@ -54,6 +56,8 @@ node --test tests/js/viewer.test.mjs
 Node 只用于查看器前端测试，运行查看器不需要 Node。Python 测试覆盖输入、标定验收、流程、复用、重建协议、产物布局与查看器；涉及求解器和 SLAM 的单元测试使用替代引擎。真实录像端到端回归和独立误差评估需另外记录输入、设备标定、版本及结果。
 
 `--quick` 用于日常内循环，跳过建图、任务、场景和查看器等端到端工作流；`--unit` 不带模块时仍运行全部 Python 测试。`--unit` 带模块时接受 `test_模块` 或 `test_模块.测试类.方法`，从 `tests/` 解析。定位和迭代时运行快速档或相关模块，涉及公共配置、登记表或融合接口的改动收尾再跑全量。选跑不会自动推断依赖，也不会替代最后的跨模块回归。
+
+仓库的轻量 CI 位于 `.github/workflows/quality.yml`：它只安装 NumPy 和 Ruff，检查全仓 Python 语法、可移植训练读取器边界及本轮核心模块的静态错误，不依赖 GTSAM、OpenCV、SLAM 或真实录像。完整算法回归仍使用本机 `.deps` 环境执行 `./test.sh --quick`、`./test.sh --unit` 和必要的 `./test.sh --all`。
 
 复用测试夹具时导入模块或独立 fixture，避免把其他文件的 `TestCase` 类直接导入测试模块顶层：unittest 会再次收集该类。查重应比较源码文件、类和方法；仅按测试 ID 检查会漏掉 `tests.test_x` 与 `test_x` 的别名重复。
 

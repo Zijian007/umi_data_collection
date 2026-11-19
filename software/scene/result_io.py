@@ -14,9 +14,13 @@ from software.infrastructure import provenance as artifact_identity
 TCP_COLUMNS = ('t_episode_s', 'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw')
 
 
-def is_local_scene(scene_record: dict) -> bool:
+def is_local_scene(coordinate_record: dict) -> bool:
     """任务坐标记录是否为单手独立回退的局部坐标（不与场景共享）。"""
-    return scene_record.get('scope') == 'local'
+    return coordinate_record.get('scope') == 'local'
+
+
+def is_poster_scene(coordinate_record: dict) -> bool:
+    return coordinate_record.get('scope') == 'task_poster'
 
 
 def scene_map_identity(map_manifest: dict) -> str:
@@ -28,6 +32,17 @@ def scene_map_identity(map_manifest: dict) -> str:
 def scene_reference(manifest: dict) -> dict:
     """读取唯一的场景坐标声明，并核对它与输入摘要中的地图身份一致。"""
     scene = manifest['scene']
+    if manifest.get('kind') == 'umi_poster_episode':
+        if (manifest.get('schema_version') != 4 or not is_poster_scene(scene)
+                or not scene.get('frame_id', '').startswith('poster:')
+                or scene.get('version') is not None or manifest.get('map') is not None):
+            raise ValueError('任务海报坐标声明无效')
+        for arm in manifest['arms']:
+            evidence = manifest['arm_results'][arm]['fusion']
+            if (evidence.get('scene_map_priors_used') is not False
+                    or evidence.get('environment_poster', {}).get('status') != 'fused'):
+                raise ValueError('任务海报结果缺少实际融合或含场景地图先验')
+        return scene
     if manifest.get('kind') == 'umi_local_episode':
         if (not is_local_scene(scene) or not scene.get('frame_id', '').startswith('local:') or
                 scene.get('version') is not None or len(manifest['arms']) != 1 or manifest.get('map') is not None):
@@ -48,7 +63,7 @@ def _manifest(directory: Path, manifest: dict | None) -> dict:
         if not path.is_file():
             raise ValueError(f'缺少当前格式任务清单：{path}')
         manifest = json.loads(path.read_text(encoding='utf-8'))
-    if manifest.get('kind') not in ('umi_scene_episode', 'umi_local_episode') or manifest.get('schema_version') != 4:
+    if manifest.get('kind') not in ('umi_scene_episode', 'umi_local_episode', 'umi_poster_episode') or manifest.get('schema_version') != 4:
         raise ValueError('任务清单必须使用 schema_version: 4')
     arm = directory.name
     if manifest['arms'].get(arm) != arm or arm not in manifest['arm_results']:
@@ -69,6 +84,9 @@ def read_arm_summary(directory: Path, manifest: dict | None = None) -> dict:
         video_time_offset_s=manifest['synchronization']['offsets_s'][arm])
     if manifest.get('kind') == 'umi_local_episode':
         summary.update(mode='local', notes=[*summary['notes'], '独立回退：局部坐标，不与场景共享。'])
+        return summary
+    if is_poster_scene(summary['scene']):
+        summary.update(mode='poster', notes=[*summary['notes'], '任务海报坐标；无预建场景地图，不跨任务共享。'])
         return summary
     reference = manifest['map']
     if not isinstance(reference.get('path'), str) or Path(reference['path']).is_absolute():

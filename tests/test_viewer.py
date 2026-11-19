@@ -7,11 +7,11 @@ from unittest.mock import patch
 from types import SimpleNamespace
 from pathlib import Path
 
-from software.viewer.data import RecordingCatalog
+from software.viewer.results.catalog import RecordingCatalog
 from software.viewer.errors import ViewerDataError
-from software.viewer.readers import read_trajectory
+from software.viewer.results.readers import read_trajectory
 from software.viewer.server import byte_range, make_handler
-from software.viewer.media import decode_frame
+from software.viewer.resources.video import decode_frame
 
 TUM = '# t x y z qx qy qz qw\n0 0 0 0 0 0 0 1\n0.5 0.3 0.4 0 0 0 0 1\n1 0.6 0.8 0 0 0 0 1\n'
 
@@ -160,7 +160,7 @@ class HTTPContractTests(unittest.TestCase):
 
 class FrameDecodeTests(unittest.TestCase):
     def setUp(self):
-        from software.viewer import media
+        from software.viewer.resources import video as media
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         environment = patch.dict('os.environ', {'UMI_VIEW_CACHE': self.temp.name})
@@ -170,20 +170,20 @@ class FrameDecodeTests(unittest.TestCase):
 
     def test_invalid_times_are_rejected_before_starting_decoder(self):
         for seconds in (-1, float('nan'), float('inf'), 86401):
-            with patch('software.viewer.media.subprocess.run') as execute:
+            with patch('software.viewer.resources.video.subprocess.run') as execute:
                 with self.assertRaises(ViewerDataError):
                     decode_frame(Path('input.mp4'), seconds)
                 execute.assert_not_called()
 
     def test_decoder_outputs_jpeg_without_writing_video(self):
-        with patch('software.viewer.media.find_ffmpeg', return_value='/ffmpeg'), patch('software.viewer.media.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=b'\xff\xd8jpeg', stderr=b'')) as execute:
+        with patch('software.viewer.resources.video.find_ffmpeg', return_value='/ffmpeg'), patch('software.viewer.resources.video.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=b'\xff\xd8jpeg', stderr=b'')) as execute:
             self.assertEqual(decode_frame(Path('input.mp4'), 17.35), b'\xff\xd8jpeg')
             command = execute.call_args.args[0]
             self.assertEqual(command[-1], 'pipe:1')
             self.assertEqual(command[command.index('-ss') + 1], '17.350000')
 
     def test_empty_decoded_frame_reports_error(self):
-        with patch('software.viewer.media.find_ffmpeg', return_value='/ffmpeg'), patch('software.viewer.media.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=b'', stderr=b'')):
+        with patch('software.viewer.resources.video.find_ffmpeg', return_value='/ffmpeg'), patch('software.viewer.resources.video.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=b'', stderr=b'')):
             with self.assertRaisesRegex(ViewerDataError, '没有可用画面'):
                 decode_frame(Path('input.mp4'), 0)
 

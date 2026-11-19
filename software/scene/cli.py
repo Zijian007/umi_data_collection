@@ -13,11 +13,11 @@ import json
 
 from software.scene import layout, workflow
 from software.scene.management import episodes, processing
-from software.scene.management import batch_inputs, episode_inputs
-from software.scene.management.batch_discovery import batch_root
+from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs
+from software.scene.management.batch.discovery import batch_root
 from software.scene.management.episodes import episode_paths
-from software.scene.pipeline import map_lifecycle
-from software.scene.pipeline import map_epoch_selection
+from software.scene.pipeline.maps import lifecycle as map_lifecycle
+from software.scene.pipeline.maps import epoch_selection as map_epoch_selection
 from software.scene.pipeline import recording_checks
 from software.scene.errors import ITEM_FAILURES
 
@@ -98,51 +98,70 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument('--format', choices=['trajectory', 'training'], default='trajectory', help='默认轨迹交付包；training 为训练中间包')
     export.add_argument('--fps', type=float, default=30., help='仅 training：目标采样帧率，范围 (0, 120] Hz，默认 %(default)g Hz；trajectory 忽略此项')
     export.add_argument('--max-gap-s', type=float, default=.25, help='仅 training：最大插值间隔，须为有限正秒数，默认 %(default)g 秒；trajectory 忽略此项')
+    export.add_argument('--start-s', type=float, help='仅 training：人工确认的任务窗口起点，单位秒')
+    export.add_argument('--end-s', type=float, help='仅 training：人工确认的任务窗口终点，单位秒')
+    from software.dataset.policy import QUALITY_POLICIES, UNKNOWN_SUPPORT_POLICIES
+    export.add_argument('--quality-policy', choices=QUALITY_POLICIES, default='all',
+                        help='仅 training：all 保留全部有效采样；position_supported 要求所有手插值两端均有位置支持')
+    export.add_argument('--unknown-support', choices=UNKNOWN_SUPPORT_POLICIES, default='drop',
+                        help='严格质量筛选遇到未知位置支持时 drop 剔除或 error 拒绝；默认 drop')
     clean = commands.add_parser('clean', help='删除已被取代的运行、地图版本和中断残留；当前结果、最近一次尝试和验收记录保留')
     clean.add_argument('paths', nargs='+', type=Path, help='批次、场景或上层目录，可一次指定多个')
     clean.add_argument('--cache', action='store_true', help='同时清空全部可重建缓存；下次运行会重新解码、建图和定位')
     clean.add_argument('--dry-run', action='store_true', help='只列出将删除的内容和可释放空间，不做修改')
     inspect = commands.add_parser('inspect', help='核对批次当前绑定的地图')
     inspect.add_argument('batch', type=Path, help='批次目录、collection.yaml 或批次 .pipeline/manifest.yaml；读取 manifest.yaml 绑定的地图')
+    relative = commands.add_parser('evaluate-relative', help='用实测固定夹具参考评估双手相对位姿；不更新人工验收')
+    relative.add_argument('path', type=Path, help='任务目录或冻结的运行结果目录')
+    relative.add_argument('--reference', required=True, type=Path, help='umi_rigid_pair_reference v1 JSON')
+    relative.add_argument('--out', required=True, type=Path, help='评估报告 JSON，必须位于源运行结果目录外')
     return parser
+
+
+def _prepare_execution(args):
+    """Load command overrides and configure process-wide runtime settings."""
+    overrides = None
+    if args.command in ('run', 'build', 'plan-epochs', 'pipeline'):
+        from software.scene.overrides import SceneOverrides
+        from software.scene.management.effective_config import effective_report
+        common = user_config.current().values
+        if hasattr(args, 'jobs') and args.jobs is None:
+            args.jobs = common['runtime']['jobs']
+        if hasattr(args, 'cores') and not args.cores and common['runtime']['cores'] != 'auto':
+            args.cores = common['runtime']['cores']
+        if args.command in ('run', 'pipeline') and args.jobs < 1:
+            raise ValueError('jobs 必须至少为 1')
+        overrides = SceneOverrides.load(args.config) if args.config else None
+        if getattr(args, 'show_config', False):
+            paths = args.paths if args.command == 'run' else [args.batch]
+            report = dict(program='umi-scene', operation=args.command, scope='configuration_only',
+                precedence=['project_defaults', 'config/user.yaml', 'collection.yaml', '--expert-config'],
+                execution={key: value for key, value in vars(args).items()
+                           if key in ('cores', 'jobs', 'force', 'keep_work', 'skip_preflight', 'epochs')},
+                configuration=effective_report(paths, overrides=overrides),
+                user_config=user_config.current().report(),
+                operational=settings.execution_report(cores=args.cores, jobs=getattr(args, 'jobs', 1)))
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return None, True
+    if args.command in ('run', 'build', 'pipeline', 'detect-tags'):
+        import cv2
+
+        threads = settings.values('runtime')['opencv_threads']
+        if threads < 1:
+            raise ValueError('UMI_OPENCV_THREADS 必须是正整数')
+        # OpenCV 设置是进程级的；在创建任务线程前设置一次。
+        cv2.setNumThreads(threads)
+        if args.command in ('run', 'build', 'pipeline'):
+            workflow.console.write(settings.summary(cores=args.cores, jobs=getattr(args, 'jobs', 1)))
+    return overrides, False
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        overrides = None
-        if args.command in ('run', 'build', 'plan-epochs', 'pipeline'):
-            from software.scene.configuration import SceneOverrides
-            from software.scene.management.effective_config import effective_report
-            common = user_config.current().values
-            if hasattr(args, 'jobs') and args.jobs is None:
-                args.jobs = common['runtime']['jobs']
-            if hasattr(args, 'cores') and not args.cores and common['runtime']['cores'] != 'auto':
-                args.cores = common['runtime']['cores']
-            if args.command in ('run', 'pipeline') and args.jobs < 1:
-                raise ValueError('jobs 必须至少为 1')
-            overrides = SceneOverrides.load(args.config) if args.config else None
-            if getattr(args, 'show_config', False):
-                paths = args.paths if args.command == 'run' else [args.batch]
-                report = dict(program='umi-scene', operation=args.command, scope='configuration_only',
-                    precedence=['project_defaults', 'config/user.yaml', 'collection.yaml', '--expert-config'],
-                    execution={key: value for key, value in vars(args).items()
-                               if key in ('cores', 'jobs', 'force', 'keep_work', 'skip_preflight', 'epochs')},
-                    configuration=effective_report(paths, overrides=overrides),
-                    user_config=user_config.current().report(),
-                    operational=settings.execution_report(cores=args.cores, jobs=getattr(args, 'jobs', 1)))
-                print(json.dumps(report, ensure_ascii=False, indent=2))
-                return 0
-        if args.command in ('run', 'build', 'pipeline', 'detect-tags'):
-            import cv2
-
-            threads = settings.values('runtime')['opencv_threads']
-            if threads < 1:
-                raise ValueError('UMI_OPENCV_THREADS 必须是正整数')
-            # OpenCV 设置是进程级的；在创建任务线程前设置一次。
-            cv2.setNumThreads(threads)
-            if args.command in ('run', 'build', 'pipeline'):
-                workflow.console.write(settings.summary(cores=args.cores, jobs=getattr(args, 'jobs', 1)))
+        overrides, handled = _prepare_execution(args)
+        if handled:
+            return 0
         if args.command == 'check':
             from software.trajectory.pipeline.runtime import check
             return check()
@@ -174,8 +193,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), ensure_ascii=False, indent=2) if args.json else recording_checks.format_report(result))
             return int(not result.passed)
         elif args.command == 'detect-tags':
-            from software.vision.environment_tags import DetectionSettings, cached
-            from software.vision.tag_board import DEFAULT_LAYOUT, load
+            from software.vision.poster.detection import DetectionSettings, cached
+            from software.vision.poster.layout import DEFAULT_LAYOUT, load
             board = load(args.layout or DEFAULT_LAYOUT)
             detection_settings = DetectionSettings(border_bits=board.border_bits if args.border_bits is None else args.border_bits,
                 dictionary=board.dictionary, ids=board.ids, frame_step=args.frame_step,
@@ -216,12 +235,29 @@ def main(argv: list[str] | None = None) -> int:
             if args.format == 'training':
                 if args.with_video:
                     raise ValueError('training 包已包含视频，不需要 --with-video')
+                if (args.start_s is None) != (args.end_s is None):
+                    raise ValueError('--start-s 和 --end-s 必须同时提供')
                 from software.dataset.export import build
-                result = build(args.paths, args.out, fps=args.fps, max_gap_s=args.max_gap_s)
+                result = build(args.paths, args.out, fps=args.fps, max_gap_s=args.max_gap_s,
+                               quality_policy=args.quality_policy, unknown_support=args.unknown_support,
+                               time_window_s=None if args.start_s is None else (args.start_s, args.end_s))
             else:
+                if args.quality_policy != 'all' or args.unknown_support != 'drop' or args.start_s is not None or args.end_s is not None:
+                    raise ValueError('训练采样选项只适用于 --format training')
                 result = episodes.export(episode_paths(args.paths), args.out, with_video=args.with_video)
         elif args.command == 'clean':
             result = processing.clean(args.paths, dry_run=args.dry_run, cache=args.cache)
+        elif args.command == 'evaluate-relative':
+            from software.scene.pipeline.tasks.relative_pose_evaluation import evaluate
+            from software.infrastructure.file_store import write_json
+            result = evaluate(args.path, args.reference)
+            if args.out.expanduser().resolve().is_relative_to(Path(result['run'])):
+                raise ValueError('评估报告不能写入冻结运行结果目录')
+            if args.out.expanduser().resolve() == args.reference.expanduser().resolve():
+                raise ValueError('评估报告不能覆盖实测参考')
+            write_json(args.out, result)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0 if result['status'] == 'passed' else 1
         elif args.command == 'inspect':
             batch = batch_root(args.batch)
             if not layout.is_batch(batch):

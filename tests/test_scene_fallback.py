@@ -12,8 +12,8 @@ import numpy as np
 
 from software.configuration import loader as config
 from software.scene.models import PreparedRecording
-from software.scene.pipeline import fallback
-from software.scene.management import scene_inputs
+from software.scene.pipeline.tasks.backends import independent_reconstruction
+from software.scene.management.inputs import scene as scene_inputs
 from software.trajectory.calibration import assets
 from software.trajectory.pipeline import runtime
 from software.vision.models import LensVideo, RecordingPaths
@@ -50,7 +50,7 @@ class SceneFallbackAdapterTests(unittest.TestCase):
             self.addCleanup(mocked.stop)
 
     def run_fallback(self):
-        return fallback.reconstruct(self.episode, 'right', self.recording, self.root / 'independent')
+        return independent_reconstruction.reconstruct(self.episode, 'right', self.recording, self.root / 'independent')
 
     def test_reuses_video_frozen_calibration_and_full_original_clock(self):
         result = self.run_fallback()
@@ -87,8 +87,8 @@ class SceneFallbackAdapterTests(unittest.TestCase):
     def test_truncated_trajectory_cannot_silently_drop_tail_frames(self):
         def execute(command, **options):
             result = self.engines(command, **options)
-            if 'software.trajectory.algorithms.fusion_cli' in command:
-                position = command.index('software.trajectory.algorithms.fusion_cli')
+            if 'software.trajectory.algorithms.fusion.cli' in command:
+                position = command.index('software.trajectory.algorithms.fusion.cli')
                 tum = Path(command[position + 6]) / 'traj_tum.txt'
                 tum.write_text(''.join(tum.read_text().splitlines(keepends=True)[:-1]))
             return result

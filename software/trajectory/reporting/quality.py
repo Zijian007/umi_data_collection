@@ -38,6 +38,50 @@ def runs(mask: np.ndarray) -> list[tuple[int, int]]:
     return out
 
 
+def maximum_support_gap(times: np.ndarray, visual: np.ndarray, poster_times: np.ndarray) -> float:
+    """使用真实观测时刻计算共同位置支持缺口，不把海报吸附到输出帧。"""
+    supported = np.unique(np.r_[times[visual], poster_times])
+    return float(np.max(np.diff(np.r_[times[0], supported, times[-1]])))
+
+
+def position_support(times: np.ndarray, visual: np.ndarray, poster: dict | None) -> dict:
+    """仅为输出关联最近帧的时间单元；求解器与缺口检查仍使用精确观测时间。
+
+    历史融合记录缺少观测/几何证据时返回 unknown，不推断海报未使用。
+    """
+    fused = poster is not None and poster.get('status') == 'fused'
+    observed = poster.get('observation_video_times_s') if fused else []
+    supported = poster.get('position_support_video_times_s') if fused else []
+
+    def cells(events):
+        if events is None:
+            return None
+        events = np.asarray(events, float)
+        if (events.ndim != 1 or not np.isfinite(events).all() or np.any(np.diff(events) <= 0)
+                or np.any(events < times[0]-1e-8) or np.any(events > times[-1]+1e-8)):
+            raise ValueError('海报支持时间证据无效')
+        mask = np.zeros(len(times), bool)
+        mask[np.searchsorted((times[:-1]+times[1:])/2, events, side='right')] = True
+        return mask
+
+    observed_mask, poster_mask = cells(observed), cells(supported)
+    if supported is not None and observed is not None and not np.isin(supported, observed).all():
+        raise ValueError('海报位置支持不属于已记录观测')
+    return dict(visual_position_supported=visual, poster_observed=observed_mask,
+                poster_position_supported=poster_mask,
+                position_supported=(visual | poster_mask) if poster_mask is not None else None)
+
+
+def position_support_summary(times: np.ndarray, visual: np.ndarray, poster: dict) -> dict:
+    masks = position_support(times, visual, poster)
+    if masks['position_supported'] is None:
+        raise ValueError('缺少海报几何支持证据')
+    return dict(position_support_fraction=float(masks['position_supported'].mean()),
+                maximum_position_support_gap_s=maximum_support_gap(
+                    times, visual, np.asarray(poster['position_support_video_times_s'], float)),
+                poster_supported_frames=len(poster['position_support_video_times_s']))
+
+
 def tracked_counts(run_txt: Path) -> dict:
     """'map: rc=0 TRACKED a / b' lines recorded by reconstruction.py."""
     structured = run_txt.parent / 'tracking.json'

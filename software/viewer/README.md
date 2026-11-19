@@ -4,20 +4,24 @@
 
 ## 阅读顺序
 
-`server.main()` 创建 `RecordingCatalog` 并启动 HTTP 服务；`data.py` 负责目录发现与结果装配，`readers.py` 解析轨迹、逐帧约束和标签间距，`errors.py` 定义输入错误。浏览器的 `app.mjs` 管理选择与播放状态，三维、视频、曲线共用轨迹时间轴。
+`server.main()` 创建 `RecordingCatalog` 并启动 HTTP 服务；`results/catalog.py` 负责目录发现与结果装配，`results/readers.py` 解析轨迹、逐帧约束和标签间距，`errors.py` 定义输入错误。浏览器的 `app.mjs` 管理选择与播放状态，三维、视频、曲线共用轨迹时间轴。
 
 ## 文件职责
 
 ```text
 software/viewer/
-  data.py            目录发现、访问边界与结果装配
-  readers.py         TUM / CSV、逐帧约束和标签测距协议解析
-  errors.py          查看器输入错误
-  server.py          HTTP API、本地静态资源与视频 Range 流
-  media.py           兼容模式的限并发 FFmpeg 解码
-  cache.py           查看器磁盘缓存、文件身份、跨进程锁与原子发布
-  maps.py            地图校验、旧图集按需转换与缓存
-  static/
+├── errors.py          查看器输入错误
+├── server.py          HTTP API、本地静态资源与视频 Range 流
+├── results/
+│   ├── catalog.py     目录发现、访问边界与结果装配
+│   ├── readers.py     TUM / CSV、逐帧约束和标签测距协议解析
+│   ├── episodes.py    场景任务状态、双手共同区间与显示采样
+│   └── poses.py       TCP 到相机/IMU 的只读显示轨迹转换
+├── resources/
+│   ├── video.py       限并发 FFmpeg 解码、预览与视频资源
+│   ├── cache.py       磁盘缓存、文件身份、跨进程锁与原子发布
+│   └── maps.py        地图校验、旧图集按需转换与缓存
+└── static/
     app.mjs          录像选择与统一播放状态
     scene.mjs        三维点云、关键帧、轨迹和姿态轴、鼠标操作
     chart.mjs        速度曲线与点击定位
@@ -26,6 +30,8 @@ software/viewer/
     measurements.mjs 标签间距格式化和双手时间选择
     viewer.css       自适应布局
 ```
+
+两个子包初始化只说明职责，调用方从实际模块导入。HTTP 入口及静态资源位置保留，结果读取不反向启动 HTTP 服务。文件身份、缓存隔离、路径检查和输出协议保持原逻辑；地图转换缓存继续跟踪真实转换/缓存代码文件，按新身份重建。
 
 浏览器侧自行计算三维透视投影，Canvas 显示轨迹；不从 CDN 加载绘图库。大轨迹只在绘制轮廓时降采样，逐帧读取和时间定位保留原始索引。对录像目录外的软链接不暴露文件内容，视频支持 HEAD 和单段 HTTP Range，便于拖动跳转。
 
@@ -37,7 +43,7 @@ software/viewer/
 
 共享场景任务由 `software/scene/management/episodes.py` 适配：通过 ruamel.yaml 读取采集清单以展示待处理或缺片任务，处理和验收状态从 state.json 读取，不加载算法环境。已有结果只读当前 `results` 指针、校验两只手的场景版本/坐标身份，裁出共同时间区间，再对另一只手的位置和四元数插值。浏览器的 `paired.mjs` 跟随主时间同步第二路视频；两路各自使用 `video_time_offset_s`，不把共同区间起点误当成视频起点。
 
-场景结果默认仅保存 TCP 主轨迹；缺少相机/IMU TUM 时，`poses.py` 以已记录的固定外参按需重建这两条显示轨迹。该路径只用标准库，不引入 NumPy、SciPy 或求解器依赖；已保存的历史辅助轨迹仍优先使用。
+场景结果默认仅保存 TCP 主轨迹；缺少相机/IMU TUM 时，`results/poses.py` 以已记录的固定外参按需重建这两条显示轨迹。该路径只用标准库，不引入 NumPy、SciPy 或求解器依赖；已保存的历史辅助轨迹仍优先使用。
 
 `GET /api/recordings/<id>/map` 独立加载地图，不阻塞轨迹与视频。新场景任务通过 `software.scene.result_io` 从根 `episode.json` 读取各手指标和共享 `map` 引用，历史结果继续读取每手摘要。查看器校验相对路径、本场景范围、版本、坐标系与 SHA256，不在每只手的结果里复制地图。单独查看原位置的任务结果也使用同一共享文件。
 

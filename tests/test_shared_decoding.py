@@ -11,13 +11,18 @@ import av
 import numpy as np
 
 from software.infrastructure import provenance
-from software.gripper_width import detection, sampled_detection
+from software.gripper_width.detection import markers as detection, sampling as sampled_detection
 from software.scene import layout
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
-from software.scene.pipeline import measurements
+from software.scene.management.inputs import (
+    batch as batch_inputs,
+    episode as episode_inputs,
+    kit as kit_inputs,
+    scene as scene_inputs,
+)
+from software.scene.pipeline.tasks import measurements
 from software.infrastructure.file_store import write_yaml
-from software.vision import tag_board, environment_tags
+from software.vision.poster import layout as tag_board, detection as environment_tags
 from software.vision.decoding import VideoDecode
 from test_environment_tags import poster, recording
 from test_marker_detection import bright_markers

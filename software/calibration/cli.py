@@ -66,12 +66,12 @@ def main(argv: list[str] | None = None, *, prepare_environment: bool = False) ->
     if args.cmd in ('preview-width', 'detect-width'):
         from av.error import FFmpegError
         from cv2 import error as OpenCVError
-        from software.gripper_width import preview
+        from software.gripper_width.tools import preview
         try:
             if args.cmd == 'preview-width':
                 result = preview.render(args.video, args.out, roi=args.roi, contrast=args.contrast)
             else:
-                from software.gripper_width import monitor
+                from software.gripper_width.tools import monitor
                 video_output = None if args.no_video else (args.video_out or args.video.with_name(args.video.stem + '_width_detect.mp4'))
                 result = monitor.run(args.video, args.roi, hz=args.hz, output=args.out,
                                      benchmark=args.benchmark, video_output=video_output, contrast=args.contrast)

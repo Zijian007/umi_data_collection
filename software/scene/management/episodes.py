@@ -13,13 +13,13 @@ import tempfile
 
 from software.infrastructure import provenance as artifact_identity
 from software.scene import layout
-from software.scene.configuration import SceneOverrides, apply_overrides
+from software.scene.overrides import SceneOverrides, apply_overrides
 from software.scene.layout import locked
 from software.scene.management import camera_assets
-from software.scene.management.scene_inputs import INTERNAL_DIRECTORIES, validate_name
-from software.scene.management.batch_inputs import batch_task_directories
+from software.scene.management.inputs.scene import INTERNAL_DIRECTORIES, validate_name
+from software.scene.management.inputs.batch import batch_task_directories
 from software.scene.asset_identity import validate_assets
-from software.scene.management.episode_inputs import episode_inputs, read_episode
+from software.scene.management.inputs.episode import episode_inputs, read_episode
 from software.scene.result_io import scene_reference, trajectory_path
 from software.infrastructure.file_store import write_json
 
@@ -122,9 +122,11 @@ def successful_run(episode) -> tuple[Path, dict]:
         episode = replace(episode, session=replace(episode.session, scene=scene))
     cameras = camera_assets.select_cameras(episode.recordings, replace(episode.scene, mode=run_manifest['inputs']['map_mode'],
         devices=episode.session.devices, rear_calibrations=camera_assets.rear_files(episode.session.devices)), episode.serials)
-    scene_record = scene_reference(run_manifest)
-    map_manifest = dict(version=scene_record['version'], frame_id=scene_record['frame_id'],
+    coordinate_record = scene_reference(run_manifest)
+    reference = run_manifest['inputs'].get('scene_map_reference') or coordinate_record
+    map_manifest = (dict(version=reference['version'], frame_id=reference['frame_id'],
                         assets=run_manifest['inputs']['scene_assets'], mode=run_manifest['inputs']['map_mode'])
+                    if run_manifest['inputs']['scene_map_sha256'] is not None else None)
     if episode_inputs(episode, cameras, map_manifest) != run_manifest['inputs']:
         raise ValueError('输入或算法配置已变化，请重新处理后验收')
     return run_dir, run_manifest

@@ -7,12 +7,10 @@ from dataclasses import replace
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.trajectory.algorithms.fusion_alignment_solver import estimate_lens_alignment
+from software.trajectory.algorithms.fusion.alignment_solver import estimate_lens_alignment
 from software.configuration import loader as config
-from software.trajectory.algorithms.fusion_alignment import (
-    AlignmentError, align_lenses,
-)
-from software.trajectory.algorithms.fusion_diagnostics import sampling_stability
+from software.trajectory.algorithms.fusion.alignment import AlignmentError, align_lenses
+from software.trajectory.algorithms.fusion.diagnostics import sampling_stability
 
 
 class SamplingStabilityTests(unittest.TestCase):
@@ -46,6 +44,18 @@ class SamplingStabilityTests(unittest.TestCase):
         self.assertAlmostEqual(baseline['chains'][0]['scale'], .7, delta=.003)
         self.assertEqual(evidence[0]['status'], 'stable')
         json.dumps(evidence, allow_nan=False)
+
+    def test_stable_case_keeps_numeric_quality_margins(self):
+        baseline, evidence = self.check()
+        chain = baseline['chains'][0]
+        report = evidence[0]
+        self.assertAlmostEqual(chain['g_free'], 9.807, delta=.01)
+        self.assertLess(chain['rel_std'], .005)
+        self.assertLess(baseline['pos_rms'], .001)
+        self.assertLess(report['scale_relative_span'], .005)
+        self.assertLess(report['maximum_gravity_difference_m_s2'], .01)
+        self.assertEqual(len(report['phases']), 3)
+        self.assertTrue(all(item['fixed_map_residuals'][0]['rms_m'] < .002 for item in report['phases']))
 
     def test_off_grid_visual_error_cannot_pass_using_lucky_baseline(self):
         lens = copy.deepcopy(self.lens)

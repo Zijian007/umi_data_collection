@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from software.scene.pipeline.diagnostics import visual_gaps
+from software.scene.pipeline.tasks.diagnostics import visual_gaps
 
 
 class VisualGapTests(unittest.TestCase):

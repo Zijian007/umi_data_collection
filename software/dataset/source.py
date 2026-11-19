@@ -7,7 +7,7 @@ from pathlib import Path
 
 from software.infrastructure import provenance as artifact_identity
 from software.scene.management import episodes
-from software.scene.management.episode_inputs import read_episode
+from software.scene.management.inputs.episode import read_episode
 
 
 @dataclass(frozen=True)

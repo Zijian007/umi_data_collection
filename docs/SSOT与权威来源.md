@@ -24,7 +24,7 @@
 | 名称 | 载体与镜头 | 字典和 ID | 权威配置 | 代码与产物 |
 |---|---|---|---|---|
 | 夹爪标签 | 夹爪上的两枚小标签，工作镜头 `front` 观察 | `DICT_4X4_50`，固定 ID `0/1` | `kits/<kit>/kit.yaml` 的 `gripper.tag_distance`；开口宽度另用 `gripper.width` | `software/gripper_width/`；`tag_distance_*`、`gripper_width` |
-| 环境标签 / 环境海报 | 场地中的刚性海报，环境镜头 `rear` 观察 | `DICT_4X4_100`，布局默认 ID `12–88` | 批次 `collection.yaml.scene.tags` 的 `enabled/layout/mapping.enabled/mapping.scale.enabled/fusion.enabled` | `software/vision/environment_tags.py`、`poster_pose.py`；`environment_tags`、`environment_poster` |
+| 环境标签 / 环境海报 | 场地中的刚性海报，环境镜头 `rear` 观察 | `DICT_4X4_100`，布局默认 ID `12–88` | 批次 `collection.yaml.environment_poster` 的 `detection.enabled/layout_path/mapping.enabled/mapping.scale_correction.enabled/task_constraint.enabled` | `software/vision/poster/detection.py`、`poster/geometry.py`；`environment_tags`、`environment_poster` |
 | 标定板标签 | 相机标定用 AprilGrid，不属于夹爪或环境海报 | `tag36h11` 等由标定板资产声明 | `hardware/calibration_targets/aprilgrid.json` 与 `umi-calib --tag-size-mm` | `software/calibration/`；只服务相机标定和轨迹初始化 |
 
 特别约束：`gripper.tag_distance` 的 ID 0/1 尺寸不能填环境海报的 100 mm，也不能填 AprilGrid 的 `--tag-size-mm`；环境海报布局不能作为夹爪测距资产；标定板尺寸不能参与任务标签融合。
@@ -34,15 +34,15 @@
 地图选择只有一条解析路径：
 
 ```text
-任务级显式 map_version
-    > 任务级显式 map_epoch
+任务级 `map.version`
+    > 任务级 `map.epoch`
     > map_epochs.yaml 按 latest_prior 选择
     > 批次 manifest.yaml 中已绑定的默认地图
 ```
 
-解析结果由 `software.scene.management.episode_inputs.read_episode()` 生成，并保存在内存中的 `Episode.map_selection`。后续定位、报告和发布都消费这个结果，不在各阶段重新解释 `collection.yaml`、`map_epochs.yaml` 或批次地图指针。
+解析结果由 `software.scene.management.inputs.episode.read_episode()` 生成，并保存在内存中的 `Episode.map_selection`。后续定位、报告和发布都消费这个结果，不在各阶段重新解释 `collection.yaml`、`map_epochs.yaml` 或批次地图指针。
 
-`collection.yaml` 中的 `map_version` 是用户声明；`.pipeline/manifest.yaml.map` 是已经发布并冻结的批次状态；地图版本目录中的 `manifest.json` 是地图资产本身的权威身份。三者不能互相覆盖：声明变化需要重新解析和校验，地图资产变化必须拒绝运行。
+`collection.yaml` 中的 `map.selection.version` 是用户声明；`.pipeline/manifest.yaml.map` 是已经发布并冻结的批次状态；地图版本目录中的 `manifest.json` 是地图资产本身的权威身份。三者不能互相覆盖：声明变化需要重新解析和校验，地图资产变化必须拒绝运行。
 
 ## 任务配置规则
 
@@ -53,11 +53,11 @@ collection.yaml:
   tasks:
     take_001:
       instruction: ...
-      expected_arms: [left, right]
+      arms: [left, right]
       synchronization: assumed_simultaneous
 ```
 
-`.pipeline/tasks/<task>/episode.yaml` 只记录自动发现的原片、序列号、路径和 SHA256，不保存另一份 `instruction`、`expected_arms` 或 `synchronization`。读取任务时由 `layout.task_configuration()` 合并批次声明；旧的 `task.yaml` 会被明确拒绝。
+`.pipeline/tasks/<task>/episode.yaml` 只记录自动发现的原片、序列号、路径和 SHA256，不保存另一份 `instruction`、`arms` 或 `synchronization`。读取任务时由 `layout.task_configuration()` 合并批次声明；旧的 `task.yaml` 会被明确拒绝。
 
 当前批次没有 `tasks.<take>` 时，任务会继承批次默认值。这是有意的默认规则；如果某个 take 有独立指令、同步方式或地图选择，应显式写入 `collection.yaml.tasks.<take>`。
 

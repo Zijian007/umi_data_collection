@@ -11,7 +11,7 @@ from software.configuration import loader as config
 from software.infrastructure import provenance
 from software.camera import registry
 from software.infrastructure.file_store import write_json
-from software.trajectory.algorithms import fusion
+from software.trajectory.algorithms.fusion import solver as fusion
 from software.trajectory.calibration import assets, selection
 from software.trajectory.models import TrajectoryRequest
 from software.trajectory.pipeline import calibration_assets, poster_assets, reuse
@@ -95,7 +95,7 @@ class RearAssetsTests(RecordingFixture):
             calibration_assets.select_environment_assets(self.video, replace(self.selected, intrinsics_source='factory'), self.request)
 
     def test_poster_and_fingerprint_share_one_explicit_asset_selection(self):
-        from software.vision import tag_board
+        from software.vision.poster import layout as tag_board
         request = replace(self.request, tag_layout=tag_board.DEFAULT_LAYOUT)
         with patch.object(registry, 'rear_path', wraps=registry.rear_path) as resolve_rear:
             selected_assets = calibration_assets.select_environment_assets(self.video, self.selected, request)
@@ -137,7 +137,7 @@ class RearNumericalTests(unittest.TestCase):
         from contextlib import redirect_stdout
         from dataclasses import asdict
         from scipy.spatial.transform import Rotation
-        from software.trajectory.algorithms import fusion_cli
+        from software.trajectory.algorithms.fusion import cli as fusion_cli
         from test_independent_poster import write_camera
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -97,19 +97,19 @@ def _coverage(directory, path, execution, grid, board, *, role, source_identity,
 
 
 def _validate(video, dataset, execution, runner, identity, parameter_file, bundle, *,
-              grid, board, trajectory_configuration, generator=None, sample=False, detection=None):
-    step = Step.SAMPLE if sample else Step.TRAJECTORY
+              grid, board, trajectory_configuration, generator=None, is_sample=False, detection=None):
+    step = Step.SAMPLE if is_sample else Step.TRAJECTORY
     def measure():
         try:
-            with runtime.timed(execution.timings, ('sample' if sample else 'candidate') + '.detect_wait'):
+            with runtime.timed(execution.timings, ('sample' if is_sample else 'candidate') + '.detect_wait'):
                 found, timing = (detection.result() if detection is not None else
                     _detect_board(dataset, execution, board, 'C', identity['source']))
             execution.timings.setdefault('C.detect', timing)
             return trajectory.trajectory_check(video, found, execution, grid=grid, board=board,
                 trajectory_configuration=trajectory_configuration, calibration_json=parameter_file,
-                bundle=bundle, tag='sample' if sample else 'candidate', generator=generator)
+                bundle=bundle, tag='sample' if is_sample else 'candidate', generator=generator)
         except Exception as error:
-            if not sample:
+            if not is_sample:
                 raise
             write_error_log(execution.paths.logs/'sample_error.log', error)
             return dict(status='comparison_failed', reason=str(error))
@@ -184,8 +184,8 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
         provenance = parameter_record(configuration, trajectory_configuration)
         provenance['intrinsics_source'] = request.intrinsics_source
         provenance['backend'] = backend_identity or dict(kind='front')
-        sample = assets.read_basalt(assets.SAMPLE_CAMERA_JSON) if request.lens == 'front' else None
-        sources = dict(grid=source.grid, sample_camera=sample,
+        sample_camera = assets.read_basalt(assets.SAMPLE_CAMERA_JSON) if request.lens == 'front' else None
+        sources = dict(grid=source.grid, sample_camera=sample_camera,
             recordings={role: dict(path=str(video.resolve()), sha256=artifact_identity.file_hash(video)) for role, video in source.recordings.items()})
         if request.dry_run:
             print(json.dumps(dict(serial=source.camera_serial, lens=request.lens, output=str(paths.output), inputs=sources,
@@ -214,7 +214,7 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
         try:
             identities = {role: recordings.preparation_identity(video, role != 'D', request.lens)
                           for role, video in source.recordings.items()}
-            measurement_record = {role: _prepare(role, video, execution, runner, identities[role], request.lens)
+            recording_preparers = {role: _prepare(role, video, execution, runner, identities[role], request.lens)
                     for role, video in source.recordings.items()}
             detection = None
             available = len(os.sched_getaffinity(0))
@@ -226,7 +226,7 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
                 pool = resources.enter_context(ThreadPoolExecutor(max_workers=1, thread_name_prefix='calibration-C'))
                 resources.callback(cancelled.set)
                 background = replace(execution, workers=min(workers, available // 4, 8), timings={})
-                detection = pool.submit(_detect_board, measurement_record['C'], background, configuration.values.board,
+                detection = pool.submit(_detect_board, recording_preparers['C'], background, configuration.values.board,
                     'C', identities['C'], cancelled=cancelled, background=True)
             common = dict(code=provenance['code'], engines=provenance['engines'], grid=source.grid,
                           lens=request.lens, intrinsics_source=request.intrinsics_source)
@@ -236,7 +236,7 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
             prepared_bag = None
             def solve_a():
                 nonlocal prepared_bag
-                directory = measurement_record['A']()
+                directory = recording_preparers['A']()
                 if request.intrinsics_source == 'factory':
                     solved, origin = factory_solver.generate(source, request.lens, execution,
                         configuration.values.imu, configuration.values.factory, native=factory_native)
@@ -258,7 +258,7 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
                     background_ab = replace(execution, workers=min(workers, available // 4, 8), timings={})
                     a_detection = prefetch.submit(_detect_board, directory, background_ab, configuration.values.board,
                         'A', identities['A'], cancelled=cancelled_ab, background=True)
-                    prepared_bag = prefetch.submit(basalt.prepare_bag, measurement_record['B'](), background_ab,
+                    prepared_bag = prefetch.submit(basalt.prepare_bag, recording_preparers['B'](), background_ab,
                         name='camera_imu', log_name='camera_imu.log', cancelled=cancelled_ab)
                     resources.callback(prepared_bag.cancel)
                 solved = basalt.estimate_intrinsics(directory, source.grid, execution)
@@ -274,7 +274,7 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
                 initial = result_io.intrinsics_result(paths.output, a)
                 with atomic_file(initial.calibration_json) as temporary_record:
                     temporary_record.write_text(a['calibration_snapshot'], encoding='utf-8')
-                directory = measurement_record['B']()
+                directory = recording_preparers['B']()
                 prepared = None
                 if prepared_bag is not None:
                     with runtime.timed(execution.timings, 'camera_imu.bag_wait'):
@@ -290,23 +290,23 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
             digest = artifact_identity.file_hash(paths.calibration)
             doc['subject']['parameter_sha256'] = digest
             if request.lens == 'front' or request.intrinsics_source == 'factory':
-                _compare_factory(source, measurement_record, execution, runner,
+                _compare_factory(source, recording_preparers, execution, runner,
                     dict(common, recordings=identities, calibration=digest,
                          board=board_identity('validation_step'), method=factory.METHOD_VERSION),
                     configuration.values.board, detection, lens=request.lens, intrinsics_source=request.intrinsics_source)
             runner.run(Step.GRAVITY, dict(common, source=identities['D'], calibration=digest,
                 gravity=asdict(configuration.values.gravity)),
-                lambda: asdict(gravity.validate_gravity(measurement_record['D'](), paths.calibration, configuration.values.gravity, execution)))
+                lambda: asdict(gravity.validate_gravity(recording_preparers['D'](), paths.calibration, configuration.values.gravity, execution)))
             c_identity = dict(common, source=identities['C'], calibration=digest, board=board_identity('validation_step'),
                 trajectory=trajectory_configuration.computation_hash, backend=provenance['backend'],
                 trajectory_code=provenance['trajectory_code'], trajectory_engines=provenance['trajectory_engines'],
                 assets=trajectory.trajectory_assets() if request.lens == 'front' else backend_identity)
-            _validate(source.recordings.c, measurement_record['C'], execution, runner, c_identity, paths.calibration, str(paths.output), grid=source.grid, board=configuration.values.board,
+            _validate(source.recordings.c, recording_preparers['C'], execution, runner, c_identity, paths.calibration, str(paths.output), grid=source.grid, board=configuration.values.board,
                 trajectory_configuration=trajectory_configuration, generator=trajectory_generator, detection=detection)
             if request.compare_sample and request.lens == 'front':
-                _validate(source.recordings.c, measurement_record['C'], execution, runner,
+                _validate(source.recordings.c, recording_preparers['C'], execution, runner,
                     dict(c_identity, calibration=artifact_identity.file_hash(assets.SAMPLE_CAMERA_JSON)), assets.SAMPLE_CAMERA_JSON, 'factory', grid=source.grid, board=configuration.values.board,
-                    trajectory_configuration=trajectory_configuration, sample=True, detection=detection)
+                    trajectory_configuration=trajectory_configuration, is_sample=True, detection=detection)
             else:
                 runner.invalidate(Step.SAMPLE)
             doc['execution'].update(status='complete', error=None)

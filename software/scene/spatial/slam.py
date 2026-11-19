@@ -14,7 +14,8 @@ import numpy as np
 from . import relocalization
 from .geometry import VisualObservations, read_visual_observations
 from software.scene.models import PreparedRecording, SceneParameters
-from software.scene.map_cache import MapBuildCache
+from software.scene.cache.storage import StageCache
+from software.scene.cache.identity import visual_inputs
 from software.infrastructure import provenance as artifact_identity
 from software.infrastructure.file_store import write_json
 from software.trajectory.reporting import map_data
@@ -23,9 +24,9 @@ from software.vision.models import MapAtlas
 
 
 def build(recording: PreparedRecording, lens: str, directory: Path, *,
-          cache: MapBuildCache | None = None, refresh: bool = False) -> MapAtlas:
+          cache: StageCache | None = None, refresh: bool = False) -> MapAtlas:
     video = recording.lens_video(lens)
-    identity = dict(cache.visual_inputs(recording, lens),
+    identity = dict(visual_inputs(recording, lens, engines=cache.engines),
                     mask=artifact_identity.file_hash(video.mask) if video.mask else None) if cache else {}
     with (cache.stage('build', f'{lens} 视觉建图', identity, directory,
                       roots=(f'{lens}/map', 'logs'), refresh=refresh) if cache else nullcontext(False)) as reused:
@@ -38,8 +39,8 @@ def build(recording: PreparedRecording, lens: str, directory: Path, *,
 
 def localize(recording: PreparedRecording, lens: str, archive: Path, index: int, directory: Path,
              *, reverse: bool = False, frame_range: tuple[int, int] | None = None,
-             cache: MapBuildCache | None = None, refresh: bool = False) -> VisualObservations:
-    identity = dict(cache.visual_inputs(recording, lens), archive=artifact_identity.file_hash(archive),
+             cache: StageCache | None = None, refresh: bool = False) -> VisualObservations:
+    identity = dict(visual_inputs(recording, lens, engines=cache.engines), archive=artifact_identity.file_hash(archive),
                     index=index, reverse=reverse, frame_range=list(frame_range) if frame_range else None) if cache else {}
     with (cache.stage('localize', f'{lens} 地图 {index} 定位', identity, directory,
                       roots=('localization', 'logs'), refresh=refresh) if cache else nullcontext(False)) as reused:
@@ -81,7 +82,7 @@ def localize_with_recovery(recording: PreparedRecording, lens: str, archive: Pat
 
 
 def atlas_candidates(recording: PreparedRecording, lens: str, archive: Path, directory: Path, *,
-                     cache: MapBuildCache | None = None, refresh: bool = False):
+                     cache: StageCache | None = None, refresh: bool = False):
     first = localize(recording, lens, archive, 0, directory / 'm0', cache=cache, refresh=refresh)
     maps = visual_slam.read_atlas_maps(directory / 'm0/localization/log.txt', lens=lens)
     yield maps[0].index, first

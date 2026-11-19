@@ -1,15 +1,21 @@
-from software.scene.management import kit_inputs
+from software.scene.management.inputs import kit as kit_inputs
 from software.infrastructure import provenance as artifact_identity
 from software.scene.spatial import mapping
 """当前配置是运行输入；内部记录不覆盖配置，历史成果保持原内容。"""
-from software.scene.pipeline import reconstruction
+from software.scene.pipeline.tasks.backends import scene_reconstruction
 import json
 import unittest
 from unittest.mock import patch
 
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs, processing
-from software.scene.configuration import SceneOverrides
+from software.scene.management.inputs import (
+    batch as batch_inputs,
+    episode as episode_inputs,
+    kit as kit_inputs,
+    scene as scene_inputs,
+)
+from software.scene.management import processing
+from software.scene.overrides import SceneOverrides
 from software.infrastructure.file_store import write_json, write_yaml
 import test_processing
 
@@ -88,14 +94,14 @@ class CurrentConfigurationTests(unittest.TestCase):
         source = self.f.f.source / 'left/tcp.json'
         original_geometry = source.read_bytes()
         original_trajectory = (previous / 'left/trajectory.csv').read_bytes()
-        original = reconstruction.reconstruct_arm_in_scene
+        original = scene_reconstruction.reconstruct_arm_in_scene
         def solve(*args, **kwargs):
             self.update_calibration()
             changed = json.loads(original_geometry)
             changed['T_camera_tcp']['t_m'] = [10., 0., 0.]
             write_json(source, changed)
             return original(*args, **kwargs)
-        with patch.object(reconstruction, 'reconstruct_arm_in_scene', side_effect=solve):
+        with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=solve):
             result = processing.run([self.batch], force=True)
         self.assertEqual(result[0]['status'], 'ok')
         current = (self.batch / 'take_001/results').resolve()

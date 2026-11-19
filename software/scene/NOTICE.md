@@ -18,9 +18,14 @@ gates, parallel/antiparallel gravity handling, explicit scene/calibration versio
 configuration-driven noise, and integration with the X3 timestamp convention.
 These files are modified adaptations, not unmodified upstream KIWI code.
 Shared-map scale estimation and motion-segment screening now call the common
-solver in `trajectory/algorithms/fusion_alignment_solver.py`; the three-node system in
+solver in `trajectory/algorithms/fusion/alignment_solver.py`; the three-node system in
 `geometry.py` is retained only as an observability check. Shared maps fit one
 scale, gravity vector and accelerometer bias across accepted segments, rather
 than adopting independent per-segment map placements.
-The separate per-recording implementation is in `trajectory/algorithms/fusion.py`;
-its command-line adapter is `trajectory/algorithms/fusion_cli.py`.
+The separate per-recording implementation is in `trajectory/algorithms/fusion/solver.py`;
+its command-line adapter is `trajectory/algorithms/fusion/cli.py`.
+
+The task-local poster-VIO implementation additionally references specialist
+commit `da29719cdbaa366df0599984068ad4553d9cc86d` (MIT, Hybrid Robotics).
+The reference paths, local adaptations and complete MIT notice are retained in
+[poster_vio/NOTICE.md](../trajectory/poster_vio/NOTICE.md).

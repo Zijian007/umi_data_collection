@@ -51,6 +51,8 @@ class RetryParameters:
     minimum_full_fraction: float
     maximum_placements: int
     maximum_scale_change_ratio: float
+    use_poster_position_support: bool
+    maximum_position_support_gap_s: float
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,13 @@ class EnvironmentTagParameters:
     tag_sigma_per_radius_px: float
     tag_huber: float
     tag_maximum_reprojection_rms_px: float
+    tag_maximum_position_std_m: float
+    tag_maximum_rotation_std_deg: float
+    tag_maximum_cull_fraction: float
+    tag_minimum_retained_time_fraction: float
+    tag_rear_rotation_refinement_enabled: bool
+    tag_rear_rotation_prior_sigma_rad: float
+    tag_rear_rotation_maximum_correction_deg: float
 
 
 @dataclass(frozen=True)

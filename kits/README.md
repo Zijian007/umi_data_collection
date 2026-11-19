@@ -24,7 +24,7 @@ arms:
       width: right_width.json
 ```
 
-只保留实际使用的手。工作镜头参数必须已按相机序列号登记；kit 只选来源，不填写版本号。夹爪文件路径相对 `kit.yaml`，需位于套件目录内：
+只保留实际使用的手。工作镜头参数必须已按相机序列号登记；kit 只选来源，不填写版本号。夹爪文件路径相对 `kit.yaml`，可引用当前套件目录或 `kits/` 根目录的共享资产：
 
 | 字段 | 要求 |
 |---|---|
@@ -35,18 +35,20 @@ arms:
 | `intrinsics.front` | 工作镜头来源：`measured`（默认）或 `factory`；选择该设备此来源的当前完整参数 |
 | `intrinsics.rear` | 环境镜头来源：`factory`（默认）或 `measured`；与 front 独立选择 |
 
-左右安装几何相同时，可以共同引用一个 `tcp_camera.json`；不同时分别填写。没有实测开口关系时省略 `width`，不要填写示例数值。TCP 格式与方向见[设备与坐标](../docs/设备与坐标.md#几何资产)，宽度格式与测量方法见[训练数据指南](../docs/训练数据.md#夹爪宽度标定与接入)。
+左右安装几何相同时，可以共同引用一个共享 `tcp_camera.json`；不同时分别填写。没有实测开口关系时省略 `width`，不要填写示例数值。TCP 格式与方向见[设备与坐标](../docs/设备与坐标.md#几何资产)，宽度格式与测量方法见[训练数据指南](../docs/训练数据.md#夹爪宽度标定与接入)。
 
 只测两个标签中心的实际距离时，可单独配置 `gripper.tag_distance: tag_distance.json`，无需 `gripper.width`。JSON 格式为 `{"tag_sizes_mm": {"0": 6.0, "1": 6.0}}`；数值是每枚标签黑色外框实测边长，单位 mm，不包括外侧白边，两枚可以不同。`kit_001` 和 `kit_002` 当前按用户给定尺寸使用各 6 mm；其他套件须填写各自尺寸。这与 AprilGrid 标定板尺寸是不同资产，不修改 `hardware/calibration_targets/aprilgrid.json`。
 
 运行使用该相机已选定的工作镜头 KB4 内参，输出 `tag_distance_mm`。尺寸文件随运行快照保存并校验哈希，修改尺寸后重跑会重算三维值、复用原始角点缓存。标签中心间距与夹爪接触面开口分别输出；没有开口标定时不生成开合量或闭合状态。
 
 ```text
-kits/kit_001/
-├── kit.yaml
-├── tcp_camera.json
-├── left_width.json       # 有实测数据时创建
-└── right_width.json      # 有实测数据时创建
+kits/
+├── tcp_camera.json       # 可由多个 kit 共享
+├── tag_distance.json     # 可由多个 kit 共享
+└── kit_001/
+    ├── kit.yaml
+    ├── left_width.json   # 有实测数据时创建
+    └── right_width.json  # 有实测数据时创建
 ```
 
 批次在 `collection.yaml` 中声明 `kit: kit_001`。每次 `run` 读取当前套件，在开始计算前解析测量并复制到运行目录 `devices/<序列号>/`，结果记录实际文件的哈希。修改文件后重跑即可，历史运行保留自己的副本。配置变更适用于下一次运行，无需编辑 `.pipeline/manifest.yaml`。

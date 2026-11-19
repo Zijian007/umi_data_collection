@@ -1,7 +1,7 @@
 """跨场景交错采集、固定版本、原片导入与设备资产回归。"""
 from __future__ import annotations
 from software.infrastructure import provenance as artifact_identity
-from software.scene.pipeline import map_lifecycle
+from software.scene.pipeline.maps import lifecycle as map_lifecycle
 
 import json
 import tempfile
@@ -14,12 +14,17 @@ from software.camera import registry
 from software.calibration import inventory
 from software.scene import layout
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
+from software.scene.management.inputs import (
+    batch as batch_inputs,
+    episode as episode_inputs,
+    kit as kit_inputs,
+    scene as scene_inputs,
+)
 from software.scene import cli, models, workflow
 from software.scene.pipeline import recordings
 from software.infrastructure.file_store import write_json, write_yaml
 from software.trajectory.calibration import assets as calibration_assets
-from software.viewer.data import RecordingCatalog
+from software.viewer.results.catalog import RecordingCatalog
 import test_scene as fixtures
 from registry_fakes import legacy_bundle
 
@@ -176,9 +181,9 @@ class SessionManagementTests(unittest.TestCase):
             episode_inputs.read_episode(task)
 
     def test_old_scene_schema_is_refused_without_compatibility_branch(self):
-        data = read_yaml(self.f.scene_path); data['scene']['schema_version'] = 1
+        data = read_yaml(self.f.scene_path); data['schema_version'] = 1
         write_yaml(self.f.scene_path, data)
-        with self.assertRaisesRegex(ValueError, 'schema_version: 3'):
+        with self.assertRaisesRegex(ValueError, '不再使用 schema_version'):
             scene_inputs.read_scene(self.f.scene_path)
 
     def test_discovery_skips_internal_and_archived_tasks(self):

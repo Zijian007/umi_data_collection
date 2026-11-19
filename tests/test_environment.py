@@ -39,6 +39,20 @@ class TrajectoryHealthTests(unittest.TestCase):
 
 
 class InterpreterSelectionTests(unittest.TestCase):
+    def test_poster_vio_decode_settings_do_not_require_orb_assets(self):
+        from software.vision import runtime
+        from software.configuration.loader import load
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            with patch.object(runtime, 'validate_engines', side_effect=AssertionError('ORB not needed')), \
+                    patch.object(runtime, 'prepare_mask', return_value=directory / 'mask.png'):
+                prepared = runtime.visual_settings(
+                    {'UMI_PY': sys.executable}, lens_settings={'front': 'settings'},
+                    front_mask=directory / 'input.png', output=directory / 'settings',
+                    parameters=load('trajectory').values, require_slam=False)
+            self.assertTrue(prepared.front_settings.is_file())
+
     def test_project_and_tools_interpreters_are_explicit(self):
         self.assertEqual(python_executable({'UMI_PY': 'base'}), 'base')
         self.assertEqual(python_executable({}, default='fallback'), 'fallback')
@@ -68,10 +82,5 @@ class InterpreterSelectionTests(unittest.TestCase):
         self.assertIn('usage: umi-view', result.stdout)
 
     def test_viewer_import_does_not_load_scene_or_trajectory_solvers(self):
-        result = subprocess.run([sys.executable, '-c', '''
-import sys
-import software.viewer.server
-assert not {'gtsam', 'software.scene.workflow', 'software.scene.spatial.fusion',
-            'software.trajectory.workflow', 'software.trajectory.algorithms.fusion'} & sys.modules.keys()
-'''], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True, timeout=20)
+        result = subprocess.run([sys.executable, '-c', "\nimport sys\nimport software.viewer.server\nassert not {'gtsam', 'software.scene.workflow', 'software.scene.spatial.fusion',\n            'software.trajectory.workflow', 'software.trajectory.algorithms.fusion.solver'} & sys.modules.keys()\n"], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)

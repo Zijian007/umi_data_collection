@@ -13,10 +13,10 @@ import numpy as np
 
 from software.configuration import loader as config
 from software.scene.cli import build_parser
-from software.scene.management.scene_inputs import load_scene_parameters
+from software.scene.management.inputs.scene import load_scene_parameters
 from software.scene.spatial import fusion
 from software.scene.spatial.geometry import VisualObservations
-from software.vision import environment_tags
+from software.vision.poster import detection as environment_tags
 tags = environment_tags
 
 
@@ -43,6 +43,31 @@ def recording(path, rear, *, front=None, count=4):
 
 
 class PosterDetectionTests(unittest.TestCase):
+    def test_shared_observation_reader_preserves_arrays_and_rejects_bad_archives(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            video, archive = root / 'source.mkv', root / 'observations.npz'
+            recording(video, poster([(12, 400, 400)]))
+            observations = tags.detect(video, tags.DetectionSettings(border_bits=1))
+            payload = {name: getattr(observations, name) for name in observations.__dataclass_fields__}
+            np.savez_compressed(archive, **payload)
+            loaded = tags.load_observations(archive)
+            for name, expected in payload.items():
+                np.testing.assert_array_equal(getattr(loaded, name), expected)
+                self.assertEqual(getattr(loaded, name).dtype, expected.dtype)
+            incomplete = dict(payload)
+            incomplete.pop('sample_indices')
+            np.savez_compressed(archive, **incomplete)
+            with self.assertRaises(KeyError):
+                tags.load_observations(archive)
+            np.savez_compressed(archive, **dict(payload, sample_indices=np.full_like(
+                observations.sample_indices, len(observations.video_times_s))))
+            with self.assertRaisesRegex(ValueError, '索引越界'):
+                tags.load_observations(archive)
+            np.savez_compressed(archive, **dict(payload, tag_ids=np.array([object()], dtype=object)))
+            with self.assertRaises(ValueError):
+                tags.load_observations(archive)
+
     def test_detects_ids_beyond_gripper_dictionary_and_rejects_duplicates(self):
         image = poster([(12, 400, 400), (88, 700, 400), (25, 1000, 400), (25, 1300, 400), (99, 400, 800)])
         found, duplicate, unknown = environment_tags.PosterDetector(environment_tags.DetectionSettings(border_bits=1)).detect(image)

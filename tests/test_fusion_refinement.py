@@ -8,9 +8,9 @@ import numpy as np
 from scipy.optimize import least_squares
 
 import test_fusion_stability as stability_tests
-from software.trajectory.algorithms import fusion_refinement as refinement
-from software.trajectory.algorithms.fusion_alignment import align_lenses
-from software.trajectory.algorithms.fusion_alignment_solver import estimate_lens_alignment
+from software.trajectory.algorithms.fusion import refinement
+from software.trajectory.algorithms.fusion.alignment import align_lenses
+from software.trajectory.algorithms.fusion.alignment_solver import estimate_lens_alignment
 
 
 class RefinementTests(unittest.TestCase):
@@ -97,7 +97,7 @@ class RefinementTests(unittest.TestCase):
             self.refine()
 
     def test_review_reports_rejection_without_publishing_trajectory(self):
-        from software.trajectory.algorithms.fusion_data import FusionInputs
+        from software.trajectory.algorithms.fusion.data import FusionInputs
         from software.trajectory.reporting.initialization_review import review
         from software.configuration import loader as config
         observations = {k: (np.zeros(3), rot) for k, (_, rot) in self.lens['obs'].items()}

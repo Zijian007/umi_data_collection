@@ -1,5 +1,5 @@
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import kit_inputs
+from software.scene.management.inputs import kit as kit_inputs
 """当前镜头来源、安装替换、历史冻结与混合来源的业务约定。"""
 from contextlib import redirect_stderr
 from copy import deepcopy
@@ -15,8 +15,10 @@ from unittest.mock import patch
 from software.camera import registry
 from software.calibration import cli, devices, inventory
 from software.camera import calibration_source
-from software.scene.management import batches, camera_assets, batch_inputs, episode_inputs, scene_inputs
-from software.scene.pipeline import map_lifecycle
+from software.scene.management.batch import snapshot as batches
+from software.scene.management import camera_assets
+from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs, scene as scene_inputs
+from software.scene.pipeline.maps import lifecycle as map_lifecycle
 from software.infrastructure.file_store import write_json, write_yaml
 from software.trajectory.calibration import assets
 from test_intrinsics_source import factory_bundle
@@ -66,9 +68,10 @@ class CurrentLensSelectionTests(unittest.TestCase):
     def test_install_updates_current_without_editing_kit_or_frozen_batch(self):
         batch = self.root/'scene/batch'
         write_yaml(batch/'collection.yaml', dict(
-            schema_version=1,
-            scene=dict(layout='shared', map_reference_arm='left'),
-            kit='rig', arms=['right'], map_policy='latest_prior'))
+            scene=dict(description=''),
+            map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
+            reconstruction=dict(backend='scene_map'),
+            kit='rig', recording=dict(arms=['right'])))
         first = batches.read_inputs(batch, require_mapping=False)
         path = batches.save_record(first)
         frozen = path.read_bytes()

@@ -9,7 +9,8 @@ import csv
 import numpy as np
 
 from software.infrastructure import provenance as artifact_identity
-from software.gripper_width import detection, series
+from software.gripper_width.detection import markers as detection
+from software.gripper_width import series
 from software.gripper_width.calibration import pixel_distances_to_widths
 
 
@@ -25,7 +26,7 @@ def identity() -> dict:
 
     directory = Path(__file__).parent
     return dict(detector=detection.identity(), opencv=cv2.__version__, files={name: artifact_identity.source_hash(directory/name)
-        for name in ('__init__.py', 'calibration.py', 'detection.py', 'frame_processing.py', 'series.py', 'pipeline.py')})
+        for name in ('__init__.py', 'calibration.py', 'detection/markers.py', 'detection/frames.py', 'series.py', 'pipeline.py')})
 
 
 def align(times: np.ndarray, widths: np.ndarray, above: np.ndarray,

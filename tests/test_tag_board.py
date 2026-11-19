@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from software.infrastructure import provenance
-from software.vision.tag_board import DEFAULT_LAYOUT, load
+from software.vision.poster.layout import DEFAULT_LAYOUT, load
 
 
 class TagBoardTests(unittest.TestCase):

@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from software.scene.pipeline import map_lifecycle
+from software.scene.pipeline.maps import lifecycle as map_lifecycle
 from software.scene.spatial import mapping, slam
 from software.vision.models import ProcessingError
 

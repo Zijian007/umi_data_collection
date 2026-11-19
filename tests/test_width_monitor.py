@@ -13,8 +13,8 @@ import cv2
 import numpy as np
 
 from software.calibration import cli
-from software.gripper_width import monitor
-from software.gripper_width.frame_processing import crop_gray
+from software.gripper_width.tools import monitor
+from software.gripper_width.detection.frames import crop_gray
 from test_width_preview import recording
 
 ROI = (100, 700, 900, 1000)

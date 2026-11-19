@@ -13,8 +13,13 @@ from software.camera.timing import (
 )
 from software.scene.spatial import fusion
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
-from software.scene.pipeline import trajectory_writers
+from software.scene.management.inputs import (
+    batch as batch_inputs,
+    episode as episode_inputs,
+    kit as kit_inputs,
+    scene as scene_inputs,
+)
+from software.scene.pipeline.tasks.results import trajectory_writers
 from software.scene.spatial.geometry import VisualObservations
 from software.scene.models import ArmTrajectory
 

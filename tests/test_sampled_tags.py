@@ -13,10 +13,21 @@ import unittest
 import av
 import numpy as np
 
-from software.gripper_width import detection, sampled_detection, tag_distance
-from software.gripper_width.tag_models import TagDistanceRequest, TagDistanceResult, TagDistanceSeries, TagPoseQuality
+from software.gripper_width.detection import markers as detection, sampling as sampled_detection
+from software.gripper_width.distance import pipeline as tag_distance
+from software.gripper_width.distance.models import (
+    TagDistanceRequest,
+    TagDistanceResult,
+    TagDistanceSeries,
+    TagPoseQuality,
+)
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
+from software.scene.management.inputs import (
+    batch as batch_inputs,
+    episode as episode_inputs,
+    kit as kit_inputs,
+    scene as scene_inputs,
+)
 from software.infrastructure.file_store import write_json
 from test_tag_distance import CAMERA, SIZES, projected
 

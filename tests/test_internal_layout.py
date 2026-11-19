@@ -7,11 +7,12 @@ import unittest
 from unittest.mock import patch
 
 from software.scene import layout, workflow
-from software.scene.management import episodes, processing, batch_inputs, episode_inputs, scene_inputs
+from software.scene.management import episodes, processing
+from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs, scene as scene_inputs
 from software.infrastructure.file_store import write_json, write_yaml
-from software.viewer.data import RecordingCatalog
-from software.viewer.episodes import capture_status
-from software.scene.pipeline import map_lifecycle
+from software.viewer.results.catalog import RecordingCatalog
+from software.viewer.results.episodes import capture_status
+from software.scene.pipeline.maps import lifecycle as map_lifecycle
 import test_processing
 import test_scene
 from registry_fakes import write_task_configuration, read_task_configuration

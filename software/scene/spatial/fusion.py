@@ -124,7 +124,8 @@ def seed_states(times, observations, T_cam_imu, scene_parameters):
 
 
 def build_inertial_graph(times, imu, rotations, positions, velocities, fusion_parameters,
-                         *, pose_key_fn=None, velocity_key_fn=None, bias_key_fn=None):
+                         *, pose_key_fn=None, velocity_key_fn=None, bias_key_fn=None,
+                         gravity_m_s2=None, initial_acc_bias=None, initial_gyro_bias=None):
     """按原顺序插入 X/V/B、初始先验、IMU 及 bias 随机游走因子。"""
     import gtsam
     from gtsam.symbol_shorthand import B, V, X
@@ -133,12 +134,16 @@ def build_inertial_graph(times, imu, rotations, positions, velocities, fusion_pa
     velocity_key_fn = velocity_key_fn or V
     bias_key_fn = bias_key_fn or B
 
-    preintegration_parameters = gtsam.PreintegrationParams(np.array([0., 0., -fusion_parameters.gravity_m_s2]))
+    gravity = (np.array([0., 0., -fusion_parameters.gravity_m_s2]) if gravity_m_s2 is None
+               else np.asarray(gravity_m_s2, dtype=float))
+    preintegration_parameters = gtsam.PreintegrationParams(gravity)
     preintegration_parameters.setAccelerometerCovariance(np.eye(3)*fusion_parameters.acc_noise**2)
     preintegration_parameters.setGyroscopeCovariance(np.eye(3)*fusion_parameters.gyro_noise**2)
     preintegration_parameters.setIntegrationCovariance(np.eye(3)*fusion_parameters.integration_covariance)
-    gyro_bias = estimate_gyro_bias(imu[:, 1:4], fusion_parameters)
-    initial_bias = gtsam.imuBias.ConstantBias(np.zeros(3), gyro_bias)
+    gyro_bias = (estimate_gyro_bias(imu[:, 1:4], fusion_parameters)
+                 if initial_gyro_bias is None else initial_gyro_bias)
+    initial_bias = gtsam.imuBias.ConstantBias(
+        np.zeros(3) if initial_acc_bias is None else initial_acc_bias, gyro_bias)
     graph, values = gtsam.NonlinearFactorGraph(), gtsam.Values()
     for frame_index in range(len(times)):
         values.insert(pose_key_fn(frame_index), gtsam.Pose3(gtsam.Rot3(rotations[frame_index].as_matrix()), positions[frame_index]))

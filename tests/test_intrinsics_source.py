@@ -1,7 +1,7 @@
 """Source selection must keep B, lenses, maps, and current registry assets paired."""
 from __future__ import annotations
 from software.infrastructure import provenance as artifact_identity
-from software.scene.pipeline import map_lifecycle
+from software.scene.pipeline.maps import lifecycle as map_lifecycle
 import copy
 import json
 from pathlib import Path
@@ -21,7 +21,8 @@ from software.calibration.solve import factory as solver, basalt
 from software.calibration.validation import factory as diagnostic
 from software.scene import cli as scene_cli
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import batches, batch_inputs, kit_inputs, scene_inputs
+from software.scene.management.batch import snapshot as batches
+from software.scene.management.inputs import batch as batch_inputs, kit as kit_inputs, scene as scene_inputs
 from software.infrastructure.file_store import write_json, write_yaml
 from software.trajectory.calibration import assets
 from test_factory_comparison import offset
@@ -186,9 +187,10 @@ class BatchSourceTests(unittest.TestCase):
             write_yaml(kits/'rig/kit.yaml',dict(arms=dict(left=dict(serial='camera',gripper=dict(tcp='tcp.json'),
                 calibrations=dict(measured=dict(front='001',rear='rear_001'),factory=dict(front='002',rear='rear_002'))))))
             write_yaml(batch/'collection.yaml',dict(
-                schema_version=1,
-                scene=dict(layout='shared', map_reference_arm='left'),
-                kit='rig', arms=['left'], map_policy='latest_prior'))
+                scene=dict(description=''),
+                map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
+                reconstruction=dict(backend='scene_map'),
+                kit='rig', recording=dict(arms=['left'])))
             with patch.object(kit_inputs,'KITS',kits), patch.object(registry,'rear_path',side_effect=lambda serial,version:root/version):
                 factory=kit_inputs.read_kit('rig',intrinsics_source='factory')
                 video=batch/'mapping/video.insv';video.parent.mkdir();video.write_bytes(b'video')
@@ -206,9 +208,10 @@ class BatchSourceTests(unittest.TestCase):
                 archives=path.parent/'snapshots'
                 self.assertFalse(archives.exists())
                 self.assertEqual(read_yaml(batch/'collection.yaml'), dict(
-                    schema_version=1,
-                    scene=dict(layout='shared', map_reference_arm='left'),
-                    kit='rig', arms=['left'], map_policy='latest_prior'))
+                    scene=dict(description=''),
+                    map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
+                    reconstruction=dict(backend='scene_map'),
+                    kit='rig', recording=dict(arms=['left'])))
 
     def test_legacy_sample_factory_override_cannot_select_insv_factory(self):
         import os

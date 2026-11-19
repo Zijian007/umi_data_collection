@@ -59,7 +59,52 @@ class ReconstructionTests(unittest.TestCase):
         self.assertIn(str(self.paths.attempt(1) / 'front/loc/frames.csv'), fusion)
         self.assertIn(str(self.data.imu_csv), fusion)
         self.assertEqual(json.loads(self.settings.parameters_file.read_text())['input']['mode'], 'handheld')
-        self.assertIn('software.trajectory.algorithms.fusion_cli', (result.directory / 'logs/run.txt').read_text())
+        self.assertIn('software.trajectory.algorithms.fusion.cli', (result.directory / 'logs/run.txt').read_text())
+
+    def test_retry_uses_exact_qualified_poster_events_without_hiding_other_failures(self):
+        from software.trajectory.algorithms.fusion.quality import scale_consistency
+        directory = self.root/'poster-quality'
+        directory.mkdir()
+        trajectory = directory/'traj_tum.txt'
+        trajectory.write_text(''.join(f'{1+i/10:.9f} 0 0 0 0 0 0 1\n' for i in range(100)))
+        info = directory/'fuse_info.json'
+        for case in ('good', 'sparse_good', 'legacy', 'weak', 'long_gap', 'disabled', 'scale', 'malformed'):
+            with self.subTest(case=case):
+                events = [i/10. for i in range(100)] if case == 'good' else [float(i) for i in range(10)]
+                poster = dict(status='fused', observation_video_times_s=events,
+                              position_support_video_times_s=events.copy())
+                if case == 'legacy':
+                    poster.pop('position_support_video_times_s')
+                elif case == 'weak':
+                    poster['position_support_video_times_s'] = []
+                elif case == 'long_gap':
+                    poster['position_support_video_times_s'] = [0., 1., 2.]
+                elif case == 'malformed':
+                    poster['position_support_video_times_s'] = [0., 1., 100.]
+                evidence = dict(frames=100, init_lens='front', chains=dict(front=[[[0, 9], 'full']]),
+                    environment_poster=poster, scale_consistency=scale_consistency([dict(lens='front', chain=0,
+                        sid=0, scale_initial=1., scale_final=3. if case == 'scale' else 1.)]))
+                info.write_text(json.dumps(evidence))
+                configuration = config.load('trajectory', inline=dict(environment_tags=dict(tag_fusion_enabled=True),
+                    retry=dict(use_poster_position_support=case != 'disabled')))
+                context = replace(self.context, request=replace(self.context.request, configuration=configuration))
+                with patch.object(reconstruction, 'run_attempt', return_value=FusionArtifacts(trajectory, info)):
+                    result = self.run_stages(context)
+                self.assertEqual(len(result.attempts), 1 if case in ('good', 'sparse_good') else 3)
+                if case == 'malformed':
+                    self.assertIsNone(result.chosen)
+                elif case == 'scale':
+                    self.assertIsNone(result.chosen)
+                    self.assertFalse(result.attempts[0]['usable'])
+                else:
+                    self.assertIsNotNone(result.chosen)
+                    self.assertEqual(result.attempts[0]['full_fraction'], .1)
+                if case in ('good', 'sparse_good'):
+                    quality = result.attempts[0]
+                    self.assertEqual(quality['coverage_basis'], 'visual_and_poster')
+                    if case == 'sparse_good':
+                        self.assertLess(quality['position_support_fraction'], .95)
+                    self.assertAlmostEqual(quality['maximum_position_support_gap_s'], .1 if case == 'good' else 1.)
 
     def test_measured_lens_settings_are_preserved_without_sample_rear_fallback(self):
         front = calibration_assets.read_basalt(calibration_assets.SAMPLE_CAMERA_JSON)
@@ -146,8 +191,8 @@ class ReconstructionTests(unittest.TestCase):
 
         def execute(command, **options):
             result = self.engines(command, **options)
-            if 'software.trajectory.algorithms.fusion_cli' in command:
-                pos = command.index('software.trajectory.algorithms.fusion_cli')
+            if 'software.trajectory.algorithms.fusion.cli' in command:
+                pos = command.index('software.trajectory.algorithms.fusion.cli')
                 directory = Path(command[pos+6])
                 directory.mkdir()
                 (directory/'alignment_failure.json').write_text(json.dumps(dict(code='NO_USABLE_LENS')))
@@ -165,8 +210,8 @@ class ReconstructionTests(unittest.TestCase):
 
         def execute(command, **options):
             result = self.engines(command, **options)
-            if 'software.trajectory.algorithms.fusion_cli' in command:
-                pos = command.index('software.trajectory.algorithms.fusion_cli')
+            if 'software.trajectory.algorithms.fusion.cli' in command:
+                pos = command.index('software.trajectory.algorithms.fusion.cli')
                 directory = Path(command[pos+6])
                 directory.mkdir()
                 (directory/'alignment_failure.json').write_text(json.dumps(dict(code='NO_USABLE_LENS')))

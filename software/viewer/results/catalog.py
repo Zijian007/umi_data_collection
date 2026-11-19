@@ -1,0 +1,210 @@
+"""Read UMI output layouts into a small, explicit browser data contract."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import hashlib
+import json
+import os
+
+from software.scene import layout
+from software.scene.result_io import read_arm_settings, read_arm_summary, trajectory_path
+from software.trajectory.reporting.results import front_video_path, load_summary, result_path
+from software.viewer.errors import ViewerDataError
+from software.viewer.results.readers import read_tag_distance, read_trajectory, read_frames
+
+
+class RecordingCatalog:
+    """Only expose result directories and videos within the selected local root."""
+
+    def __init__(self, root: Path):
+        self.root = root.expanduser().resolve()
+        if not self.root.is_dir():
+            raise ViewerDataError(f'数据目录不存在：{self.root}')
+        self.directories: dict[str, Path] = {}
+
+    def contains(self, path: Path) -> bool:
+        resolved = path.resolve()
+        if resolved.is_relative_to(self.root):
+            return True
+        # 单独打开任务时，允许读取该任务在批次内的集中产物。
+        if layout.is_batch(self.root.parent):
+            internal = self.root.parent / layout.INTERNAL / 'tasks' / self.root.name
+            if internal.resolve().is_relative_to(self.root.parent):
+                return resolved.is_relative_to(internal.resolve())
+        return False
+
+    def summary(self, directory: Path) -> dict:
+        manifest = directory.parent / 'episode.json'
+        if manifest.is_file() and self.contains(manifest):
+            try:
+                metadata = json.loads(manifest.read_text(encoding='utf-8'))
+                if metadata.get('schema_version', 1) >= 3:
+                    return read_arm_summary(directory, metadata)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                raise ViewerDataError(f'场景运行元数据无效：{error}') from error
+        path = result_path(directory, 'summary.json')
+        if not self.contains(path):
+            raise ViewerDataError('摘要文件超出当前数据目录。')
+        try:
+            value = load_summary(directory)
+            return value if isinstance(value, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def scan(self) -> dict:
+        directories = {}
+        entries = []
+        for current, children, files in os.walk(self.root, followlinks=False):
+            directory = Path(current)
+            children[:] = sorted(name for name in children if name not in {
+                '.git', '.deps', 'node_modules', 'details', 'debug', 'diagnostics', 'work', 'bundle', 'umi_calib_out', 'calibration_result', 'run', '__pycache__',
+                'runs', 'versions', 'archive', 'cache', 'imports', 'mapping', 'videos', 'pending',
+            } and not name.startswith('.'))
+            capture = {}
+            capture_path = layout.manifest(directory, 'episode.yaml')
+            has_capture = capture_path.is_file() and self.contains(capture_path)
+            if has_capture:
+                try:
+                    from software.viewer.results.episodes import capture_status
+                    state_path = layout.manifest(directory, 'state.json')
+                    if state_path.exists() and not self.contains(state_path):
+                        raise ViewerDataError('任务状态超出查看目录')
+                    capture = capture_status(directory)
+                except (OSError, ValueError, TypeError, KeyError, IndexError):
+                    capture = dict(status='pending')
+                result_name = 'local_results' if capture.get('status') in ('local_ok', 'local_skipped') else 'results'
+                if 'scene' in capture and not (directory / result_name / 'episode.json').is_file():
+                    key = hashlib.sha256(str(directory.resolve()).encode()).hexdigest()[:20]
+                    label = '/'.join(str(capture.get(name, directory.name)) for name in ('scene', 'kit', 'session', 'name'))
+                    entries.append(dict(id=key, name=label, path=str(directory.relative_to(self.root)),
+                        status=capture['status'], review=capture.get('review', {}).get('decision', 'unreviewed'),
+                        available=False, serial=', '.join(capture.get('expected_arms', [])),
+                        reason=capture.get('attempt', {}).get('reason', '')))
+                    children[:] = []
+                    continue
+            # 任务的 results 是原子发布的版本指针；只展示当前版本，不遍历历史 runs。
+            episode = directory / result_name if has_capture else directory
+            if (episode / 'episode.json').is_file():
+                from software.viewer.results.episodes import read_episode, recording_key
+                children[:] = []
+                try:
+                    metadata, arms = read_episode(episode, self.contains)
+                    key = recording_key(episode)
+                    directories[key] = episode.resolve()
+                    for path in arms.values():
+                        directories[recording_key(path)] = path
+                    interval = metadata['common_interval_s']
+                    session = metadata.get('session')
+                    kit = capture.get('kit') or metadata.get('kit', {}).get('id')
+                    label = '/'.join(filter(None, (metadata.get('scene', {}).get('name'), kit, session, metadata.get('name', directory.name))))
+                    entries.append(dict(id=key, name=label, path=str(episode.relative_to(self.root)),
+                        serial=('任务海报轨迹' if metadata.get('kind') == 'umi_poster_episode' else
+                                '独立局部轨迹' if metadata.get('kind') == 'umi_local_episode' else
+                                '双手场景' if len(arms) == 2 else '场景任务'), status=capture.get('status', metadata['status']),
+                        review=capture.get('review', {}).get('decision', 'unreviewed'), available=True, duration=interval[1]-interval[0],
+                        rows=metadata.get('rows'), calibration=metadata['scene']['version']))
+                except (ViewerDataError, OSError, ValueError, KeyError):
+                    continue
+                continue
+            if not {'traj_tcp.txt', 'trajectory.csv'} & set(files):
+                continue
+            children[:] = []
+            if not self.contains(directory) or not self.contains(trajectory_path(directory)):
+                continue
+            key = hashlib.sha256(str(directory.resolve()).encode()).hexdigest()[:20]
+            directories[key] = directory
+            try:
+                summary = self.summary(directory)
+            except ViewerDataError:
+                continue
+            selection = summary.get('calibration_used') or {}
+            entries.append(dict(id=key, name=directory.name, path=str(directory.relative_to(self.root)),
+                                serial=selection.get('serial'), status=summary.get('status', 'unknown'),
+                                duration=summary.get('duration_s'), rows=summary.get('rows'),
+                                calibration=selection.get('id')))
+        self.directories = directories
+        entries.sort(key=lambda entry: (entry.get('available', True), entry['name']), reverse=True)
+        return dict(root=str(self.root), recordings=entries)
+
+    def directory(self, key: str) -> Path:
+        directory = self.directories.get(key)
+        if directory is None or not self.contains(directory):
+            raise ViewerDataError('录像不存在，请刷新列表。')
+        return directory
+
+    def video_path(self, key: str) -> Path | None:
+        directory = self.directory(key)
+        if (directory / 'episode.json').is_file():
+            from software.viewer.results.episodes import read_episode
+            _, arms = read_episode(directory, self.contains)
+            directory = arms.get('left', next(iter(arms.values())))
+        try:
+            summary = self.summary(directory)
+        except (OSError, ValueError, TypeError):
+            summary = {}
+        path = front_video_path(directory, summary)
+        return path if path is not None and self.contains(path) else None
+
+    def map_data(self, key: str) -> dict:
+        from software.viewer.resources import maps
+        directory = self.directory(key)
+        if (directory / 'episode.json').is_file():
+            from software.viewer.results.episodes import read_episode
+            _, arms = read_episode(directory, self.contains)
+            directory = arms.get('left', next(iter(arms.values())))
+        return maps.load(directory, self.summary(directory))
+
+    def load(self, key: str) -> dict:
+        directory = self.directory(key)
+        if (directory / 'episode.json').is_file():
+            from software.viewer.results.episodes import load_episode
+            return load_episode(self, key, directory)
+        summary = self.summary(directory)
+        tcp_path = trajectory_path(directory)
+        if not self.contains(tcp_path):
+            raise ViewerDataError('轨迹文件超出当前数据目录。')
+        tcp = read_trajectory(tcp_path)
+        times = tcp.pop('times')
+        tag_distance = read_tag_distance(tcp_path, times)
+        tracks = dict(tcp=tcp)
+        frames_path = result_path(directory, 'frames.csv')
+        if not self.contains(frames_path):
+            raise ViewerDataError('逐帧文件超出当前数据目录。')
+        frames, notes = read_frames(frames_path, times)
+        for name in ('camera', 'imu'):
+            path = result_path(directory, f'traj_{name}.txt')
+            if not path.is_file():
+                continue
+            if not self.contains(path):
+                notes.append(f'{name} 轨迹超出当前数据目录，已跳过。')
+                continue
+            try:
+                track = read_trajectory(path)
+                if len(track['times']) != len(times) or any(abs(a - b) > 1e-4 for a, b in zip(times, track.pop('times'))):
+                    raise ViewerDataError('时间轴与 TCP 不一致')
+                tracks[name] = track
+            except (OSError, ViewerDataError) as error:
+                notes.append(f'{name} 轨迹未加载：{error}')
+        if summary.get('mode') in ('scene', 'local', 'poster') and {'camera', 'imu'} - tracks.keys():
+            try:
+                from software.viewer.results.poses import derive_body_tracks
+                derived = derive_body_tracks(times, tcp, read_arm_settings(directory))
+                for name in ('camera', 'imu'):
+                    tracks.setdefault(name, derived[name])
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                notes.append(f'相机/IMU 显示轨迹未重建：{error}')
+        video = self.video_path(key)
+        from software.viewer.resources.video import cached_preview, video_version
+        version = video_version(video) if video else None
+        preview = cached_preview(video) if video else None
+        return dict(id=key, name=directory.name, path=str(directory), summary=summary, times=times,
+                    tag_distance=tag_distance,
+                    tracks=tracks, frames=frames, notes=notes + list(summary.get('notes') or []),
+                    video_url=f'/api/recordings/{key}/video?v={version}' if video else None,
+                    poster_url=f'/api/recordings/{key}/frame?t=0&v={version}' if video else None,
+                    preview_url=f'/api/recordings/{key}/preview' if video else None,
+                    preview_video_url=f'/api/recordings/{key}/preview/video?v={preview.stem}' if preview else None,
+                    frame_url=f'/api/recordings/{key}/frame' if video else None,
+                    video_time_offset_s=summary.get('video_time_offset_s', times[0]),
+                    video_note='工作镜头裁切视频 · 与轨迹使用同一视频时钟' if video else '未保留工作镜头视频，仍可独立回放三维轨迹。')

@@ -124,7 +124,7 @@ async function load(id) {
     const summary = recording.summary, selection = summary.calibration_used || {};
     $('record-title').textContent = recordingLabel(recording.name); $('record-title').title = recording.name;
     $('record-meta').textContent = `${recording.name} · ${summary.scene?.frame_id || summary.mode || 'handheld'}`;
-    $('status-badge').textContent = summary.mode === 'local' ? '独立回退 · 局部坐标' : summary.status === 'ok' ? '抽取成功' : summary.status === 'failed' ? '抽取失败' : '已加载轨迹';
+    $('status-badge').textContent = summary.mode === 'poster' ? '海报轨迹 · 任务坐标' : summary.mode === 'local' ? '独立回退 · 局部坐标' : summary.status === 'ok' ? '抽取成功' : summary.status === 'failed' ? '抽取失败' : '已加载轨迹';
     $('status-badge').classList.toggle('failed', summary.status === 'failed');
     $('stat-duration').replaceChildren(document.createTextNode((recording.times.at(-1) - recording.times[0]).toFixed(1)), unit(' s'));
     $('detail-serial').textContent = selection.serial || '未记录'; $('detail-calibration').textContent = selection.id || '未记录';

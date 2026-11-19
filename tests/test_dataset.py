@@ -12,8 +12,10 @@ import numpy as np
 
 from software.dataset import sampling
 from software.scene import cli
-from software.dataset.export import build, load_episode
-from software.scene.management import episodes, batch_inputs, episode_inputs, scene_inputs
+from software.dataset.export import build
+from software.dataset.reader import load_episode
+from software.scene.management import episodes
+from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs, scene as scene_inputs
 from software.scene import workflow
 from software.infrastructure.file_store import write_yaml
 from registry_fakes import write_task_configuration, read_task_configuration
@@ -56,6 +58,15 @@ class DatasetTests(unittest.TestCase):
         metadata, arrays = load_episode(self.output, entry['path'])
         self.assertEqual(set(metadata['tcp_geometry']), {'left', 'right'})
         self.assertGreater(len(arrays['t_episode_s']), 1)
+
+    def test_export_persists_manual_sampling_window(self):
+        build([self.f.episode_path], self.output, fps=20., time_window_s=(.2, .8))
+        manifest = json.loads((self.output / 'manifest.json').read_text())
+        metadata, arrays = load_episode(self.output, manifest['episodes'][0]['path'])
+        self.assertEqual(manifest['time_window_s'], [.2, .8])
+        self.assertEqual(metadata['sampling_window_s'], [.2, .8])
+        self.assertGreaterEqual(float(arrays['t_episode_s'][0]), .2)
+        self.assertLessEqual(float(arrays['t_episode_s'][-1]), .8)
 
     def test_portable_package_uses_video_indices_and_flags_missing_gripper(self):
         before = self.f.episode_path.read_bytes()
@@ -127,6 +138,26 @@ class DatasetTests(unittest.TestCase):
                 build([self.f.episode_path], self.output)
         self.assertFalse(self.output.exists())
 
+    def test_second_episode_failure_discards_already_written_first_episode(self):
+        from dataclasses import replace
+        from software.dataset import export
+
+        first = export.source.read_accepted_episode(self.f.episode_path)
+        second = replace(first, name=first.name.with_name('take_002'))
+        copy_video = export.shutil.copy2
+
+        def fail_second_video(source, target):
+            if 'take_002' in target.parts:
+                raise OSError('第二集视频复制失败')
+            return copy_video(source, target)
+
+        with patch.object(export.source, 'select_accepted_episodes', return_value=[first, second]), \
+                patch.object(export.shutil, 'copy2', side_effect=fail_second_video):
+            with self.assertRaisesRegex(OSError, '第二集视频复制失败'):
+                build([self.f.episode_path], self.output)
+        self.assertFalse(self.output.exists())
+        self.assertFalse(list(self.output.parent.glob('.dataset-*')))
+
     def test_single_arm_keeps_its_identity_and_needs_no_intercamera_confirmation(self):
         data = read_yaml(self.f.episode_path)
         data['recordings'].pop('left')
@@ -166,3 +197,17 @@ class DatasetSamplingTests(unittest.TestCase):
         arrays, _ = sampling.sample(dict(left=arm), 20., .25)
         np.testing.assert_allclose(arrays['left_T_scene_tcp'][1, :3, 3], [3.05, 4., 1.])
         np.testing.assert_allclose(arrays['left_T_scene_tcp'][1, :3, :3], Rotation.from_euler('z', .1).as_matrix())
+
+    def test_sampling_window_records_and_clips_the_manual_action_interval(self):
+        times = np.arange(11, dtype=float) / 10.
+        poses = np.tile(np.eye(4), (len(times), 1, 1))
+        poses[:, 0, 3] = times
+        arm = sampling.ArmSamples(times, poses, np.arange(len(times)), times,
+                                  np.ones(len(times), bool), np.ones(len(times), bool))
+        arrays, quality = sampling.sample(dict(left=arm), 10., .25, time_window_s=(.25, .75))
+        np.testing.assert_allclose(arrays['t_episode_s'], [.3, .4, .5, .6, .7])
+        self.assertEqual(quality['window_s'], [.25, .75])
+
+        for invalid in ((.5, .5), (1., 0.), (float('nan'), 1.)):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                sampling.sample(dict(left=arm), 10., .25, time_window_s=invalid)

@@ -1,8 +1,8 @@
 """共享场景的数值与流程回归：已知尺度、固定坐标、双手同步、资产和失败发布。"""
 from __future__ import annotations
 from software.infrastructure import provenance as artifact_identity
-from software.scene.pipeline import fallback, reconstruction
-from software.scene.pipeline import map_lifecycle
+from software.scene.pipeline.tasks.backends import independent_reconstruction, scene_reconstruction
+from software.scene.pipeline.maps import lifecycle as map_lifecycle
 
 import csv
 import json
@@ -21,8 +21,13 @@ from scipy.spatial.transform import Rotation
 from software.configuration import loader as config
 from software.camera.geometry import imu_from_camera
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
-from software.scene.configuration import SceneOverrides
+from software.scene.management.inputs import (
+    batch as batch_inputs,
+    episode as episode_inputs,
+    kit as kit_inputs,
+    scene as scene_inputs,
+)
+from software.scene.overrides import SceneOverrides
 from software.scene.spatial import slam, fusion, geometry, mapping
 from software.scene import models, workflow
 from software.scene.models import FusedTrajectory
@@ -32,7 +37,7 @@ from software.scene.management.camera_assets import select_camera
 from software.infrastructure.file_store import write_json, write_yaml
 from software.trajectory.calibration import assets as calibration_assets, selection
 from software.vision.models import LensVideo, MapAtlas
-from software.viewer.data import RecordingCatalog
+from software.viewer.results.catalog import RecordingCatalog
 from software.viewer.errors import ViewerDataError
 from software.scene import asset_identity
 
@@ -143,14 +148,21 @@ class SceneWorkflowTests(unittest.TestCase):
         for arm, video in self.recording_paths.items():
             video.write_bytes(arm.encode())
         self.device_pins = {f'SERIAL_{arm}': dict(calibration='test', gripper=dict(tcp=str(self.source / arm / 'tcp.json'))) for arm in models.ARMS}
-        write_yaml(self.scene_path, dict(schema_version=1,
-                   scene=dict(layout='shared', map_reference_arm='left')))
+        write_yaml(self.scene_path, dict(kit='test_kit',
+                   recording=dict(arms=['left', 'right']),
+                   scene=dict(description='test'),
+                   map=dict(layout='shared', reference_arm='left',
+                            selection=dict(policy='latest_prior')),
+                   reconstruction=dict(backend='scene_map')))
         self.scene = scene_inputs.read_scene(self.scene_path)
         kit = self.write_kit('test_kit', {arm: dict(serial='SERIAL_'+arm, **self.device_pins['SERIAL_'+arm]) for arm in models.ARMS})
         self.batch_root = self.scene.root / '20261025_001'
         write_yaml(self.batch_root / 'collection.yaml', dict(
-                   schema_version=1, scene=dict(layout='shared', map_reference_arm='left'),
-                   kit='test_kit', arms=['left', 'right'], map_policy='latest_prior'))
+                   scene=dict(description='test'),
+                   map=dict(layout='shared', reference_arm='left',
+                            selection=dict(policy='latest_prior')),
+                   kit='test_kit', recording=dict(arms=['left', 'right']),
+                   reconstruction=dict(backend='scene_map')))
         self.session_path = self.batch_root / '.pipeline/manifest.yaml'
         mapping_reference = dict(self.ref('left'), **{key: value for key, value in kit['arms']['left'].items() if key != 'serial'})
         write_yaml(self.session_path, dict(schema_version=5, scene='collection.yaml',
@@ -308,7 +320,7 @@ class SceneWorkflowTests(unittest.TestCase):
         document = read_yaml(self.episode_path)
         document['recordings'] = {'right': self.ref('right')}
         collection = read_yaml(self.batch_root / 'collection.yaml')
-        collection.setdefault('tasks', {})['take_001'] = dict(expected_arms=['right'])
+        collection.setdefault('tasks', {})['take_001'] = dict(arms=['right'])
         write_yaml(self.batch_root / 'collection.yaml', collection)
         write_yaml(self.episode_path, document)
 
@@ -322,9 +334,9 @@ class SceneWorkflowTests(unittest.TestCase):
         from software.scene.management import episodes
         self.single_arm_episode()
         self.build_scene()
-        with patch.object(reconstruction, 'reconstruct_arm_in_scene',
+        with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene',
                           side_effect=fusion.SceneFusionQualityError('场景定位不足：覆盖 0.0%')) as shared, \
-                patch.object(fallback, 'reconstruct', return_value=self.local_fusion_result()) as local:
+                patch.object(independent_reconstruction, 'reconstruct', return_value=self.local_fusion_result()) as local:
             result = workflow.run_episode(self.episode_path)
             self.assertEqual(result['status'], 'local_ok')
             output = Path(result['output'])
@@ -361,9 +373,9 @@ class SceneWorkflowTests(unittest.TestCase):
 
     def test_quality_failure_never_falls_back_for_bimanual_task(self):
         self.build_scene()
-        with patch.object(reconstruction, 'reconstruct_arm_in_scene',
+        with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene',
                           side_effect=fusion.SceneFusionQualityError('场景定位不足')), \
-                patch.object(fallback, 'reconstruct') as local:
+                patch.object(independent_reconstruction, 'reconstruct') as local:
             with self.assertRaisesRegex(fusion.SceneFusionQualityError, '场景定位不足'):
                 workflow.run_episode(self.episode_path)
             local.assert_not_called()
@@ -372,15 +384,15 @@ class SceneWorkflowTests(unittest.TestCase):
     def test_single_arm_generic_error_does_not_trigger_fallback(self):
         self.single_arm_episode()
         self.build_scene()
-        with patch.object(reconstruction, 'reconstruct_arm_in_scene', side_effect=ValueError('损坏的输入')), \
-                patch.object(fallback, 'reconstruct') as local:
+        with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=ValueError('损坏的输入')), \
+                patch.object(independent_reconstruction, 'reconstruct') as local:
             with self.assertRaisesRegex(ValueError, '损坏的输入'):
                 workflow.run_episode(self.episode_path)
             local.assert_not_called()
 
     def test_fallback_still_measures_and_rejects_invalid_tag_distance(self):
-        from software.gripper_width import tag_distance
-        from software.gripper_width.tag_models import TagDistanceResult, TagDistanceSeries
+        from software.gripper_width.distance import pipeline as tag_distance
+        from software.gripper_width.distance.models import TagDistanceResult, TagDistanceSeries
         self.single_arm_episode()
         self.build_scene()
         video = self.recording_paths['right']
@@ -396,9 +408,9 @@ class SceneWorkflowTests(unittest.TestCase):
             return TagDistanceResult(TagDistanceSeries(times, np.full(len(times), 50.),
                 np.full(len(times), 'two_tags')), dict(valid_fraction=1., **sizes))
 
-        with patch.object(reconstruction, 'reconstruct_arm_in_scene',
+        with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene',
                           side_effect=fusion.SceneFusionQualityError('覆盖不足')), \
-                patch.object(fallback, 'reconstruct', return_value=self.local_fusion_result()), \
+                patch.object(independent_reconstruction, 'reconstruct', return_value=self.local_fusion_result()), \
                 patch.object(tag_distance, 'process', side_effect=measure) as process, \
                 patch('software.vision.decoding.VideoDecode.run', return_value=[]):
             result = workflow.run_episode(self.episode_path)
@@ -419,13 +431,13 @@ class SceneWorkflowTests(unittest.TestCase):
     def test_fallback_and_double_failure_preserve_previous_shared_result(self):
         self.single_arm_episode()
         self.build_scene()
-        with patch.object(fallback, 'reconstruct') as local:
+        with patch.object(independent_reconstruction, 'reconstruct') as local:
             shared_result = workflow.run_episode(self.episode_path)
             local.assert_not_called()
         shared_output = Path(shared_result['output']).resolve()
-        with patch.object(reconstruction, 'reconstruct_arm_in_scene',
+        with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene',
                           side_effect=fusion.SceneFusionQualityError('覆盖不足')), \
-                patch.object(fallback, 'reconstruct', return_value=self.local_fusion_result()) as local:
+                patch.object(independent_reconstruction, 'reconstruct', return_value=self.local_fusion_result()) as local:
             result = workflow.run_episode(self.episode_path, force=True)
             local_output = Path(result['output']).resolve()
             self.assertEqual(Path(shared_result['output']).resolve(), shared_output)
@@ -548,8 +560,8 @@ class SceneWorkflowTests(unittest.TestCase):
         front_obs = self.raw['right']
         rear_obs = replace(front_obs, imu_times_s=front_obs.imu_times_s-.02)
         sentinel = FusedTrajectory(np.zeros((0, 4, 4)), np.zeros(0, bool), np.zeros(0, bool), {})
-        with patch.object(reconstruction, 'localize_cached', side_effect=[front_obs, rear_obs]) as localize, patch.object(fusion, 'fuse', return_value=sentinel) as fuse:
-            solved = reconstruction.reconstruct_arm_in_scene(episode, 'right', recording, self.root, manifest)
+        with patch.object(scene_reconstruction, 'localize_with_cache', side_effect=[front_obs, rear_obs]) as localize, patch.object(fusion, 'fuse', return_value=sentinel) as fuse:
+            solved = scene_reconstruction.reconstruct_arm_in_scene(episode, 'right', recording, self.root, manifest)
         self.assertIs(solved.trajectory.T_reference_imu, sentinel.T_reference_imu)
         self.assertIsNone(solved.poster_inputs)
         self.assertEqual([(call.args[3], call.args[4], call.args[5]) for call in localize.call_args_list],
@@ -573,7 +585,7 @@ class SceneWorkflowTests(unittest.TestCase):
         built = self.build_scene()
         manifest = json.loads((self.scene.map_root / 'versions' / built['version'] / 'manifest.json').read_text())
         self.assertEqual(set(manifest['maps']), {'shared_front'})
-        with patch.object(reconstruction, 'localize_cached', wraps=reconstruction.localize_cached) as localize:
+        with patch.object(scene_reconstruction, 'localize_with_cache', wraps=scene_reconstruction.localize_with_cache) as localize:
             result = workflow.run_episode(self.episode_path)
         self.assertEqual(result['status'], 'ok')
         self.assertEqual([call.args[3] for call in localize.call_args_list], ['front', 'front'])
@@ -654,7 +666,7 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertEqual(direct.map_data(direct.scan()['recordings'][0]['id']), json.loads(shared_map.read_text()))
 
     def test_map_version_contains_build_time_and_forced_builds_are_distinct(self):
-        with patch('software.scene.pipeline.map_lifecycle.datetime') as clock:
+        with patch('software.scene.pipeline.maps.lifecycle.datetime') as clock:
             clock.now.return_value = datetime(2026, 10, 25, 15, 30, 0)
             first = self.build_scene()
             self.assertRegex(first['version'], r'^20261025_153000-[0-9a-f]{8}$')

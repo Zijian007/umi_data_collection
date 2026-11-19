@@ -13,7 +13,8 @@ import cv2
 import numpy as np
 
 from software.calibration import cli
-from software.gripper_width import detection, preview
+from software.gripper_width.detection import markers as detection
+from software.gripper_width.tools import preview
 
 
 def recording(path: Path, *, size=(3840, 1920)) -> None:

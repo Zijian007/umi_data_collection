@@ -8,7 +8,8 @@ from unittest.mock import patch
 import numpy as np
 from software.scene.result_io import pose_rows
 
-from software.scene.management import episodes, batch_inputs, episode_inputs, scene_inputs
+from software.scene.management import episodes
+from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs, scene as scene_inputs
 from software.scene import workflow
 from software.infrastructure.file_store import write_yaml
 from registry_fakes import write_task_configuration, read_task_configuration

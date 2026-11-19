@@ -2,10 +2,16 @@ import unittest
 from pathlib import Path
 import tempfile
 
-from software.scene.pipeline.map_epoch_planning import draft_plan
-from software.scene.pipeline.map_epoch_selection import (MapEpoch, MapEpochError, TaskCollection,
-                                                         read_plan, resolve_task_map,
-                                                         select_many, select_map_epoch)
+from software.scene.pipeline.maps.epoch_planning import draft_plan
+from software.scene.pipeline.maps.epoch_selection import (
+    MapEpoch,
+    MapEpochError,
+    TaskCollection,
+    read_plan,
+    resolve_task_map,
+    select_many,
+    select_map_epoch,
+)
 from software.infrastructure.file_store import write_yaml
 
 

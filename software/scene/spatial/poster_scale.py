@@ -9,9 +9,14 @@ from scipy.spatial.transform import Rotation
 
 from software.camera.geometry import imu_from_camera
 from software.scene.spatial.fusion import sample_observations
-from software.scene.spatial.poster import cull_threshold, isolated_cull, without_sightings, corner_sigma_px
-from software.vision.poster_pose import (camera_model, estimate_board, project_observations,
-                                         PosterGeometryError)
+from software.vision.poster.geometry import camera_model, estimate_board, project_observations, PosterGeometryError
+from software.vision.poster.quality import (
+    cull_threshold,
+    isolated_cull,
+    without_sightings,
+    corner_sigma_px,
+    culling_record,
+)
 
 
 class PosterScaleConflict(ValueError):
@@ -20,7 +25,8 @@ class PosterScaleConflict(ValueError):
         self.evidence = evidence
 
 
-def estimate_scale(observations, map_lens_measurement, rear_measurement, detections, board, initial_scale, parameters):
+def estimate_scale(observations, map_lens_measurement, rear_measurement, detections, board, initial_scale, parameters,
+                   *, _allow_cull=True):
     """标签只使用连续地图段内的插值；镜头间米制杆臂不能跟地图一起缩放。"""
     detections.validate()
     evidence = dict(status='insufficient_observations', layout=board.record(), actual_error='not_measured')
@@ -68,11 +74,13 @@ def estimate_scale(observations, map_lens_measurement, rear_measurement, detecti
     sighting_rms = np.sqrt(np.mean(corner_errors ** 2, axis=1))
     cull_limit = cull_threshold(parameters)
     cull_mask = sighting_rms > cull_limit
-    if isolated_cull(cull_mask, frame_ids, parameters.tag_mapping_minimum_frames):
+    if _allow_cull and isolated_cull(cull_mask, frame_ids, parameters.tag_mapping_minimum_frames,
+                                    times=all_times[selected], parameters=parameters):
         refined = estimate_scale(observations, map_lens_measurement, rear_measurement,
-                                 without_sightings(detections, selected, cull_mask), board, initial_scale, parameters)
-        refined.update(culled_observations=int(np.sum(cull_mask)),
-                       cull_threshold_px=float(cull_limit),
+                                 without_sightings(detections, selected, cull_mask), board, initial_scale, parameters,
+                                 _allow_cull=False)
+        refined.update(**culling_record(cull_mask, selected, frame_ids, tag_ids, all_times[selected], parameters,
+                                        stage='initialization', minimum_frames=parameters.tag_mapping_minimum_frames),
                        pre_cull_reprojection_rms_px=float(seed_rms),
                        pre_cull_reprojection_metrics=seed_metrics)
         return refined

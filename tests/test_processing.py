@@ -1,10 +1,10 @@
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import kit_inputs
+from software.scene.management.inputs import kit as kit_inputs
 """三入口的配置驱动流程：原片到地图和结果、只读预览、补片与快照重跑。"""
 from software.scene import layout
 from software.infrastructure import provenance as artifact_identity
-from software.scene.pipeline import map_lifecycle
-from contextlib import redirect_stdout
+from software.scene.pipeline.maps import lifecycle as map_lifecycle
+from contextlib import redirect_stdout, redirect_stderr
 import io
 import json
 from pathlib import Path
@@ -14,9 +14,42 @@ from unittest.mock import patch
 
 from software.camera import registry
 from software.scene import cli, workflow
-from software.scene.management import batches, episodes, ingest, processing, batch_inputs, episode_inputs
-from software.infrastructure.file_store import write_yaml
+from software.scene.management.batch import snapshot as batches
+from software.scene.management import episodes, ingest, processing
+from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs
+from software.infrastructure.file_store import write_yaml as _write_yaml
 import test_scene as fixtures
+
+
+def write_yaml(path, data):
+    if path.name == 'collection.yaml' and data.get('schema_version') == 1:
+        scene = dict(data.get('scene', {}))
+        tags = scene.pop('tags', None)
+        kit_name = data.get('kit', 'rig')
+        default_arms = list(kit_inputs.read_kit(kit_name)['arms']) if kit_name else ['left', 'right']
+        out = dict(kit=kit_name,
+                   recording=dict(arms=data.get('arms', default_arms)),
+                   scene=dict(description=scene.pop('description', '')),
+                   map=dict(layout=scene.pop('layout', 'auto'),
+                            reference_arm=scene.pop('map_reference_arm', 'left'),
+                            selection=dict(policy='latest_prior')),
+                   reconstruction=dict(backend='scene_map'))
+        if 'map_version' in data:
+            out['map']['selection']['version'] = data['map_version']
+        if tags is not None:
+            out['environment_poster'] = dict(
+                layout_path=tags.get('layout'), detection=dict(enabled=tags.get('enabled', False)),
+                mapping=dict(enabled=tags.get('mapping', {}).get('enabled', False),
+                             scale_correction=dict(enabled=tags.get('mapping', {}).get('scale', {}).get('enabled', False))),
+                task_constraint=dict(enabled=tags.get('fusion', {}).get('enabled', False),
+                                     method=tags.get('fusion', {}).get('method', 'staged')))
+        if data.get('tasks'):
+            out['tasks'] = data['tasks']
+        for key, value in data.items():
+            if key not in {'schema_version', 'scene', 'kit', 'arms', 'map_policy', 'map_version', 'tasks', 'reconstruction'}:
+                out[key] = value
+        data = out
+    _write_yaml(path, data)
 
 
 class ProcessingTests(unittest.TestCase):
@@ -32,9 +65,12 @@ class ProcessingTests(unittest.TestCase):
             self.addCleanup(override.stop)
         write_kit('rig', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(left='SERIAL_left', right='SERIAL_right')).items()})
         self.batch = self.f.scene.root / 'prepared'
-        write_yaml(self.batch / 'collection.yaml', dict(schema_version=1,
-                   scene=dict(layout='shared', map_reference_arm='left'), kit='rig',
-                   map_policy='latest_prior'))
+        write_yaml(self.batch / 'collection.yaml', dict(
+                   scene=dict(description='test'), kit='rig',
+                   recording=dict(arms=['left', 'right']),
+                   map=dict(layout='shared', reference_arm='left',
+                             selection=dict(policy='latest_prior')),
+                   reconstruction=dict(backend='scene_map')))
         mapping = self.batch / 'mapping/map.INSV'
         mapping.parent.mkdir()
         mapping.write_text('left_mapping')
@@ -85,7 +121,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(prepared.scene.mode, 'shared_front')
 
     def test_runtime_overrides_survive_map_binding_and_preserve_reuse(self):
-        from software.scene.configuration import SceneOverrides
+        from software.scene.overrides import SceneOverrides
         from software.scene.management.effective_config import effective_report
         override_path = self.f.root/'override.yaml'
         write_yaml(override_path, dict(parameters=dict(
@@ -238,6 +274,61 @@ class ProcessingTests(unittest.TestCase):
                 self.assertEqual(processing.run([self.batch])[0]['status'], 'failed')
                 run.assert_not_called()
 
+    def test_batch_and_direct_task_report_the_same_input_problems(self):
+        processing.prepare_batch(self.batch)
+        problem = dict(path='bad.insv', reason='invalid input')
+        for category in ('errors', 'pending', 'ignored'):
+            report = dict(episodes=[], skipped=['take_001'], errors=[], pending=[], ignored=[])
+            report[category].append(problem)
+            for target in (self.batch, self.batch / 'take_001'):
+                for dry_run in (False, True):
+                    with self.subTest(category=category, target=target, dry_run=dry_run), \
+                            patch.object(processing, 'prepare_batch', return_value=report), \
+                            patch.object(workflow, 'run_episodes') as run:
+                        summaries = processing.run([target], dry_run=dry_run)
+                        self.assertEqual(len(summaries), 1)
+                        self.assertEqual(summaries[0]['status'], 'failed')
+                        self.assertEqual(summaries[0]['name'], target.name)
+                        self.assertEqual(summaries[0]['details'], [problem])
+                        self.assertIn('bad.insv: invalid input', summaries[0]['error'])
+                        run.assert_not_called()
+
+    def test_rejected_batch_does_not_block_another_batch(self):
+        other = self.f.batch_root
+        problem = dict(path='bad.insv', reason='invalid input')
+        rejected = dict(episodes=[], errors=[problem], pending=[], ignored=[])
+        accepted = dict(episodes=[], skipped=['take_001'], errors=[], pending=[], ignored=[])
+
+        def discover(paths, **kwargs):
+            return [self.f.episode_path] if paths == [other] else []
+
+        with patch.object(processing, 'configured_batches', return_value=[self.batch, other]), \
+                patch.object(processing, 'prepare_batch', side_effect=[rejected, accepted]), \
+                patch.object(episodes, 'episode_paths', side_effect=discover), \
+                patch.object(workflow, 'run_episodes', return_value=[dict(status='ok')]) as run, \
+                patch.object(processing.cleanup, 'after_batch'):
+            summaries = processing.run([self.f.scene.root])
+        self.assertEqual([item['status'] for item in summaries], ['failed', 'ok'])
+        self.assertEqual(summaries[0]['details'], [problem])
+        self.assertEqual(run.call_args.args[0], [self.f.episode_path])
+
+    def test_direct_tasks_prepare_each_batch_once_and_keep_input_order(self):
+        first = layout.metadata(self.batch / 'take_002', 'episode.yaml')
+        second = self.f.episode_path
+        third = layout.metadata(self.batch / 'take_001', 'episode.yaml')
+        selected = [first, second, third]
+        clean = dict(episodes=[], errors=[], pending=[], ignored=[])
+        with patch.object(processing, 'configured_batches', return_value=[]), \
+                patch.object(episodes, 'episode_paths', return_value=selected), \
+                patch.object(processing, 'prepare_batch', return_value=clean) as prepare, \
+                patch.object(workflow, 'run_episodes', return_value=[dict(status='ok')]) as run, \
+                patch.object(processing.cleanup, 'after_batch'):
+            processing.run(selected)
+        self.assertEqual(prepare.call_count, 2)
+        self.assertEqual([call.args[0] for call in prepare.call_args_list],
+                         sorted([self.batch, self.f.batch_root]))
+        self.assertEqual(run.call_args.args[0], selected)
+
     def test_run_preview_reads_current_kit_and_keeps_snapshot_unchanged(self):
         processing.prepare_batch(self.batch)
         write_kit('single', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(right='SERIAL_right')).items()})
@@ -351,7 +442,8 @@ class ProcessingTests(unittest.TestCase):
 
     def test_dual_reference_is_resolved_from_scene_options_into_batch_record(self):
         batch_document = read_yaml(self.batch / 'collection.yaml')
-        batch_document['scene'] = dict(layout='per_arm', map_reference_arm='right')
+        batch_document['map'] = dict(layout='per_arm', reference_arm='right',
+                                     selection=dict(policy='latest_prior'))
         write_yaml(self.batch / 'collection.yaml', batch_document)
         left = self.batch / 'mapping/left/VID.insv'
         left.parent.mkdir()
@@ -412,10 +504,31 @@ class ProcessingTests(unittest.TestCase):
         self.assertFalse((layout.metadata(self.batch, 'manifest.yaml')).exists())
 
     def test_training_export_options_forward_to_existing_exporter(self):
-        with patch('software.dataset.export.build', return_value=dict(training_ready=False)) as build, redirect_stdout(io.StringIO()):
-            code = cli.main(['export', str(self.batch), '--format', 'training', '--out', str(self.f.root / 'dataset'), '--fps', '20'])
+        for extra, policy, unknown in (([], 'all', 'drop'),
+                (['--quality-policy', 'position_supported', '--unknown-support', 'error'], 'position_supported', 'error')):
+            with self.subTest(policy=policy), \
+                    patch('software.dataset.export.build', return_value=dict(training_ready=False)) as build, \
+                    redirect_stdout(io.StringIO()):
+                code = cli.main(['export', str(self.batch), '--format', 'training',
+                    '--out', str(self.f.root / 'dataset'), '--fps', '20', *extra])
+            self.assertEqual(code, 0)
+            self.assertEqual(build.call_args.kwargs, dict(fps=20., max_gap_s=.25,
+                quality_policy=policy, unknown_support=unknown, time_window_s=None))
+
+    def test_training_export_forwards_manual_sampling_window(self):
+        with patch('software.dataset.export.build', return_value=dict(training_ready=False)) as build, \
+                redirect_stdout(io.StringIO()):
+            code = cli.main(['export', str(self.batch), '--format', 'training',
+                '--out', str(self.f.root / 'dataset'), '--start-s', '.2', '--end-s', '.8'])
         self.assertEqual(code, 0)
-        self.assertEqual(build.call_args.kwargs, dict(fps=20., max_gap_s=.25))
+        self.assertEqual(build.call_args.kwargs['time_window_s'], (.2, .8))
+
+    def test_trajectory_export_rejects_training_quality_options(self):
+        with patch.object(episodes, 'export') as export, redirect_stderr(io.StringIO()):
+            code = cli.main(['export', str(self.batch), '--out', str(self.f.root / 'dataset'),
+                             '--quality-policy', 'position_supported'])
+        self.assertNotEqual(code, 0)
+        export.assert_not_called()
 
     def test_only_three_root_programs_remain(self):
         project = Path(__file__).resolve().parents[1]

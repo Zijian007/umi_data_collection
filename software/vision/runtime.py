@@ -13,7 +13,7 @@ from software.camera.images import prepare_mask
 from software.infrastructure.runtime_environment import python_executable
 from software.infrastructure.paths import PROJECT_ROOT
 from software.vision.models import VisualContext, VisualSettings, ProcessingError
-from software.vision.paths import orb_executable
+from software.vision.paths import orb_executable, orb_directory
 
 
 HERE = Path(__file__).resolve().parent
@@ -25,11 +25,17 @@ def write_error_log(path: Path, error: BaseException) -> None:
     path.write_text(''.join(traceback.format_exception(error)), encoding='utf-8')
 
 def visual_settings(environment: dict[str, str], *, lens_settings: dict[str, str], front_mask: Path,
-                    output: Path, parameters: parameter_models.TrajectoryParameters) -> VisualSettings:
+                    output: Path, parameters: parameter_models.TrajectoryParameters,
+                    require_slam: bool = True) -> VisualSettings:
     """写显式指定的镜头设置与遮手图；不选择或回退任何镜头标定。"""
     if 'front' not in lens_settings or set(lens_settings)-{'front', 'rear'}:
         raise ValueError('视觉设置需要 front，且只允许 front/rear 镜头')
-    orb, vocabulary = validate_engines(environment)
+    if require_slam:
+        orb, vocabulary = validate_engines(environment)
+    else:
+        # Decoding and direct pixel BA do not consume the ORB executable/vocabulary.
+        orb = orb_directory(environment)
+        vocabulary = Path(environment.get('ORB3_VOCAB') or orb / 'Vocabulary/ORBvoc.txt')
     output.mkdir(parents=True, exist_ok=True)
     paths = {}
     for lens, text in lens_settings.items():

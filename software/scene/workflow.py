@@ -19,21 +19,26 @@ import uuid
 
 from software.infrastructure import provenance as artifact_identity
 from software.infrastructure.terminal import Console
-from software.scene import layout, scheduling
-from software.scene.configuration import SceneOverrides
+from software.scene import layout, cpu_budget
+from software.scene.overrides import SceneOverrides
 from software.scene.layout import locked
 from software.scene.management import camera_assets
 from software.scene.management import cleanup, episodes
 from software.scene.asset_identity import validate_assets
-from software.scene.management.episode_inputs import episode_inputs, read_episode
+from software.scene.management.inputs.episode import episode_inputs, read_episode
 from software.infrastructure.file_store import read_yaml, write_json
-from software.scene.models import Episode, EpisodeRunResult
-from software.scene.result_io import is_local_scene, scene_reference
-from software.scene.pipeline import map_lifecycle, reconstruction, reporting, episode_execution
-from software.scene.pipeline import episode_publication, recording_checks, trajectory_writers, cache_audit
+from software.scene.models import Episode, EpisodeRunResult, TaskInputs
+from software.scene.result_io import is_local_scene, is_poster_scene, scene_reference
+from software.scene.pipeline.maps import lifecycle as map_lifecycle
+from software.scene.pipeline.tasks import recording_preparation
+from software.scene.pipeline.tasks.results import reporting
+from software.scene.pipeline.tasks.results import publication as episode_publication, trajectory_writers
+from software.scene.pipeline import recording_checks
+from software.scene.pipeline.cache_audit import CacheAudit
 from software.scene.pipeline import synchronization
+from software.scene.pipeline.tasks import estimation
 from software.vision import runtime
-from software.scene.errors import ITEM_FAILURES
+from software.scene.errors import ITEM_FAILURES, MapCompatibilityError, fallback_record
 
 
 console = Console('场景')
@@ -114,7 +119,8 @@ def _reuse_existing_result(episode: Episode, input_identity: dict, *, force: boo
     if force:
         return None
     local_output = episode.root / 'local_results'
-    candidates = [(episode.output, 'umi_scene_episode', 'skipped')]
+    candidates = [(episode.output, 'umi_scene_episode', 'skipped'),
+                  (episode.output, 'umi_poster_episode', 'skipped')]
     if len(episode.expected_arms) == 1:
         candidates.append((local_output, 'umi_local_episode', 'local_skipped'))
         if layout.read_state(episode.root).get('attempt', {}).get('status') in ('local_ok', 'local_skipped'):
@@ -149,7 +155,7 @@ def _requested_map_version(episode: Episode, command_map_version: str | None) ->
     }
     if episode.map_version is not None and explicit:
         if requested is not None and requested != episode.map_version:
-            raise ValueError('命令行 map_version 与 collection.yaml.tasks 的 map_version 不一致')
+            raise ValueError('命令行 map_version 与 collection.yaml.tasks.<take>.map.version 不一致')
         requested = episode.map_version
     return requested
 
@@ -172,31 +178,31 @@ def _require_map_views(scene, cameras: dict, map_manifest: dict) -> None:
     for arm in cameras:
         for lens in scene.localization_lenses(arm):
             if scene.role(arm, lens) not in map_manifest['maps']:
-                raise ValueError(f'场景地图缺少 {arm}/{lens} 可定位的视角')
+                raise MapCompatibilityError(f'场景地图缺少 {arm}/{lens} 可定位的视角')
 
 
-def _task_cache_events(episode: Episode, cameras: dict, sync_status: str, sync_reason: str) -> cache_audit.CacheAudit:
+def _create_cache_audit(episode: Episode, cameras: dict, sync_status: str, sync_reason: str) -> CacheAudit:
     """记录本次任务不经阶段缓存、但需要审计来源的输入：同步、标定和 TCP。"""
-    events = cache_audit.CacheAudit()
-    events.record(stage='synchronization', key=artifact_identity.canonical_hash(episode.synchronization),
+    audit = CacheAudit()
+    audit.record(stage='synchronization', key=artifact_identity.canonical_hash(episode.synchronization),
                   path=str(layout.metadata(episode.root, 'sync.json')),
                   status=sync_status, reason=sync_reason)
     for arm, camera in cameras.items():
-        events.record(stage='calibration',
+        audit.record(stage='calibration',
                       key=artifact_identity.canonical_hash(camera_assets.camera_identity(camera)),
                       path=str(camera.selected.assets.camera_json), status='reused',
                       reason='registry 不可变标定版本已固定到本次任务快照')
         if 'tcp' not in camera.files:
-            events.record(stage='tcp', key=f'{arm}:none', path='', status='not_applicable',
+            audit.record(stage='tcp', key=f'{arm}:none', path='', status='not_applicable',
                           reason='套件未配置 TCP 几何资产')
-    return events
+    return audit
 
 
 def _freeze_tag_layout(episode: Episode, run_dir: Path, input_identity: dict) -> Episode:
     """把海报布局复制进运行目录并核对身份；之后的计算只引用这份副本。"""
     if episode.scene.tag_layout is None:
         return episode
-    from software.vision.tag_board import load as load_tag_board
+    from software.vision.poster.layout import load as load_tag_board
     frozen_layout = run_dir / 'devices/environment_poster.json'
     frozen_layout.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(episode.scene.tag_layout, frozen_layout)
@@ -232,8 +238,12 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
         # --- 阶段 1: 地图版本绑定与输入指纹比对 (Bind Map & Verify Cache) ---
         if batch_map is not None and batch_map.requested != requested_map_version:
             raise ValueError('批量运行中的任务需要不同地图版本，请按地图版本分组运行')
-        episode, map_dir, map_manifest = (batch_map.bind(episode) if batch_map is not None else
-            map_lifecycle.bind_map(episode, requested_map_version, dry_run, cores=cores))
+        mode = episode.scene.reconstruction_mode
+        episode, map_selection = estimation.select_map(episode, requested_map_version,
+            batch_map=batch_map, dry_run=dry_run, cores=cores)
+        map_dir, map_manifest = map_selection.directory, map_selection.manifest
+        if mode != 'scene_map':
+            batch_map = None
         scene = episode.scene
         device_scene = replace(
             scene,
@@ -241,15 +251,23 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             rear_calibrations=camera_assets.rear_files(episode.session.devices),
         )
         cameras = camera_assets.select_cameras(episode.recordings, device_scene, episode.serials)
-        map_lifecycle.validate_map_calibrations(cameras, map_manifest)
+        if map_manifest is not None:
+            try:
+                map_lifecycle.validate_map_calibrations(cameras, map_manifest)
+                _require_map_views(scene, cameras, map_manifest)
+            except MapCompatibilityError as error:
+                if mode != 'auto':
+                    raise
+                map_selection = estimation.MapSelection.without_map(fallback_record(error))
+                map_dir, map_manifest = None, None
         input_identity = episode_inputs(episode, cameras, map_manifest)
 
         if dry_run:
             return dict(status='planned', inputs=input_identity, output=str(episode.output),
                         synchronization=episode.synchronization)
 
-        runtime.validate_engines(dict(os.environ))
-        _require_map_views(scene, cameras, map_manifest)
+        if mode != 'poster_vio':
+            runtime.validate_engines(dict(os.environ))
 
         reused = _reuse_existing_result(episode, input_identity, force=force)
         if reused is not None:
@@ -261,7 +279,7 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
         # 解码产物从缓存链接到运行期工作目录，结束即删；发布结果只保留自包含文件。
         work_dir = layout.metadata(episode.root, 'work') / run_dir.name
         started, started_at = time.monotonic(), time.time()
-        cache_events = _task_cache_events(episode, cameras, sync_cache_status, sync_cache_reason)
+        cache_audit = _create_cache_audit(episode, cameras, sync_cache_status, sync_cache_reason)
 
         try:
             if check_report is not None:
@@ -271,35 +289,21 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             episode = _freeze_tag_layout(episode, run_dir, input_identity)
             # Step 1: 准备录像与公共时间区间
             console.write('准备任务录像与时间轴', recording=name, step=(1, 3))
-            allocation = scheduling.arm_cores(tuple(episode.recordings), cores, parallel=parallel_arms)
-            prepared_recordings = reconstruction.prepare_episode_recordings(episode, cameras, video_offsets_s,
-                work_dir=work_dir, cores=cores, arm_cores=allocation, cache_audit=cache_events)
-            scene_metadata = dict(
-                name=scene.name,
-                version=map_manifest['version'],
-                frame_id=map_manifest['frame_id'],
-                session=episode.session.name,
-            )
-
+            arm_cpu_sets = cpu_budget.arm_cores(tuple(episode.recordings), cores, parallel=parallel_arms)
+            prepared_recordings = recording_preparation.prepare_episode_recordings(episode, cameras, video_offsets_s,
+                work_dir=work_dir, cores=cores, arm_cores=arm_cpu_sets, cache_audit=cache_audit)
             # Step 2: 各手独立求解轨迹、夹爪测量与共享海报融合
-            arm_execution = episode_execution.execute_arm_tracks(
-                episode=episode,
-                prepared_recordings=prepared_recordings,
-                video_offsets_s=video_offsets_s,
-                map_dir=map_dir,
-                map_manifest=map_manifest,
-                run_dir=run_dir,
-                scene=scene,
-                name=name,
-                allocation=allocation,
-                cache_events=cache_events,
-                scene_metadata=scene_metadata,
-                console=console,
-            )
+            task_inputs = TaskInputs(episode, prepared_recordings, video_offsets_s,
+                                     run_dir, arm_cpu_sets, cache_audit, console)
+            arm_execution = estimation.execute(task_inputs, map_selection)
             tracks = arm_execution.tracks
-            scene_metadata = arm_execution.scene_metadata
+            coordinate_record = arm_execution.coordinate_record
             # 局部回退结果不引用共享地图。
-            display_map_path = None if is_local_scene(scene_metadata) else map_dir / 'map.json'
+            display_map_path = (None if is_local_scene(coordinate_record) or is_poster_scene(coordinate_record)
+                                else map_dir / 'map.json')
+            if mode == 'auto' and display_map_path is not None:
+                from software.scene.asset_identity import validate_assets
+                validate_assets(map_dir, map_manifest['assets'])
 
             # Step 3: 双手对齐、防篡改校验与原子发布
             console.write('写入轨迹、报告并发布结果', recording=name, step=(3, 3))
@@ -311,12 +315,12 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
                 map_manifest=map_manifest,
                 tracks=tracks,
                 video_offsets_s=video_offsets_s,
-                scene_record=scene_metadata,
+                coordinate_record=coordinate_record,
                 run_dir=run_dir,
                 map_path=display_map_path,
-                widths=arm_execution.widths,
-                distances=arm_execution.distances,
-                cache_events=cache_events,
+                width_reports=arm_execution.width_reports,
+                tag_distance_reports=arm_execution.tag_distance_reports,
+                cache_audit=cache_audit,
                 common_interval_s=common_interval_s,
                 elapsed_s=time.monotonic() - started,
                 started_at=started_at,
@@ -335,10 +339,10 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
         return dict(
             status='local_ok' if is_local else 'ok',
             output=str(output),
-            frame_id=scene_metadata['frame_id'],
+            frame_id=coordinate_record['frame_id'],
             common_interval_s=common_interval_s,
             synchronization=episode.synchronization,
-            quality=reporting.quality_summary(tracks, scene_metadata, common_interval_s),
+            quality=reporting.quality_summary(tracks, coordinate_record, common_interval_s),
         )
 
 

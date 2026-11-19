@@ -1,5 +1,5 @@
 """套件单/双手、批次配置、离线处理、验收和导出的完整业务回归。"""
-from software.scene.pipeline import reconstruction
+from software.scene.pipeline.tasks.backends import scene_reconstruction
 import io
 import json
 import unittest
@@ -7,11 +7,17 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs, episodes
+from software.scene.management.inputs import (
+    batch as batch_inputs,
+    episode as episode_inputs,
+    kit as kit_inputs,
+    scene as scene_inputs,
+)
+from software.scene.management import episodes
 from software.scene import cli, layout, workflow
 from software.infrastructure.file_store import write_yaml
 from registry_fakes import write_task_configuration
-from software.viewer.data import RecordingCatalog
+from software.viewer.results.catalog import RecordingCatalog
 import test_scene as scene_fixtures
 
 
@@ -108,17 +114,54 @@ class EpisodeLifecycleTests(unittest.TestCase):
         with patch('software.scene.spatial.slam.localize',side_effect=AssertionError('cached localization must be reused')):
             workflow.run_episode(self.f.episode_path,force=True)
 
+    def test_damaged_localization_cache_recomputes_only_that_entry(self):
+        workflow.run_episode(self.f.episode_path)
+        output = self.f.task_root / 'results'
+        before = {name: (output / name).read_bytes() for name in
+                  ('left/trajectory.csv', 'right/trajectory.csv', 'bimanual.csv')}
+        cache_root = layout.metadata(self.f.task_root, 'cache/localization')
+        for filename in ('observations.npz', 'recovery.json'):
+            with self.subTest(filename=filename):
+                next(cache_root.glob('*/' + filename)).write_bytes(b'broken')
+                with patch.object(scene_reconstruction.slam, 'localize_with_recovery',
+                                  wraps=scene_reconstruction.slam.localize_with_recovery) as compute:
+                    workflow.run_episode(self.f.episode_path, force=True)
+                self.assertEqual(compute.call_count, 1)
+                self.assertEqual({name: (output / name).read_bytes() for name in before}, before)
+                audit = json.loads((output / 'run_report.json').read_text())['cache']['task']
+                statuses = [item['status'] for item in audit if item['stage'] == 'localize']
+                self.assertEqual(statuses.count('invalidated'), 1)
+                self.assertEqual(statuses.count('computed'), 1)
+
+    def test_failed_localization_retains_engine_logs_and_previous_result(self):
+        workflow.run_episode(self.f.episode_path)
+        previous = (self.f.task_root / 'results').resolve()
+        cache_root = layout.metadata(self.f.task_root, 'cache/localization')
+        damaged = next(cache_root.glob('*/observations.npz'))
+        damaged.write_bytes(b'broken')
+
+        def fail(recording, lens, archive, index, directory, *args):
+            directory.mkdir(parents=True)
+            (directory / 'engine.log').write_text('localization failed')
+            raise OSError('engine failed')
+
+        with patch.object(scene_reconstruction.slam, 'localize_with_recovery', side_effect=fail), \
+                self.assertRaisesRegex(OSError, 'engine failed'):
+            workflow.run_episode(self.f.episode_path, force=True)
+        self.assertEqual((self.f.task_root / 'results').resolve(), previous)
+        self.assertTrue(list(cache_root.glob('.*' + '/engine.log')))
+
     def test_second_arm_failure_keeps_previous_bimanual_result(self):
         workflow.run_episode(self.f.episode_path)
         output = (self.f.task_root/'results').resolve()
-        reconstruct = reconstruction.reconstruct_arm_in_scene
+        reconstruct = scene_reconstruction.reconstruct_arm_in_scene
 
         def solve(episode, arm, *args, **kwargs):
             if arm == 'right':
                 raise ValueError('right arm failed')
             return reconstruct(episode, arm, *args, **kwargs)
 
-        with patch.object(reconstruction, 'reconstruct_arm_in_scene', side_effect=solve):
+        with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=solve):
             with self.assertRaisesRegex(ValueError, 'right arm failed'):
                 workflow.run_episode(self.f.episode_path, force=True)
         self.assertEqual((self.f.task_root/'results').resolve(), output)
@@ -132,7 +175,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
         workflow.run_episode(self.f.episode_path)
         output = (self.f.task_root/'results').resolve()
         before = (output/'episode.json').read_bytes()
-        with patch('software.scene.pipeline.episode_result_writer.write_episode_result', side_effect=OSError('report write failed')):
+        with patch('software.scene.pipeline.tasks.results.result_writer.write_episode_result', side_effect=OSError('report write failed')):
             with self.assertRaisesRegex(OSError, 'report write failed'):
                 workflow.run_episode(self.f.episode_path, force=True)
         self.assertEqual((self.f.task_root/'results').resolve(), output)

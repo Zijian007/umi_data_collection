@@ -9,7 +9,7 @@ import struct
 import numpy as np
 
 from software.camera.x3 import frame, imu_reader, insv_reader
-from software.scene.management.scene_inputs import load_scene_parameters
+from software.scene.management.inputs.scene import load_scene_parameters
 from software.scene.models import SceneParameters
 
 

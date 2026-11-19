@@ -7,17 +7,15 @@ from typing import TYPE_CHECKING, Callable
 import json
 import shutil
 
-import numpy as np
-
 from software.infrastructure import provenance
 from software.configuration.parameter_models import EnvironmentTagParameters
 from software.infrastructure.file_store import write_json
 from software.trajectory.calibration.assets import read_basalt
-from software.vision import environment_tags, tag_board
+from software.vision.poster import detection as environment_tags, layout as tag_board
 
 
 if TYPE_CHECKING:
-    from software.trajectory.algorithms.fusion_poster import PosterInputs
+    from software.trajectory.algorithms.fusion.poster import PosterInputs
 
 
 @dataclass(frozen=True)
@@ -27,7 +25,8 @@ class PosterAssetHashes:
 
 
 def prepare(video: Path, directory: Path, layout: Path, rear: Path, parameters: EnvironmentTagParameters,
-            *, expected: PosterAssetHashes | None = None, progress: Callable[[str], None] | None = None) -> Path:
+            *, expected: PosterAssetHashes | None = None, progress: Callable[[str], None] | None = None,
+            detection_cache: Path | None = None) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     frozen_layout, frozen_rear = directory / 'layout.json', directory / 'rear.json'
     shutil.copyfile(layout, frozen_layout)
@@ -39,7 +38,12 @@ def prepare(video: Path, directory: Path, layout: Path, rear: Path, parameters: 
     detection_settings = environment_tags.DetectionSettings(
         border_bits=board.border_bits, ids=board.ids, dictionary=board.dictionary,
         minimum_side_px=parameters.tag_minimum_side_px)
-    detection_report = environment_tags.cached(video, directory / 'detection', detection_settings, layout=board, progress=progress)
+    cache_directory = detection_cache if detection_cache is not None else directory / 'detection'
+    detection_report = environment_tags.cached(video, cache_directory, detection_settings, layout=board, progress=progress)
+    if cache_directory.resolve() != (directory / 'detection').resolve():
+        (directory / 'detection').mkdir(exist_ok=True)
+        for name in ('observations.npz', 'detection.json', 'report.json'):
+            shutil.copyfile(cache_directory / name, directory / 'detection' / name)
     manifest_path = directory / 'input.json'
     write_json(manifest_path, dict(
         schema_version=1, layout='layout.json', rear='rear.json', observations='detection/observations.npz',
@@ -50,7 +54,7 @@ def prepare(video: Path, directory: Path, layout: Path, rear: Path, parameters: 
 
 
 def load(manifest_path: Path) -> PosterInputs:
-    from software.trajectory.algorithms.fusion_poster import PosterInputs
+    from software.trajectory.algorithms.fusion.poster import PosterInputs
     manifest = json.loads(manifest_path.read_text())
     if manifest['schema_version'] != 1:
         raise ValueError('未知海报输入版本')
@@ -62,9 +66,6 @@ def load(manifest_path: Path) -> PosterInputs:
     for asset_kind in ('layout', 'rear', 'observations'):
         if manifest[asset_kind] not in manifest['assets']:
             raise ValueError('海报输入未被哈希覆盖')
-    with np.load(snapshot_directory / manifest['observations'], allow_pickle=False) as observation_archive:
-        observations = environment_tags.TagObservations(**{
-            field: observation_archive[field] for field in environment_tags.TagObservations.__dataclass_fields__})
-    observations.validate()
+    observations = environment_tags.load_observations(snapshot_directory / manifest['observations'])
     return PosterInputs(tag_board.load(snapshot_directory / manifest['layout']), observations,
                         read_basalt(snapshot_directory / manifest['rear']))

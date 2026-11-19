@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 def rear_validation_parameters() -> SceneParameters:
     """环境镜头 C 独立验证，不采用任务海报或建图尺度修正。"""
-    from software.scene.management.scene_inputs import load_scene_parameters
+    from software.scene.management.inputs.scene import load_scene_parameters
     return replace(load_scene_parameters(), tag_fusion_enabled=False,
                    tag_mapping_enabled=False, tag_mapping_scale_enabled=False)
 

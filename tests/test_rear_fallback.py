@@ -19,7 +19,7 @@ from software.infrastructure.file_store import write_json
 from software.trajectory.calibration import assets
 from software.trajectory.models import TrajectoryRequest
 from software.trajectory.pipeline import calibration_assets, reuse
-from software.vision import tag_board
+from software.vision.poster import layout as tag_board
 from test_intrinsics_source import native
 from test_trajectory_workflow import RecordingFixture
 import test_trajectory_workflow as workflow_tests
@@ -128,7 +128,7 @@ class RearFallbackTests(RecordingFixture):
 
     def test_shared_scene_and_dual_share_fallback_and_frozen_asset_identity(self):
         from software.infrastructure.file_store import read_yaml
-        from software.scene.management import scene_inputs
+        from software.scene.management.inputs import scene as scene_inputs
         front = assets.read_basalt(self.selected.assets.camera_json)
         record = dict(serial='camera', status='active', json=str(self.selected.assets.camera_json),
             dir=str(self.selected.directory), source='registry', cam_time_offset_ns=front['cam_time_offset_ns'],

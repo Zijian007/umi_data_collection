@@ -10,7 +10,7 @@ from software.infrastructure import provenance
 from software.infrastructure.file_store import read_yaml, write_yaml
 from software.scene import layout
 from software.scene.models import ARMS
-from software.scene.pipeline import map_epoch_selection
+from software.scene.pipeline.maps import epoch_selection as map_epoch_selection
 
 
 _SHA256 = re.compile(r'^[0-9a-f]{64}$')

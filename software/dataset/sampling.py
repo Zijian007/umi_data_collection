@@ -9,7 +9,8 @@ import csv
 from scipy.spatial.transform import Rotation
 import numpy as np
 
-from software.camera.geometry import resample_pose_series
+from software.camera.geometry import resample_pose_series, relative_pose_series
+from software.dataset.policy import validate_quality_policy
 from software.gripper_width import series
 from software.trajectory.io.tum import read_tum
 from software.scene.result_io import TCP_COLUMNS, trajectory_path
@@ -24,6 +25,7 @@ class ArmSamples:
     full_constraint: np.ndarray
     front_tracked: np.ndarray
     width_samples: series.WidthSeries | None = None
+    position_support: dict[str, np.ndarray] | None = None
 
 
 def video_timestamps(path: Path) -> np.ndarray:
@@ -87,9 +89,33 @@ def read_arm(directory: Path, offset_s: float) -> ArmSamples:
     poses = np.tile(np.eye(4), (len(times), 1, 1))
     poses[:, :3, 3] = positions
     poses[:, :3, :3] = Rotation.from_quat(quaternions).as_matrix()
+    support = _read_position_support(rows)
     return ArmSamples(frame_times, poses, indices, pts,
                       np.array([row['constraint'] == 'full' for row in rows]),
-                      np.array([row['front_lens_tracked'] == '1' for row in rows]), width_samples)
+                      np.array([row['front_lens_tracked'] == '1' for row in rows]), width_samples, support)
+
+
+def _read_position_support(rows: list[dict]) -> dict[str, np.ndarray] | None:
+    fields = ('visual_position_supported', 'poster_observed', 'poster_position_supported', 'position_supported')
+    if not rows or not any(field in rows[0] for field in fields):
+        return None  # 历史结果的未知证据不能冒充海报未使用。
+    if any(field not in row or row[field] not in ('', '0', '1') for row in rows for field in fields):
+        raise ValueError('逐帧位置支持状态不完整或无效')
+    support = {field: np.array([row[field] == '1' for row in rows])
+               for field in fields if all(row[field] != '' for row in rows)}
+    visual = support.get('visual_position_supported')
+    if visual is None or not np.array_equal(visual, [row['constraint'] == 'full' for row in rows]):
+        raise ValueError('自然视觉位置支持与原约束状态不一致')
+    poster, observed = support.get('poster_position_supported'), support.get('poster_observed')
+    combined = support.get('position_supported')
+    if poster is not None:
+        if observed is None or np.any(poster & ~observed):
+            raise ValueError('海报位置支持缺少观测证据')
+        if combined is None or not np.array_equal(combined, visual | poster):
+            raise ValueError('共同位置支持必须是自然视觉与海报的并集')
+    elif combined is not None:
+        raise ValueError('共同位置支持缺少海报几何证据')
+    return support
 
 
 def brackets(times: np.ndarray, query: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -99,9 +125,47 @@ def brackets(times: np.ndarray, query: np.ndarray) -> tuple[np.ndarray, np.ndarr
     return left, right
 
 
-def sample(arms: dict[str, ArmSamples], fps: float, max_gap_s: float) -> tuple[dict[str, np.ndarray], dict]:
+def _supported_samples(arm, left, right):
+    """三态判定：任一端已知无支持则拒绝，两端有支持才通过，其余未知。"""
+    combined = (arm.position_support or {}).get('position_supported')
+    # 缺少海报证据时，自然视觉支持仍是已知的正证据；其余帧保持未知。
+    supported = arm.full_constraint if combined is None else combined
+    known = arm.full_constraint if combined is None else np.ones(len(combined), bool)
+    accepted = supported[left] & supported[right]
+    rejected = (known[left] & ~supported[left]) | (known[right] & ~supported[right])
+    return accepted, ~accepted & ~rejected
+
+
+def _segment_ids(query, arms, fps, max_gap_s, quality_policy):
+    """低频采样也保留源时间轴中的缺口，防止窗口跨过未被采到的坏段。"""
+    breaks = np.diff(query) > 1.5 / fps
+    for arm in arms.values():
+        gap_prefix = np.r_[0, np.cumsum(np.diff(arm.times_s) > max_gap_s)]
+        first = np.searchsorted(arm.times_s[1:], query[:-1], side='right')
+        last = np.searchsorted(arm.times_s[:-1], query[1:], side='left')
+        breaks |= gap_prefix[last] > gap_prefix[first]
+        if quality_policy == 'position_supported':
+            indices = np.arange(len(arm.times_s))
+            supported, _ = _supported_samples(arm, indices, indices)
+            bad_prefix = np.r_[0, np.cumsum(~supported)]
+            first = np.searchsorted(arm.times_s, query[:-1], side='right')
+            last = np.searchsorted(arm.times_s, query[1:], side='left')
+            breaks |= bad_prefix[last] > bad_prefix[first]
+    return np.r_[0, np.cumsum(breaks)].astype(np.int64)
+
+
+def sample(arms: dict[str, ArmSamples], fps: float, max_gap_s: float, *,
+           quality_policy: str = 'all', unknown_support: str = 'drop',
+           time_window_s: tuple[float, float] | None = None) -> tuple[dict[str, np.ndarray], dict]:
+    validate_quality_policy(quality_policy, unknown_support)
     start = max(arm.times_s[0] for arm in arms.values())
     end = min(arm.times_s[-1] for arm in arms.values())
+    if time_window_s is not None:
+        if (len(time_window_s) != 2 or not np.isfinite(time_window_s).all()
+                or time_window_s[1] <= time_window_s[0]):
+            raise ValueError('time_window_s 必须是有限的 [start, end] 秒区间，且 end 大于 start')
+        start = max(start, time_window_s[0])
+        end = min(end, time_window_s[1])
     if end <= start:
         raise ValueError('轨迹没有共同有效时间区间')
     first = int(np.ceil(start*fps))
@@ -112,12 +176,29 @@ def sample(arms: dict[str, ArmSamples], fps: float, max_gap_s: float) -> tuple[d
         left, right = brackets(arm.times_s, query)
         keep &= arm.times_s[right]-arm.times_s[left] <= max_gap_s
     dropped = int(np.count_nonzero(~keep))
+    gap_keep = keep.copy()
+    selection = dict(quality_policy=quality_policy, unknown_support=unknown_support, arms={})
+    if quality_policy == 'position_supported':
+        for name, arm in arms.items():
+            left, right = brackets(arm.times_s, query)
+            supported, unknown = _supported_samples(arm, left, right)
+            selection['arms'][name] = dict(
+                unsupported_samples=int(np.count_nonzero(gap_keep & ~supported & ~unknown)),
+                unknown_samples=int(np.count_nonzero(gap_keep & unknown)))
+            if unknown_support == 'error' and np.any(gap_keep & unknown):
+                raise ValueError(f'{name} 存在未知位置支持证据，无法按严格质量策略导出')
+            keep &= supported
+    selection['dropped_quality_samples'] = int(np.count_nonzero(gap_keep & ~keep))
     query = query[keep]
     if len(query) < 2:
+        if selection['dropped_quality_samples']:
+            raise ValueError('质量筛选后有效样本不足两个：删除了 '
+                             f"{selection['dropped_quality_samples']} 个位置支持不足或未知样本")
         raise ValueError('目标时间轴有效样本不足')
-    segments = np.r_[0, np.cumsum(np.diff(query) > 1.5/fps)].astype(np.int64)
+    segments = _segment_ids(query, arms, fps, max_gap_s, quality_policy)
     arrays = dict(t_episode_s=query, segment_id=segments)
-    quality = dict(dropped_gap_samples=dropped, segments=int(segments[-1])+1, arms={})
+    quality = dict(dropped_gap_samples=dropped, segments=int(segments[-1])+1,
+                   selection=selection, window_s=[float(start), float(end)], arms={})
     for name, arm in arms.items():
         left, right = brackets(arm.times_s, query)
         nearest = np.where(query-arm.times_s[left] <= arm.times_s[right]-query, left, right)
@@ -136,4 +217,12 @@ def sample(arms: dict[str, ArmSamples], fps: float, max_gap_s: float) -> tuple[d
         quality['arms'][name] = dict(maximum_image_time_error_s=float(np.abs(time_error).max()),
             full_constraint_fraction=float(arrays[f'{name}_full_constraint'].mean()),
             front_tracked_fraction=float(arrays[f'{name}_front_tracked'].mean()))
+        support = arm.position_support or {}
+        for field, mask in support.items():
+            arrays[f'{name}_{field}'] = mask[left] & mask[right]
+        quality['arms'][name]['position_support_available'] = 'position_supported' in support
+        quality['arms'][name]['position_support_fractions'] = {
+            field: float(arrays[f'{name}_{field}'].mean()) for field in support}
+    if 'left' in arms and 'right' in arms:
+        arrays['T_left_tcp_right_tcp'] = relative_pose_series(arrays['left_T_scene_tcp'], arrays['right_T_scene_tcp'])
     return arrays, quality

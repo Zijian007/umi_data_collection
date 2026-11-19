@@ -19,7 +19,7 @@ scenes/shelf/
         └── results                # 指向本批次 .pipeline/tasks/take_001/runs/ 的成功结果
 ```
 
-每轮“建图＋几次操作”一个批次；各批次有自己的地图版本和缓存，不自动引用其他批次的最新地图。批次内的某个 take 可在 `collection.yaml.tasks.<take>` 明确配置 `map_version`，结果会固定记录该版本。换标定或替换建图原片可直接重跑当前批次，新采集轮次也可以建立下一批次。每份结果自带当时的设备和地图副本；重跑成功后，被取代的旧结果会自动删除。单手套件只放对应侧；双手套件本批次只用一手时在 `collection.yaml` 明确写 `arms: [left]` 或 `[right]`。
+每轮“建图＋几次操作”一个批次；各批次有自己的地图版本和缓存，不自动引用其他批次的最新地图。批次内的某个 take 可在 `collection.yaml.tasks.<take>.map.version` 明确配置地图版本，结果会固定记录该版本。换标定或替换建图原片可直接重跑当前批次，新采集轮次也可以建立下一批次。每份结果自带当时的设备和地图副本；重跑成功后，被取代的旧结果会自动删除。单手套件只放对应侧；双手套件本批次只用一手时在 `collection.yaml` 明确写 `recording.arms: [left]` 或 `[right]`。
 
 预先分好的 take 保留名称与分组，本地原片直接引用。未分组原片可放批次 `pending/`，只有唯一配对后才归入 take；缺片或歧义会报告并保留。标定原片仍放 `recordings/calibration/`，套件放全局 `kits/`。
 
@@ -30,14 +30,18 @@ scenes/shelf/
 新建批次可复制带注释的 [collection.example.yaml](example_scene/collection.example.yaml) 到批次目录，命名为 `collection.yaml`，例如 `scenes/test_shelf/20261109_008/collection.yaml`。
 
 ```yaml
-schema_version: 1
-scene:
-  layout: shared
-  map_reference_arm: right
-  description: shelf scene
 kit: kit_001
-arms: [left, right]
-map_policy: latest_prior
+recording:
+  arms: [left, right]
+scene:
+  description: shelf scene
+map:
+  layout: shared
+  reference_arm: right
+  selection:
+    policy: latest_prior
+reconstruction:
+  backend: scene_map
 ```
 
 `shared_front` 支持左手、右手和双手采集；`dual` 表示工作/环境镜头双路处理，需要双路建图原片，优先使用套件绑定的正式环境镜头标定；未绑定时尝试 X3 INSV 工厂参数 + 本设备 front B 兜底，标记未经 rear 独立验收（见[标定指南](../docs/标定.md#双镜头标定与海报接入)）。场景名称由目录名确定；版本字段可省略。

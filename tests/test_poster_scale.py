@@ -12,11 +12,11 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from software.configuration import loader as config
-from software.scene.configuration import SceneOverrides
+from software.scene.overrides import SceneOverrides
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import batch_inputs, scene_inputs
+from software.scene.management.inputs import batch as batch_inputs, scene as scene_inputs
 from software.scene.spatial import geometry, mapping, poster_scale
-from software.vision import tag_board, environment_tags
+from software.vision.poster import layout as tag_board, detection as environment_tags
 tags = environment_tags
 from software.infrastructure.file_store import write_yaml
 from software.scene import asset_identity
@@ -131,7 +131,11 @@ class PosterScaleIdentityTests(unittest.TestCase):
             path = Path(temporary)/'batch/collection.yaml'
             board_path = Path(temporary)/'board.json'
             board_path.write_bytes(tag_board.DEFAULT_LAYOUT.read_bytes())
-            write_yaml(path, dict(schema_version=1, kit='rig', scene=dict(layout='shared', tags=dict(enabled=True, layout=str(board_path)))))
+            write_yaml(path, dict(kit='rig', recording=dict(arms=['left', 'right']),
+                                 scene=dict(description=''),
+                                 map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
+                                 environment_poster=dict(layout_path=str(board_path), detection=dict(enabled=True)),
+                                 reconstruction=dict(backend='scene_map')))
             scene = scene_inputs.read_scene(path)
             before = mapping.definition(scene)
             scene = replace(scene, parameters=replace(scene.parameters, tag_fusion_enabled=True))
@@ -152,7 +156,10 @@ class PosterScaleIdentityTests(unittest.TestCase):
             scene_inputs.load_scene_parameters(overrides=dict(tag_mapping_scale_enabled=True))
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)/'batch/collection.yaml'
-            write_yaml(path, dict(schema_version=1, kit='rig', scene=dict(layout='shared', parameters=dict(tag_mapping_enabled=True))))
+            write_yaml(path, dict(kit='rig', recording=dict(arms=['left']),
+                                 scene=dict(description='', parameters=dict(tag_mapping_enabled=True)),
+                                 map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
+                                 reconstruction=dict(backend='scene_map')))
             with self.assertRaisesRegex(ValueError, '不承载算法参数'):
                 scene_inputs.read_scene(path)
 
@@ -168,7 +175,9 @@ class PosterMappingWorkflowTests(unittest.TestCase):
     def configure(self, helper, *, correction):
         declaration_path = helper.batch_root / 'collection.yaml'
         declaration = read_yaml(declaration_path)
-        declaration['scene'] = dict(declaration['scene'], tags=dict(enabled=True, layout=str(tag_board.DEFAULT_LAYOUT)))
+        declaration['environment_poster'] = dict(
+            layout_path=str(tag_board.DEFAULT_LAYOUT), detection=dict(enabled=True),
+            task_constraint=dict(enabled=False, method='staged'))
         write_yaml(declaration_path, declaration)
         expert = helper.root / 'expert.yaml'
         write_yaml(expert, dict(parameters=dict(mapping=dict(environment_tags=dict(
@@ -180,7 +189,7 @@ class PosterMappingWorkflowTests(unittest.TestCase):
                                             files=dict(camera.files, rear=camera.files['front']))
 
     def detections(self, helper, *, empty=False, shifted=False):
-        from software.vision import poster_pose, environment_tags
+        from software.vision.poster import geometry as poster_pose, detection as environment_tags
         from test_scene import motion
         times, truth, _ = motion()
         frame_indices = np.arange(0,len(times),3)

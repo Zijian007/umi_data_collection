@@ -74,3 +74,10 @@ def resample_pose_series(times_s: np.ndarray, poses: np.ndarray, query_s: np.nda
     result[:, :3, :3] = Slerp(times_s, Rotation.from_matrix(poses[:, :3, :3]))(query_s).as_matrix()
     result[:, :3, 3] = np.column_stack([np.interp(query_s, times_s, poses[:, k, 3]) for k in range(3)])
     return result
+
+
+def relative_pose_series(first: np.ndarray, second: np.ndarray) -> np.ndarray:
+    """同一时刻、同一参考系的 T_world_first/second → T_first_second。"""
+    if first.shape != second.shape or first.ndim != 3 or first.shape[1:] != (4, 4):
+        raise ValueError('相对位姿需要相同形状的 N×4×4 轨迹')
+    return np.linalg.inv(first) @ second

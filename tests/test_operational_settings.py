@@ -12,10 +12,13 @@ import unittest
 from unittest.mock import patch
 
 from software.configuration import operational_settings as settings
-from software.gripper_width import detection, pipeline, tag_distance
-from software.scene import scheduling
+from software.gripper_width.detection import markers as detection
+from software.gripper_width import pipeline
+from software.gripper_width.distance import pipeline as tag_distance
+from software.scene import cpu_budget
 from software.infrastructure.file_store import write_yaml
-from software.viewer import cache, maps, media, server
+from software.viewer.resources import cache, maps, video as media
+from software.viewer import server
 
 
 class OperationalSettingsTests(unittest.TestCase):
@@ -97,7 +100,7 @@ class OperationalSettingsTests(unittest.TestCase):
             self.assertEqual(report['resources']['calibration_workers'], 6)
             self.assertEqual(report['resources']['opencv_threads'], 1)
             self.assertEqual(settings.calibration_workers(cores='2-7'), 4)
-            self.assertEqual(scheduling.arm_cores(('left', 'right'), '2-7', parallel=True),
+            self.assertEqual(cpu_budget.arm_cores(('left', 'right'), '2-7', parallel=True),
                              {'left': '2,4,6', 'right': '3,5,7'})
             self.assertFalse(settings.execution_report(jobs=2)['resources']['dual_arm_eligible'])
             with self.assertRaisesRegex(ValueError, '--cores'):

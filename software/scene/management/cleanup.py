@@ -124,7 +124,7 @@ def kept_map_versions(batch: Path) -> set[str]:
                     keep.add(target.relative_to(versions.resolve()).parts[0])
     epoch_plan = layout.metadata(batch, 'map_epochs.yaml')
     if epoch_plan.is_file():
-        from software.scene.pipeline import map_epoch_selection
+        from software.scene.pipeline.maps import epoch_selection as map_epoch_selection
         for epoch in map_epoch_selection.read_plan(epoch_plan).epochs:
             if epoch.map_version:
                 keep.add(epoch.map_version)

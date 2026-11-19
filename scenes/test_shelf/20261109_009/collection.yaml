@@ -1,20 +1,18 @@
-schema_version: 1
+kit: kit_001  # kits/ 下已有套件目录名。
+
+recording:
+  arms: [left, right]  # [left] | [right] | [left, right]：本批次预期采集的手。
+
 scene:
-  layout: auto
-  map_reference_arm: left
-  description: test shelf
-  tags:
-    enabled: false
-    layout: ../../hardware/calibration_targets/environment_poster.json
-    mapping:
-      enabled: false
-      scale:
-        enabled: false
-    fusion:
-      enabled: false
-kit: kit_001
-arms: [left, right]
-map_policy: latest_prior
-# 可选：需要冻结到已有地图时填写已发布版本。
-# map_version: 20261113_100000-a1b2c3d4
-tasks: {}
+  description: test shelf  # 场景描述文本。
+
+environment_poster:
+  layout_path: ../../hardware/calibration_targets/environment_poster.json  # 海报布局 JSON 路径。
+  detection:
+    enabled: true  # true | false：环境海报检测总开关。
+  task_constraint:
+    enabled: true  # true | false：任务融合是否使用海报约束。
+    method: staged  # staged | joint；仅 scene_map 使用。
+
+reconstruction:
+  backend: poster_vio  # scene_map | poster_independent | poster_vio | auto。

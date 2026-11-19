@@ -9,9 +9,9 @@ from scipy.spatial.transform import Rotation
 from software.configuration import loader as config
 from software.camera import registry
 from software.camera.geometry import resample_pose_series
-from software.trajectory.algorithms import fusion, fusion_poster
-from software.trajectory.algorithms.fusion_data import FusionInputs
-from software.vision import tag_board, environment_tags, poster_pose
+from software.trajectory.algorithms.fusion import solver as fusion, poster as fusion_poster
+from software.trajectory.algorithms.fusion.data import FusionInputs
+from software.vision.poster import layout as tag_board, detection as environment_tags, geometry as poster_pose
 tags = environment_tags
 
 
@@ -74,6 +74,41 @@ class IndependentPosterTests(unittest.TestCase):
         np.testing.assert_array_equal(empty.T_world_imu,baseline.T_world_imu)
         self.assertEqual(empty.evidence['environment_poster']['status'],'insufficient_observations')
 
+    def test_fixed_rear_rotation_and_correction_limit_use_the_shared_factors(self):
+        from software.camera.geometry import imu_from_camera
+        inputs, parameters = fixture()
+        fixed = replace(parameters, environment_tags=replace(parameters.environment_tags,
+            tag_rear_rotation_refinement_enabled=False))
+        evidence = self.solve(inputs, fixed).evidence['environment_poster']
+        np.testing.assert_array_equal(evidence['T_rear_camera_imu_optimized'], np.linalg.inv(imu_from_camera(inputs.poster.measured)))
+        self.assertEqual(evidence['rear_rotation_correction_deg'], 0.)
+        limited = replace(parameters, environment_tags=replace(parameters.environment_tags,
+            tag_rear_rotation_maximum_correction_deg=1e-8))
+        with self.assertRaisesRegex(poster_pose.PosterGeometryError, '旋转修正超限'):
+            self.solve(inputs, limited)
+
+    def test_post_solve_cull_reuses_the_initialization_and_keeps_one_budget(self):
+        inputs, parameters = fixture()
+        corners = inputs.poster.observations.corners_half_px.copy()
+        corners[0] += [25., 0.]
+        inputs = replace(inputs, poster=replace(inputs.poster,
+            observations=replace(inputs.poster.observations, corners_half_px=corners)))
+        original = fusion_poster.isolated_cull
+        calls = []
+
+        def skip_seed_once(*args, **kwargs):
+            calls.append(None)
+            return False if len(calls) == 1 else original(*args, **kwargs)
+
+        with patch.object(fusion_poster, 'isolated_cull', side_effect=skip_seed_once), \
+                patch.object(fusion, 'align_recording', wraps=fusion.align_recording) as alignment:
+            result = self.solve(inputs, parameters)
+        self.assertEqual(alignment.call_count, 1)
+        evidence = result.evidence['environment_poster']
+        self.assertEqual(evidence['culled_observations'], 1)
+        self.assertEqual(evidence['culling']['stage'], 'optimization')
+        self.assertEqual(evidence['culling']['passes'], 1)
+
     def test_conflicting_board_rejects_and_missing_assets_cannot_silently_disable(self):
         inputs,parameters = fixture()
         with self.assertRaisesRegex(ValueError,'布局'):
@@ -88,7 +123,7 @@ class IndependentPosterTests(unittest.TestCase):
         times = np.array([0.,.1,.2,.3,.4])
         rear = {k:(np.array([t+.013,0.,0.]),np.eye(3)) for k,t in enumerate(times)}
         inputs = replace(inputs,video_times_s=times,observations=dict(front={},rear=rear),map_ids=dict(front={},rear={0:'a',1:'a',2:'b',3:'b',4:'b'}))
-        from software.trajectory.algorithms.fusion_data import retime_rear
+        from software.trajectory.algorithms.fusion.data import retime_rear
         result = retime_rear(inputs, inputs.poster.measured)
         self.assertNotIn(0,result.observations['rear'])
         self.assertNotIn(2,result.observations['rear'])
@@ -115,7 +150,7 @@ class IndependentPosterPipelineTests(unittest.TestCase):
         from pathlib import Path
         import tempfile
         from software.trajectory.pipeline import poster_assets
-        from software.trajectory.algorithms import fusion_cli
+        from software.trajectory.algorithms.fusion import cli as fusion_cli
         inputs,parameters = fixture()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -190,11 +225,11 @@ class IndependentPosterPipelineTests(unittest.TestCase):
             files=dict(helper.recording.camera.files,rear=rear),measurements=dict(rear=inputs.poster.measured)))
         def engine(command,**kwargs):
             result=helper.engines(command,**kwargs)
-            if 'software.trajectory.algorithms.fusion_cli' in command:
+            if 'software.trajectory.algorithms.fusion.cli' in command:
                 manifest=Path(command[command.index('--poster')+1]);poster_assets.load(manifest)
                 parameters=json.loads(Path(command[command.index('--parameters')+1]).read_text())
                 self.assertTrue(parameters['environment_tags']['tag_fusion_enabled'])
-                pos=command.index('software.trajectory.algorithms.fusion_cli')
+                pos=command.index('software.trajectory.algorithms.fusion.cli')
                 evidence=Path(command[pos+6])/'fuse_info.json'
                 document=json.loads(evidence.read_text());document['environment_poster']=dict(status='fused',actual_error='not_measured')
                 evidence.write_text(json.dumps(document))

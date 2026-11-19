@@ -11,10 +11,14 @@
 | `capabilities.py` | 探测实际 ORB 二进制的前向 KB4 能力，供工厂来源入口校验 |
 | `slam.py` | 纯视觉建图、固定地图定位、逐图定位合并及产物验收 |
 | `decoding.py` | 多检测器共用一次 PyAV 顺序解码，全部检测完成校验后各自保存缓存 |
-| `environment_tags.py` | 环境镜头 ArUco `DICT_4X4_100` 海报角点、真实 PTS、检测缓存与采样可见性报告；不求海报位姿 |
-| `poster_pose.py` | KB4 海报角点投影、解析导数与多帧板位姿初值 |
-| `tag_board.py` | 已核对 PDF 的海报米制布局、角点顺序校验与几何身份 |
+| `poster/detection.py` | 环境镜头 ArUco `DICT_4X4_100` 海报角点、真实 PTS、检测缓存与采样可见性报告；不求海报位姿 |
+| `poster/geometry.py` | KB4 海报角点投影、解析导数与多帧板位姿初值 |
+| `poster/quality.py` | 共享角点噪声、异常剔除预算、证据记录及条件几何质量 |
+| `poster/factors.py` | 场景与独立图共用的鲁棒角点因子、安装旋转修正及验收 |
+| `poster/layout.py` | 已核对 PDF 的海报米制布局、角点顺序校验与几何身份 |
 | `tools/` | 可独立执行的镜头裁切和定位合并工具 |
+
+海报实现集中在 `poster/`，直接从实际子模块导入。`geometry.py` 保留投影、残差和初始化，`quality.py` 依赖几何计算噪声与筛查指标，`factors.py` 复用两者构建因子；检测和布局不依赖场景或独立轨迹业务。包初始化只说明职责，不加载检测器或求解器，也不提供旧路径转发。
 
 `VisualContext` 直接包含已解析参数、核心设置、路径、帧数及 CPU 设置，不携带 `TrajectoryRequest`。独立流程通过 `ReconstructionContext.visual` 提供视觉上下文；场景直接构造 `VisualContext`。
 
@@ -29,6 +33,8 @@
 仅接受 X3 3840×1920、约 59.94 fps 的双镜头原片，检测左半幅 `rear`。字典为 `DICT_4X4_100`，默认登记 ID 12–88、黑边 1 格；同帧重复 ID 全部拒绝，其他 ID 计为未知。默认每两个源帧取一个，可用 `--frame-step` 调节；始终保存真实 PTS，不用帧率推算时间。`--minimum-side-px` 可增加像素边长筛选，默认 0 仅统计。可用 `--layout` 指定同格式布局；`--border-bits` 若指定，必须与布局一致。
 
 输出 `observations.npz`（采样源帧号、视频时刻、ID、原始半幅角点及筛选标记）、`detection.json`（原片/参数/实现/依赖身份及角点文件哈希）和 `report.json`。`TagObservations.corners_px` 减去 240 px 得到标定裁切坐标，`imu_times_s(offset)` 显式接收环境镜头时间偏移；默认观测只含视频时间。标定裁切之外的检测保留用于统计，但 `usable=False`。
+
+`poster.detection.load_observations(path)` 是原始角点 NPZ 的统一读取入口：禁用 pickle，恢复全部数组并验证时间、索引、角点与有效性契约。检测缓存、建图快照、场景融合和独立引擎共用该入口；来源身份与哈希仍由各自调用方核对。
 
 可见率按采样帧计算，同一帧多个 ID 不重复计为多个时刻；最长缺口也是采样统计，不能推断跳过的帧。`usable` 仅表示像素与标定裁切筛选通过，不是海报位姿可观测性或轨迹验收。报告记录当前布局和 PDF 来源哈希，角点缓存与物理几何分开；更正尺寸时可复用像素观测。布局是 `pdf_design`，不代表已测量打印成品。独立检测命令不修改轨迹；场景通过批次 `collection.yaml.scene.tags` 配置 `enabled`、`mapping.enabled`、`mapping.scale.enabled` 和 `fusion.enabled`，详见[实施范围](../../docs/dev/环境标签与自适应融合重构计划.md#当前代码的使用与边界2026-11-11)。
 

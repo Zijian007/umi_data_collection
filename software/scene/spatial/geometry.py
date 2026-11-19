@@ -20,7 +20,11 @@ from software.configuration import parameter_models
 from software.camera.geometry import transform, validate_transform
 from software.camera.timing import video_to_imu_seconds
 from software.scene.models import SceneParameters
-from software.trajectory.algorithms import fusion_alignment, fusion_alignment_solver, inertial
+from software.trajectory.algorithms.fusion import (
+    alignment as fusion_alignment,
+    alignment_solver as fusion_alignment_solver,
+)
+from software.trajectory.algorithms import inertial
 
 
 @dataclass(frozen=True)

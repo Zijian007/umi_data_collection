@@ -1,5 +1,5 @@
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import kit_inputs
+from software.scene.management.inputs import kit as kit_inputs
 """套件单/双手、批次配置、离线处理、验收和导出的完整业务回归。"""
 from software.scene.management import camera_assets
 from pathlib import Path
@@ -8,7 +8,13 @@ from unittest.mock import patch
 from registry_fakes import write_kit, write_batch
 
 from software.camera import registry
-from software.scene.management import batches, kit_inputs, batch_inputs, episode_inputs, scene_inputs
+from software.scene.management.batch import snapshot as batches
+from software.scene.management.inputs import (
+    kit as kit_inputs,
+    batch as batch_inputs,
+    episode as episode_inputs,
+    scene as scene_inputs,
+)
 from software.infrastructure.file_store import write_yaml
 import test_scene_management as registry_fixtures
 
@@ -87,8 +93,10 @@ class KitTests(unittest.TestCase):
                                         gripper=dict(tcp='tcp_camera.json'))})
         batch = self.scene_path / 'morning'
         declaration = batch / 'collection.yaml'
-        write_yaml(declaration, dict(schema_version=1,
-            scene=dict(layout='shared', map_reference_arm='right'), kit='rig'))
+        write_yaml(declaration, dict(kit='rig',
+            recording=dict(arms=['right']), scene=dict(description=''),
+            map=dict(layout='shared', reference_arm='right', selection=dict(policy='latest_prior')),
+            reconstruction=dict(backend='scene_map')))
         before = declaration.read_bytes()
         self.assertFalse((batch / '.pipeline').exists())
         resolved = batch_inputs.read_batch(batches.save_record(batches.read_inputs(batch, require_mapping=False)))

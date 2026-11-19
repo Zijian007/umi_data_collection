@@ -8,7 +8,12 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
+from software.scene.management.inputs import (
+    batch as batch_inputs,
+    episode as episode_inputs,
+    kit as kit_inputs,
+    scene as scene_inputs,
+)
 from software.scene.pipeline import recording_checks
 from software.scene import workflow
 import test_scene as fixtures

@@ -13,7 +13,7 @@ from software.camera import calibration_source, rear_fallback
 from software.infrastructure.file_store import write_json
 from software.trajectory.calibration.selection import SelectedCalibration
 from software.trajectory.models import TrajectoryRequest
-from software.vision import tag_board
+from software.vision.poster import layout as tag_board
 
 
 @dataclass(frozen=True)

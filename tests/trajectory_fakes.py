@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from software.trajectory.algorithms.fusion_quality import scale_consistency
+from software.trajectory.algorithms.fusion.quality import scale_consistency
 
 REAL_RUN = subprocess.run
 
@@ -68,8 +68,8 @@ class FakeEngines:
             if self.failures.get('merge'):
                 return SimpleNamespace(returncode=self.failures['merge'])
             return REAL_RUN(command, **kwargs)
-        if 'software.trajectory.algorithms.fusion_cli' in command:
-            pos = command.index('software.trajectory.algorithms.fusion_cli')
+        if 'software.trajectory.algorithms.fusion.cli' in command:
+            pos = command.index('software.trajectory.algorithms.fusion.cli')
             directory = Path(command[pos + 6])
             self.calls.append(('fuse', command, kwargs))
             code = self.failures.get('fuse', 0)

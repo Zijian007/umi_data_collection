@@ -24,6 +24,216 @@
 
 此后如果改融合、ORB-SLAM3 封装、X3 读取或 Basalt 标定，在本文件追加一笔：日期、改了什么、为什么改。
 
+## 2026-11-18：按 specialist 参考补齐 poster-VIO 初始化、前端与关键帧恢复
+
+本轮以本机 `/home/zijianwang/specialist` 的 `da29719cdbaa366df0599984068ad4553d9cc86d` 为参考。对应 MIT 来源、路径和本地适配边界写入 `software/trajectory/poster_vio/NOTICE.md`，完整许可证保留为 `LICENSE.specialist`；没有引入 specialist 包、MEI 模型、GPU 内核或其记录格式。
+
+初始化增加整板/单标签/标签对子集的确定性 KB4 PnP 假设、完整标签多数一致性、平面多解拒绝和原始训练预算；保存逐标签 `tag_initialization_mask`。清洁完整板观测走快速路径，异常帧才进入有限子集搜索。前端增加 KB4 视线极几何、纯旋转分支、确定性本质矩阵 RANSAC，分批三角化检查视差/条件数/深度/重投影，并将前端筛选计数写入诊断。
+
+同镜头轨迹增加有界 ORB 描述子重关联：休眠库按时间和数量限额保留，候选须通过 Hamming 比值与当前米制初值重投影，ID 不复用。自然点留出按冻结图节点索引划分；留出像素可用于关联和前端几何筛选，但不参与三角化初值、联合图或后验剔除，前后镜头分别记录残差和覆盖。
+
+联合求解先使用 `precull_iterations` 短求解判断异常；若没有异常则同一轮继续完整优化，不消耗剔除轮数。剔除重求解复用上轮 GTSAM 状态和 LM 阻尼，固定图节点时刻与累计预算，显式按三维点优先、海报/状态时间顺序构造消元顺序。关键帧按时间/平移/旋转选取；标签和自然观测时刻强制并入主图。非主图输出节点使用固定端点的局部条件惯性图恢复，端点位姿/速度/零偏固定；零残差区间直接传播，其他区间优化，不使用普通插值或端点误差摊分。
+
+参数增加 `initialization`、`keyframes`、`frontend.revisit`、`culling.precull_iterations` 与 `holdout.natural_stride` 分组；配置快照、验证、轻量 CI、测试入口和操作说明同步更新。动态语义分割、滑窗边缘化和 GPU 加速仍未接入。
+
+验证：specialist 对照与新前端/初始化/热启动/自然留出/关键帧回归 45 项通过（16.055 s）；综合配置、文档和 VIO 定向回归 121 项通过（21.114 s）；快速档 **209 项通过（40.002 s）**；最终 `PYTHONDONTWRITEBYTECODE=1 ./test.sh --all` 的 **1030 项 Python 测试通过（239.073 s）**，查看器前端、CLI 自检和 KB4 C++ 检查通过。Ruff、语法、Shell 语法、文档链接与差异空白检查通过。合成加速双手对照结果见 `/tmp/umi-vio-specialist-keyframes-benchmark.json`：关键帧主图 72 个状态节点、恢复 200 个输出节点、217 个变量/223 个因子；逐帧对照 272 个状态节点、817 个变量/623 个因子。关键帧模式的条件恢复会增加小规模合成耗时，不能据此宣称整体加速；生成帧前端对照另记录于 `/tmp/umi-vio-specialist-frontend-benchmark.json`，其只测内存合成帧，不含真实解码和实机精度。完整与快速日志分别为 `/tmp/umi-vio-specialist-final-all.log`、`/tmp/umi-vio-specialist-final-quick.log`。
+
+## 2026-11-18：poster-VIO 持续补点、有限轮剔除与标签留出
+
+修复自然特征前端在累计创建 2000 条轨迹后停止补点的问题：活动点及其短历史独立维护，退役时三角化，通过后按整个录像的时间区间分配保留预算。各区间优先保留较长轨迹，活动点和归档都有数量上限，特征 ID 单调递增、不循环复用。低纹理区间的预算不向其他区间挪用，避免前段候选挤掉后段；这属于有界的轨迹保留策略，尚不是关键帧/分窗优化。
+
+联合求解增加最多两轮后验异常剔除与重求解。标签按整次四角点观测处理，复用共享剔除门槛及数量/时间覆盖规则，预算始终相对原始训练标签；自然像素预算按每手每镜头的原始观测数分别计算，累计比例向下取整。移除后不足两次观测或重新三角化失败的轨迹整体移除，其剩余观测同样计入预算。提案超预算、破坏训练标签时间覆盖或耗尽轮数后仍有异常均拒绝整任务，不删到恰好过关。证据保存逐轮原始观测索引、ID/镜头/时间、残差、提案是否实际应用及前后分布；初始严格 PnP 失败仍拒绝，不宣称后验剔除解决了鲁棒初始化。
+
+生产输入在 PnP、惯性初始化和自然点三角化前，按完整标签时刻划分内部留出，首尾保留训练；划分必须保持训练所需的时刻数、跨度及最大间隔。对应 rear 帧不参与自然特征跟踪与标签区域掩膜构造，留出像素不参与联合图或异常剔除。冻结数值输入增加逐标签 `tag_holdout_mask`，输入诊断记录训练/留出时刻数；后验记录留出误差与时刻。至少两个留出时刻通过才记为 `passed`，超限或非正深度则拒绝；证据不足、配置关闭和数值调用未准备留出分别明确标记。这是同一录像、标定下的标签观测一致性评估，不能替代独立 TCP/双手精度参考；自然点留出尚未实现。
+
+前端活动点/保留轨迹/长度、后验轮数/自然点预算/门槛和留出步长/RMS 统一进入 `parameters.poster_vio.frontend/culling/holdout`，同步类型、schema、校验、专家覆盖、快照和操作说明。快速档增加后验数值回归，轻量 CI 增加新策略模块。合成回归覆盖小预算下的末段补点、孤立异常恢复、异常超预算拒绝、跨轮累计预算、轮数上限、留出像素破坏不改变初值或训练拟合、留出拒绝不写轨迹，以及冻结输入、分镜头来源和配置校验。
+
+留出划分按唯一时刻批量计算局部间隔与训练容量，避免逐候选重复扫描整组观测；数值回放同时校验首尾保留和剩余训练时间覆盖，非有限留出投影明确拒绝。单次本机合成测量：10000 个时刻、30000 次标签观测的划分从 0.610814 s 降为 0.002176 s，100000 个时刻、300000 次观测为 0.023441 s；这是划分步骤耗时，不是整条求解性能基准。
+
+验证：最终 `PYTHONDONTWRITEBYTECODE=1 ./test.sh --all` 的 **1016 项 Python 测试通过（230.495 s）**，查看器前端、CLI 自检和 KB4 C++ 数值检查通过；快速质量档 **195 项通过（34.907 s）**。算法、配置与文档定向回归 104 项通过（14.402 s）；最后的划分优化与输入边界加固后，后验/留出模块 12 项回归通过（5.596 s）。Ruff、语法、Shell 语法、文档本地链接及差异空白检查通过。最终完整与快速回归日志为 `/tmp/umi-vio-refinement-20261118-final-all.log`、`/tmp/umi-vio-refinement-20261118-final-quick.log`。
+
+## 2026-11-18：poster-VIO 接入工作镜头自然特征
+
+自然特征前端改为一次顺序解码原始 INSV，同时提取右半幅 front 工作镜头和左半幅 rear 环境镜头各自的 1440 标定裁切。front 使用冻结相机遮手图，按最近邻缩放，显式将资产中“非零表示遮挡”转换为 OpenCV 的允许区域；该限制同时作用于新建特征和光流延续，避免手部轨迹进入静态环境图。rear 继续排除检测到的标签区域。原始时间戳不一致、录像截断和遮手图缺失/损坏均拒绝输入。
+
+联合图分别使用两镜头的固定内外参和时间偏移，自然点按手、镜头和特征 ID 分配独立键。同一镜头的合格自然点才能组成该镜头的视觉支持；记录各镜头轨迹数、像素残差和精确支持时刻。发布的 `tracked` 是两镜头支持的并集，`front_tracked` 仅表示 front，逐帧 `visual_lenses` 保留两镜头来源。冻结数值输入保存分镜头标定与轨迹，回放核对实际使用镜头的标定身份；仍共用现有任务原子发布与资产哈希协议。
+
+合成回归覆盖两镜头不同内外参/时差、按手和镜头重名的三维点、原片半幅与一次解码、遮手图反向语义、已有特征进入遮挡区后的停止、rear 支持不冒充 front，以及完整任务发布后的逐帧来源、数值输入、复用与失败保持旧结果。操作说明、模块指南、方案当前实施范围与待办已同步；描述子重关联、动态物体筛除、有限轮联合剔除、留出评估和大规模优化仍未交付，真实录像及 TCP 精度未在本轮验收。
+
+验证：VIO 合约、初始化、前端与任务模块定向回归 30 项通过（6.903 s）；`PYTHONDONTWRITEBYTECODE=1 ./test.sh --all` 的 **1001 项 Python 测试通过（225.739 s）**，查看器前端、CLI 自检和 KB4 C++ 数值检查通过；快速质量档 **180 项通过（28.279 s）**。Ruff、语法、文档本地链接与差异空白检查通过。完整及快速回归日志分别保存在 `/tmp/umi-poster-vio-dual-20261118-all.log` 与 `/tmp/umi-poster-vio-dual-20261118-quick.log`。
+
+## 2026-11-18：接入第一版任务级 poster-VIO 数值后端
+
+新增 `poster_vio` 初始化和任务路由：从冻结的环境海报角点按真实 IMU 时间建立逐帧平面 PnP 种子，拒绝非正深度和不足的观测；任务图固定海报参考系，联合优化每手的 IMU 位姿/速度/偏置、海报角点和可用自然特征点。新增稀疏光流、三角化前端，输出原始像素轨迹与任务海报坐标下的三维点初值；有效但没有自然纹理的录像可返回零自然轨迹；缺失、截断或时间戳变化的录像明确拒绝，不静默退化为仅标签求解。
+
+`poster_vio` 路由不读取预建场景地图，不要求 ORB 可执行文件或词典。标签旋转与陀螺仪积分先拟合陀螺仪零偏，不把低角速度当作静止；标签 PnP 与 IMU 预积分再在任意海报坐标中初始化重力和加速度零偏；双手方向一致后固定共享重力和海报规范。图节点包含全部工作镜头曝光与 rear 观测时刻，最终轨迹取真实优化状态。冻结布局、相机、IMU 和角点 ID 在路由边界交叉校验，部分注入的回放输入会拒绝。
+
+门槛集中于 `scene_parameters.yaml` 的独立 `poster_vio` 分组：最小独立标签帧数、跨度、观测间隔、共同位置支持缺口和双手重力差。求解完成后还检查标签/自然点残差、正深度、零偏和海报条件几何；不将所有输出帧标成视觉支持。`run_report.json` 记录实际后端与变换链，运行目录保留原始角点、数值输入和质量证据，并将这些文件纳入发布资产哈希以检测复用时的篡改。纯海报后端不读取地图 epoch，也不因无关地图计划阻止发布。
+
+当前作为实验性显式后端，`auto` 在可用地图的 `scene_map` 质量不足后尝试本后端，无地图时直接从本后端开始，失败再回退到 `poster_independent`。rear 光流采用顺序解码、前后向检查、遮掉标签区域、视差/正深度三角化与轨迹数量/长度限制；front 自然点、描述子重关联、动态筛除、有限轮联合剔除、留出评估和大规模关键帧/分窗尚未交付。真实录像、TCP 和独立参考精度尚未由本变更证明。
+
+验证：最终 `PYTHONDONTWRITEBYTECODE=1 ./test.sh --all` 的 **995 项 Python 测试通过（222.725 s）**，查看器前端、CLI 环境自检和 KB4 C++ 数值检查通过；快速质量档 **177 项通过**，新增 VIO 合约/初始化/前端已加入快速档。新增测试覆盖慢转与陀螺仪零偏的区分、任意海报朝向、双手不同运动/外参及非零镜头时差、同名自然点隔离、自然点解析 Jacobian、原始帧裁切/光流/时间戳校验、异常输入和像素质量拒绝、无地图完整发布/复用/查看器、失败保留旧结果及冻结数值输入篡改拒绝。Ruff、语法编译和 `git diff --check` 通过。日志：`/tmp/umi-poster-vio-20261118-final.log`、`/tmp/umi-poster-vio-20261118-quick.log`；回归用例保存在 `tests/test_poster_vio_*.py`，不依赖临时日志运行。
+
+## 2026-11-18：独立训练包读取、人工采样窗口与海报准备阶段
+
+训练包读取从 `dataset/export.py` 分离到 `dataset/reader.py`；格式版本、时间轴、手级字段和刚体数组名称集中在 `dataset/schema.py`。读取器只依赖 NumPy 与项目基础身份函数，导入时不加载场景管理、OpenCV、SciPy 或 GTSAM；哈希、数组形状、时间轴、视频登记、坐标声明和训练就绪条件仍在读取时校验。导出器只负责筛选已验收结果、生成文件和原子发布，磁盘协议保持兼容。
+
+训练导出新增 `--start-s/--end-s` 人工确认窗口，窗口外样本不进入时间轴；最终窗口写入包清单和每集元数据。采样器记录实际窗口、保留 `segment_id` 断点，并继续在质量策略之后对宽度与视频索引使用同一时间轴。无效窗口、窗口无共同有效区间和不完整 CLI 参数都会明确失败。
+
+共享海报融合把每只手的可用观测、初始板位姿和初始化剔除计划提取为 `_prepare_shared_poster_arms()`；图构建、优化、后验剔除和证据发布顺序不变。这个阶段边界与 specialist 的观测准备 / 联合图 / 证据分层一致，后续新增观测质量诊断不再混入求解器主体。
+
+验证：训练包、读取边界、窗口及海报组合回归共 24 项通过；海报融合全模块 33 项通过；快速质量档 162 项通过；完整 Python 回归 **969 项通过（211.194 秒）**。`py_compile` 和 `git diff --check` 通过。独立读取子进程确认 `software.dataset.reader` 不加载 `gtsam`、`cv2`、`scipy`、场景 workflow 或导出模块。
+
+融合图中的 `segof`、`n_obs`、`n_rot`、`n_cont` 改为 `segment_for_frame`、`observation_counts`、`rotation_only_counts`、`continuity_factor_counts`，只改善局部语义，不改变因子插入顺序或发布字段。稳定性样例新增固定数值门槛：重力、尺度不确定度、位置 RMS、错位窗口尺度跨度、固定地图残差和三组相位证据均需落在物理合理范围；对应 5 项测试通过。
+
+`optimize_fused_trajectory()` 的节点值、视觉因子和 IMU 边插入收拢到局部 `add_nodes_and_factors()` 阶段函数；主流程现在明确区分参数准备、图构建、优化和证据发布。30 项融合定向回归通过，未改变 GTSAM 因子插入顺序或固定观测结果。
+
+新增 `.github/workflows/quality.yml` 轻量 CI：只安装 NumPy 和 Ruff，执行全仓语法编译、可移植训练读取器边界测试以及核心改动文件的 F/E9 静态检查；完整 GTSAM/SLAM 回归仍由本机 `test.sh` 负责。
+
+标定 workflow 中原本名为 `measurement_record` 的对象实际保存各阶段的延迟准备函数，已改为 `recording_preparers`；调用链和阶段复用行为保持不变。标定 workflow 与交接边界定向回归 55 项通过。
+
+`umi-scene` CLI 将运行覆盖、专家配置、`show-config` 和 OpenCV 线程初始化提取为 `_prepare_execution()`；命令分发只处理业务命令，38 项处理/文档契约测试通过。
+
+viewer server 将录像媒体处理和静态资源处理从 `do_GET()` 分离为 `serve_recording()` / `serve_static()`，Range、ETag、预览版本和错误响应保持原协议；viewer 定向测试通过。
+
+epoch 规划中的地图/任务事件从位置元组改为具名 `_MapEvent` / `_TaskEvent`，排序、序号和 needs_review 原因保持一致；地图 epoch、批次映射和场景管理定向回归 31 项通过。
+
+新增 `software/trajectory/poster_vio/` 契约层，定义任务级海报视觉惯性后端的观测、资产、`task_poster` 坐标、质量证据和结果校验；明确禁止把场景地图先验或现有 `poster_independent` 实现伪装成联合 BA。当前仅交付软件边界与 2 项契约测试，数值求解器仍需独立算法验证。
+
+poster_vio 契约增加独立观测质量门槛：最小标签帧数、最大观测间隔和最小时间跨度在优化器启动前统一筛选；契约测试扩展为 4 项，结果质量状态区分 `ready`、`solved` 和 `insufficient_observations`。新增第一版 `solve_joint_poster_imu()`：每手建立独立 IMU 位姿/速度/偏置状态，共享板位姿并加入海报角点因子，合成观测回归验证联合图、正深度和重投影证据；自然特征点因子尚未接入任务路由。
+
+## 2026-11-18：统一内部语义命名、收紧阶段结果并分离共用缓存
+
+任务输入的 CPU 分配及审计对象改名为 `arm_cpu_sets`、`cache_audit`，任务输出的测量报告改名为 `width_reports`、`tag_distance_reports`。输出坐标声明统一使用 `coordinate_record`，单手分支明确为 `arm_coordinate_record`；身份构造中的测量资产分别使用 `width_assets`、`tag_distance_assets`。重力单位方向、地图尝试目录及请求版本使用明确名称。内部 Python 字段和参数同步迁移，磁盘 JSON/CSV、原有状态、坐标含义和协议键保持原值。
+
+场景后端入口统一为 `execute_task()`，注册适配器明确为 `_run_scene_map()` / `_run_poster_independent()`。录像准备与定位的缓存入口使用 `prepare_with_cache()` / `localize_with_cache()`，`defer_poster_fusion` 明确表示先交出基线和观测、延后共享海报求解。`MapSelection` 校验目录和清单必须成对存在、已选地图不能同时携带失败原因，并提供 `available()` / `without_map()` 构造入口。手级求解结果使用冻结的具名对象，删除四元组的位置解包，立即写入及联合求解后写入的时序保持不变。
+
+定位缓存入口分别调用恢复观测、计算并发布两个步骤；损坏条目重算，引擎工作目录仍独立于缓存，失败保留日志，不发布缺失或不完整的结果。显式任务先按所属批次分组，每批只准备一次；处理后一次性筛除已报告或失败的任务，保留原始任务顺序，避免反复解析所属目录及重建列表。
+
+原 `pipeline/maps/cache.py` 分为共用 `scene/cache/storage.py` 的 `StageCache`、纯内容身份 `scene/cache/identity.py` 和地图专属 `pipeline/maps/identity.py`。准备与视觉身份由独立函数生成，缓存对象只承担存储、完整性、审计和计时及运行上下文。`spatial` 不再导入地图流水线，共用缓存也不导入流水线；rear 标定对共用录像准备的调用继续保留。源码身份引用真实的新路径，准备缓存继续只追踪解码依赖，相关算法缓存按实际源码变化失效。
+
+对照本轮起点 `/tmp/umi-scene-contracts-20261118-before`：20 种批次/显式任务、预览/执行及问题/异常组合的摘要、准备和调度调用完全一致；共用缓存存储的五个方法及函数语法树一致，证据 `/tmp/umi-scene-contracts-equivalence.json`。首次计算、复用、观测损坏、恢复证据损坏、引擎失败五种定位场景的观测、审计、诊断、引擎调用和失败日志行为完全一致，证据 `/tmp/umi-scene-contracts-localization-equivalence.json`。独立差异 `/tmp/umi-scene-contracts-only.patch`，均非运行依赖。
+
+工作盘曾耗尽空间，本轮只将项目生成的 41 个字节码目录（14,304,269 字节）移到 `/tmp/umi-scene-contracts-bytecode`，后续测试关闭字节码写入；原始录像、标定、业务配置及历史成果未改写。
+
+验证：`PYTHONDONTWRITEBYTECODE=1 ./test.sh --all` 的 965 项 Python 测试（210.591 s）、查看器前端、CLI 自检和 KB4 C++ 数值检查全部通过，日志 `/tmp/umi-scene-contracts-all.log`。新增五项回归覆盖地图状态约束、观测/恢复证据损坏仅重算一个条目且轨迹表一致、引擎失败保留日志及旧成功结果、跨批次显式任务顺序，以及数值算法/共用缓存对地图流水线的依赖边界。此前命名 37 项、结构 76 项及缓存 82 项定向回归通过，日志 `/tmp/umi-scene-contracts-names-final.log`、`/tmp/umi-scene-contracts-structure.log`、`/tmp/umi-scene-contracts-cache-final.log`；文档和边界检查 7 项通过，日志 `/tmp/umi-scene-contracts-docs.log`。同级 Organizer 27 项交接测试全部执行通过，日志 `/tmp/umi-scene-contracts-organizer.log`。场景目录无未引用顶层导入，无旧接口或旧缓存模块引用，`git diff --check` 通过。
+
+## 2026-11-18：按职责命名场景模块并收拢任务后端与结果
+
+先完成四项职责命名：`scene/configuration.py` 改为 `overrides.py`，`scheduling.py` 改为 `cpu_budget.py`，任务的 `evaluation.py` 改为 `relative_pose_evaluation.py`，`fallback.py` 改为 `independent_reconstruction.py`。最后一项同时服务显式海报后端及单手局部回退，不再以失败路径命名共用引擎适配。
+
+随后将任务估计实现收拢到 `pipeline/tasks/backends/`：场景执行 `execution.py` 改为 `scene_map.py`，地图定位和融合 `reconstruction.py` 改为 `scene_reconstruction.py`，海报后端及独立引擎适配同置其中。共用的 `prepare_cached()` 和 `prepare_episode_recordings()` 原样移到 `tasks/recording_preparation.py`，workflow 直接调用，不经场景地图后端准备输入。
+
+轨迹表、报告、任务清单与发布移到 `tasks/results/`；公共测量及手级轨迹写入 `write_arm_result()` 从原执行模块原样移到 `results/arm_writer.py`，两种后端直接调用，消除海报后端为写结果而依赖场景执行模块的关系。`estimation.py` 保留后端注册与整任务回退。任务目录直接平铺的实现文件由 13 个减为 6 个；新增包初始化只有说明，不转发旧模块或预加载求解器。
+
+所有源码导入、测试拦截、动态调用路径、定位缓存的显式源码依赖和当前代码指南同步更新。历史记录保留当时的旧路径。源码与缓存身份按真实路径和内容更新，未伪造旧身份；结果协议、求解顺序、回退条件、并行预算与发布边界保持原值，未改业务配置、原始录像、注册资产或历史结果。
+
+以起点快照 `/tmp/umi-scene-names-20261118-before` 对照场景下 305 个函数与类，归一化模块引用和依赖路径后，定义语法树全部一致；核对 `/tmp/umi-scene-names-semantic-audit.json`，本轮独立差异 `/tmp/umi-scene-names-only.patch`，均非运行依赖。
+
+验证：`./test.sh --all` 的 960 项 Python 测试（209.981 s）、查看器前端、CLI 自检与 KB4 C++ 数值检查全部通过，日志 `/tmp/umi-scene-names-all.log`。四项命名调整的 42 项、后端与目录边界的 51 项定向回归通过，日志 `/tmp/umi-scene-names-stage1.log`、`/tmp/umi-scene-names-stage2.log`；文档、源码身份与轻量导入的 12 项检查通过，日志 `/tmp/umi-scene-names-contracts.log`。同级 Organizer 27 项交接测试全部执行通过，日志 `/tmp/umi-scene-names-organizer.log`。场景目录无未引用顶层导入，`git diff --check` 通过。
+
+## 2026-11-18：统一任务后端契约与批次准备，分离地图声明校验
+
+共享输入 `TaskInputs` 和输出 `ArmExecutionResult` 统一定义在 `scene/models.py`。场景地图和任务海报后端直接接收同一个输入对象，手级测量与轨迹写入也共用此对象，删除适配层展开后再传递的重复参数。场景和任务名称从 `Episode` 读取；CPU 分配明确为 `dict[str, str] | None`，轨迹输出明确为 `ArmTrajectory`，替换原先的 `bool`、`object` 标注。后端选择、整任务回退、并行预算、求解与发布规则保持不变。
+
+地图仓库的 `validate_manifest()` 只处理已读入的声明，集中检查结构、版本、坐标、地图条目、尺度与刚体变换。指针解析、文件读取、哈希、当前场景兼容和引擎查询保留在读取流程，异常边界和类别保持原值。抽取前后校验块的归一化语法树完全相同；新增回归检查纯校验不访问文件或引擎、不修改输入，并覆盖损坏的声明。
+
+批次和显式任务入口统一使用 `_prepare_for_run()`，共用原片准备及错误、待补齐、忽略项检查。`_BatchInputError` 携带结构化问题，两个入口共用失败摘要生成。显式任务入口的错误信息现在增加具体原片路径、原因及 `details`；批次已有输出保持一致。问题批次仍整批阻断，其他批次继续处理，预览也遵守同样规则。
+
+以本轮起点对照两种入口、预览/执行以及正常、三类原片问题和准备异常共 20 种组合：准备与任务调度调用完全一致，除显式任务增加问题明细外，摘要完全一致。证据 `/tmp/umi-flow-processing-equivalence.json`，起点快照 `/tmp/umi-flow-cleanup-20261118-before`，独立源码补丁 `/tmp/umi-flow-cleanup-only.patch`，均非运行依赖。源码身份按既有规则更新，业务配置、原片、设备资产及历史结果没有改写。
+
+验证：`./test.sh --all` 的 960 项 Python 测试（212.041 s）、查看器前端、CLI 自检与 KB4 C++ 数值检查全部通过，日志 `/tmp/umi-flow-full.log`。后端 27 项、地图 25 项、处理/布局/配置 49 项定向回归通过，日志分别为 `/tmp/umi-flow-contracts.log`、`/tmp/umi-flow-maps.log`、`/tmp/umi-flow-processing-final.log`。文档更新后 3 项契约测试通过，同级 Organizer 27 项交接测试全部执行通过，日志 `/tmp/umi-flow-docs.log`、`/tmp/umi-flow-organizer.log`。七个实现模块无未引用顶层导入，`git diff --check` 通过。
+
+## 2026-11-18：收敛海报融合和任务报告的重复计算
+
+场景单双手海报路径共用标签几何准备、地图观测重编号和位置支持证据组装。双手每只手在本轮初始化与组图间复用自身镜头模型、板角点及像素观测，避免重复构造；初始剔除及优化后剔除的重试仍重新准备过滤后的观测，不跨轮缓存。每只手的后镜头模型和时间偏移保持独立。节点时刻、变量编号、因子插入顺序、单轮剔除预算及最终验收顺序保持原值。
+
+任务报告复用一次质量摘要中的坐标范围、行数、最长视觉缺口和地图一致性指标；约束区间只计算一次，同时提供分类及视觉/IMU 视图。逐帧来源字段和 CSV 引用继续保留，报告及结果 schema 未改变。没有新增配置项、业务层级或外部依赖。
+
+清理前后在同一进程内使用真实 GTSAM 对照 12 组固定观测：单双手 staged/joint、仅诊断、无观测、单手缺海报、固定 rear 外参、初始化剔除、优化后剔除，以及不同 rear 内参/时偏和部分标签集。输出位姿、跟踪标记及全部质量证据逐值相同，位姿最大绝对差均为 0；双手正常求解的相机模型构造次数由 4 降为 2，剔除重求解由 8 降为 4。新增永久回归覆盖双手使用不同相机模型、时偏和标签子集。
+
+用同一份运行输入分别生成场景、任务海报与单手局部三类报告，JSON 文件逐字节相同；缺失、空和分段帧表的区间摘要也完全相同。对照记录为 `/tmp/umi-cleanup-poster-equivalence.json`、`/tmp/umi-cleanup-report-equivalence.json`。起点快照 `/tmp/umi-cleanup-poster-20261118-before`，源码补丁和公共签名复核为 `/tmp/umi-cleanup-poster-only.patch`、`/tmp/umi-cleanup-poster-review.json`，均非运行依赖。源码身份仍按既有规则变化，不改写原始录像、业务 YAML、设备资产或历史成果。
+
+验证：`./test.sh --all` 的 956 项 Python 测试（209.735 s）、查看器前端、CLI 自检与 KB4 C++ 数值检查全部通过，日志 `/tmp/umi-cleanup-poster-all.log`。此前海报/位置支持/场景 73 项定向回归及新增不同相机参数用例通过，文档契约 3 项通过；日志 `/tmp/umi-cleanup-poster-targeted.log`、`/tmp/umi-cleanup-poster-cameras.log`、`/tmp/umi-cleanup-poster-docs.log`。两个修改模块无未引用顶层导入，`git diff --check` 通过。
+
+## 2026-11-18：删除遗留死代码并收敛观测读取与训练导出
+
+删除相机注册表中无调用的 `_current_directory()`、`_remove_previous_versions()` 及其唯一专用依赖 `_installed_source()`，三者共 37 行函数实现；清理未使用的 `parent`、图优化 `node_set`、物理检查工具 `sys` 和统一读取后不再使用的两处 NumPy 导入。版本查找直接选择镜头对应的来源指针并按键查询，仍保留不可变历史版本及独立 rear 资产的查找规则。未修改设备索引或已安装的资产。
+
+四处原始海报 NPZ 恢复逻辑统一到 `vision/poster/detection.load_observations()`，共用 `allow_pickle=False`、字段恢复与 `TagObservations.validate()`。缓存键、文件哈希和冻结快照的来源校验继续位于原有调用边界；不放宽损坏数据的处理。
+
+训练 `export.build()` 从 78 行收敛为 42 行，单集采样、视频复制、元数据与哈希写入由 `_write_episode()` 承担，外层保留输出锁、临时目录、最终源结果复核与整包原子发布。没有增加导出层级或改变数据协议。相对于本轮起点，8 个实现文件净减少 51 行；原有公共函数签名不变。
+
+报告逐帧来源仍属于当前消费契约（已有场景回归明确检查），本轮保留字段；融合求解和因子插入顺序未改动。`parse_gyro()` 的别名调用和公共入口导出继续保留。缓存按现有真实源码身份规则失效，不伪造旧身份，也不改写原始录像、场景 YAML、设备资产及历史成果。
+
+使用同一份冻结结果分别运行清理前后的导出代码：`manifest.json`、`export_report.json`、每集 `episode.json`、`samples.npz` 和两路 MP4 共 6 个文件逐字节一致，核对为 `/tmp/umi-cleanup-export-equivalence.json`。本轮起点快照为 `/tmp/umi-cleanup-20261118-before`，独立源码补丁与公共签名核对为 `/tmp/umi-cleanup-only.patch`、`/tmp/umi-cleanup-review.json`；均非运行依赖。
+
+验证：中断后补跑的 `./test.sh --all` 共 955 项 Python 测试（207.336 s），查看器前端、CLI 自检与 KB4 C++ 数值检查全部通过，日志 `/tmp/umi-cleanup-final-all.log`。新增回归覆盖原始观测数组与类型保真、缺字段/越界/对象数组拒绝，以及第二集视频失败时清理已写出的第一集且不发布部分数据。此前 80 项定向回归通过；文档契约 3 项、同级 Organizer 27 项测试均通过，日志分别为 `/tmp/umi-cleanup-targeted.log`、`/tmp/umi-cleanup-docs.log`、`/tmp/umi-cleanup-organizer.log`。静态复核未发现未引用的顶层导入（排除显式公共导出），`git diff --check` 通过。
+
+## 2026-11-17：收敛坐标读取、自动回退与训练质量策略
+
+修正场景代码指南中的旧模块名、地图专用调用链和坐标声明，区分任务级估计路由与地图内融合初值。训练模块与 exports 入口增加格式对照、明确参考系的读取示例；无地图设计方案更新已交付的海报结果契约，完整 `poster_vio` 仍保留为未来能力。
+
+新增 `dataset/coordinates.py`，从同一坐标声明生成导出元数据，`read_pose_series()` 返回 `T_reference_tcp` 视图及参考系/范围。磁盘 `<arm>_T_scene_tcp` 字段和 schema 1/2 读取保持兼容；缺少显式坐标字段时从 scene 推导，矛盾声明、非米制单位、无效刚体变换拒绝读取。
+
+地图读取显式识别缺失、损坏及声明无效（`MapUnavailableError`）与不兼容（`MapCompatibilityError`）。`auto` 仅捕获这些地图错误及既有 `SceneFusionQualityError`，普通程序异常和执行错误不再被宽泛捕获为回退理由。持久记录 `category/reason/error_type`，数据读取失败保留异常链；引擎查询失败与地图文件读取边界分离。无地图共同位置支持缺口与双手重力夹角迁到 `parameters.poster_independent`，默认仍为 2 s、5°；此前通过地图参数调整这两项实验门槛的覆盖需要迁移，旧日常 YAML 继续有效，旧单手回退规则保留。
+
+训练导出增加 `--quality-policy all|position_supported`、`--unknown-support drop|error`。默认保留时间有效样本；严格模式要求所有手插值两端均有位置支持，历史未知证据不会冒充无标签，仍接受已知的自然视觉正证据。时间缺口与质量删除分开统计，策略及各手拒绝/未知数量写入清单与报告。剔除后重建连续片段；即使低帧率未采到源坏段或时间缺口，也切断 `segment_id`。宽度采样复用筛选后的时间轴，失败不发布部分数据集。未更改求解器、原始录像或既有成果。
+
+新增文档契约检查，使用真实配置及 CLI 解析器验证标记示例、检查当前文档链接及指南函数入口；小视频真实导出检查字段表、读取参考系、筛选报告与失败原子性。文档检查加入 `test.sh --quick`。
+
+验证：`./test.sh --all` 的 952 项 Python 测试（207.567 s）、查看器前端、CLI 自检与 KB4 C++ 数值检查全部通过，日志 `/tmp/umi-contract-final-all.log`。最终补充的地图清单内部条目校验另以 26 项地图/海报后端回归通过，日志 `/tmp/umi-contract-map-final.log`；文档示例、真实导出字段和低频分段边界 13 项回归通过，日志 `/tmp/umi-contract-doc-final.log`。同级 Organizer 的 27 项测试全部执行通过，日志 `/tmp/umi-contract-organizer.log`。`git diff --check` 通过。
+
+## 2026-11-17：查看器按结果和资源分组，核验 Organizer 交接
+
+查看器迁移 7 个模块：目录发现、任务结果、协议读取和显示位姿位于 `viewer/results/`；视频、地图及可再生缓存位于 `viewer/resources/`。HTTP 入口、静态资源、公共错误继续留在原位置。所有调用直接导入实际模块，没有旧路径转发，两个子包初始化不加载求解器或创建执行资源。标定代码已有明确分层，本轮没有继续拆分。
+
+迁移前后浏览器目录列表和轨迹响应逐字段一致，场景/轨迹/标定三类代码身份也完全一致，因此此次 viewer 调整不导致数值算法缓存失效。地图转换缓存仍记录实际地图/缓存实现文件，移动后按资源身份重建。970 个函数/类的归一化 AST 核对无差异，报告 `/tmp/umi-layout-viewer-semantic-audit.json`；浏览器协议及身份对照为 `/tmp/umi-layout-viewer-contract-before.json` 与 `-after.json`。
+
+对同级 `insv_organizer` 的检查发现：业务代码通过原片目录、`collection.yaml`、`import_manifest.json` 与 UMI 交接，不导入内部模块，启动器使用的 `.deps` 路径也未改变；其交接测试仍导入前几轮迁移的两处旧路径，被宽泛的 ImportError 跳过规则隐藏。已更新测试到 `management.inputs.scene` 和 `pipeline.maps.epoch_selection`，改为仅仓库不存在时跳过，仓库存在但导入失败则报错；增加两项跳过条件回归。Organizer 27 项测试全部执行通过（包括真实双边增量交接），启动器 `--help` 正常，业务源代码、配置、原片和提交目录未改写。日志 `/tmp/insv-organizer-umi-final.log`。
+
+本轮 UMI 验证：查看器及相关流程 70 项定向回归通过，`./test.sh --all` 的 930 个 Python 测试（204.349 s）、前端、CLI 自检与 KB4 C++ 回归全部通过，日志 `/tmp/umi-layout-viewer-all.log`。新子包轻量导入、旧模块入口、YAML 对照和当前文档链接检查通过；viewer 根目录实现文件从 9 减为 2（HTTP 入口和公共错误）。
+
+## 2026-11-17：夹爪测量与采集管理分组
+
+继续迁移 16 个模块：夹爪共用检测、源像素处理和按时刻采样集中到 `gripper_width/detection/`，三维标签中心距集中到 `distance/`，预览与监测集中到 `tools/`；开口标定、换算和时间序列保留顶层。场景声明解析集中到 `scene/management/inputs/`，批次发现、配置/资产快照、执行与 epoch 编排集中到 `batch/`；公共调度、任务验收、登记、资产和清理保留管理层。夹爪根目录实现文件从 11 减为 3，管理层从 15 减为 7，统计不含包初始化文件。
+
+导入、工具入口、缓存依赖和代码指南同步更新，没有新增旧模块转发。检测、测距与采样的代码身份使用迁移后的真实文件，跨目录解码/时钟依赖改为项目根路径定位。任务代码身份的八项编排排除保持原集合，改用精确路径表达以避免文件重名影响策略。业务 YAML、原始录像、注册资产和历史成果没有改写；相关缓存按新的代码身份失效。
+
+验证：夹爪 86 项、场景管理 137 项定向回归通过；`./test.sh --all` 的 930 个 Python 测试（205.108 s）、前端、CLI 自检和 KB4 C++ 回归全部通过，日志 `/tmp/umi-layout-measurement-all.log`。归一化 AST 核对 970 个函数/类，仅五处身份/寻址调整符合预期，没有计算逻辑差异，报告 `/tmp/umi-layout-measurement-semantic-audit.json`。合成 KB4 测距、像素宽度映射及时间采样的六组数组与迁移前逐元素一致，样本为 `/tmp/umi-layout-measurement-numeric-before.npz` 与 `-after.npz`。新子包保持轻量导入，旧模块入口、YAML 对照及当前文档链接检查通过。
+
+## 2026-11-17：按职责收拢海报、融合与场景流水线
+
+迁移 35 个模块到真实子包：共享海报位于 `vision/poster/`，独立融合位于 `trajectory/algorithms/fusion/`，地图生命周期及缓存位于 `scene/pipeline/maps/`，任务估计、测量、评估和发布位于 `scene/pipeline/tasks/`。海报原几何模块的七个噪声、剔除和条件质量函数原样移到 `poster/quality.py`，几何、质量、因子保持单向依赖。入口、公共模型与通用原片准备继续保留原层级；包初始化只记录职责，没有旧路径转发或预加载求解器。同步更新导入、动态调用字符串、融合 `python -m` 入口、脚本文件位置、缓存依赖及文档。海报检测缓存原先按相邻文件查找解码实现，改为查找父级视觉目录。
+
+代码身份继续记录真实路径，相关旧缓存按新身份失效；本次没有修改业务 YAML、原始录像、注册资产或历史成果。归一化 AST 核对覆盖 970 个函数/类，除检测缓存文件寻址外未发现计算逻辑变化；报告 `/tmp/umi-layout-semantic-audit.json`。新子包导入不加载 NumPy/OpenCV/GTSAM，旧模块入口检查通过；地图缓存测试验证新质量模块纳入依赖。
+
+验证：`./test.sh --all` 的 930 个 Python 测试（202.883 s）、前端测试、CLI 自检和 KB4 C++ 回归全部通过，日志 `/tmp/umi-layout-all.log`。008 使用原冻结输入在新入口重放融合，左右手的 `traj_tum.txt`、`state.csv`、`seg_placement.csv` 与迁移前逐字节一致；核对报告 `/tmp/umi-layout-008/layout_validation.json`。这是代码组织回归验证，不代替外部物理精度实验。
+
+## 2026-11-17：任务级估计接口与双手海报独立重建
+
+继续收敛剔除、安装修正和选轮规则：将既有场景角点/seat 因子提取到 `vision/poster_factors.py`，场景和独立图共同使用；共享参数保留原 0.2 rad 先验，新增严格关闭修正及默认 5° 上限。剔除数量、剩余时间覆盖与原始观测记录集中到 `vision/poster_pose.py`；修复单手最终剔除绕过比例预算、共享图剔除前提前 RMS 拒绝、建图尺度递归重置预算的问题。独立图增加优化后的单轮重求解，复用对齐与基线。重试复用精确位置支持统计，稀疏合格标签可补足位置缺口，原视觉覆盖、尺度硬保护及旧证据路径保留。建图身份纳入实际消费的两项剔除参数。
+
+本轮验证：`./test.sh --all` 的 929 个 Python 测试（203.474 s）、前端、CLI 自检和 KB4 C++ 回归全部通过，日志 `/tmp/umi-polish-budget-all.log`。008 使用原冻结 SLAM、IMU、海报角点重放到 `/tmp/umi-polish-budget-008`，左右 RMS 仍为 1.75409/1.32351 px，rear 修正 0.39755°/0.59358°，均通过新增上限；左手单轮剔除 24 个观测，右手 0 个。对真实重放产物执行新旧重试判定：右手自然视觉覆盖 0.7824，旧策略判为可疑，新策略在共同位置支持缺口 0.10010 s 时不再仅因覆盖率重试；这是保存产物的融合重放与策略验证，未重新运行整条 SLAM 流水线或宣称测得物理精度。报告 `/tmp/umi-polish-budget-008/retry_validation.json`，原录像、collection 配置和原成功结果未改写。
+
+同日继续补齐质量证据：把场景角点噪声模型收敛到 `vision/poster_pose.py`，独立图和场景 staged/joint 复用现有 Jacobian 与鲁棒权重，输出固定海报/标定下的逐时刻局部精度诊断。无地图后端只用几何合格的观测检查位置支持缺口；原始弱观测仍保留鲁棒因子。逐帧视觉/海报/共同来源沿既有 CSV、报告、训练采样传递，未知历史证据保留未知。双手相对位姿复用统一几何函数；新增 `evaluate-relative`，使用外部实测固定夹具参考，复用 TCP 读取、重采样、资产哈希和标定统计，不做拟合对齐或修改验收状态。
+
+008 复用保存的局部 SLAM、IMU 和海报角点重放融合：左手 489/472、右手 384/379 个海报观测/几何合格时刻，共同位置支持最大缺口分别 0.03337/0.10010 s；重投影 RMS 仍为 1.75409/1.32351 px。仅是内部证据和回归验证，未获得独立夹具真值，不能据此认证双手相对精度。重放输出位于 `/tmp/umi-polish-008`，原始 008 及原成功结果未改写。
+
+上一轮验证：`./test.sh --all` 的 918 个 Python 测试、前端测试、CLI 自检及 KB4 C++ 回归全部通过；日志 `/tmp/umi-polish-all.log`。008 重放输出进一步经过现有轨迹写入器、真实 MP4 读取和训练采样器，386 个共同采样点的来源 mask 与相对位姿通过检查；结果在 `/tmp/umi-polish-008/output/validation.json`。与原 TCP 文件的位置差异最大约 0.8 μm，处于文件数值精度量级。该诊断采样未变更原录像尚未确认的同步状态，也未发布为训练就绪数据。
+
+新增 `scene/pipeline/estimation.py` 的任务级估计输入及后端注册，将 `scene_map` 与 `poster_independent` 放在同一条场景流水线。批次及任务可选 `reconstruction.backend: scene_map|poster_independent|auto`；旧配置保持场景地图路径。新 `auto` 只加载已有地图，在地图不可用、标定/视角不兼容或结构化场景融合质量失败时，整任务切换，不混用一只手的场景解和另一只手的局部解。输入错误、海报几何冲突和执行错误仍失败。完整标签初始化与原始视觉点 BA 的 `poster_vio` 保留为后续设计，未作为本次已完成能力。
+
+`poster_independent` 复用现有独立引擎，在各手本录像局部视觉地图、分段尺度和 IMU 图中持续融合海报，之后以 `inverse(T_world_board)` 转换到共同板坐标。两手必须实际融合成功、布局一致，并通过板坐标重力方向及自然视觉/海报联合支持缺口检查。海报坐标不假定 z 向上；时间同步不由静态海报推断。结果新增 `umi_poster_episode`、`task_poster` 范围、`poster:<run_id>` 和空地图引用，仍原子发布到 results；查看器、复用、人工验收和训练中间包已接入，训练位姿声明为 `T_board_tcp`。
+
+独立海报初始化先用鲁棒板拟合获得残差，再有限地剔除孤立异常，避免总体 RMS 在剔除前提前拒绝；剔除比例限制 15%，实际最终 RMS、正深度和优化下降仍在原生图验收。修复剔除重算后证据错误嵌套，并保存实际参与约束的时间。任务已有环境角点缓存经原身份校验后冻结给独立引擎，避免两次解码检测。本次没有直接移植新的 specialist 源码，复用的是 UMI 已有独立引擎；其后续可移植模块见设计方案。
+
+验证：`./test.sh --all` 的 **903 项 Python 测试（192.168 秒）**、查看器前端、标定/场景 CLI 自检和 KB4 C++ 数值回归通过，日志 `/tmp/umi-poster-independent-all.log`。随后补充缺失显式地图版本及布局推断边界，相关 **82 项测试、12 项 subtests** 通过；覆盖批次/任务配置优先级、无地图、损坏地图、双手整体回退、禁止输入错误回退、旧结果保护、共同约束缺口、重力不一致、查看器及训练读取。`git diff --check` 与新增文档链接检查通过。
+
+真实 008 采用复制原片的隔离批次 `/tmp/umi-poster-independent-008-aih16sre/test_shelf/20261109_008`，未修改原批次配置、原片或原成功结果。成功运行 `397221b6c5ec4963b09d55c8aa77f9b9`：左手 490 帧、海报 RMS 1.7541 px、剔除 24 次观测；右手 386 帧、RMS 1.3235 px、未剔除。两手重力方向差 0.3612°；右手自然视觉缺口 2.8028 s 时仍有海报约束，两类位置支持的最大时间间隔均约 0.033 s。隔离批次没有 `.pipeline/maps`，结果 `map: null`，两手均记录 `scene_map_priors_used: false`。发布资产哈希和查看器双手加载通过；相同输入重复运行返回 skipped。日志 `/tmp/umi-poster-independent-008-rerun.log`、`/tmp/umi-poster-independent-008-reuse.log`，复核记录 `/tmp/umi-poster-independent-008-validation.json`。
+
+首轮实跑暴露了直接套用场景地图“自然视觉缺口”门槛的问题，曾拒绝右手；修正为按真实自然视觉与海报时刻并集判断位置支持缺口，并增加两类约束同时丢失时拒绝的测试。未降低最大缺口阈值或最终重投影阈值。008 的同步仍为未确认的 assumed_simultaneous，海报资产仍为 pdf_design，真实轨迹误差未测量，因此此试跑不代表双手训练精度已经通过独立验收。
+
 ## 2026-10-15 结构
 
 轨迹实际走的路径和另一套没人调用的相机接口叠在一起，画面裁切也写了多份。这次只改调用关系。
@@ -340,7 +550,7 @@ collection/lifecycle/preflight/engine 分别整理为 capture_config/episodes/re
 
 ## 2026-10-25 批次引用套件固定版本，精简任务状态
 
-批次清单升级到 schema 3，kit 仅保存 id/version；设备和测量版本统一从场景下不可变 kit.yaml 读取并校验，不回退 current。套件读取移入 inputs，移除 capture_config 的读取实现，无循环依赖或旧入口转发。任务清单升级到 schema 4，移除恒定 timing，程序继续统一按双手同时录制、零输出偏移处理；批次与任务各自的 expected_arms 保留。
+批次清单升级到 schema 3，kit 仅保存 id/version；设备和测量版本统一从场景下不可变 kit.yaml 读取并校验，不回退 current。套件读取移入 inputs，移除 capture_config 的读取实现，无循环依赖或旧入口转发。任务清单升级到 schema 4，移除恒定 timing，程序继续统一按双手同时录制、零输出偏移处理；批次与任务各自的 arms 保留。
 
 state.json 只保存 attempt/review，身份、使用手和完整性从清单读取；attempt.preflight_report 引用运行目录的报告，移除完整报告副本。检查报告在算法前写入，融合失败仍保留检查证据。查看器通过 ruamel.yaml 直接读取采集清单，无需算法环境，支持无状态快照的待处理、缺片任务，并在清单改变后清除当前验收显示。
 
@@ -525,7 +735,7 @@ state.json 只保存 attempt/review，身份、使用手和完整性从清单读
 ## 2026-11-09 场景登记与批次准备架构收敛
 
 - 按 `.cursor/skills/deep-architecture-refactoring/SKILL.md` 梳理场景管理链路。删除无生产调用的 register_task、resolve_batch、capture_config.py、未使用的控制台实例，以及 episodes.read_state 纯转发层；状态读取直接使用 layout.read_state，清单修改的副作用明确命名为 invalidate_task_state。
-- 新增 batches.py，集中批次声明读取、资产校验、建图引用和快照并发检查；BatchInputs 明确 root/declaration/previous_record/kit/expected_arms/scene/mapping_paths，删除重复 parameters 字段和字符串下标式请求传递。移除旧失败记录临时回填分支及无需复制的批次内建图原片导入。
+- 新增 batches.py，集中批次声明读取、资产校验、建图引用和快照并发检查；BatchInputs 明确 root/declaration/previous_record/kit/arms/scene/mapping_paths，删除重复 parameters 字段和字符串下标式请求传递。移除旧失败记录临时回填分支及无需复制的批次内建图原片导入。
 - processing.py 从 233 行收敛到 128 行，负责发现批次和调度。预览构造内存快照，实际运行保存快照，二者统一调用 ingest.register_recordings 规划原片；不再维护第二套预览过滤与配对逻辑。
 - 自动登记只接收已解析的 Session；移除旧 CLI 的外部目录、使用手和硬链接参数以及 Path/Session 双类型适配。RawVideoInfo 改为 RecordingMetadata，extract_video_info 改为 inspect_recording；登记局部变量使用任务、原片、设备身份、报告等领域名称，补齐入口类型标注。
 - 测试通过配置和记录夹具准备初始状态，实际补片通过自动登记验证，指令修改通过 YAML 输入与验收失效验证。test_capture_config.py 更名为 test_batch_configuration.py；新增预览/实际复用一致性和重复原片归属均拒绝的回归。已有资产及持久化记录的读取协议仍由 inputs/layout/migration 负责，不在本次登记链路重构中重写。

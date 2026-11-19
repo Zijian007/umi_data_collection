@@ -1,5 +1,5 @@
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import kit_inputs
+from software.scene.management.inputs import kit as kit_inputs
 """精简清单仍保留快照、缺片语义、同步和内容校验。"""
 import unittest
 from registry_fakes import write_kit, write_batch, write_task, write_task_configuration, read_task_configuration
@@ -7,9 +7,10 @@ from unittest.mock import patch
 
 from software.camera import registry
 from software.scene import layout
-from software.scene.management import episodes, batch_inputs, episode_inputs, scene_inputs
+from software.scene.management import episodes
+from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs, scene as scene_inputs
 from software.infrastructure.file_store import write_yaml
-from software.viewer.episodes import capture_status
+from software.viewer.results.episodes import capture_status
 import test_scene as fixtures
 
 
@@ -35,12 +36,18 @@ class CompactManifestTests(unittest.TestCase):
         scene = self.f.root / 'shelf'
         collection = scene / 'seed/collection.yaml'
         collection.parent.mkdir(parents=True)
-        write_yaml(collection, dict(schema_version=1, scene=dict(layout='shared', map_reference_arm='left')))
+        write_yaml(collection, dict(kit='rig', recording=dict(arms=['left', 'right']),
+                                   scene=dict(description=''), map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
+                                   reconstruction=dict(backend='scene_map')))
         minimal = scene_inputs.read_scene(collection)
         self.assertEqual((minimal.name, minimal.mode, minimal.reference_arm), ('shelf', 'shared_front', 'left'))
-        write_yaml(collection, dict(schema_version=1, scene=dict(layout='shared', map_reference_arm='left')))
+        write_yaml(collection, dict(kit='rig', recording=dict(arms=['left', 'right']),
+                                   scene=dict(description=''), map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
+                                   reconstruction=dict(backend='scene_map')))
         self.assertEqual(minimal, scene_inputs.read_scene(collection))
-        write_yaml(collection, dict(schema_version=1, scene=dict(layout='per_arm', map_reference_arm='right')))
+        write_yaml(collection, dict(kit='rig', recording=dict(arms=['left', 'right']),
+                                   scene=dict(description=''), map=dict(layout='per_arm', reference_arm='right', selection=dict(policy='latest_prior')),
+                                   reconstruction=dict(backend='scene_map')))
         explicit = scene_inputs.read_scene(collection)
         self.assertEqual((explicit.mode, explicit.reference_arm), ('dual', 'right'))
 
@@ -115,7 +122,8 @@ class CompactManifestTests(unittest.TestCase):
         task_record = read_task_configuration(layout.owner(path))
         task_record['instruction'] = '双手移动盒子'
         write_task_configuration(layout.owner(path), task_record)
-        self.assertEqual(read_task_configuration(layout.owner(path))['synchronization'], data['synchronization'])
+        self.assertEqual(read_task_configuration(layout.owner(path))['synchronization'],
+                         dict(data['synchronization'], mode='manual'))
         self.assertEqual(episode_inputs.read_episode(path).offsets(), dict(left=0., right=-.12))
         data['synchronization']['note'] = ''
         write_task_configuration(layout.owner(path), data)

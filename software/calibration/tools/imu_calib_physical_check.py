@@ -32,7 +32,6 @@ import datetime as _dt
 import hashlib
 import json
 import math
-import sys
 from pathlib import Path
 
 from software.configuration import loader as config

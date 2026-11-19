@@ -13,13 +13,13 @@ import re
 
 from software.configuration import operational_settings as settings
 from software.configuration import user_settings as user_config
-from software.viewer import media
-from software.viewer.cache import root as cache_root
+from software.viewer.resources import video as media
+from software.viewer.resources.cache import root as cache_root
 from software.infrastructure.paths import SCENES_ROOT
 
-from software.viewer.data import RecordingCatalog
+from software.viewer.results.catalog import RecordingCatalog
 from software.viewer.errors import ViewerDataError
-from software.viewer.media import decode_frame, preview_file, preview_status, video_version
+from software.viewer.resources.video import decode_frame, preview_file, preview_status, video_version
 
 
 STATIC = Path(__file__).resolve().parent / 'static'
@@ -106,49 +106,53 @@ def make_handler(catalog: RecordingCatalog):
         def do_HEAD(self):
             self.do_GET()
 
+        def serve_recording(self, key, media_path):
+            if media_path == '/map':
+                self.json(catalog.map_data(key))
+                return
+            path = catalog.video_path(key)
+            if path is None:
+                self.json({'error': '未找到工作镜头视频'}, 404)
+            elif media_path == '/preview':
+                status = preview_status(path)
+                if status['status'] == 'ready':
+                    status['url'] = f'/api/recordings/{key}/preview/video?v={status["version"]}'
+                self.json(status)
+            elif media_path == '/preview/video':
+                query = parse_qs(urlsplit(self.path).query)
+                self.file(preview_file(path, query.get('v', [''])[0]), video=True, immutable=True)
+            elif media_path == '/frame':
+                query = parse_qs(urlsplit(self.path).query)
+                seconds = float(query.get('t', ['0'])[0])
+                version = query.get('v', [None])[0]
+                if version is not None and version != video_version(path):
+                    raise ViewerDataError('原视频已更新，请重新选择录像。')
+                image = decode_frame(path, seconds)
+                headers = {'Cache-Control': 'private, max-age=86400, immutable'} if version else None
+                self.send_content_headers(200, 'image/jpeg', len(image), headers)
+                if self.command != 'HEAD':
+                    self.wfile.write(image)
+            else:
+                self.file(path, video=True)
+
+        def serve_static(self, route):
+            relative = 'index.html' if route == '/' else route.lstrip('/')
+            path = (STATIC / relative).resolve()
+            if not path.is_relative_to(STATIC) or not path.is_file():
+                self.json({'error': '页面不存在'}, 404)
+            else:
+                self.file(path)
+
         def do_GET(self):
             try:
                 route = unquote(urlsplit(self.path).path)
                 if route == '/api/recordings':
                     self.json(catalog.scan())
                 elif match := re.fullmatch(r'/api/recordings/([0-9a-f]{20})(/video|/frame|/map|/preview|/preview/video)?', route):
-                    key, media = match.groups()
-                    if media == '/map':
-                        self.json(catalog.map_data(key))
-                    elif media:
-                        path = catalog.video_path(key)
-                        if path is None:
-                            self.json({'error': '未找到工作镜头视频'}, 404)
-                        elif media == '/preview':
-                            status = preview_status(path)
-                            if status['status'] == 'ready':
-                                status['url'] = f'/api/recordings/{key}/preview/video?v={status["version"]}'
-                            self.json(status)
-                        elif media == '/preview/video':
-                            query = parse_qs(urlsplit(self.path).query)
-                            self.file(preview_file(path, query.get('v', [''])[0]), video=True, immutable=True)
-                        elif media == '/frame':
-                            query = parse_qs(urlsplit(self.path).query)
-                            seconds = float(query.get('t', ['0'])[0])
-                            version = query.get('v', [None])[0]
-                            if version is not None and version != video_version(path):
-                                raise ViewerDataError('原视频已更新，请重新选择录像。')
-                            image = decode_frame(path, seconds)
-                            headers = {'Cache-Control': 'private, max-age=86400, immutable'} if version else None
-                            self.send_content_headers(200, 'image/jpeg', len(image), headers)
-                            if self.command != 'HEAD':
-                                self.wfile.write(image)
-                        else:
-                            self.file(path, video=True)
-                    else:
-                        self.json(catalog.load(key))
+                    key, media_path = match.groups()
+                    self.json(catalog.load(key)) if media_path is None else self.serve_recording(key, media_path)
                 else:
-                    relative = 'index.html' if route == '/' else route.lstrip('/')
-                    path = (STATIC / relative).resolve()
-                    if not path.is_relative_to(STATIC) or not path.is_file():
-                        self.json({'error': '页面不存在'}, 404)
-                    else:
-                        self.file(path)
+                    self.serve_static(route)
             except (ViewerDataError, ValueError) as error:
                 self.json({'error': str(error)}, 400)
             except OSError as error:

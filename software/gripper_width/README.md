@@ -1,12 +1,14 @@
 # 夹爪开合宽度
 
+共用检测位于 `detection/`，三维标签中心距位于 `distance/`，预览/监测位于 `tools/`；根目录的 `calibration.py`、`pipeline.py`、`series.py` 继续负责开口标定、换算和时间序列。宽度与中心距都使用 `detection/markers.py` 和 `frames.py`，不复制检测实现。各子包初始化只说明职责，调用方从实际模块导入。
+
 ## 夹爪标签中心三维间距
 
-`tag_geometry.py` 实现几何计算，`tag_distance.py` 编排与像素锚点宽度独立的测量：从夹爪标签 ID 0/1 的原始四角点、工作镜头 KB4 内参及各自标签边长，求两枚夹爪标签中心在相机坐标系中的位置，输出其三维欧氏距离（mm）。不使用夹持面偏置、零点或像素—毫米 anchors，不据此生成 `close_01` 或闭合状态。
+`distance/geometry.py` 实现几何计算，`distance/pipeline.py` 编排与像素锚点宽度独立的测量：从夹爪标签 ID 0/1 的原始四角点、工作镜头 KB4 内参及各自标签边长，求两枚夹爪标签中心在相机坐标系中的位置，输出其三维欧氏距离（mm）。不使用夹持面偏置、零点或像素—毫米 anchors，不据此生成 `close_01` 或闭合状态。
 
 套件配置 `gripper.tag_distance: tag_distance.json`，文件包含 `{"tag_sizes_mm":{"0":6.0,"1":6.0}}`；两枚边长分别配置，必须为正数。测量黑色外框，不含白边；尺寸变化线性改变尺度，不能借用标定板尺寸。原片检测缓存保存 `[帧, ID, 角点, xy]`，重复/缺失 ID 的角点保留 NaN。标签中心距按最终轨迹时间点检测，像素锚点宽度沿用原片逐帧检测；两者分别缓存。改尺寸或内参会复用角点重算几何，有效比例不足时再补检尚未尝试的帧。
 
-标签检测先裁剪原始工作镜头半幅中的固定范围，默认 `LEFT TOP RIGHT BOTTOM = 600 980 1350 1250`，即 750×270 像素；坐标原点仍是 1920×1920 工作镜头半幅左上角。场景通过 `parameters.measurements.gripper_tags.roi_px` 配置范围，`preview-width`、`detect-width` 使用相同默认值，可用 `--roi` 覆盖。场景快速扫描/补检、像素宽度提取和两个宽度 CLI 共用 `frame_processing.py`：先裁剪源像素平面，再仅把 ROI 转灰度，检测后统一恢复原始半幅坐标。RGB 输入也先裁剪再转灰度。快速扫描、补检和重搜都不越过配置范围。`trajectory.video.crop` 负责轨迹视频准备；标签检测使用这里明确配置的 ROI。
+标签检测先裁剪原始工作镜头半幅中的固定范围，默认 `LEFT TOP RIGHT BOTTOM = 600 980 1350 1250`，即 750×270 像素；坐标原点仍是 1920×1920 工作镜头半幅左上角。场景通过 `parameters.measurements.gripper_tags.roi_px` 配置范围，`preview-width`、`detect-width` 使用相同默认值，可用 `--roi` 覆盖。场景快速扫描/补检、像素宽度提取和两个宽度 CLI 共用 `detection/frames.py`：先裁剪源像素平面，再仅把 ROI 转灰度，检测后统一恢复原始半幅坐标。RGB 输入也先裁剪再转灰度。快速扫描、补检和重搜都不越过配置范围。`trajectory.video.crop` 负责轨迹视频准备；标签检测使用这里明确配置的 ROI。
 
 共享灰度转换保留颜色空间、亮度量程及色度采样对齐；奇数 ROI 坐标先对齐后取回精确边界，高位深转 8 位保留抖动相位。视频仍需解码源帧，减少的是灰度转换和检测的像素量；预览视频的彩色显示转换独立于标签检测图像。
 
@@ -16,7 +18,7 @@
 
 质量参数在 `scene_parameters.yaml` 的 `measurements.gripper_tags`：`max_reprojection_error_px` 默认 2.0（每角点二维残差的 RMS），`max_center_ambiguity_mm` 默认 2.0；实验性覆盖写入 `--expert-config` 的 `parameters.measurements.gripper_tags`。原片测量按最近的实际帧对齐轨迹时钟，限制在半个源帧周期内；不补缺口或用前帧值代替当前缺失。`trajectory.csv` 增加 `tag_distance_mm`、`tag_distance_valid`、`tag_distance_source`，无效数值留空；来源包括 `two_tags`、`missing`、`outside_calibration`、`invalid_geometry`、`pose_failed`、`high_reprojection_error`、`ambiguous_pose`、`ambiguous_detection`、`unmatched_time`。
 
-`TagDistanceRequest` 将原片、尺寸、相机、哈希、`TagPoseQuality`、ROI 和验收要求组合为具名输入。`sampled_detection.py` 按真实 PTS 为每个最终轨迹帧选择最近源帧，裁剪到配置 ROI 后检测，不缩小检测像素；解码仍读取压缩视频，非输出时间点不执行标签检测。超出源时钟范围或帧间隔过大时保持 `unmatched_time`。
+`TagDistanceRequest` 将原片、尺寸、相机、哈希、`TagPoseQuality`、ROI 和验收要求组合为具名输入。`detection/sampling.py` 按真实 PTS 为每个最终轨迹帧选择最近源帧，裁剪到配置 ROI 后检测，不缩小检测像素；解码仍读取压缩视频，非输出时间点不执行标签检测。超出源时钟范围或帧间隔过大时保持 `unmatched_time`。
 
 先用快速模式扫描全段全部输出帧并完成三维检查。每只手同时满足两项才通过：`two_tags` 有效帧数除以最终 CSV 总帧数达到 `parameters.measurements.gripper_tags.minimum_valid_fraction`（默认 0.5，范围 `(0, 1]`），且连续没有有效三维中心距的帧数不超过 `parameters.measurements.gripper_tags.max_missing_frames`（默认 15，非负整数，0 表示不允许缺失）。恰好等于上限通过；开头、结尾、所有无效原因都计入连续缺失。该上限按最终输出帧计数，当前约 30 帧/秒时 15 帧约为 0.5 秒；调整输出频率后帧数上限不自动改变。
 
@@ -33,15 +35,19 @@
 ```text
 software/gripper_width/
 ├── calibration.py       开口锚点/标签边长读取、像素—毫米映射
-├── detection.py         唯一标签检测与原始四角点缓存
-├── frame_processing.py  先裁剪再转灰度、检测及原始坐标恢复
-├── sampled_detection.py 输出时间点采样、快速角点与有界补检缓存
 ├── pipeline.py          开口换算、时间对齐与报告
 ├── series.py            开口时间序列与重采样
-├── tag_models.py        测距请求、质量策略、测距序列和结果
-├── tag_geometry.py      KB4 位姿和三维中心距离
-├── tag_distance.py      几何缓存、时钟对齐与报告
-└── preview.py / monitor.py  像素检测预览与采样监测
+├── detection/
+│   ├── markers.py       共用标签检测器、角点/像素数据类型、ROI 校验与原片缓存
+│   ├── frames.py        源像素裁剪、灰度转换与坐标恢复
+│   └── sampling.py      输出时刻采样、快速角点与有界补检缓存
+├── distance/
+│   ├── models.py        三维测距请求、质量策略、序列和结果
+│   ├── geometry.py      KB4 标签位姿和三维中心距离
+│   └── pipeline.py      几何缓存、时钟对齐与测距报告
+└── tools/
+    ├── preview.py       像素检测叠加预览
+    └── monitor.py       按时刻采样监测与 CSV/视频输出
 ```
 
 像素锚点宽度的原片提取默认也限制在 `600 980 1350 1250` 范围。通用 `MarkerDetector` 仍支持显式不指定 ROI 的自动活动区域模式；正式场景中心距及两个宽度 CLI 均提供固定 ROI，范围外的标签不参与当前检测。不把前帧位置作为当帧测量。
@@ -63,7 +69,7 @@ detect-width 的快速模式针对小标签使用 7～23 像素、步长 4 的�
 | 文件 | 场景集成职责 |
 |---|---|
 | `calibration.py` | 校验 anchors 与开口范围 |
-| `detection.py` | 共享逐帧标签框、ID、中心距离检测；按原片和检测器缓存原始距离 |
+| `detection/markers.py` | 共享逐帧标签框、ID、中心距离检测；按原片和检测器缓存原始距离 |
 | `preview.py` | 输出叠加定位框、ID、距离和原片时间的 H.264 预览 |
 | `monitor.py` | 固定 ROI、按视频时间采样的快速检测、CSV 与采样帧 MP4 输出 |
 | `pipeline.py` | 换算毫米、邻近三帧中位数、短缺口插值、内存宽度序列与报告构造 |

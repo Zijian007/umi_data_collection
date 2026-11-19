@@ -5,8 +5,8 @@ import unittest
 import av
 import numpy as np
 
-from software.gripper_width.detection import MarkerDetector
-from software.gripper_width.frame_processing import crop_gray, detect_frame
+from software.gripper_width.detection.markers import MarkerDetector
+from software.gripper_width.detection.frames import crop_gray, detect_frame
 
 
 class ConversionTrace:

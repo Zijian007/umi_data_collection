@@ -5,10 +5,17 @@ from threading import Barrier, Event
 from unittest.mock import patch
 import unittest
 
-from software.scene import layout, scheduling, workflow
+from software.scene import layout, cpu_budget, workflow
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
-from software.scene.pipeline import map_lifecycle, reconstruction
+from software.scene.management.inputs import (
+    batch as batch_inputs,
+    episode as episode_inputs,
+    kit as kit_inputs,
+    scene as scene_inputs,
+)
+from software.scene.pipeline.maps import lifecycle as map_lifecycle
+from software.scene.pipeline.tasks.backends import scene_reconstruction
+from software.scene.pipeline.tasks import recording_preparation
 from software.infrastructure.file_store import write_yaml
 import test_scene as fixtures
 
@@ -16,15 +23,15 @@ import test_scene as fixtures
 class CoreBudgetTests(unittest.TestCase):
     def test_parallel_budget_splits_allowed_cores_and_serializes_small_budget(self):
         arms = ('left', 'right')
-        with patch.object(scheduling.settings.os, 'sched_getaffinity', return_value=set(range(16))):
-            allocation = scheduling.arm_cores(arms, '2-9', parallel=True)
-            self.assertEqual(allocation, dict(left='2,4,6,8', right='3,5,7,9'))
-            self.assertIsNone(scheduling.arm_cores(arms, '0-6', parallel=True))
-            self.assertIsNone(scheduling.arm_cores(arms, '', parallel=False))
-            self.assertIsNone(scheduling.arm_cores(('left',), '', parallel=True))
+        with patch.object(cpu_budget.settings.os, 'sched_getaffinity', return_value=set(range(16))):
+            arm_cpu_sets = cpu_budget.arm_cores(arms, '2-9', parallel=True)
+            self.assertEqual(arm_cpu_sets, dict(left='2,4,6,8', right='3,5,7,9'))
+            self.assertIsNone(cpu_budget.arm_cores(arms, '0-6', parallel=True))
+            self.assertIsNone(cpu_budget.arm_cores(arms, '', parallel=False))
+            self.assertIsNone(cpu_budget.arm_cores(('left',), '', parallel=True))
             for invalid in ('8-2', '0-1-2', 'none', '99'):
                 with self.subTest(invalid=invalid), self.assertRaises(ValueError):
-                    scheduling.arm_cores(arms, invalid, parallel=True)
+                    cpu_budget.arm_cores(arms, invalid, parallel=True)
 
 
 class SceneSchedulingTests(unittest.TestCase):
@@ -46,15 +53,15 @@ class SceneSchedulingTests(unittest.TestCase):
         before = {name: (output / name).read_bytes() for name in
                   ('left/trajectory.csv', 'right/trajectory.csv', 'bimanual.csv')}
         barrier = Barrier(2)
-        original = reconstruction.reconstruct_arm_in_scene
+        original = scene_reconstruction.reconstruct_arm_in_scene
 
         def together(*args, **kwargs):
             barrier.wait(timeout=10)
             return original(*args, **kwargs)
 
-        with patch.object(scheduling.settings.os, 'sched_getaffinity', return_value=set(range(8))), \
-                patch.object(reconstruction, 'reconstruct_arm_in_scene', side_effect=together), \
-                patch.object(reconstruction, 'prepare_cached', wraps=reconstruction.prepare_cached) as prepare:
+        with patch.object(cpu_budget.settings.os, 'sched_getaffinity', return_value=set(range(8))), \
+                patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=together), \
+                patch.object(recording_preparation, 'prepare_with_cache', wraps=recording_preparation.prepare_with_cache) as prepare:
             workflow.run_episode(self.f.episode_path, force=True)
         self.assertEqual({name: (output / name).read_bytes() for name in before}, before)
         self.assertEqual([call.args[-1] for call in prepare.call_args_list], ['0,2,4,6', '1,3,5,7'])
@@ -63,7 +70,7 @@ class SceneSchedulingTests(unittest.TestCase):
         workflow.run_episode(self.f.episode_path, parallel_arms=False)
         previous = (self.f.task_root / 'results').resolve()
         barrier, finished = Barrier(2), Event()
-        original = reconstruction.reconstruct_arm_in_scene
+        original = scene_reconstruction.reconstruct_arm_in_scene
 
         def failing(episode, arm, *args, **kwargs):
             barrier.wait(timeout=10)
@@ -74,8 +81,8 @@ class SceneSchedulingTests(unittest.TestCase):
             finally:
                 finished.set()
 
-        with patch.object(scheduling.settings.os, 'sched_getaffinity', return_value=set(range(8))), \
-                patch.object(reconstruction, 'reconstruct_arm_in_scene', side_effect=failing), \
+        with patch.object(cpu_budget.settings.os, 'sched_getaffinity', return_value=set(range(8))), \
+                patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=failing), \
                 self.assertRaisesRegex(ValueError, 'left failed'):
             workflow.run_episode(self.f.episode_path, force=True)
         self.assertTrue(finished.is_set())
@@ -87,7 +94,7 @@ class SceneSchedulingTests(unittest.TestCase):
     def test_batch_binds_once_and_does_not_nest_arm_parallelism(self):
         second = self.second_task()
         with patch.object(map_lifecycle, 'bind_map', wraps=map_lifecycle.bind_map) as bind, \
-                patch.object(scheduling, 'arm_cores', wraps=scheduling.arm_cores) as budget:
+                patch.object(cpu_budget, 'arm_cores', wraps=cpu_budget.arm_cores) as budget:
             results = workflow.run_episodes([self.f.episode_path, second], jobs=2)
         self.assertEqual([item['status'] for item in results], ['ok', 'ok'])
         self.assertEqual(bind.call_count, 1)

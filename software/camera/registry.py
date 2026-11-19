@@ -119,15 +119,6 @@ def store_version(parent: Path, version: str, files: dict[str, Path], **metadata
     return directory
 
 
-def _current_directory(parent: Path, lens: str, source: str) -> Path:
-    """返回一个镜头/内参来源的版本根目录。"""
-    if lens not in ('front', 'rear'):
-        raise RegistryError(f'镜头类型无效：{lens}')
-    from software.camera.calibration_source import validate
-    validate(source)
-    return parent / lens / source
-
-
 def _current_key(source: str) -> str:
     """来源名只用于选择指针，不能充当不可变版本身份。"""
     from software.camera.calibration_source import validate
@@ -165,15 +156,10 @@ def _find_version(serial: str, lens: str, identity: str) -> Path:
         record = load_index()['devices'].get(validate_id(serial), {})
     except RegistryError:
         record = {}
-    for source, field in (('front', 'calibration_sources'), ('rear', 'rear_calibration_sources')):
-        if source != lens:
-            continue
-        current = record.get(field, {})
-        for origin, version in current.items():
-            if identity == origin:
-                identity = version
-                break
-    for source, directory in _iter_version_directories(serial, lens):
+    field = {'front': 'calibration_sources', 'rear': 'rear_calibration_sources'}.get(lens)
+    current = record.get(field, {})
+    identity = current.get(identity, identity)
+    for _, directory in _iter_version_directories(serial, lens):
         if directory.name == identity:
             return directory
     # Independent trajectory rear assets are installed directly under the
@@ -182,40 +168,6 @@ def _find_version(serial: str, lens: str, identity: str) -> Path:
     if direct.is_dir():
         return direct
     raise RegistryError(f'标定不可变版本不存在：{serial}/{lens}/{identity}')
-
-
-def _installed_source(directory: Path, kind: str) -> str | None:
-    """Read the source of an installed front/rear asset without selecting it."""
-    try:
-        if kind == 'umi_camera_calibration':
-            return traj_calib.describe(directory / 'bundle', 'registry').get('intrinsics_source')
-        raw = json.loads((directory / 'rear_calibration.json').read_text(encoding='utf-8'))
-        from software.camera.calibration_source import source
-        return source(raw)
-    except (OSError, KeyError, TypeError, ValueError, traj_calib.CalibrationError):
-        return None
-
-
-def _remove_previous_versions(parent: Path, keep: str, *, kind: str, serial: str, source: str) -> None:
-    """Keep one installed version per lens/source; leave other lens/source assets intact.
-
-    Front and rear assets share a camera directory for compatibility, so cleanup
-    must inspect the manifest kind instead of deleting every sibling directory.
-    """
-    if not parent.is_dir():
-        return
-    for directory in parent.iterdir():
-        if not directory.is_dir() or directory.name == keep:
-            continue
-        manifest_path = directory / 'manifest.json'
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
-        except (OSError, json.JSONDecodeError):
-            # Never remove an unrecognised or damaged directory automatically.
-            continue
-        if (manifest.get('kind') == kind and manifest.get('serial') == serial
-                and _installed_source(directory, kind) == source):
-            shutil.rmtree(directory)
 
 
 def bundle_sha256(bundle_dir: Path) -> str:
@@ -419,7 +371,6 @@ def register(serial: str, bundle_dir: Path, *, status: str = "active",
         path.name for path in bundle_dir.iterdir() if path.is_file())
     files = {'bundle/'+name: bundle_dir / name for name in names}
     with locked(ROOT, '.registry.lock'):
-        parent = CAMERAS / serial / 'calibrations'
         source = _current_key(description['intrinsics_source'])
         version = _version_id(serial=serial, lens='front', source=source, files=files)
         store_version(_version_directory(serial, 'front', source, version).parent, version, files,

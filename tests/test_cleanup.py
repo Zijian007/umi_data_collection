@@ -10,8 +10,9 @@ import time
 import unittest
 
 from software.scene import layout, workflow
-from software.scene.management import cleanup, processing, batch_inputs, episode_inputs, scene_inputs
-from software.scene.pipeline import reconstruction
+from software.scene.management import cleanup, processing
+from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs, scene as scene_inputs
+from software.scene.pipeline.tasks.backends import scene_reconstruction
 from software.infrastructure.file_store import mark_used, write_yaml
 import test_scene as fixtures
 
@@ -48,7 +49,7 @@ class TaskCleanupTests(unittest.TestCase):
         self.task = self.f.task_root
 
     def fail_once(self, reason):
-        with patch.object(reconstruction, 'reconstruct_arm_in_scene', side_effect=ValueError(reason)), \
+        with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=ValueError(reason)), \
                 self.assertRaisesRegex(ValueError, reason):
             workflow.run_episode(self.f.episode_path, force=True, parallel_arms=False)
 

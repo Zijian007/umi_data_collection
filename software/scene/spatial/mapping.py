@@ -15,7 +15,7 @@ from .geometry import MapAlignmentError, VisualObservations, alignment_parameter
 from software.infrastructure import provenance as artifact_identity
 from software.camera.geometry import imu_from_camera
 from software.scene.models import PreparedRecording, Scene
-from software.scene.map_cache import MapBuildCache
+from software.scene.cache.storage import StageCache
 from software.infrastructure.file_store import write_json
 from software.trajectory.algorithms.inertial import estimate_gyro_bias
 
@@ -72,11 +72,12 @@ def definition(scene: Scene) -> dict:
         imu_alignment=dict(gravity=fusion_parameters.gravity_m_s2, initial_static_gyro_rad_s=fusion_parameters.initial_static_gyro_rad_s,
                            initial_bias_min_samples=fusion_parameters.initial_bias_min_samples, initial_bias_max_samples=fusion_parameters.initial_bias_max_samples))
     if scene.parameters.tag_mapping_enabled:
-        from software.vision.tag_board import load
+        from software.vision.poster.layout import load
         result['environment_poster'] = dict(layout=load(scene.tag_layout).record(), frame_step=2,
             parameters={key: value for key, value in parameter_values.items()
                         if key.startswith('tag_mapping_') or key in {'tag_minimum_side_px', 'tag_corner_sigma_px',
-                            'tag_sigma_per_radius_px', 'tag_huber', 'tag_maximum_reprojection_rms_px'}})
+                            'tag_sigma_per_radius_px', 'tag_huber', 'tag_maximum_reprojection_rms_px',
+                            'tag_maximum_cull_fraction', 'tag_minimum_retained_time_fraction'}})
     return result
 
 
@@ -118,7 +119,7 @@ def candidate_score(observations, placement, *, total_frames: int | None = None)
 
 
 def choose_map(recording: PreparedRecording, lens: str, archive: Path, directory: Path, scene: Scene,
-               *, cache: MapBuildCache | None = None, refresh: bool = False, poster_data=None):
+               *, cache: StageCache | None = None, refresh: bool = False, poster_data=None):
     accepted, rejected = [], []
     total_frames = len(recording.video_times_s) if getattr(recording, 'video_times_s', None) is not None else None
     for index, obs in slam.atlas_candidates(recording, lens, archive, directory, cache=cache, refresh=refresh):
@@ -151,7 +152,7 @@ def choose_map(recording: PreparedRecording, lens: str, archive: Path, directory
 
 
 def build_maps(scene: Scene, prepared: dict[str, PreparedRecording], directory: Path, *,
-               cache: MapBuildCache | None = None, refresh: bool = False, poster_data=None):
+               cache: StageCache | None = None, refresh: bool = False, poster_data=None):
     """返回固定场景变换；每只手只引用到同一个 reference 地图，不独立定义世界系。"""
     reference = scene.reference_arm
     roles = {'shared_front': (reference, 'front')} if scene.mode == 'shared_front' else {

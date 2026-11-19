@@ -52,7 +52,7 @@ class ConfigTests(unittest.TestCase):
             p.fusion.step = 10
 
     def test_environment_tag_defaults_have_one_shared_source(self):
-        from software.scene.management.scene_inputs import load_scene_parameters
+        from software.scene.management.inputs.scene import load_scene_parameters
         from software.infrastructure.file_store import read_yaml
 
         shared = read_yaml(Path('config/algorithms/environment_tags.yaml'))

@@ -56,10 +56,48 @@ localization:  # 固定地图任务的双向定位、覆盖和连续性规则。
   minimum_fraction: 0.5  # 每只手获得地图位置约束的最低帧比例。
   maximum_visual_gap_s: 2.0  # 允许的最长连续无视觉时长，单位 s。
 
+poster_independent:  # 本录像独立引擎海报后端的支持与重力验收。
+  maximum_position_support_gap_s: 2.0  # 自然视觉与合格海报均无位置支持的最大间隔，单位 s。
+  maximum_gravity_difference_deg: 5.0  # 两手在海报坐标中的重力夹角上限，单位 deg。
+
+poster_vio:  # 实验性联合图的观测门槛；与独立引擎后端分开配置。
+  minimum_tag_frames: 8  # 每手最少的独立训练标签时刻数，留出后仍需满足，不按同帧 ID 数累计。
+  maximum_observation_gap_s: 0.5  # 初始化标签时刻之间的最大间隔，单位 s。
+  minimum_time_span_s: 1.0  # 每手标签观测的最小时间跨度，单位 s。
+  maximum_position_support_gap_s: 2.0  # 含首尾、无自然视觉或合格海报支持的最大间隔，单位 s。
+  maximum_gravity_difference_deg: 5.0  # 两手惯性初始化重力方向夹角上限，单位 deg。
+  initialization:
+    maximum_hypotheses: 32  # 每帧整板/标签子集 PnP 假设的确定性上限。
+  keyframes:
+    maximum_dt_s: 0.1  # 关键帧最大时间间隔；0 保留逐帧全图作对照。
+    minimum_translation_m: 0.03  # 初值平移超过此值时保留关键帧。
+    minimum_rotation_deg: 3.0  # 初值旋转超过此值时保留关键帧。
+  frontend:
+    maximum_features: 200  # 每镜头同时活动的特征点上限。
+    maximum_tracks: 2000  # 每镜头保留给联合图的轨迹总预算，按录像时间分配；不限制持续补点。
+    minimum_track_length: 3  # 三角化所需的最少观测数。
+    maximum_track_length: 40  # 单条轨迹的观测数上限，达到后重新检测。
+    geometric_threshold_px: 3.0  # KB4 视线极几何/旋转门槛的像素等效值。
+    revisit:
+      enabled: true  # ORB 描述子 + 米制重投影验证后续接同镜头轨迹。
+      maximum_bank: 256  # 每镜头暂存可重关联轨迹数上限。
+      maximum_gap_s: 5.0  # 可重关联的最长真实 IMU 时间间隔。
+      match_ratio: 0.75  # Hamming 最近/次近距离比上限。
+      maximum_reprojection_px: 4.0  # 重关联需通过初值米制重投影门槛。
+  culling:
+    maximum_rounds: 2  # 联合求解后最多剔除并重求解的轮数；0 关闭。
+    precull_iterations: 8  # 首轮先短求解判断异常；后续沿用已求解状态和阻尼。
+    maximum_natural_fraction: 0.15  # 每手每镜头相对原始自然像素观测的累计剔除比例；向下取整。
+    natural_threshold_px: 10.0  # 自然像素异常门槛，单位 px；标签沿用共享几何门槛及预算。
+  holdout:
+    stride: 5  # 初始化前按独立标签时刻留出内部帧；0 关闭，至少为 2。
+    natural_stride: 5  # 按冻结图节点索引留出自然点像素；0 关闭，复访/抽样后不重新分类。
+    maximum_rms_px: 5.0  # 未参与初始化或求解的标签/自然点像素 RMS 上限，单位 px。
+
 fusion:  # 固定场景任务的视觉融合权重和环境海报因子。
   environment_tags:  # 场景任务是否把环境海报角点加入视觉–IMU 图。
     enabled: false  # collection.yaml.scene.tags.fusion.enabled 会覆盖此默认值。
-    method: staged  # staged：先地图+IMU再海报；joint：初值图直接联合地图、IMU和海报。
+    method: staged  # staged 用地图+IMU基线初值，joint 用视觉位姿种子；最终图均含地图、IMU和海报。
   front_position_sigma_m: 0.015  # 工作镜头位置观测标准差，单位 m。
   rear_position_sigma_m: 0.020  # 环境镜头位置观测标准差，单位 m。
   visual_rotation_sigma_deg: 1.0  # 视觉旋转观测标准差，单位 deg。

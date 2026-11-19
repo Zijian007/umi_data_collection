@@ -1,9 +1,9 @@
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import kit_inputs
+from software.scene.management.inputs import kit as kit_inputs
 from software.infrastructure import provenance as artifact_identity
 """main 宽度算法的场景集成：标定冻结、原片检测、时钟、缺失值与训练导出。"""
 from software.scene.management import camera_assets
-from software.scene.configuration import SceneOverrides
+from software.scene.overrides import SceneOverrides
 import csv
 from dataclasses import replace
 from fractions import Fraction
@@ -20,9 +20,18 @@ import numpy as np
 from software.scene.result_io import pose_rows
 
 from software.camera import registry
-from software.dataset.export import build, load_episode
-from software.gripper_width import calibration, detection, pipeline, series
-from software.scene.management import batches, episodes, kit_inputs, batch_inputs, episode_inputs, scene_inputs
+from software.dataset.export import build
+from software.dataset.reader import load_episode
+from software.gripper_width import calibration, pipeline, series
+from software.gripper_width.detection import markers as detection
+from software.scene.management.batch import snapshot as batches
+from software.scene.management import episodes
+from software.scene.management.inputs import (
+    kit as kit_inputs,
+    batch as batch_inputs,
+    episode as episode_inputs,
+    scene as scene_inputs,
+)
 from software.scene import layout, workflow
 from software.infrastructure.file_store import write_json, write_yaml
 import test_dataset as dataset_fixtures
@@ -205,8 +214,8 @@ class WidthKitTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'anchors'):
                 camera_assets.select_camera(self.f.root / 'recording.insv', scene)
 
-    def test_user_width_paths_must_stay_inside_the_kit(self):
-        for filename in ('../escape.json', str(self.f.root / 'width.json'), '', 'left_width.yaml', None):
+    def test_user_width_paths_must_stay_inside_the_kit_or_shared_root(self):
+        for filename in ('../../escape.json', str(self.f.root / 'width.json'), '', 'left_width.yaml', None):
             with self.subTest(filename=filename):
                 self.arms['left']['gripper']['width'] = filename
                 write_yaml(self.width.parent / 'kit.yaml', dict(arms=self.arms))
@@ -217,7 +226,7 @@ class WidthKitTests(unittest.TestCase):
         (self.width.parent / 'linked.json').symlink_to(outside)
         self.arms['left']['gripper']['width'] = 'linked.json'
         write_yaml(self.width.parent / 'kit.yaml', dict(arms=self.arms))
-        with self.assertRaisesRegex(ValueError, '套件目录内'):
+        with self.assertRaisesRegex(ValueError, '套件目录或共享 kits 目录内'):
             kit_inputs.read_kit('rig')
 
     def test_changed_width_file_is_read_without_editing_kit_yaml(self):

@@ -1,35 +1,42 @@
 # 复制到 scenes/<scene>/<batch>/collection.yaml；示例文件不会被自动发现。
-schema_version: 1
-scene:
-  layout: auto
-  map_reference_arm: left
-  description: example scene
-  tags:
-    # 总开关：false 时只保留布局声明，不检测环境海报。
-    enabled: false
-    # 环境海报布局 JSON；路径相对场景根目录。
-    layout: ../../hardware/calibration_targets/environment_poster.json
-    mapping:
-      # 建图阶段检测并记录海报诊断；不应用尺度修正。
-      enabled: false
-      scale:
-        # 将海报尺度与 IMU 尺度合并，并重新验收地图。
-        enabled: false
-    fusion:
-      # 将任务中的海报角点加入视觉–IMU 融合。
-      enabled: false
-      # staged：先地图+IMU再海报；joint：初值图直接联合地图、IMU和海报。
-      method: staged
 kit: kit_001
-arms: [left, right]
-map_policy: latest_prior
-# 可选：冻结本批次默认使用的已发布地图；填写后不需要 mapping/ 原片。
-# map_version: 20261113_100000-a1b2c3d4
+
+recording:
+  arms: [left, right]
+
+scene:
+  description: example scene
+
+map:
+  layout: auto                 # auto | shared | per_arm
+  reference_arm: left          # left | right
+  selection:
+    policy: latest_prior       # 当前只能是 latest_prior
+    version: null              # null 或已发布地图版本 ID
+
+environment_poster:
+  layout_path: ../../hardware/calibration_targets/environment_poster.json
+  detection:
+    enabled: false
+  mapping:
+    enabled: false
+    scale_correction:
+      enabled: false
+  task_constraint:
+    enabled: false
+    method: staged              # staged | joint；仅 scene_map 使用
+
+reconstruction:
+  backend: scene_map            # scene_map | poster_independent | poster_vio | auto
+
 tasks:
   take_001:
     instruction: 拿起物体并放到指定位置
-    expected_arms: [left, right]
-    synchronization: assumed_simultaneous
-    # 可选：按采集阶段或具体版本固定该任务使用的地图。
-    # map_epoch: epoch_001
-    # map_version: 20261113_100000-a1b2c3d4
+    arms: [left, right]
+    synchronization:
+      mode: assumed_simultaneous # audio_auto | assumed_simultaneous | manual
+    # reconstruction:
+    #   backend: poster_independent
+    # map:
+    #   epoch: epoch_001
+    #   version: 20261113_100000-a1b2c3d4

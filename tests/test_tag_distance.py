@@ -15,14 +15,25 @@ import cv2
 import numpy as np
 
 from software.camera import registry
-from software.gripper_width import detection, tag_distance
-from software.gripper_width import sampled_detection
-from software.gripper_width.tag_geometry import TagPoseEstimator
-from software.gripper_width.tag_models import TagDistanceRequest, TagDistanceResult, TagDistanceSeries, TagPoseQuality
+from software.gripper_width.detection import markers as detection
+from software.gripper_width.distance import pipeline as tag_distance
+from software.gripper_width.detection import sampling as sampled_detection
+from software.gripper_width.distance.geometry import TagPoseEstimator
+from software.gripper_width.distance.models import (
+    TagDistanceRequest,
+    TagDistanceResult,
+    TagDistanceSeries,
+    TagPoseQuality,
+)
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
+from software.scene.management.inputs import (
+    batch as batch_inputs,
+    episode as episode_inputs,
+    kit as kit_inputs,
+    scene as scene_inputs,
+)
 from software.infrastructure.file_store import write_json
-from software.viewer.readers import read_tag_distance
+from software.viewer.results.readers import read_tag_distance
 from software.viewer.errors import ViewerDataError
 
 
@@ -137,19 +148,21 @@ class DistanceConfigurationTests(unittest.TestCase):
                 path.write_text(json.dumps(invalid))
                 with self.assertRaises(ValueError): gripper_calibration.read_tag_sizes(path)
 
-    def test_kit_paths_stay_inside_kit(self):
+    def test_kit_paths_allow_shared_root_and_reject_escape(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)
             result=kit_inputs.gripper_paths(dict(tcp='tcp.json',tag_distance='tags.json'), root)
             self.assertEqual(result['tag_distance'],str(root/'tags.json'))
-            for name in ('../tags.json','/tmp/tags.json','tags.yaml'):
+            shared = kit_inputs.gripper_paths(dict(tcp='tcp.json', tag_distance='../tags.json'), root)
+            self.assertEqual(shared['tag_distance'], str(root.parent/'tags.json'))
+            for name in ('../../tags.json','/etc/tags.json','tags.yaml'):
                 with self.assertRaises(ValueError):
                     kit_inputs.gripper_paths(dict(tcp='tcp.json',tag_distance=name), root)
 
 
 class DistancePipelineTests(unittest.TestCase):
     def test_bimanual_viewer_crops_primary_distance_on_same_clock_as_trajectory(self):
-        from software.viewer import episodes
+        from software.viewer.results import episodes
         scene=dict(version='v1',frame_id='scene/v1')
         paths={arm:Path('/fixture')/arm for arm in ('left','right')}
         def data(times,values):

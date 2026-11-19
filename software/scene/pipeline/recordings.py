@@ -15,7 +15,8 @@ from software.infrastructure import provenance as artifact_identity
 from software.camera import registry
 from software.camera.timing import euroc_ns_to_seconds
 from software.scene.models import CalibratedCamera, PreparedRecording, Scene
-from software.scene.map_cache import MapBuildCache
+from software.scene.cache.storage import StageCache
+from software.scene.cache.identity import preparation_inputs
 from software.trajectory.calibration import assets as calibration_assets
 from software.vision import recordings as recording_data, runtime
 from software.vision.models import LensVideo, RecordingData, RecordingPaths, VisualContext
@@ -70,8 +71,8 @@ def import_video(video: Path, directory: Path, *, metadata: dict, link: bool = F
 
 
 def prepare_recording(recording_path: Path, camera: CalibratedCamera, scene: Scene, cache_dir: Path, *, cores: str = '',
-                      cache: MapBuildCache | None = None) -> PreparedRecording:
-    identity = cache.preparation_inputs(recording_path, camera, scene) if cache else {}
+                      cache: StageCache | None = None) -> PreparedRecording:
+    identity = preparation_inputs(recording_path, camera, scene, engines=cache.engines) if cache else {}
     # 无缓存时（rear 标定等一次性用途）总是重新准备。
     with (cache.stage('prepare', f'{camera.serial} 录像准备', identity, cache_dir,
                       roots=('debug/dataset', 'debug/lens_videos'), link=True) if cache else nullcontext(False)) as reuse:
@@ -88,7 +89,8 @@ def prepare_recording(recording_path: Path, camera: CalibratedCamera, scene: Sce
             lens_settings={lens: calibration_assets.slam_settings_text(measured, scene.trajectory.values)
                            for lens, measured in camera.measurements.items()},
             front_mask=camera.selected.assets.front_mask, output=cache_dir / 'settings',
-            parameters=scene.trajectory.values)
+            parameters=scene.trajectory.values,
+            **(dict(require_slam=False) if scene.reconstruction_mode == 'poster_vio' else {}))
         context = VisualContext(paths, settings, scene.trajectory.values, extracted_data.manifest['frames']['n_frames_used'], cores)
         lens_videos = tuple(LensVideo(lens, paths.lens_videos / f'{lens}.mp4', settings.front_settings if lens == 'front' else settings.rear_settings,
                                  settings.front_mask if lens == 'front' else None)

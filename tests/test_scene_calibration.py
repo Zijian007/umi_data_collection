@@ -20,7 +20,7 @@ from software.calibration.validation import gravity
 from software.calibration.algorithms import board_pnp
 from software.calibration.models import CalibrationInputs, Decision, CameraImuResult, GravityResult, IntrinsicsResult, SegmentPaths
 from software.scene.spatial import rear_calibration
-from software.scene.management import scene_inputs
+from software.scene.management.inputs import scene as scene_inputs
 from software.infrastructure.file_store import write_json
 from software.vision.models import LensVideo
 import test_scene as scene_fixtures

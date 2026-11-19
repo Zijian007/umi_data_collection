@@ -7,12 +7,14 @@ from pathlib import Path
 
 from software.infrastructure.file_store import read_yaml
 from software.scene import layout
-from software.scene.configuration import SceneOverrides
-from software.scene.management import batches, episodes, kit_inputs
-from software.scene.management.batch_discovery import configured_batches
-from software.scene.management.batch_inputs import mapping_records, read_arms
-from software.scene.management.kit_inputs import validate_kit
-from software.scene.management.scene_inputs import ROOT, read_scene
+from software.scene.overrides import SceneOverrides
+from software.scene.management.batch import snapshot as batches
+from software.scene.management import episodes
+from software.scene.management.inputs import kit as kit_inputs
+from software.scene.management.batch.discovery import configured_batches
+from software.scene.management.inputs.batch import mapping_records, read_arms
+from software.scene.management.inputs.kit import validate_kit
+from software.scene.management.inputs.scene import ROOT, read_scene
 from software.scene.parameter_schema import nested_snapshot
 
 
@@ -77,6 +79,8 @@ def _target_report(directory: Path, *, overrides: SceneOverrides | None,
                 scene_path = candidate
         declarations = [str(layout.manifest(directory, 'manifest.yaml'))]
     scene = read_scene(scene_path, document=scene_document, overrides=overrides)
+    from software.scene.pipeline.tasks.policy import task_modes
+    _, modes = task_modes(read_yaml(scene_path))
     if frozen_mapping:
         scene = replace(scene, mode='shared_front' if len(frozen_mapping) == 1 else 'dual',
                         reference_arm=manifest.get('mapping_reference_arm', next(iter(frozen_mapping))))
@@ -85,7 +89,9 @@ def _target_report(directory: Path, *, overrides: SceneOverrides | None,
             defaults=list(DEFAULT_SOURCES),
             scene=str(scene_path) if scene_path.is_file() else None, declarations=declarations,
             override=overrides.snapshot() if overrides else None),
-        effective=dict(mode=scene.mode, reference_arm=scene.reference_arm,
+        effective=dict(mode=scene.mode, reconstruction_mode=scene.reconstruction_mode,
+            task_reconstruction_modes=modes,
+            reference_arm=scene.reference_arm,
             tag_layout=str(scene.tag_layout) if scene.tag_layout else None,
             environment_tag_policy=scene.environment_tag_policy,
             trajectory=scene.trajectory.snapshot(),

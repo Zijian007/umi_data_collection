@@ -13,7 +13,7 @@ from scipy.spatial.transform import Rotation
 
 from software.trajectory.reporting import map_data
 from software.scene.spatial import slam
-from software.viewer import maps
+from software.viewer.resources import maps
 
 
 class SharedMapTests(unittest.TestCase):

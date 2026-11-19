@@ -6,5 +6,5 @@ arms:
       front: measured
       rear: factory
     gripper:
-      tcp: tcp_camera.json
-      tag_distance: tag_distance.json
+      tcp: ../tcp_camera.json       # kits/ 根目录共享安装几何
+      tag_distance: ../tag_distance.json  # kits/ 根目录共享标签尺寸

@@ -1,0 +1,129 @@
+"""场景与独立图共用的海报因子；从原场景实现提取，保留解析 Jacobian。"""
+import numpy as np
+from scipy.spatial.transform import Rotation
+
+from software.vision.poster.geometry import PosterGeometryError, residual_and_jacobians, rotation_correction_jacobian
+from software.vision.poster.quality import corner_sigma_px
+
+
+def skew(point):
+    x, y, z = point
+    return np.array([[0., -z, y], [z, 0., -x], [-y, x, 0.]])
+
+
+def natural_track_error(state, pose_key, point_key, T_camera_imu, model, observed):
+    """Return one natural-feature reprojection residual and its Jacobians.
+
+    The point is expressed in the graph world frame and the pose maps IMU
+    coordinates to that world frame, as in the inertial graph. GTSAM's Pose3 right
+    perturbation is used here as in :func:`residual_and_jacobians`, so the
+    factor can share the same state with tag corners without introducing a
+    second trajectory representation.
+    """
+    body = state.atPose3(pose_key).matrix()
+    point = np.asarray(state.atPoint3(point_key), dtype=float)
+    in_body = body[:3, :3].T @ (point - body[:3, 3])
+    in_camera = T_camera_imu[:3, :3] @ in_body + T_camera_imu[:3, 3]
+    projection = model.project_jacobian(in_camera[None, ...])[0]
+    residual = model.project(in_camera[None, ...])[0] - np.asarray(observed, dtype=float)
+    body_twist = np.concatenate((skew(in_body), -np.eye(3)), axis=1)
+    pose_jacobian = projection @ T_camera_imu[:3, :3] @ body_twist
+    point_jacobian = projection @ T_camera_imu[:3, :3] @ body[:3, :3].T
+    return residual, pose_jacobian, point_jacobian
+
+
+def add_natural_track_factors(graph, values, *, pose_key_fn, point_key_fn,
+                              T_camera_imu, model, tracks, sigma_px=1.5,
+                              huber=2.0):
+    """Insert robust reprojection factors for task-local natural tracks.
+
+    Each track dictionary contains ``track_id``, ``node_indices``, ``pixels``
+    and ``initial_point_m``.  The landmark is shared by all observations of a
+    track, while every observation connects to the arm's inertial pose node.
+    """
+    import gtsam
+
+    noise = gtsam.noiseModel.Robust.Create(
+        gtsam.noiseModel.mEstimator.Huber.Create(float(huber)),
+        gtsam.noiseModel.Isotropic.Sigma(2, float(sigma_px)))
+    for track in tracks:
+        point_key = point_key_fn(int(track['track_id']))
+        values.insert(point_key, gtsam.Point3(*np.asarray(track['initial_point_m'], dtype=float)))
+        for node, observed in zip(track['node_indices'], track['pixels']):
+            pose_key = pose_key_fn(int(node))
+
+            def error(factor, state, jacobians, observed=observed, pose_key=pose_key,
+                      point_key=point_key):
+                residual, pose_jacobian, point_jacobian = natural_track_error(
+                    state, pose_key, point_key, T_camera_imu, model, observed)
+                if jacobians is not None:
+                    jacobians[0] = pose_jacobian
+                    jacobians[1] = point_jacobian
+                return residual
+
+            graph.add(gtsam.CustomFactor(noise, [pose_key, point_key], error))
+
+
+def rear_rotation_error(state, pose_key, board_key, seat_key, base_ext, corners, observed, model):
+    body, board = state.atPose3(pose_key).matrix(), state.atPose3(board_key).matrix()
+    correction = state.atRot3(seat_key).matrix()
+    ext = base_ext.copy()
+    ext[:3, :3] = correction @ base_ext[:3, :3]
+    residual, body_jac, board_jac, projection, in_body = residual_and_jacobians(
+        body, board, ext, corners, observed, model, return_projection=True)
+    seat_jac = rotation_correction_jacobian(correction, base_ext[:3, :3], in_body, projection)
+    return residual, body_jac, board_jac, seat_jac
+
+
+def add_rear_seat(graph, values, rear_key, parameters):
+    import gtsam
+    if parameters.tag_rear_rotation_refinement_enabled:
+        values.insert(rear_key, gtsam.Rot3())
+        graph.add(gtsam.PriorFactorRot3(rear_key, gtsam.Rot3(),
+            gtsam.noiseModel.Isotropic.Sigma(3, parameters.tag_rear_rotation_prior_sigma_rad)))
+
+
+def add_tag_factors(graph, *, pose_key, board_key, rear_key, base_ext, model, points, pixels,
+                    tag_indices, parameters):
+    import gtsam
+    enabled = parameters.tag_rear_rotation_refinement_enabled
+    for node, corners, observed in zip(tag_indices, points, pixels):
+        noise = gtsam.noiseModel.Robust.Create(
+            gtsam.noiseModel.mEstimator.Huber.Create(parameters.tag_huber),
+            gtsam.noiseModel.Diagonal.Sigmas(np.repeat(corner_sigma_px(observed, model, parameters), 2)))
+
+        def error(factor, state, jacobians, corners=corners, observed=observed):
+            if enabled:
+                residual, *derivatives = rear_rotation_error(state, *factor.keys(), base_ext, corners, observed, model)
+            else:
+                residual, *derivatives = residual_and_jacobians(
+                    state.atPose3(factor.keys()[0]).matrix(), state.atPose3(board_key).matrix(),
+                    base_ext, corners, observed, model)
+            if jacobians is not None:
+                for i, derivative in enumerate(derivatives):
+                    jacobians[i] = derivative
+            return residual
+
+        keys = [pose_key(int(node)), board_key] + ([rear_key] if enabled else [])
+        graph.add(gtsam.CustomFactor(noise, keys, error))
+
+
+def solved_rear_extrinsic(optimized, rear_key, base_ext, parameters):
+    final_ext = base_ext.copy()
+    correction_deg = 0.
+    if parameters.tag_rear_rotation_refinement_enabled:
+        correction = optimized.atRot3(rear_key).matrix()
+        final_ext[:3, :3] = correction @ base_ext[:3, :3]
+        correction_deg = float(np.degrees(Rotation.from_matrix(correction).magnitude()))
+    return final_ext, correction_deg
+
+
+def rear_rotation_evidence(correction_deg, parameters):
+    evidence = dict(enabled=parameters.tag_rear_rotation_refinement_enabled,
+        prior_sigma_rad=parameters.tag_rear_rotation_prior_sigma_rad,
+        maximum_correction_deg=parameters.tag_rear_rotation_maximum_correction_deg,
+        correction_deg=correction_deg)
+    if not np.isfinite(correction_deg) or correction_deg > parameters.tag_rear_rotation_maximum_correction_deg:
+        raise PosterGeometryError(f'环境镜头旋转修正超限：{correction_deg:.3f} deg',
+                                  metrics=dict(rear_rotation_refinement=evidence))
+    return evidence

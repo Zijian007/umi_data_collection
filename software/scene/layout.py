@@ -6,10 +6,11 @@ import os
 
 from software.infrastructure import provenance
 from software.infrastructure.file_store import locked as storage_lock, read_yaml
+from software.scene.management.collection_schema import normalize_collection
 
 
 INTERNAL = '.pipeline'
-TASK_FIELDS = {'instruction', 'expected_arms', 'synchronization', 'map_version', 'map_epoch'}
+TASK_FIELDS = {'instruction', 'expected_arms', 'synchronization', 'map_version', 'map_epoch', 'reconstruction'}
 LEGACY_USER_FILES = {'scene.yaml', 'batch.yaml', 'task.yaml'}
 
 
@@ -82,14 +83,14 @@ def task_configuration(root: Path) -> dict:
     collection = batch / 'collection.yaml'
     if not collection.is_file():
         return {}
-    tasks = read_yaml(collection).get('tasks', {})
+    tasks = normalize_collection(read_yaml(collection)).get('tasks', {})
     if not isinstance(tasks, dict):
         raise ValueError('collection.yaml 的 tasks 必须是配置表')
     declaration = tasks.get(root.name, {})
     if not isinstance(declaration, dict):
         raise ValueError(f'collection.yaml 的 tasks.{root.name} 必须是配置表')
     if declaration.keys() - TASK_FIELDS:
-        raise ValueError('collection.yaml 的任务只允许 instruction、expected_arms、synchronization、map_epoch 和 map_version')
+        raise ValueError('collection.yaml 的任务只允许 instruction、arms、synchronization、map.epoch、map.version 和 reconstruction.backend')
     return declaration
 
 

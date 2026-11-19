@@ -69,7 +69,7 @@ class FusionRegressionTests(unittest.TestCase):
         path = self.root/'parameters.json'
         path.write_text(json.dumps(asdict(parameters)))
         output = self.root/'out'
-        command = [sys.executable, '-m', 'software.trajectory.algorithms.fusion_cli', str(self.frames), str(self.frames), str(self.imu),
+        command = [sys.executable, '-m', 'software.trajectory.algorithms.fusion.cli', str(self.frames), str(self.frames), str(self.imu),
                    str(self.camera['cam_time_offset_ns']), '.500794,.498606,-.501155,.499441', str(output),
                    '--lever_prior', '.0147,-.0093,-.0163', '--calibration', str(camera), '--parameters', str(path)]
         if refine:
@@ -139,8 +139,8 @@ class FusionRegressionTests(unittest.TestCase):
         np.testing.assert_allclose(info['front_lever_prior'], lever.round(4))
 
     def test_library_calls_are_isolated_and_do_not_write_outputs(self):
-        from software.trajectory.algorithms.fusion import solve
-        from software.trajectory.algorithms.fusion_data import load_inputs
+        from software.trajectory.algorithms.fusion.solver import solve
+        from software.trajectory.algorithms.fusion.data import load_inputs
         inputs = load_inputs(front_frames=self.frames, rear_frames=self.frames, imu_csv=self.imu,
             camera_json=assets.SAMPLE_CAMERA_JSON, offset_ns=self.camera['cam_time_offset_ns'],
             rear_quaternion=[.500794,.498606,-.501155,.499441], rear_lever=[.0147,-.0093,-.0163], use_rear=False)
@@ -155,8 +155,8 @@ class FusionRegressionTests(unittest.TestCase):
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.root.iterdir()})
 
     def test_dual_mode_uses_both_physically_consistent_lens_observations(self):
-        from software.trajectory.algorithms.fusion import solve
-        from software.trajectory.algorithms.fusion_data import load_inputs
+        from software.trajectory.algorithms.fusion.solver import solve
+        from software.trajectory.algorithms.fusion.data import load_inputs
 
         rear_quaternion = [.500794, .498606, -.501155, .499441]
         rear_rotation = Rot.from_quat(rear_quaternion).as_matrix()
@@ -185,7 +185,7 @@ class FusionRegressionTests(unittest.TestCase):
         path = self.root/'parameters.json'
         path.write_text(json.dumps(asdict(config.load('trajectory').values)))
         output = self.root/'signed'
-        command = [sys.executable, '-m', 'software.trajectory.algorithms.fusion_cli', str(self.frames), str(self.frames), str(self.imu),
+        command = [sys.executable, '-m', 'software.trajectory.algorithms.fusion.cli', str(self.frames), str(self.frames), str(self.imu),
                    str(self.camera['cam_time_offset_ns']), '-.500794,-.498606,.501155,-.499441', str(output),
                    '--lever_prior', '-.0147,.0093,.0163', '--calibration', str(assets.SAMPLE_CAMERA_JSON), '--parameters', str(path)]
         process = subprocess.run(command, capture_output=True, text=True, timeout=60)
@@ -193,7 +193,7 @@ class FusionRegressionTests(unittest.TestCase):
         self.assertTrue((output/'traj_tum.txt').is_file())
 
     def test_failed_initialization_writes_evidence_without_trajectory(self):
-        from software.trajectory.algorithms.fusion_cli import main
+        from software.trajectory.algorithms.fusion.cli import main
         with self.frames.open() as stream:
             rows = list(csv.DictReader(stream))
         with self.frames.open('w') as stream:

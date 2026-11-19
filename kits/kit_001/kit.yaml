@@ -6,13 +6,13 @@ arms:
       front: measured
       rear: measured
     gripper:
-      tcp: tcp_camera.json
-      tag_distance: tag_distance.json
+      tcp: ../tcp_camera.json       # kits/ 根目录共享安装几何
+      tag_distance: ../tag_distance.json  # kits/ 根目录共享标签尺寸
   left:
     serial: IAQEB2609JPAR3
     intrinsics:
       front: measured
       rear: measured
     gripper:
-      tcp: tcp_camera.json
-      tag_distance: tag_distance.json
+      tcp: ../tcp_camera.json
+      tag_distance: ../tag_distance.json

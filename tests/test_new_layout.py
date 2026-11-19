@@ -1,5 +1,5 @@
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import kit_inputs
+from software.scene.management.inputs import kit as kit_inputs
 """全局套件复用、扁平场景批次以及原片到训练包的业务回归。"""
 from software.infrastructure import provenance as artifact_identity
 import json
@@ -10,12 +10,14 @@ from unittest.mock import patch
 
 from software.camera import registry
 from software.scene import layout
-from software.dataset.export import build, load_episode
-from software.scene.management import episodes, ingest, batch_inputs, episode_inputs, scene_inputs
+from software.dataset.export import build
+from software.dataset.reader import load_episode
+from software.scene.management import episodes, ingest
+from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs, scene as scene_inputs
 from software.scene import workflow
 from software.infrastructure.file_store import write_yaml
-from software.viewer.data import RecordingCatalog
-from software.viewer.episodes import capture_status
+from software.viewer.results.catalog import RecordingCatalog
+from software.viewer.results.episodes import capture_status
 from software.scene.management import processing
 import shutil
 import tempfile
@@ -99,8 +101,10 @@ class NewLayoutTests(unittest.TestCase):
                                          gripper=dict(tcp='tcp_camera.json'))})
         batch = scene / 'morning'
         declaration = batch / 'collection.yaml'
-        write_yaml(declaration, dict(schema_version=1,
-                     scene=dict(layout='shared', map_reference_arm='right'), kit='single'))
+        write_yaml(declaration, dict(kit='single', recording=dict(arms=['right']),
+                     scene=dict(description=''),
+                     map=dict(layout='shared', reference_arm='right', selection=dict(policy='latest_prior')),
+                     reconstruction=dict(backend='scene_map')))
         mapping = batch / 'mapping/map.insv'
         mapping.parent.mkdir()
         mapping.write_text('right_mapping')

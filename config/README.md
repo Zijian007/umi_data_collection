@@ -17,7 +17,7 @@
 
 ## 用户日常配置
 
-普通使用只维护项目根目录的 `config/user.yaml`。用户只需要打开或关闭功能；算法细节仍在内部配置文件中。`schema_version: 2` 是当前格式，旧的 schema 1 仍可读取。
+普通使用只维护项目根目录的 `config/user.yaml`。用户只需要打开或关闭功能；算法细节仍在内部配置文件中。`schema_version: 2` 是当前 collection.yaml 格式，旧的 collection schema 不再读取。
 
 ```yaml
 schema_version: 2
@@ -96,7 +96,7 @@ map_max_points: 20000
 
 ## 算法参数归属
 
-标定和单段轨迹抽取共用 [software/configuration/loader.py](../software/configuration/loader.py) 加载配置。场景流程由 `software/scene/management/scene_inputs.py` 加载场景参数，并复用轨迹配置。数值默认值集中在下面的 YAML 中。
+标定和单段轨迹抽取共用 [software/configuration/loader.py](../software/configuration/loader.py) 加载配置。场景流程由 `software/scene/management/inputs/scene.py` 加载场景参数，并复用轨迹配置。数值默认值集中在下面的 YAML 中。
 
 | 内容 | 管理位置 | 生效范围 |
 |---|---|---|
@@ -109,7 +109,7 @@ map_max_points: 20000
 | 输入/输出路径、CPU、并行数、保留中间文件 | 命令行请求 | 只影响执行方式，不写入算法配置 |
 | 原片规格、标定区域、像素变换与派生帧率规则 | `software/camera/x3/frame.py` | 相机图像规格；在结果中记录 |
 
-`config/algorithms/scene_parameters.yaml` 保存算法默认参数；推荐由批次 `collection.yaml` 的 `scene` 保存具体布局、地图参考手、标签布局和描述，并用 `map_policy: latest_prior` 固定多地图选择规则；一次专家实验的算法覆盖写入 `--expert-config` 指定的文件。建图原片位于各批次 `mapping/`，设备与地图快照保存在该批次 `.pipeline/manifest.yaml`。
+`config/algorithms/scene_parameters.yaml` 保存算法默认参数；批次 `collection.yaml` 的 `map` 保存地图布局/参考手/选择规则，`environment_poster` 保存标签布局和用途开关，`scene` 保存描述；一次专家实验的算法覆盖写入 `--expert-config` 指定的文件。建图原片位于各批次 `mapping/`，设备与地图快照保存在该批次 `.pipeline/manifest.yaml`。
 
 每个批次只有一个 `.pipeline/`：`maps/` 保存本批次的地图版本、当前指针和建图缓存，`tasks/<任务>/` 保存任务原片清单、状态、缓存和运行历史。不同批次不自动选择彼此的地图；显式指定 `map_version` 时冻结该版本到本批次。
 
@@ -118,7 +118,7 @@ map_max_points: 20000
 ```yaml
 instruction: 拿起盒子，放到托盘上
 # 双手批次中这次只使用右手时声明；否则继承批次设置
-expected_arms: [right]
+arms: [right]
 ```
 
 任务人工选项只能写在批次根目录 `collection.yaml.tasks.<take>`；`.pipeline/tasks/<take>/episode.yaml` 由程序生成并冻结原片身份。
@@ -211,7 +211,7 @@ trajectory:
 
 `calibration.board` 只配置板检测和评估算法。板布局由 [`hardware/calibration_targets/aprilgrid.json`](../hardware/calibration_targets/aprilgrid.json) 定义，打印文件见 [标定板说明](../hardware/calibration_targets/README.md)；本次实测标签边长通过 `--tag-size-mm` 输入，无需修改板配置。
 
-表中的 `calibration.*`、`trajectory.*` 表示所属文件；文件内直接写 `board:`、`fusion:` 等映射，参数使用两个空格缩进。场景专家覆盖使用 `parameters.pairing`、`parameters.mapping`、`parameters.placement`、`parameters.localization`、`parameters.fusion`、`parameters.measurements` 和 `parameters.diagnostics`。字段名尽量带单位：`_m`、`_mm`、`_px`、`_s`、`_deg`、`_rad_s`。IMU 噪声使用现有 Basalt/GTSAM 连续时间模型的单位，四个 noise/RW 值不能为零。
+表中的 `calibration.*`、`trajectory.*` 表示所属文件；文件内直接写 `board:`、`fusion:` 等映射，参数使用两个空格缩进。场景专家覆盖使用 `parameters.pairing`、`parameters.mapping`、`parameters.placement`、`parameters.localization`、`parameters.poster_independent`、`parameters.fusion`、`parameters.measurements` 和 `parameters.diagnostics`。字段名尽量带单位：`_m`、`_mm`、`_px`、`_s`、`_deg`、`_rad_s`。IMU 噪声使用现有 Basalt/GTSAM 连续时间模型的单位，四个 noise/RW 值不能为零。
 
 C 段可以独立指定轨迹实验配置。在标定覆盖文件中写：
 
@@ -271,6 +271,10 @@ C 固定覆盖 `input.mode: handheld` 和 `environment_tags.tag_fusion_enabled: 
 这些参数参与任务结果身份，不参与建图身份。原片检测缓存仅由原片内容和检测器决定；测量、阈值和输出时间轴变化会复用检测。宽度报告统一保存在 episode.json，格式见[训练数据](../docs/训练数据.md#夹爪宽度标定与接入)。
 
 ## 重试与配置校验
+
+`trajectory.retry.use_poster_position_support` 默认开启。当实际完成海报融合、具有至少 `tag_minimum_frames` 个几何合格的精确观测时刻时，重试用自然视觉与海报共同位置支持的最大缺口判断覆盖是否足够；上限为 `maximum_position_support_gap_s`（默认 2 s）。场景 `poster_independent` 后端使用 `parameters.poster_independent.maximum_position_support_gap_s`（默认 2 s），使重试与最终验收一致；旧单手局部回退仍使用 `localization.maximum_visual_gap_s`。双手重力夹角由 `parameters.poster_independent.maximum_gravity_difference_deg`（默认 5°）独立控制，不再复用地图放置门槛。稀疏标签只按真实时刻参与缺口检查，不能冒充逐帧观测。关闭此项或历史结果缺证据时，仍使用 `minimum_full_fraction`；尺度硬保护、放置数量和异常处理继续生效。这些是选轮目标，耗尽次数后的最佳有效结果仍须通过任务最终验收。
+
+`attempts.json` 保留自然视觉的 `full_fraction`，另记 `coverage_basis`、`position_coverage_passed`、`position_support_fraction` 和 `maximum_position_support_gap_s`。多轮先比较放置数量，再比较覆盖是否通过及所用覆盖比例；原始视觉覆盖保留为后续比较依据。
 
 `trajectory.retry.maximum_scale_change_ratio` 控制重建的尺度发散保护：每个有位置约束的分段比较融合后尺度与自身初始化，使用 `max(后/前, 前/后)`，不同地图之间不直接比较。默认上限为 2 倍，超限轮次重试且不得选中，全部轮次不合格则失败。它不修改融合解，也不放宽 `calibration.checks`；当前上限是粗粒度保护，尚需多录像检验。C 的运行记录保存每轮视觉、对齐和尺度诊断，验收前保留子进程工作数据。
 
@@ -372,7 +376,7 @@ Basalt/ORB/OpenCV/GTSAM 内部尚未暴露的参数，通过当前引擎内容/�
 
 ### 环境海报参与任务融合
 
-在批次 `collection.yaml` 的 `scene.tags` 中声明环境标签布局和用途开关（路径相对场景根目录）。用户配置统一使用 `enabled` 字段：
+在批次 `collection.yaml` 的 `environment_poster` 中声明环境标签布局和用途开关（路径相对场景根目录）。用户配置统一使用 `enabled` 字段：
 
 ```yaml
 scene:
@@ -392,8 +396,18 @@ scene:
 
 `tag_minimum_side_px` / `tag_minimum_frames` 筛选像素尺寸和独立观测时刻；`tag_corner_sigma_px` / `tag_sigma_per_radius_px` 设置角点噪声；`tag_huber` 是每 ID 四角点共同的鲁棒核阈值；`tag_maximum_reprojection_rms_px` 检查初始化和最终像素残差。默认值只经合成数据验证。无足够观测保留基线，启用后的几何冲突明确失败。每段录像独立求解海报位姿，海报在录像内须静止、平整；任务融合本身不会改变已发布地图尺度；建图修正由下述开关单独控制。打印尺寸状态仍为 PDF 设计值，需核对成品尺寸后评估实拍效果。
 
+`tag_maximum_position_std_m`（默认 0.05 m）和 `tag_maximum_rotation_std_deg`（默认 5°）筛查固定海报/标定下的局部线性化约束强度；不表示真实轨迹精度。独立、场景 `staged/joint` 共用几何诊断，`poster_independent` 用通过筛查的观测评估共同位置支持缺口。场景单次覆盖使用 `parameters.fusion.environment_tags.maximum_position_std_m` / `maximum_rotation_std_deg`；内部独立引擎使用 `--config` 文件的 `environment_tags.tag_maximum_position_std_m` / `tag_maximum_rotation_std_deg`。输出字段与实测流程见[海报约束质量](../docs/场景处理.md#海报约束质量和双手实测评估)。
+
+剔除预算统一使用 `tag_maximum_cull_fraction`（默认 0.15，数量上限向上取整，0 关闭剔除）、`tag_minimum_retained_time_fraction`（默认 0.8）和剩余最少帧数。建图尺度、场景单手/共享图及独立图共用规则；一次求解至多一轮剔除，不能递归重置预算。场景单次覆盖路径是 `parameters.fusion.environment_tags.culling.maximum_fraction` / `minimum_retained_time_fraction`，两项是共享海报规则，也影响本次建图尺度估计。记录保留 `culling` 的阶段、预算、时间跨度及移除的原始观测索引/帧/ID/时刻；时刻沿用各求解器时钟。优化后仍有超过逐标签剔除门槛的观测、且无法在本轮预算内处理时，拒绝融合。
+
+rear 旋转修正改为共享因子实现：`tag_rear_rotation_refinement_enabled` 默认 true，`tag_rear_rotation_prior_sigma_rad` 默认 0.2 rad（沿用原先验），`tag_rear_rotation_maximum_correction_deg` 默认 5°。关闭时严格固定标定外参，不创建修正变量；开启后超限拒绝，不裁剪修正角再发布。场景覆盖路径是 `parameters.fusion.environment_tags.rear_rotation_refinement.enabled` / `prior_sigma_rad` / `maximum_correction_deg`；内部独立引擎在 `--config` 的 `environment_tags` 下覆盖原字段名。强度与上限为实验默认值，不代替标定精度测量；结果 `rear_rotation_refinement` 记录实际配置与修正角。
+
 
 ### 建图海报尺度
+
+任务估计后端由 `collection.yaml.reconstruction.backend` 选择，可由 `tasks.<take>.reconstruction.backend` 覆盖：`scene_map`（默认）沿用场景地图流程；`poster_independent` 用本录像独立重建并持续融合海报，统一为任务海报坐标；`poster_vio` 从本任务海报角点建立 PnP 种子，并在无预建地图的联合图中优化海报、IMU 和自然特征；`auto` 有可用地图时按 `scene_map → poster_vio → poster_independent` 尝试，地图缺失、损坏或不兼容时从 `poster_vio` 开始，只有明确质量失败才继续降级。无地图后端要求 `environment_poster.detection.enabled`、布局和 `task_constraint.enabled`，不要求 mapping 原片。`task_constraint.method: staged|joint` 仍只选择场景地图后端的海报图初值；`map.layout: auto` 只推断地图布局，与后端自动回退不同。具体边界见[估计后端说明](../docs/场景处理.md#选择轨迹估计后端)。
+
+`parameters.poster_vio` 的 `initialization` 管理整板/标签子集假设上限；`keyframes` 管理时间、位移和旋转选帧，间隔为 0 时保留逐帧对照；`frontend` 管理活动点、轨迹预算、长度、几何筛选及有界重关联；`culling` 管理短求解迭代、热启动重求解轮数和累计剔除预算；`holdout` 管理标签/自然像素留出及验收 RMS。默认值见 `algorithms/scene_parameters.yaml`，完整覆盖示例及证据边界见[场景处理](../docs/场景处理.md#选择轨迹估计后端)。
 
 `tags.mapping.scale.enabled: true` 开启建图阶段的标签尺度诊断和尺度融合；它要求 `tags.enabled: true` 与 `tags.mapping.enabled: true`，并要求建图设备可解析正式 rear 参数或工厂兜底。修正后固定新尺度重求重力与零偏，并复核整图惯性残差；地图形状保持原值。
 
@@ -402,6 +416,6 @@ scene:
 
 ### 独立模式与回退的海报配置
 
-独立命令用 `--tag-layout` 指定布局，可用 `--rear-calibration rear_<hash>` 绑定正式 rear，省略时尝试工厂兜底；环境海报数值默认来自 `environment_tags.yaml`，需要实验时通过 `--expert-config` 的 `trajectory.environment_tags` 覆盖。默认只诊断，启用需要本设备可用的 rear 参数（正式标定或工厂兜底）；这些参数不自动开启标定 C 验证或共享场景的标签约束。
+内部独立引擎用 `--tag-layout` 指定布局，`--rear-calibration measured|factory` 选择本设备 rear 来源，省略时尝试工厂兜底；环境海报数值默认来自 `environment_tags.yaml`，实验覆盖通过 `--config` 文件的 `environment_tags` 映射传入。默认只诊断，启用需要本设备可用的 rear 参数（正式标定或工厂兜底）；这些参数不自动开启标定 C 验证或共享场景的标签约束。
 
-共享任务的日常开关使用 `collection.yaml.scene.tags.enabled`、`mapping.enabled`、`mapping.scale.enabled` 和 `fusion.enabled`；`fusion.method` 可选 `staged` 或 `joint`，默认 `staged`。`staged` 先完成地图+IMU 基线，再进行海报优化；`joint` 用视觉种子直接构建包含地图先验、IMU 和海报角点的最终图。环境海报几何数值统一来自 `environment_tags.yaml`，场景专属建图参数仍由 `scene_parameters.yaml` 提供。单手质量失败后的独立回退显式沿用同一套标签策略，避免回退时悄悄丢掉已启用的海报约束。
+共享任务的日常开关使用 `collection.yaml.environment_poster.detection.enabled`、`mapping.enabled`、`mapping.scale_correction.enabled` 和 `task_constraint.enabled`；`task_constraint.method` 可选 `staged` 或 `joint`，默认 `staged`。`staged` 先完成地图+IMU 基线，再进行海报优化；`joint` 用视觉种子直接构建包含地图先验、IMU 和海报角点的最终图。环境海报几何数值统一来自 `environment_tags.yaml`，场景专属建图参数仍由 `scene_parameters.yaml` 提供。单手质量失败后的独立回退显式沿用同一套标签策略，避免回退时悄悄丢掉已启用的海报约束。

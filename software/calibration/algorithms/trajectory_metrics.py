@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import numpy as np
+from scipy.spatial.transform import Rotation
+
+from software.camera.geometry import validate_transform
 
 from software.configuration import loader as config
 
@@ -10,6 +13,24 @@ from software.configuration import loader as config
 # Text timestamp precision and a numerical degeneracy guard, not accuracy thresholds.
 TIME_MATCH_TOLERANCE_NS = 1000
 MINIMUM_TRAJECTORY_SPREAD_M = 1e-6
+
+
+def relative_pose_errors(reference, measured) -> dict:
+    """实测固定双 TCP 参考下的绝对相对位姿误差；不拟合 SE3/Sim3。"""
+    reference = validate_transform(reference)
+    measured = np.asarray(measured, float)
+    if measured.ndim != 3 or measured.shape[1:] != (4, 4) or not len(measured):
+        raise ValueError('相对位姿参考比较需要非空 N×4×4 轨迹')
+    for pose in measured:
+        validate_transform(pose)
+    position = np.linalg.norm(measured[:, :3, 3] - reference[:3, 3], axis=1)
+    rotation = np.degrees(Rotation.from_matrix(reference[:3, :3].T @ measured[:, :3, :3]).magnitude())
+
+    def metrics(errors):
+        return dict(rms=float(np.sqrt(np.mean(errors**2))), p95=float(np.percentile(errors, 95)),
+                    maximum=float(errors.max()))
+
+    return dict(position_error_m=metrics(position), rotation_error_deg=metrics(rotation), alignment='none')
 
 
 def umeyama(src, dst, with_scale=True):

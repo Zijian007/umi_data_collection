@@ -16,9 +16,9 @@ from scipy.spatial.transform import Rotation
 from software.configuration import loader as config
 from software.infrastructure import provenance
 from software.camera.x3.frame import output_frame_rate
-from software.trajectory.algorithms.fusion_alignment import AlignmentError, align_recording
+from software.trajectory.algorithms.fusion.alignment import AlignmentError, align_recording
 from software.trajectory.algorithms.inertial import integrate_gyro_rotation
-from software.trajectory.algorithms.fusion_data import load_inputs
+from software.trajectory.algorithms.fusion.data import load_inputs
 from software.trajectory.calibration.assets import read_basalt
 
 

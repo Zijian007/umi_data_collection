@@ -28,6 +28,18 @@ ALGORITHM_DIRECTORY = CONFIG_ROOT / 'algorithms'
 SCHEMA_VERSION = 1
 
 
+def validate_environment_tags(parameters) -> None:
+    """场景与独立轨迹共用的海报参数关系检查。标量类型在各入口解码。"""
+    if parameters.tag_minimum_frames < 3:
+        raise ValueError('tag_minimum_frames 至少为 3')
+    if not 0 <= parameters.tag_maximum_cull_fraction < 1:
+        raise ValueError('tag_maximum_cull_fraction 必须在 [0, 1) 内')
+    if not 0 < parameters.tag_minimum_retained_time_fraction <= 1:
+        raise ValueError('tag_minimum_retained_time_fraction 必须在 (0, 1] 内')
+    if not 0 < parameters.tag_rear_rotation_maximum_correction_deg <= 180:
+        raise ValueError('tag_rear_rotation_maximum_correction_deg 必须在 (0, 180] 内')
+
+
 def merge_overrides(base: dict, overlay: dict, prefix: str = '') -> dict:
     result = dict(base)
     for name, value in overlay.items():
@@ -76,7 +88,8 @@ def _validate_parameters(values) -> None:
     # 除以下明确允许关闭/零起点的量，其余算法数值必须为正。
     zero_allowed = {'crf', 'initial_tag_id', 'aruco_dictionary', 'segment_s',
                     'split_rotation_deg', 'refine_chain_pairs', 'group_scale_ratio',
-                    'minimum_full_fraction', 'minimum_mapping_fraction', 'maximum_leading_imu_s', 'tag_sigma_per_radius_px'}
+                    'minimum_full_fraction', 'minimum_mapping_fraction', 'maximum_leading_imu_s', 'tag_sigma_per_radius_px',
+                    'tag_maximum_cull_fraction'}
     def walk(parameter_group, prefix=''):
         for f in fields(parameter_group):
             v, key = getattr(parameter_group, f.name), prefix + f.name
@@ -89,8 +102,7 @@ def _validate_parameters(values) -> None:
     walk(values)
     if isinstance(values, TrajectoryParameters):
         p = values
-        if p.environment_tags.tag_minimum_frames < 3:
-            raise ValueError('environment_tags.tag_minimum_frames 至少为 3')
+        validate_environment_tags(p.environment_tags)
         if p.input.mode not in ('handheld', 'dual'):
             raise ValueError('input.mode 必须为 handheld 或 dual')
         validate_video_parameters(p.video)

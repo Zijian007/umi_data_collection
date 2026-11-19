@@ -28,9 +28,13 @@ QUICK_MODULES=(
     test_calibration_directory test_calibration_evidence test_calibration_metrics
     test_camera_frame test_camera_geometry test_compact_manifests
     test_coordinate_contracts test_effective_configuration test_file_hash
+    test_documentation_contracts
     test_fusion test_fusion_quality test_fusion_stability test_map_epochs
     test_operational_settings test_relocalization test_shared_alignment
     test_tag_board test_user_config test_video_parameters test_vision_boundaries
+    test_poster_vio_contract test_poster_vio_initialization test_poster_vio_frontend
+    test_poster_vio_refinement
+    test_poster_vio_specialist
 )
 
 usage() {

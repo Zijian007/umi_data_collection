@@ -11,10 +11,15 @@ from unittest.mock import patch
 from software.configuration import loader as config
 from software.calibration import cli as calibration_cli
 from software.scene import cli as scene_cli
-from software.scene.configuration import SceneOverrides, apply_overrides
+from software.scene.overrides import SceneOverrides, apply_overrides
 from software.scene.parameter_schema import nested_snapshot
 from software.infrastructure.file_store import read_yaml
-from software.scene.management import batch_inputs, episode_inputs, kit_inputs, scene_inputs
+from software.scene.management.inputs import (
+    batch as batch_inputs,
+    episode as episode_inputs,
+    kit as kit_inputs,
+    scene as scene_inputs,
+)
 from software.infrastructure.file_store import write_yaml
 from software.viewer import server
 
@@ -27,7 +32,10 @@ class EffectiveConfigurationTests(unittest.TestCase):
 
     def test_scene_precedence_and_immutable_loaded_overlay(self):
         scene_path = self.root/'batch/collection.yaml'
-        write_yaml(scene_path, dict(schema_version=1, scene=dict(layout='shared', map_reference_arm='left'), kit='rig'))
+        write_yaml(scene_path, dict(scene=dict(description='test'), kit='rig',
+                                    recording=dict(arms=['left', 'right']),
+                                    map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
+                                    reconstruction=dict(backend='scene_map')))
         override_path = self.root/'override.yaml'
         write_yaml(override_path, dict(trajectory=dict(video=dict(frame_step=4, crf=15)),
                                       parameters=dict(measurements=dict(gripper_width=dict(max_gap_s=.8)))))
@@ -61,7 +69,10 @@ class EffectiveConfigurationTests(unittest.TestCase):
 
     def test_scene_show_config_never_processes_inputs(self):
         collection = self.root/'batch/collection.yaml'
-        write_yaml(collection, dict(schema_version=1, scene=dict(layout='shared', map_reference_arm='left'), kit='kit_001'))
+        write_yaml(collection, dict(scene=dict(description='test'), kit='kit_001',
+                                    recording=dict(arms=['left', 'right']),
+                                    map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
+                                    reconstruction=dict(backend='scene_map')))
         before = {path: path.read_bytes() for path in self.root.rglob('*') if path.is_file()}
         with patch.object(scene_cli.processing, 'run') as run, redirect_stdout(io.StringIO()) as output:
             self.assertEqual(scene_cli.main(['run', str(collection.parent), '--show-config', '--force', '--dry-run']), 0)

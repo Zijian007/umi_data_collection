@@ -30,7 +30,7 @@ cli.main() → workflow.run_batch() → workflow.run_recording()
 
 初始化失败时，`debug/reconstruction/try_N/fuse/alignment_failure.json` 保存各段拒绝原因、门限、窗口估计和固定尺度下的速度衔接残差（`rms_m` 是位置等效残差，不是轨迹真值误差）。正常结果在 `fuse_info.json` 中保存 `sampling_stability`。结构化失败码仍为 `NO_USABLE_LENS`，不生成伪成功轨迹。若同一次任务的后续建图产生完全相同的融合输入，跳过重复融合并停止余下重试；外部程序崩溃、超时或输入改变仍按原策略重试。
 
-实验性的重力方向联合细化由底层 `fusion_cli` 的 `--refine-initialization` 或库函数 `solve(..., refine_initialization=True)` 显式启用。普通独立轨迹入口和共享场景默认不启用。它从线性初值出发，在重力球面上优化两个方向自由度，同时优化正尺度、加速度计零偏和节点速度；视觉位姿、陀螺零偏、外参和时间偏移固定。位置残差使用米，速度残差乘以中位区间时长后使用米，Huber 转折点沿用 `huber * position_sigma_m`，属于实验权重而不是完整协方差白化。
+实验性的重力方向联合细化由底层 `fusion.cli` 的 `--refine-initialization` 或库函数 `solve(..., refine_initialization=True)` 显式启用。普通独立轨迹入口和共享场景默认不启用。它从线性初值出发，在重力球面上优化两个方向自由度，同时优化正尺度、加速度计零偏和节点速度；视觉位姿、陀螺零偏、外参和时间偏移固定。位置残差使用米，速度残差乘以中位区间时长后使用米，Huber 转折点沿用 `huber * position_sigma_m`，属于实验权重而不是完整协方差白化。
 
 候选必须收敛、不触及尺度/零偏边界、原始链验收与采样稳定性通过，而且两个未参与拟合的错位视觉端点窗口均有更低的速度衔接残差，才允许替换初值。多条有效链共用零偏时暂不替换；短链、不可观测链及超过 128 个训练节点的链也不细化。保留原始自由重力值和尺度绝对不确定度，不把强制 9.81 的结果当成通过重力检查的证据。原始初始化失败时仅记录候选，仍拒绝输出轨迹。`linear_stage1` 和 `initialization_refinement` 保存前后对照。复核窗口与拟合共用 IMU，不是独立精度真值。
 
@@ -67,44 +67,38 @@ software/trajectory/
 │   ├── quality.py             跟踪统计、逐帧约束和可重评的质量提醒
 │   ├── reports.py             用户报告和终端摘要
 │   └── results.py             当前结果布局、发布与清理
-└── algorithms/                图优化求解器内核
-    ├── fusion.py              四阶段顺序入口 solve(...)
-    ├── fusion_alignment.py    跟踪段细分、可靠段筛选与镜头选择
-    ├── fusion_alignment_solver.py  线性尺度/重力求解与固定地图残差
-    ├── inertial.py            初始陀螺仪零偏、旋转积分与惯性预积分
-    ├── fusion_placement.py    地图段放置和分段
-    ├── fusion_graph.py        构建、优化因子图
-    ├── fusion_recovery.py     恢复全帧率状态
-    ├── fusion_factors.py      因子与解析 Jacobian
-    ├── fusion_data.py         输入输出数据结构与文件边界
-    ├── fusion_cli.py          独立求解 CLI
-    └── postprocess.py         编排 IMU → 相机/TCP、指标与预览
+└── algorithms/
+    ├── inertial.py            共用陀螺仪零偏、旋转积分与惯性预积分
+    ├── postprocess.py         IMU → 相机/TCP、指标与预览
+    └── fusion/                独立融合求解器各阶段，见下表
 ```
 
 `ReconstructionContext.visual` 将独立请求转换成不携带业务请求的 `VisualContext`。视觉程序、错误与路径由 `software/vision` 管理；外参和逐帧位姿右乘由 `software/camera/geometry.py` 管理；公共 TUM 读写位于 `software/trajectory/io/tum.py`。
 
 ## 融合模块
 
+库入口为 `from software.trajectory.algorithms.fusion.solver import solve`，子进程入口为 `python -m software.trajectory.algorithms.fusion.cli`。包初始化不转发 `solve`，也不导入数值求解器。
+
 ```text
-algorithms/
-├── fusion_cli.py        参数解析 → 读取 → 求解 → 写结果
-├── fusion_data.py       FusionInputs、FusionSolution、文件读写
-├── fusion.py            四阶段顺序入口 solve(inputs, parameters, log=...)
-├── fusion_alignment.py  跟踪段筛选与初始化编排 → AlignmentResult
-├── fusion_alignment_solver.py  线性尺度/重力求解、固定地图残差和对齐摘要
-├── inertial.py          初始陀螺仪零偏和区间预积分
-├── fusion_diagnostics.py  错位采样复核；只依赖求解层
-├── fusion_refinement.py 实验初始化细化；不反向调用初始化编排
-├── fusion_placement.py  地图段放置和分段 → MapPlacements
-├── fusion_graph.py      构建、优化因子图 → TrajectoryOptimizationResult
-├── fusion_recovery.py   恢复节点之间的全帧率状态 → FusionSolution
-├── fusion_factors.py    因子与解析 Jacobian，自检 selftest()
-└── postprocess.py       编排 IMU → 相机/TCP、指标、配置与预览输出
+algorithms/fusion/
+├── cli.py               参数解析 → 读取 → 求解 → 写结果
+├── data.py              FusionInputs、FusionSolution、文件读写
+├── solver.py            顺序入口 solve(inputs, parameters, log=...)
+├── alignment.py         跟踪段筛选与初始化编排 → AlignmentResult
+├── alignment_solver.py  线性尺度/重力求解、固定地图残差和对齐摘要
+├── diagnostics.py       错位采样复核；只依赖求解层
+├── refinement.py        实验初始化细化
+├── placement.py         地图段放置和分段 → MapPlacements
+├── graph.py             构建、优化因子图 → TrajectoryOptimizationResult
+├── recovery.py          恢复全帧率状态 → FusionSolution
+├── factors.py           视觉/惯性因子与解析 Jacobian，自检 selftest()
+├── poster.py            共享海报角点因子的独立图适配
+└── quality.py           尺度一致性与硬保护
 ```
 
 求解器可直接导入，不解析命令行、不打开录像、不创建输出。输入和输出显式传递；尺度、跟踪段、偏置、GTSAM 图与优化结果都属于单次调用。文件边界独立，`write_solution()` 保留原轨迹、辅助 CSV 及 JSON 字段。`state.csv` 中历史兼容列仍保留，其零值不代表这些量已被估计。
 
-算法内部使用视频秒。`FusionInputs.imu_video_clock` 已将 IMU 样本换到视频时钟，`FusionSolution.video_times_s` 与 `T_world_imu` 明确时间和位姿语义。`fusion_data` 在文件边界处理 EuRoC 人工 +1 秒，转换集中在 `software/camera/timing.py`；求解核心不处理文件时钟。
+算法内部使用视频秒。`FusionInputs.imu_video_clock` 已将 IMU 样本换到视频时钟，`FusionSolution.video_times_s` 与 `T_world_imu` 明确时间和位姿语义。`fusion.data` 在文件边界处理 EuRoC 人工 +1 秒，转换集中在 `software/camera/timing.py`；求解核心不处理文件时钟。
 
 `RefinedChains` 汇集细分后通过独立复核的区间、估计与诊断。`RecoveredState` 明确区分每帧位姿、速度和 IMU 零偏；全帧恢复与段尺度统计分别实现。外部融合程序返回的文件路径使用 `models.FusionArtifacts`，与算法内存中的 `FusionSolution` 分开。
 
@@ -113,7 +107,7 @@ algorithms/
 自检：
 
 ```bash
-.deps/env/bin/python -m software.trajectory.algorithms.fusion_cli --selftest
+.deps/env/bin/python -m software.trajectory.algorithms.fusion.cli --selftest
 ```
 
 ## 运行记录与结果读取
@@ -246,6 +240,10 @@ python -m software.trajectory /path/to/task.insv --mode dual --rear-calibration 
 
 独立 `handheld` / `dual` 支持 `--tag-layout FILE`，可加 `--rear-calibration measured` 选择本设备已登记的完整 rear 标定，要求序列号、参数来源和验收匹配。省略时按上述规则兜底，显式绑定损坏则拒绝。两种路径均冻结 rear 参数和来源到 `devices/rear/`；工厂转换不合格或元数据缺失时在预检失败，保留旧结果。指定资产默认只诊断；通过 YAML `environment_tags.tag_fusion_enabled: true` 显式启用。共享默认阈值在 `config/algorithms/environment_tags.yaml`，实验覆盖写在 `--expert-config` 的 `trajectory.environment_tags` 内。
 
-`pipeline/poster_assets.py` 冻结已选布局并缓存原始角点，不再选择镜头版本；`algorithms/fusion_poster.py` 在原生图中添加单板角点因子。原有地图分段尺度仍是变量，不把上一轮融合轨迹作为固定地图先验再平滑一次。真实 rear 观测时刻插入 IMU 节点；恢复全帧轨迹时使用这些实际时间节点。dual 地图定位也按镜头时差重采样，不跨丢帧/地图切换。没有海报观测时保持原图输出；仍需通过惯性初始化和原有质量验收。
+`pipeline/poster_assets.py` 冻结已选布局并缓存原始角点，不再选择镜头版本；`algorithms/fusion/poster.py` 在原生图中添加单板角点因子。原有地图分段尺度仍是变量，不把上一轮融合轨迹作为固定地图先验再平滑一次。真实 rear 观测时刻插入 IMU 节点；恢复全帧轨迹时使用这些实际时间节点。dual 地图定位也按镜头时差重采样，不跨丢帧/地图切换。没有海报观测时保持原图输出；仍需通过惯性初始化和原有质量验收。
+
+海报数量/时间剔除规则位于 `vision/poster/quality.py`；`vision/poster/factors.py` 从原场景实现提取旋转 seat、鲁棒角点因子及解析 Jacobian，场景与独立图共同使用。rear 修正可严格关闭，开启时检查修正角上限；单轮剔除可发生在种子或优化后，优化后重求解复用已有对齐、地图放置和基线，不重跑 SLAM。`reporting/quality.position_support_summary()` 将真实观测时刻的共同支持缺口传给重试；证据不全时保留原视觉覆盖规则，尺度硬保护继续生效。
 
 输出 `environment_poster/` 保存布局、rear 标定、角点和哈希清单，默认清理 debug 后仍保留。结果的 `fusion.environment_poster` 记录初始/最终像素残差、板位姿和状态，`actual_error` 仍为 `not_measured`。单手共享失败回退自动继承场景中的海报参数及冻结资产，结果仍使用独立局部坐标。
+
+实验性无预建地图的任务海报联合图见 [poster_vio 模块指南](poster_vio/README.md)，通过场景任务后端接入，不作为旧独立融合的初值方法。
