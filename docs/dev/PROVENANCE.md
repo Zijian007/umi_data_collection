@@ -20,7 +20,7 @@
 - `docs/安装与日常使用.md`、`docs/场景处理.md`、`docs/算法原理.md`、`docs/标定.md`（当初拷来时是四份平铺的说明，后来按两块功能收进这两个目录）
 - `docs/dev/QUICKSTART_X3_STREAM.md`
 
-初次导入时，上述路径里的算法文件与该提交逐字节相同；此后的修改按下文记录。本仓库另外加了 `docs/dev/todo.md`、本文件、`.gitignore`，以及 `software/trajectory/calib/README.md`（说明 `calibration_r1440.json` 是实验室给某一台 X3 标定的样例，不是厂家出厂标定，也不是众包默认标定）。
+初次导入时，上述路径里的算法文件与该提交逐字节相同；此后的修改按下文记录。本仓库另外加了 `docs/dev/todo.md`、本文件、`.gitignore`，以及 `software/trajectory/assets/samples/README.md`（说明 `calibration_r1440.json` 是实验室给某一台 X3 标定的样例，不是厂家出厂标定，也不是众包默认标定）。
 
 此后如果改融合、ORB-SLAM3 封装、X3 读取或 Basalt 标定，在本文件追加一笔：日期、改了什么、为什么改。
 
@@ -266,7 +266,7 @@ poster_vio 契约增加独立观测质量门槛：最小标签帧数、最大观
 
 ## 2026-10-18 入口按两块功能
 
-给人看的文档收成 `docs/标定/` 和 `docs/轨迹/`。根目录 `README.md` 先写标定、轨迹两条命令，再写同一台相机的五步。`software/trajectory/calib/` 的说明改成：这里是轨迹要读的样例标定和夹爪 CAD，不是 `umi-calib` 的产出。算法路径、`kiwi_fuse3s.py`、`KIWI_*`、`source: factory` 都没改。
+给人看的文档收成 `docs/标定/` 和 `docs/轨迹/`。根目录 `README.md` 先写标定、轨迹两条命令，再写同一台相机的五步。`software/trajectory/assets/samples/` 的说明改成：这里是轨迹要读的样例标定，不是 `umi-calib` 的产出；夹爪 CAD 后来迁入套件资产。算法路径、`kiwi_fuse3s.py`、`KIWI_*`、`source: factory` 都没改。
 
 
 ## 2026-10-22 标定外围流程整理

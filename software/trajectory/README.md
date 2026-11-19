@@ -37,7 +37,7 @@ cli.main() → workflow.run_batch() → workflow.run_recording()
 已有 `--keep-work` 输出可直接生成初始化对照报告，无需重新建图或生成轨迹：
 
 ```bash
-.deps/env/bin/python -m software.trajectory.reporting.initialization_review \
+.deps/env/bin/python -m software.trajectory.tools.initialization_review \
   --run-dir umi_traj_out/VID_20261111_183645_00_026 \
   --calibration registry/cameras/IAQEB26097M4CP/calibrations/front/measured/bundle/calibration.json \
   --output umi_traj_out/initialization_review/VID_20261111_183645_00_026/refinement_review.json
@@ -67,6 +67,8 @@ software/trajectory/
 │   ├── quality.py             跟踪统计、逐帧约束和可重评的质量提醒
 │   ├── reports.py             用户报告和终端摘要
 │   └── results.py             当前结果布局、发布与清理
+├── tools/                     开发诊断工具，不参与默认运行
+│   └── initialization_review.py 复核原始与实验初始化结果
 └── algorithms/
     ├── inertial.py            共用陀螺仪零偏、旋转积分与惯性预积分
     ├── postprocess.py         IMU → 相机/TCP、指标与预览

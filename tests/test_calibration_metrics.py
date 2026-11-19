@@ -104,7 +104,7 @@ class CoverageMetricTests(unittest.TestCase):
 
 class Kb4Tests(unittest.TestCase):
     def test_named_access_and_json_list(self):
-        kb4 = board_pnp.read_kb4(Path('software/trajectory/assets/calib/calibration_r1440.json'))
+        kb4 = board_pnp.read_kb4(Path('software/trajectory/assets/samples/calibration_r1440.json'))
         self.assertIsInstance(kb4, Kb4)
         self.assertEqual(kb4.principal_point, (kb4.cx, kb4.cy))
         self.assertEqual(json.loads(json.dumps(kb4)), list(kb4))

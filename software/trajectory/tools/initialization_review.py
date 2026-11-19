@@ -1,6 +1,6 @@
 """用保留的视觉/IMU 数据对照初始化，不重建地图、不发布轨迹。
 
-python -m software.trajectory.reporting.initialization_review --run-dir RUN \
+python -m software.trajectory.tools.initialization_review --run-dir RUN \
     --calibration CAMERA_JSON --output REVIEW_JSON [--attempt 1]
 """
 

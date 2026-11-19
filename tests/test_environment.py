@@ -16,7 +16,7 @@ class TrajectoryHealthTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             trajectory = root/'trajectory'
-            for relative in ('assets/calib/calibration_r1440.json', 'assets/config/front_x3_r1440_720.yaml',
+            for relative in ('assets/samples/calibration_r1440.json', 'assets/config/front_x3_r1440_720.yaml',
                              'assets/config/front_hand_mask.png', 'Vocabulary/ORBvoc.txt', 'solver',
                              'umi_export_atlas'):
                 target = trajectory/relative

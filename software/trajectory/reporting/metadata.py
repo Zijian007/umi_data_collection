@@ -14,7 +14,7 @@ from software.trajectory.calibration.assets import FUSION_SCRIPT, read_basalt
 
 
 HERE = Path(__file__).resolve().parents[1]
-CALIB_IMU_CAM = HERE / 'assets/calib/calibration_r1440.json'
+CALIB_IMU_CAM = HERE / 'assets/samples/calibration_r1440.json'
 FRONT_MASK = HERE / 'assets/config/front_hand_mask.png'
 REAR_YAML = HERE / 'assets/config/rear_basalt065_720.yaml'
 

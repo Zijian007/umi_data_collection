@@ -9,7 +9,7 @@
 | `bin/basalt_calibrate_imu` | `8b437691e12455798488c22c246ac0f34a90e2e98db0eb40fe8772b9b6d4a43e` |
 | `lib/libbasalt.so` | `febf3d3d0f53cb5fd761bf9f4024783675c0990adebac9b98d15514a753ff884` |
 
-这两个程序就是算出样例标定（`software/trajectory/assets/calib/calibration_r1440.json`，2026-09-04）的那两个文件，逐字节相同。
+这两个程序就是算出样例标定（`software/trajectory/assets/samples/calibration_r1440.json`，2026-09-04）的那两个文件，逐字节相同。
 
 ## 源码
 

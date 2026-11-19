@@ -34,7 +34,7 @@ def reconstruction_settings(environment: dict[str, str], *, camera_json: Path, f
     """Validate engines, then combine explicit measurements and algorithm settings."""
     from dataclasses import asdict
     camera = calibration_assets.read_basalt(camera_json)
-    rear = json.loads((HERE / 'assets/calib/rear_sample.json').read_text()) if rear_measurement is None else None
+    rear = json.loads((HERE / 'assets/samples/rear_sample.json').read_text()) if rear_measurement is None else None
     visual = visual_runtime.visual_settings(environment, lens_settings={
         'front': calibration_assets.slam_settings_text(camera, parameters),
         'rear': (calibration_assets.slam_settings_text(rear_measurement, parameters) if rear_measurement is not None
@@ -92,7 +92,7 @@ def check() -> int:
                                            os.environ.get("ORB3_EXTRA_LD", ""), environment.get("LD_LIBRARY_PATH", "")])
         result = subprocess.run([str(exe), "--help"], capture_output=True, text=True, env=environment, timeout=10)
         line(result.returncode == 0, "x3_mono_slam 可运行", "" if result.returncode == 0 else (result.stderr or result.stdout)[-300:])
-    for path in (HERE / "assets" / "calib" / "calibration_r1440.json",
+    for path in (HERE / "assets" / "samples" / "calibration_r1440.json",
               HERE / "assets" / "config" / "front_x3_r1440_720.yaml", HERE / "assets" / "config" / "front_hand_mask.png"):
         line(path.is_file(), "配置文件 " + str(path.relative_to(REPO)))
     try:

@@ -98,7 +98,7 @@ class RefinementTests(unittest.TestCase):
 
     def test_review_reports_rejection_without_publishing_trajectory(self):
         from software.trajectory.algorithms.fusion.data import FusionInputs
-        from software.trajectory.reporting.initialization_review import review
+        from software.trajectory.tools.initialization_review import review
         from software.configuration import loader as config
         observations = {k: (np.zeros(3), rot) for k, (_, rot) in self.lens['obs'].items()}
         inputs = FusionInputs(dict(front=observations, rear={}), dict(front={}, rear={}), self.imu,

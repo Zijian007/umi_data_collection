@@ -22,7 +22,7 @@ from software.infrastructure.paths import PROJECT_ROOT
 
 HERE = Path(__file__).resolve().parents[1]
 REPO = PROJECT_ROOT
-SAMPLE_CAMERA_JSON = HERE / "assets" / "calib" / "calibration_r1440.json"
+SAMPLE_CAMERA_JSON = HERE / "assets" / "samples" / "calibration_r1440.json"
 FRONT_SETTINGS_TEMPLATE = HERE / "assets" / "config" / "front_x3_r1440_720.yaml"
 FUSION_SCRIPT = HERE / 'algorithms' / 'fusion' / 'cli.py'
 
