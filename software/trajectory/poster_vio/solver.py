@@ -66,7 +66,7 @@ class ArmSolveInput:
     natural_cameras: dict[str, NaturalCamera] = field(default_factory=dict)
     tag_holdout_mask: np.ndarray | None = None
     tag_initialization_mask: np.ndarray | None = None
-    base_tag_T_imu: np.ndarray | None = None  # T_imu_base_tag, tag -> native IMU; initial mount seed.
+    T_imu_base_tag: np.ndarray | None = None  # Tag -> native IMU; initial rigid mount seed.
     base_tag_indices: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=int))
 
 
@@ -130,8 +130,8 @@ def _validate_arm_input(item: ArmSolveInput) -> None:
                                ('velocities', item.seed_velocities, (len(times), 3))):
         if value is not None and (np.asarray(value).shape != shape or not np.isfinite(value).all()):
             raise ValueError(f'{item.arm} poster_vio {name} 初值无效')
-    if item.base_tag_T_imu is not None:
-        validate_transform(item.base_tag_T_imu)
+    if item.T_imu_base_tag is not None:
+        validate_transform(item.T_imu_base_tag)
     base_indices = np.asarray(item.base_tag_indices)
     if (base_indices.ndim != 1 or not np.issubdtype(base_indices.dtype, np.integer)
             or np.any(base_indices < 0) or np.any(base_indices >= len(item.times_s))):

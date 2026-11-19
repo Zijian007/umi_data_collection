@@ -146,8 +146,9 @@ def cross_base_tag_error(observer_pose, owner_pose, tag_pose, T_cam_imu,
     in_owner = transform(tag_pose.matrix(), corners)
     residual, observer_jac, owner_jac = residual_and_jacobians(
         observer_pose.matrix(), owner_pose.matrix(), T_cam_imu, in_owner, pixels, model)
-    camera_owner = T_cam_imu @ np.linalg.inv(observer_pose.matrix()) @ owner_pose.matrix()
-    _, tag_jac = base_tag_self_error(tag_pose, camera_owner, model, pixels, size_m)
+    # A right perturbation of the tag mount is the owner's right perturbation
+    # transported by Ad(T_imu_base_tag). Reuse its projection Jacobian.
+    tag_jac = owner_jac @ tag_pose.AdjointMap()
     return residual, observer_jac, owner_jac, tag_jac
 
 
@@ -165,8 +166,8 @@ def add_base_tag_self_factor(graph, *, tag_key, T_cam_imu, model, pixels, parame
     graph.add(gtsam.CustomFactor(_base_tag_noise(pixels, model, parameters), [tag_key], error))
 
 
-def add_cross_base_tag_factor_variable(graph, *, observer_key, owner_key, tag_key,
-                                       T_cam_imu, model, pixels, parameters):
+def add_cross_base_tag_factor(graph, *, observer_key, owner_key, tag_key,
+                              T_cam_imu, model, pixels, parameters):
     """One coupled factor for two moving IMUs and their rigid owner tag mount."""
     import gtsam
 

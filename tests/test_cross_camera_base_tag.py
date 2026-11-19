@@ -49,6 +49,16 @@ class CrossCameraBaseTagTests(unittest.TestCase):
                                   for d in np.eye(6) * 1e-6])
         np.testing.assert_allclose(expected, actual, atol=2e-5, rtol=2e-6)
 
+    def test_cross_factor_uses_one_projection_for_all_three_jacobians(self):
+        from unittest.mock import patch
+
+        original = Kb4Model.project
+        with patch.object(Kb4Model, 'project', autospec=True,
+                          side_effect=lambda model, points: original(model, points)) as project:
+            factors.cross_base_tag_error(self.observer, self.owner, self.mount, self.ext,
+                                          self.model, np.zeros((4, 2)), self.size)
+        self.assertEqual(project.call_count, 1)
+
     def test_joint_mount_optimization_converges_from_biased_seed(self):
         observer, owner, tag = [gtsam.symbol(c, 0) for c in ('x', 'y', 't')]
         corners = factors.base_tag_corners_m(self.size)
@@ -65,7 +75,7 @@ class CrossCameraBaseTagTests(unittest.TestCase):
         for _ in range(8):
             factors.add_base_tag_self_factor(graph, tag_key=tag, T_cam_imu=self.ext,
                 model=self.model, pixels=own_pixels, parameters={'size_m': self.size, 'scene': self.params})
-            factors.add_cross_base_tag_factor_variable(graph, observer_key=observer, owner_key=owner,
+            factors.add_cross_base_tag_factor(graph, observer_key=observer, owner_key=owner,
                 tag_key=tag, T_cam_imu=self.ext, model=self.model, pixels=cross_pixels,
                 parameters={'size_m': self.size, 'scene': self.params})
         final = gtsam.LevenbergMarquardtOptimizer(graph, values).optimize()
@@ -107,7 +117,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
                 base_tag_times_s=np.array([r[1] for r in rows]), base_tag_ids=np.array([r[2] for r in rows]),
                 base_tag_corners_px=np.array([r[3] for r in rows])))
         request = replace(request, observations=tuple(observations), base_tag_specs=specs)
-        arms = tuple(replace(item, base_tag_T_imu=gtsam.Pose3(truth_mounts[item.arm]).retract(
+        arms = tuple(replace(item, T_imu_base_tag=gtsam.Pose3(truth_mounts[item.arm]).retract(
             np.array([.01, -.01, .01, .001, -.001, .001])).matrix()) for item in arms)
         return request, arms, seed, truth_mounts
 
@@ -134,6 +144,17 @@ class BaseTagWorkflowTests(unittest.TestCase):
             np.testing.assert_allclose(current.times_s[current.tag_indices],
                                        original.times_s[original.tag_indices], atol=1e-9, rtol=0)
 
+    def test_second_node_expansion_does_not_resample_already_frozen_states(self):
+        from unittest.mock import patch
+
+        request, arms, _, _ = self.prepared()
+        expanded = base_tags.expand_nodes(request, arms)
+        with patch.object(base_tags, 'resample_pose_series') as resample:
+            repeated = base_tags.expand_nodes(request, expanded)
+        resample.assert_not_called()
+        for original, same in zip(expanded, repeated):
+            self.assertIs(original, same)
+
     def test_contract_rejects_wrong_id_owner_and_missing_clock(self):
         request, _, _, _ = self.prepared()
         first = replace(request.observations[0], base_tag_ids=np.full_like(request.observations[0].base_tag_ids, 99))
@@ -141,6 +162,9 @@ class BaseTagWorkflowTests(unittest.TestCase):
             validate_request(replace(request, observations=(first, request.observations[1])))
         with self.assertRaisesRegex(ValueError, '时钟'):
             validate_request(replace(request, clock_offsets_s={}))
+        scalar_time = replace(request.observations[0], base_tag_times_s=np.array(0.))
+        with self.assertRaisesRegex(ValueError, '契约'):
+            validate_request(replace(request, observations=(scalar_time, request.observations[1])))
 
     def test_original_base_tag_cull_budget_never_resets(self):
         request, arms, _, _ = self.prepared()
@@ -215,7 +239,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect):
             request, arms, _ = poster_vio_inputs.prepare_task_inputs(helper.inputs)
         for item in arms:
-            np.testing.assert_allclose(item.base_tag_T_imu, mounts[item.arm], atol=1e-5)
+            np.testing.assert_allclose(item.T_imu_base_tag, mounts[item.arm], atol=1e-5)
             self.assertAlmostEqual(request.clock_offsets_s[item.arm],
                 helper.inputs.offsets_s[item.arm] - .023)
             path = helper.inputs.directory / 'poster_vio' / item.arm / 'numerical_inputs.npz'

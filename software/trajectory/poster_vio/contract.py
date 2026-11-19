@@ -33,11 +33,11 @@ def _validate_observation(observation, arms: tuple[str, ...]) -> None:
     base_times = np.asarray(observation.base_tag_times_s)
     base_ids = np.asarray(observation.base_tag_ids)
     base_corners = np.asarray(observation.base_tag_corners_px)
-    if (len(targets) != len(base_times) or base_ids.shape != (len(targets),)
+    if (base_times.ndim != 1 or len(targets) != len(base_times) or base_ids.shape != (len(targets),)
             or base_corners.shape != (len(targets), 4, 2)
             or any(target not in arms for target in targets)
             or not np.isfinite(base_times).all() or not np.all(np.diff(base_times) >= 0)
-            or base_times.ndim != 1 or not np.issubdtype(base_ids.dtype, np.integer)
+            or not np.issubdtype(base_ids.dtype, np.integer)
             or np.any(base_ids < 0) or np.any(base_ids >= 100)
             or not np.isfinite(base_corners).all()):
         raise ValueError('poster_vio 夹爪 base tag 观测契约无效')

@@ -53,6 +53,10 @@ def expand_nodes(request, arms):
         if np.any(np.diff(source_times) <= 0):
             raise ValueError('base tag 原始状态时刻在纳秒舍入后不唯一')
         times = np.unique(np.round(np.r_[source_times, extra[item.arm]], 9))
+        base_indices = np.searchsorted(times, np.unique(np.round(extra[item.arm], 9)))
+        if np.array_equal(times, item.times_s) and np.array_equal(base_indices, item.base_tag_indices):
+            result.append(item)
+            continue
         seeds = resample_pose_series(source_times, item.seed_poses, times)
         velocities = (None if item.seed_velocities is None else np.column_stack([
             np.interp(times, source_times, item.seed_velocities[:, axis]) for axis in range(3)]))
@@ -60,7 +64,7 @@ def expand_nodes(request, arms):
             tag_indices=np.searchsorted(times, source_times[item.tag_indices]),
             natural_tracks=tuple(dict(track, node_indices=np.searchsorted(
                 times, source_times[track['node_indices']])) for track in item.natural_tracks),
-            base_tag_indices=np.searchsorted(times, np.unique(np.round(extra[item.arm], 9)))))
+            base_tag_indices=base_indices))
     return tuple(result)
 
 
@@ -69,12 +73,12 @@ def add_graph(request, arms, graph, values, keys, camera_for):
     tag_keys, records = {}, []
     by_arm = {item.arm: item for item in arms}
     for arm_index, item in enumerate(arms):
-        if item.base_tag_T_imu is None:
+        if item.T_imu_base_tag is None:
             continue
         key = gtsam.symbol('t', arm_index)
         tag_keys[item.arm] = key
         params = item.scene_parameters
-        factors.add_base_tag_prior(graph, values, key, item.base_tag_T_imu,
+        factors.add_base_tag_prior(graph, values, key, item.T_imu_base_tag,
             rotation_sigma_rad=params.poster_vio_base_tag_prior_rotation_sigma_rad,
             translation_sigma_m=params.poster_vio_base_tag_prior_translation_sigma_m)
     for obs in request.observations:
@@ -104,7 +108,7 @@ def add_graph(request, arms, graph, values, keys, camera_for):
                 owner_node = matching_node(owner.times_s, owner_time)
                 record.update(observer_key=keys[obs.arm].pose(observer_node),
                               owner_key=keys[target].pose(owner_node))
-                factors.add_cross_base_tag_factor_variable(graph,
+                factors.add_cross_base_tag_factor(graph,
                     observer_key=record['observer_key'], owner_key=record['owner_key'],
                     tag_key=tag_keys[target], T_cam_imu=camera.T_cam_imu,
                     model=camera.model, pixels=pixels, parameters=params)
@@ -120,7 +124,7 @@ def evaluate(arms, tag_keys, records, optimized):
         if item.arm not in tag_keys:
             continue
         pose = optimized.atPose3(tag_keys[item.arm])
-        delta = gtsam.Pose3(item.base_tag_T_imu).between(pose)
+        delta = gtsam.Pose3(item.T_imu_base_tag).between(pose)
         angle = float(np.degrees(np.linalg.norm(gtsam.Rot3.Logmap(delta.rotation()))))
         shift = float(np.linalg.norm(delta.translation()))
         params = item.scene_parameters
@@ -129,7 +133,7 @@ def evaluate(arms, tag_keys, records, optimized):
                   or shift > params.poster_vio_base_tag_maximum_translation_correction_m)
         rejected |= failed
         evidence[item.arm]['corrections'] = dict(
-            T_imu_base_tag_initial=item.base_tag_T_imu.tolist(),
+            T_imu_base_tag_initial=item.T_imu_base_tag.tolist(),
             T_imu_base_tag_optimized=pose.matrix().tolist(), rotation_deg=angle, translation_m=shift,
             maximum_rotation_deg=params.poster_vio_base_tag_maximum_rotation_correction_deg,
             maximum_translation_m=params.poster_vio_base_tag_maximum_translation_correction_m,

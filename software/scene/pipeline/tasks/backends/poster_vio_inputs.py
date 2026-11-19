@@ -37,16 +37,15 @@ def prepare_task_inputs(inputs: TaskInputs):
     observations, solve_inputs = [], []
     camera_assets, imu_assets, diagnostics = {}, {}, {}
     base_tag_specs = {}
-    base_tag_ids = {}
     for arm in arms:
         spec = getattr(inputs.recordings[arm].camera, 'base_tag', None)
         if spec is not None:
             base_tag_specs[arm] = dict(id=int(spec['id']), size_m=float(spec['size_mm']) / 1000.,
                                        dictionary=spec.get('dictionary', 'DICT_4X4_100'))
-            base_tag_ids[arm] = int(spec['id'])
-    if len(set(base_tag_ids.values())) != len(base_tag_ids):
+    owners_by_tag_id = {spec['id']: arm for arm, spec in base_tag_specs.items()}
+    if len(owners_by_tag_id) != len(base_tag_specs):
         raise ValueError('双手 base tag ID 必须唯一')
-    if set(base_tag_ids.values()) & set(board.ids):
+    if set(owners_by_tag_id) & set(board.ids):
         raise ValueError('base tag ID 不能与环境海报 ID 冲突')
     for arm in arms:
         recording = inputs.recordings[arm]
@@ -80,7 +79,6 @@ def prepare_task_inputs(inputs: TaskInputs):
         tag_times = np.round(tag_times, 9)
         if len(np.unique(tag_times)) != len(tag_times):
             raise ValueError('poster_vio 标签时刻在纳秒舍入后不唯一')
-        tag_indices = np.searchsorted(tag_times, np.round(raw_times, 9))
         base_target_arms = ()
         base_times = np.empty(0, dtype=float)
         base_ids = np.empty(0, dtype=int)
@@ -89,7 +87,7 @@ def prepare_task_inputs(inputs: TaskInputs):
         if base_tag_specs:
             base_cache = layout.metadata(episode.root, 'cache/base_tags') / arm
             detection.cached(episode.recordings[arm], base_cache,
-                detection.DetectionSettings(border_bits=1, ids=tuple(sorted(base_tag_ids.values())),
+                detection.DetectionSettings(border_bits=1, ids=tuple(sorted(owners_by_tag_id)),
                     lens='front', minimum_side_px=scene.parameters.tag_minimum_side_px),
                 progress=inputs.console.write, cache_audit=inputs.cache_audit)
             shutil.copyfile(base_cache / 'observations.npz', directory / 'base_tag_observations.npz')
@@ -98,14 +96,14 @@ def prepare_task_inputs(inputs: TaskInputs):
             valid = (base_detections.usable & (base_imu_times >= output_times[0])
                      & (base_imu_times <= output_times[-1]))
             base_rows = np.flatnonzero(valid)
-            base_target_arms = tuple(next(name for name, tag_id in base_tag_ids.items()
-                                          if tag_id == int(base_detections.tag_ids[row])) for row in base_rows)
+            base_target_arms = tuple(owners_by_tag_id[int(base_detections.tag_ids[row])] for row in base_rows)
             base_times = np.round(base_imu_times[base_rows], 9)
             base_ids = base_detections.tag_ids[base_rows]
-            base_pixels = base_detections.corners_px[base_rows]
+            base_corners = base_detections.corners_px
+            base_pixels = base_corners[base_rows]
             for row in base_rows:
                 source_frame = int(base_detections.source_frame_indices[base_detections.sample_indices[row]])
-                base_frame_polygons.setdefault(source_frame, []).append(base_detections.corners_px[row])
+                base_frame_polygons.setdefault(source_frame, []).append(base_corners[row])
         model = camera_model(measured)
         ext = np.linalg.inv(imu_from_camera(measured))
         holdout = select_holdout(np.round(raw_times, 9), scene.parameters)
@@ -182,7 +180,7 @@ def prepare_task_inputs(inputs: TaskInputs):
             gravity_m_s2=gravity, initial_acc_bias=acc_bias, seed_velocities=node_velocities,
             initial_gyro_bias=np.asarray(inertial['initial_gyro_bias_rad_s']), natural_cameras=natural_cameras,
             tag_holdout_mask=holdout, tag_initialization_mask=initialization_mask,
-            base_tag_T_imu=own_base,
+            T_imu_base_tag=own_base,
             base_tag_indices=np.searchsorted(node_times, base_times)))
         camera_assets[arm] = dict(asset_hashes=camera.asset_hashes)
         imu_assets[arm] = dict(sample_count=len(recording.imu), time_start=float(recording.imu[0, 0]),
@@ -225,8 +223,8 @@ def prepare_task_inputs(inputs: TaskInputs):
                       initial_gyro_bias=item.initial_gyro_bias, tag_holdout_mask=item.tag_holdout_mask,
                       tag_initialization_mask=item.tag_initialization_mask,
                       base_tag_indices=item.base_tag_indices,
-                      base_tag_present=np.array(item.base_tag_T_imu is not None),
-                      base_tag_T_imu=item.base_tag_T_imu if item.base_tag_T_imu is not None else np.eye(4))
+                      base_tag_present=np.array(item.T_imu_base_tag is not None),
+                      T_imu_base_tag=item.T_imu_base_tag if item.T_imu_base_tag is not None else np.eye(4))
         observation = next(obs for obs in observations if obs.arm == item.arm)
         arrays.update(base_tag_times_s=observation.base_tag_times_s,
                       base_tag_ids=observation.base_tag_ids,

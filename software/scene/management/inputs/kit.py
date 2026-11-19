@@ -17,7 +17,7 @@ KITS = PROJECT_ROOT / 'kits'
 
 
 def gripper_paths(declaration: dict, directory: Path | None = None) -> dict:
-    """kit 中使用相对路径；允许引用套件目录上一级的共享资产。"""
+    """解析夹爪文件路径及内联 base tag 声明；路径可引用上一级共享 kits 资产。"""
     require_keys(declaration, {'tcp', 'width', 'mask', 'tag_distance', 'base_tag'}, {'tcp'}, 'gripper')
     resolved = {}
     for asset, filename in declaration.items():
