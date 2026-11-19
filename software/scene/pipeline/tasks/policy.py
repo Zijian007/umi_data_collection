@@ -19,6 +19,25 @@ def require_poster(scene):
         raise ValueError('poster_independent/poster_vio/auto 需要 environment_poster.detection.enabled、layout_path 和 task_constraint.enabled')
 
 
+def apply_task_backend(scene, mode, poster):
+    """The selected backend derives required poster capabilities for this task."""
+    from dataclasses import replace
+    scene = replace(scene, reconstruction_mode=mode)
+    if mode == 'scene_map':
+        return scene
+    if not poster or scene.tag_layout is None:
+        raise ValueError(f'{mode} 需要 environment_poster.layout_path')
+    for field in ('detection', 'task_constraint'):
+        if poster.get(field, {}).get('enabled') is False:
+            raise ValueError(f'{mode} 与 environment_poster.{field}.enabled: false 冲突；省略开关即可')
+    scene = replace(scene, environment_tags_enabled=True,
+                    parameters=replace(scene.parameters, tag_fusion_enabled=True))
+    if mode in ('poster_independent', 'poster_vio'):
+        scene = replace(scene, mode='shared_front')
+    require_poster(scene)
+    return scene
+
+
 def task_modes(collection):
     """Declared per-task modes, including the batch default for unlisted tasks."""
     from software.scene.management.collection_schema import normalize_collection

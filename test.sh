@@ -34,7 +34,7 @@ QUICK_MODULES=(
     test_tag_board test_user_config test_video_parameters test_vision_boundaries
     test_poster_vio_contract test_poster_vio_initialization test_poster_vio_frontend
     test_poster_vio_refinement
-    test_poster_vio_specialist test_cross_camera_base_tag
+    test_poster_vio_specialist test_cross_camera_base_tag test_task_configuration
 )
 
 usage() {

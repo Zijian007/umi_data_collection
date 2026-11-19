@@ -16,15 +16,15 @@ map:
 
 environment_poster:
   layout_path: ../../hardware/calibration_targets/environment_poster.json
-  detection:
-    enabled: false
-  mapping:
-    enabled: false
-    scale_correction:
-      enabled: false
-  task_constraint:
-    enabled: false
-    method: staged              # staged | joint；仅 scene_map 使用
+  # scene_map 需要海报融合时再声明用途，检测会随用途自动开启：
+  # task_constraint:
+  #   enabled: true
+  #   method: staged
+  # mapping:
+  #   enabled: true
+  #   scale_correction:
+  #     enabled: true
+  # poster_vio / poster_independent / auto 只需 layout_path，无需重复开启用途。
 
 reconstruction:
   backend: scene_map            # scene_map | poster_independent | poster_vio | auto

@@ -15,8 +15,8 @@ from software.scene.management.batch.discovery import configured_batches
 from software.scene.management.inputs.batch import mapping_records
 from software.scene.arms import resolve_arms
 from software.scene.management.inputs.kit import validate_kit
-from software.scene.management.inputs.episode import read_synchronization
-from software.scene.pipeline.tasks.policy import read_mode, task_modes
+from software.scene.management.task_configuration import resolve_task_configuration
+from software.scene.pipeline.tasks.policy import task_modes, apply_task_backend
 from software.scene.management.inputs.scene import ROOT, read_scene
 from software.scene.parameter_schema import nested_snapshot
 
@@ -68,6 +68,9 @@ def _target_report(directory: Path, *, overrides: SceneOverrides | None,
         declaration_path, declaration, scene_document = batches._declaration(directory)
         selection = batches.select_kit(declaration, intrinsics_source=intrinsics_source)
         map_version = declaration.get('map_version')
+        batch_record_path = layout.metadata(directory, 'manifest.yaml')
+        if map_version is None and batch_record_path.is_file():
+            map_version = (read_yaml(batch_record_path).get('map') or {}).get('version')
         declarations = [str(declaration_path), str(kit_inputs.KITS/declaration['kit']/'kit.yaml')]
     elif layout.manifest(directory, 'manifest.yaml').is_file():
         manifest = read_yaml(layout.manifest(directory, 'manifest.yaml'))
@@ -91,18 +94,14 @@ def _target_report(directory: Path, *, overrides: SceneOverrides | None,
     task_arms = None
     task_effective = {}
     if task_root is not None:
-        task_configuration = layout.task_configuration(task_root)
-        task_arms = resolve_arms(task_configuration, selection.expected_arms)
-        map_version = (None if 'map_epoch' in task_configuration
-                       else task_configuration.get('map_version', map_version))
-        task_effective = dict(synchronization=read_synchronization(
-            task_configuration.get('synchronization'), task_arms),
-            task_map_request={key: task_configuration[key] for key in ('map_version', 'map_epoch')
-                              if key in task_configuration})
-        scene = replace(scene, reconstruction_mode=read_mode(
-            task_configuration.get('reconstruction'), default=scene.reconstruction_mode))
+        resolved = resolve_task_configuration(task_root, scene, selection.expected_arms, map_version)
+        scene, task_arms, map_version = resolved.scene, resolved.expected_arms, resolved.map_version
+        task_effective = dict(instruction=resolved.instruction, synchronization=resolved.synchronization,
+                              task_map_request=resolved.map_request, map_selection=resolved.map_selection)
+    else:
+        scene = apply_task_backend(scene, scene.reconstruction_mode,
+                                   read_yaml(scene_path).get('environment_poster'))
         if scene.reconstruction_mode in ('poster_independent', 'poster_vio'):
-            scene = replace(scene, mode='shared_front')
             map_version = None
     if frozen_mapping and scene.reconstruction_mode not in ('poster_independent', 'poster_vio'):
         scene = replace(scene, mode='shared_front' if len(frozen_mapping) == 1 else 'dual',

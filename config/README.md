@@ -389,21 +389,15 @@ reconstruction:
   backend: scene_map
 environment_poster:
   layout_path: ../../hardware/calibration_targets/environment_poster.json
-  detection:
-    enabled: false
-  mapping:
-    enabled: false
-    scale_correction:
-      enabled: false
   task_constraint:
-    enabled: false
+    enabled: true
     method: staged
 ```
 
 `detection.enabled` 控制环境标签检测；`mapping.enabled`、`mapping.scale_correction.enabled`
 和 `task_constraint.enabled` 声明建图诊断、尺度修正和任务融合用途，统一由 collection 决定。
-用途开启前须开启 detection，尺度修正还要求 mapping；专家配置只调整数值参数。
-`task_constraint.method` 的 staged/joint 只作用于 scene_map。旧的 `scene.tags` 不能作为当前用户配置。
+检测开关省略时随用途自动开启；显式关闭检测与已开启用途冲突。尺度修正还要求 mapping，专家配置只调整数值参数。
+`poster_vio`、`poster_independent` 和 `auto` 只需声明后端及海报 layout_path，不必重复填写检测和任务融合开关；显式关闭这些能力会报配置冲突。`task_constraint.method` 的 staged/joint 只作用于 scene_map。旧的 `scene.tags` 不能作为当前用户配置。
 
 `tag_minimum_side_px` / `tag_minimum_frames` 筛选像素尺寸和独立观测时刻；`tag_corner_sigma_px` / `tag_sigma_per_radius_px` 设置角点噪声；`tag_huber` 是每 ID 四角点共同的鲁棒核阈值；`tag_maximum_reprojection_rms_px` 检查初始化和最终像素残差。默认值只经合成数据验证。无足够观测保留基线，启用后的几何冲突明确失败。每段录像独立求解海报位姿，海报在录像内须静止、平整；任务融合本身不会改变已发布地图尺度；建图修正由下述开关单独控制。打印尺寸状态仍为 PDF 设计值，需核对成品尺寸后评估实拍效果。
 

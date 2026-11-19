@@ -52,8 +52,6 @@ def resolve_task_map(plan: EpochPlan | None, task: str, *, task_map_version: str
     if plan is not None and task in plan.tasks:
         selection = plan.select(task, override=task_map_version,
                                 epoch_override=task_map_epoch)
-        if selection['map_version'] is None:
-            raise MapEpochError(f'任务 {task} 选择的地图 epoch 尚未构建：{selection["epoch"]}')
         return selection
     if task_map_epoch is not None:
         raise MapEpochError(f'任务 {task} 指定了 map_epoch，但批次没有可用 epoch 清单')

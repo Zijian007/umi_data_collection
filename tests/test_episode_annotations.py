@@ -1,3 +1,4 @@
+from software.scene.management.task_configuration import read_synchronization
 from software.infrastructure.file_store import read_yaml
 """指令和同步作为任务输入参与处理、验收与导出，不改变单相机求解时钟。"""
 import json
@@ -9,7 +10,7 @@ import numpy as np
 from software.scene.result_io import pose_rows
 
 from software.scene.management import episodes
-from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs, scene as scene_inputs
+from software.scene.management.inputs import episode as episode_inputs
 from software.scene import workflow
 from software.infrastructure.file_store import write_yaml
 from registry_fakes import write_task_configuration, read_task_configuration
@@ -45,13 +46,13 @@ class EpisodeAnnotationTests(unittest.TestCase):
             dict(offsets_s=dict(left=0., right=0.), confirmed=True, note='  '),
         ):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                episode_inputs.read_synchronization(bad, ('left', 'right'))
-        single = episode_inputs.read_synchronization(None, ('right',))
+                read_synchronization(bad, ('left', 'right'))
+        single = read_synchronization(None, ('right',))
         self.assertTrue(single['confirmed'])
         self.assertEqual(single['offsets_s'], dict(right=0.))
 
     def test_audio_auto_is_an_unconfirmed_two_camera_request(self):
-        result = episode_inputs.read_synchronization({'mode': 'audio_auto', 'confirmed': False}, ('left', 'right'))
+        result = read_synchronization({'mode': 'audio_auto', 'confirmed': False}, ('left', 'right'))
         self.assertEqual(result['method'], 'audio_auto')
         self.assertEqual(result['offsets_s'], {'left': 0., 'right': 0.})
         self.assertFalse(result['confirmed'])

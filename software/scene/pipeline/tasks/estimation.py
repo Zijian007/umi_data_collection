@@ -54,7 +54,7 @@ def select_map(episode, requested_map_version, *, batch_map=None, dry_run=False,
         return episode, MapSelection.available(directory, manifest)
     # auto only consumes existing maps; it does not construct a scene map first.
     try:
-        if (episode.map_selection or {}).get('status') == 'unavailable':
+        if (episode.map_selection or {}).get('status') in ('unavailable', 'pending'):
             raise MapUnavailableError(episode.map_selection['reason'])
         version = requested_map_version or episode.map_version
         manifest_sha256 = (episode.session.map_manifest_sha256

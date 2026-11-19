@@ -1,10 +1,10 @@
+from software.scene.management.task_configuration import read_synchronization
 """场景元数据与专家算法配置的边界。"""
 from pathlib import Path
 import tempfile
 import unittest
 
 from software.scene.management.inputs import (
-    episode as episode_inputs,
     scene as scene_inputs,
 )
 from software.scene import layout
@@ -194,10 +194,10 @@ class SceneConfigurationTests(unittest.TestCase):
             layout.task_configuration(task)
 
     def test_synchronization_accepts_user_facing_shorthand(self):
-        audio = episode_inputs.read_synchronization('audio_auto', ('left', 'right'))
+        audio = read_synchronization('audio_auto', ('left', 'right'))
         self.assertEqual(audio['method'], 'audio_auto')
         self.assertEqual(audio['offsets_s'], {'left': 0., 'right': 0.})
-        simultaneous = episode_inputs.read_synchronization('assumed_simultaneous', ('left', 'right'))
+        simultaneous = read_synchronization('assumed_simultaneous', ('left', 'right'))
         self.assertEqual(simultaneous['method'], 'assumed_simultaneous')
 
     def test_collection_layout_is_user_semantic_and_resolves_to_internal_mode(self):

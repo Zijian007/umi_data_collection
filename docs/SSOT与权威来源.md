@@ -45,7 +45,7 @@ kit 绑定恢复默认，不查询当前 kit。任务 `episode.yaml` 仍只登�
 
 ## 当前配置与历史快照
 
-当前 kit 只接受设备序列号、逐镜头 intrinsics 来源和 gripper 资产；固定 calibration/calibrations 字段仅用于历史资产快照的读取。当前专家覆盖不接收海报用途开关或融合方式，这些意图由 collection 唯一声明；旧结果中冻结的专家覆盖仍可按原值读取。
+当前 kit 只接受设备序列号、逐镜头 intrinsics 来源和 gripper 资产；固定 calibration/calibrations 字段仅用于历史资产快照的读取。当前专家覆盖不接收海报用途开关或融合方式，这些意图由 collection 唯一声明；无地图/auto 后端从 backend 推导必需能力，显式 false 与后端冲突；旧结果中冻结的专家覆盖仍可按原值读取。
 
 `--show-config` 指定 take 时展示该 take 的使用手、后端与同步配置；来源报告区分 user.yaml 和 CLI。
 
@@ -62,7 +62,7 @@ kit 绑定恢复默认，不查询当前 kit。任务 `episode.yaml` 仍只登�
     > 批次 manifest.yaml 中已绑定的默认地图
 ```
 
-解析结果由 `software.scene.management.inputs.episode.read_episode()` 生成，并保存在内存中的 `Episode.map_selection`。后续定位、报告和发布都消费这个结果，不在各阶段重新解释 `collection.yaml`、`map_epochs.yaml` 或批次地图指针。
+使用手、后端、同步与地图决策由 `software.scene.management.task_configuration.resolve_task_configuration()` 统一解析；正式读取和配置展示消费同一结果。地图决策保存到 `Episode.map_selection`，展示包含选中版本、epoch、原因和 ready/pending/unavailable 状态。未构建或无效选择可预览，但 scene_map 正式执行会拒绝，auto 则按既定回退策略处理。后续定位、报告和发布都消费这个结果，不在各阶段重新解释 `collection.yaml`、`map_epochs.yaml` 或批次地图指针。
 
 `collection.yaml` 中的 `map.selection.version` 是用户声明；`.pipeline/manifest.yaml.map` 是已经发布并冻结的批次状态；地图版本目录中的 `manifest.json` 是地图资产本身的权威身份。三者不能互相覆盖：声明变化需要重新解析和校验，地图资产变化必须拒绝运行。
 

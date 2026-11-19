@@ -37,6 +37,7 @@ jobs:
           software/configuration/user_settings.py
           software/configuration/operational_settings.py
           software/scene/management/effective_config.py
+          software/scene/management/task_configuration.py
           software/scene/management/inputs/kit.py
           software/scene/overrides.py
           software/viewer/server.py

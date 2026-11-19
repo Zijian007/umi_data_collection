@@ -11,7 +11,7 @@ from __future__ import annotations
 from software.scene.arms import ARMS, read_arms, resolve_arms
 
 
-MODES = ('scene_map', 'poster_independent', 'poster_vio', 'auto')
+from software.scene.pipeline.tasks.policy import MODES
 
 
 def _mapping(value, label):
@@ -138,7 +138,8 @@ def normalize_collection(document: dict) -> dict:
         if method not in ('staged', 'joint'):
             raise ValueError('environment_poster.task_constraint.method 必须为 staged 或 joint')
         tags = dict(
-            enabled=_boolean(detection.get('enabled'), 'environment_poster.detection.enabled'),
+            enabled=_boolean(detection.get('enabled'), 'environment_poster.detection.enabled',
+                default=any(section.get('enabled') is True for section in (mapping, scale, constraint))),
             layout=poster['layout_path'],
             mapping=dict(
                 enabled=_boolean(mapping.get('enabled'), 'environment_poster.mapping.enabled'),

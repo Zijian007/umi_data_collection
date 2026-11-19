@@ -31,7 +31,7 @@ class DocumentationContractsTests(unittest.TestCase):
 
     def test_marked_examples_use_production_config_and_cli_parsers(self):
         from ruamel.yaml import YAML
-        counts = dict.fromkeys(('scene-expert', 'scene-export'), 0)
+        counts = dict.fromkeys(('scene-expert', 'scene-export', 'collection'), 0)
         for name in CURRENT_DOCS:
             for kind, language, source in re.findall(
                     r'<!-- check: ([\w-]+) -->\s*```(\w+)\n(.*?)```', (ROOT / name).read_text(), re.S):
@@ -48,6 +48,9 @@ class DocumentationContractsTests(unittest.TestCase):
                             from software.configuration.loader import load
                             from software.scene.management.inputs.scene import load_scene_parameters
                             apply_overrides(load('trajectory'), load_scene_parameters(), SceneOverrides.load(path))
+                    elif kind == 'collection':
+                        from software.scene.management.collection_schema import normalize_collection
+                        normalize_collection(YAML(typ='safe').load(source))
                     else:
                         command = shlex.split(source.replace('\\\n', ' '))
                         self.assertEqual(command.pop(0), './umi-scene')

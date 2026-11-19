@@ -57,7 +57,7 @@ software/scene/
 
 ## 采集管理
 
-使用手的校验和继承统一在 `arms.py`；kit 负责设备绑定，批次声明默认使用手，任务可覆盖为子集，下游消费 `Episode.expected_arms`。
+使用手的校验和继承统一在 `arms.py`；kit 负责设备绑定，批次声明默认使用手，任务可覆盖为子集，下游消费 `Episode.expected_arms`。`management/task_configuration.py` 统一解析任务使用手、后端、同步与地图选择，执行和只读展示共用该结果。
 
 输入解析位于 `management/inputs/`：`scene.py`、`batch.py`、`episode.py`、`kit.py` 对应四类声明与内部输入。批次操作位于 `management/batch/`：`discovery.py` 发现目录，`snapshot.py` 解析批次配置并冻结资产记录，`execution.py` 准备/构建单批，`epochs.py` 编排多地图批次。`management/processing.py` 保留公共批处理入口及任务运行编排，状态/验收、清理、原片登记和设备资产仍各有唯一实现。包初始化不转发旧模块。
 

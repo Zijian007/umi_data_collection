@@ -1343,3 +1343,13 @@ rear measured 缺少当前参数时拒绝；rear factory 优先使用当前已�
 - 当前 kit 只接受 serial、intrinsics 和 gripper，来源按 front/rear 当前选择解析；固定 calibration/calibrations 字段与旧来源协议只留在资产快照读取分支。迁移公共测试夹具为当前 kit 格式，保持旧快照、来源校验、错误资产拒绝与独立镜头选择覆盖。
 - 新增 user.defaults.yaml 作为用户偏好的唯一默认值来源，user.yaml 只保存本机覆盖；移除 Python 中重复的默认值和 v1 当前用户入口。现有工作区 user.yaml 原有值均为默认值，迁移后运行选择不变；用户配置报告记录默认值来源。
 - 更新仍依赖旧人工 kit/专家用途开关的测试，以及使用手快照显式 expected_arms 的旧断言。相关入口 **76 项通过（11.354 秒）**、最终配置展示 **8 项通过（0.423 秒）**、最后修正的设备清单/快照 **17 项通过（1.268 秒）**。最终完整 ./test.sh --unit **1061 项通过（251.622 秒）**，日志 /tmp/umi_yaml_cleanup_final_all_unit.log；修改文件 Ruff、compileall 和 git diff --check 通过。配置读取及报告相关源文件已加入 CI lint。
+
+
+## 2026-11-19：任务配置共用解析结果与后端能力推导
+
+- 新增 management/task_configuration.py 的 ResolvedTaskConfiguration，统一解析使用手、指令、后端、同步和地图请求/选择；同步解析从 episode reader 移入该边界，执行读取与 --show-config 均消费同一结果。collection 与运行策略共用后端枚举。
+- 地图选择保留 latest-prior、显式版本、显式 epoch 与批次默认规则；展示选中版本、epoch、选择原因及 ready/pending/unavailable 状态。任务展示读取批次已登记的默认地图，修正过去只展示请求或遗漏冻结默认值的问题。解析不读取原片或地图资产。
+- epoch_selection 返回未构建选择的 pending 状态，正式 scene_map 执行在读取原片前拒绝未就绪地图；auto 保留决策，并由既定 MapUnavailable 回退边界处理 pending/unavailable。损坏的规划清单仍直接拒绝。命令行 epoch 与任务版本/epoch 声明冲突时明确报错。
+- poster_vio、poster_independent 与 auto 从任务 backend 推导必需的海报检测和任务约束能力，只要求提供有效 layout_path；显式 detection.enabled:false 或 task_constraint.enabled:false 与后端冲突，不静默覆盖。任务级推导不启用其他 scene_map 任务的海报用途；scene_map 声明用途时可省略检测总开关。相机参数与 TCP 规则未改。
+- 任务与批次配置展示均显示推导后的能力；无地图后端继续忽略地图规划。模板和操作指南提供可通过公共 schema 的最小海报配置，不再重复要求必需开关。
+- 新增八项对照回归，覆盖选择规则与批次默认、pending 展示/执行拒绝、auto 决策、最小海报配置、显式关闭冲突、任务隔离与无效 epoch。完整 ./test.sh --unit **1069 项通过（251.886 秒）**，日志 /tmp/umi_task_resolution_all_unit.log。最后补齐批次级能力展示后，相关 **106 项通过（19.932 秒）**，日志 /tmp/umi_task_resolution_final.log；修改文件 Ruff、compileall 与 git diff --check 通过。解析模块加入 CI lint，测试加入 quick 档。
