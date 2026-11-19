@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 import shutil
 
 import numpy as np
@@ -47,6 +48,22 @@ def prepare_task_inputs(inputs: TaskInputs):
         raise ValueError('双手 base tag ID 必须唯一')
     if len(arms) > 1 and set(owners_by_tag_id) & set(board.ids):
         raise ValueError('base tag ID 不能与环境海报 ID 冲突')
+
+    # Each arm has its own source video and cache directory.  Run the shared
+    # detection preparation concurrently; this is the dominant cost for a
+    # bimanual poster-vio task and does not share mutable numerical state.
+    def prepare_arm_detections(arm: str) -> None:
+        measurements.prepare_detections(
+            episode, arm, inputs.recordings[arm], cache_audit=inputs.cache_audit)
+
+    if len(arms) > 1:
+        inputs.console.write('双手环境标签与夹爪检测并行', recording=episode.root.name,
+                             step=(2, 3))
+        with ThreadPoolExecutor(max_workers=len(arms), thread_name_prefix='poster-detection') as executor:
+            list(executor.map(prepare_arm_detections, arms))
+    else:
+        prepare_arm_detections(arms[0])
+
     for arm in arms:
         recording = inputs.recordings[arm]
         camera = recording.camera
@@ -61,7 +78,6 @@ def prepare_task_inputs(inputs: TaskInputs):
                 or np.any(np.diff(output_times) <= 0)
                 or recording.imu[0, 0] > output_times[0] or recording.imu[-1, 0] < output_times[-1]):
             raise ValueError(f'{arm} poster_vio IMU 未完整覆盖工作镜头曝光时刻')
-        measurements.prepare_detections(episode, arm, recording, cache_audit=inputs.cache_audit)
         cache = layout.metadata(episode.root, 'cache/environment_tags') / arm
         # prepare_detections may skip a lone detector; cached validates source identity
         # in both cases and runs the missing detector when necessary.

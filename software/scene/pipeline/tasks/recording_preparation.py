@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from software.infrastructure import provenance as artifact_identity
 from software.scene import layout
@@ -21,10 +22,21 @@ def prepare_episode_recordings(episode: Episode, cameras: dict[str, CalibratedCa
                                video_offsets_s: dict[str, float], *, work_dir: Path, cores: str = '',
                                arm_cores: dict[str, str] | None = None, cache_audit=None) -> dict[str, PreparedRecording]:
     """准备各手录像并检查共同时间区间；不估计跨相机时间偏移。"""
-    prepared = {arm: prepare_with_cache(episode, arm, cameras[arm], episode.scene,
-                                   arm_cores[arm] if arm_cores else cores, work_dir=work_dir,
-                                   cache_audit=cache_audit)
-                for arm in episode.recordings}
+    def prepare(arm: str) -> tuple[str, PreparedRecording]:
+        return arm, prepare_with_cache(
+            episode, arm, cameras[arm], episode.scene,
+            arm_cores[arm] if arm_cores else cores,
+            work_dir=work_dir, cache_audit=cache_audit)
+
+    arms = tuple(episode.recordings)
+    if arm_cores and len(arms) > 1:
+        # Each arm has independent source/cache directories and an already
+        # partitioned CPU set.  Parallelize decode and lens-video preparation
+        # without creating nested task-level parallelism.
+        with ThreadPoolExecutor(max_workers=len(arms), thread_name_prefix='scene-prepare') as executor:
+            prepared = dict(executor.map(prepare, arms))
+    else:
+        prepared = dict(prepare(arm) for arm in arms)
     start = max(recording.video_times_s[0] + video_offsets_s[arm] for arm, recording in prepared.items())
     end = min(recording.video_times_s[-1] + video_offsets_s[arm] for arm, recording in prepared.items())
     if start >= end:
