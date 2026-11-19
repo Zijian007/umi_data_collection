@@ -1353,3 +1353,12 @@ rear measured 缺少当前参数时拒绝；rear factory 优先使用当前已�
 - poster_vio、poster_independent 与 auto 从任务 backend 推导必需的海报检测和任务约束能力，只要求提供有效 layout_path；显式 detection.enabled:false 或 task_constraint.enabled:false 与后端冲突，不静默覆盖。任务级推导不启用其他 scene_map 任务的海报用途；scene_map 声明用途时可省略检测总开关。相机参数与 TCP 规则未改。
 - 任务与批次配置展示均显示推导后的能力；无地图后端继续忽略地图规划。模板和操作指南提供可通过公共 schema 的最小海报配置，不再重复要求必需开关。
 - 新增八项对照回归，覆盖选择规则与批次默认、pending 展示/执行拒绝、auto 决策、最小海报配置、显式关闭冲突、任务隔离与无效 epoch。完整 ./test.sh --unit **1069 项通过（251.886 秒）**，日志 /tmp/umi_task_resolution_all_unit.log。最后补齐批次级能力展示后，相关 **106 项通过（19.932 秒）**，日志 /tmp/umi_task_resolution_final.log；修改文件 Ruff、compileall 与 git diff --check 通过。解析模块加入 CI lint，测试加入 quick 档。
+
+
+## 2026-11-19：补齐 YAML 字段说明与候选值注释
+
+- 为 `config/user.defaults.yaml` 和 `config/user.yaml` 补充用户偏好、默认/覆盖关系、布尔候选、端口范围、CPU 范围及特殊值说明。
+- 为 kit 与 collection 示例补充设备来源、资产路径、单/双手、地图布局、地图选择、海报用途、后端、同步、任务覆盖和 base tag 的含义、候选值、单位、继承与冲突规则；实际 test_shelf collection 同步补充注释。
+- 为轨迹、标定、scene_parameters 的未充分说明字段补充单位、正数/范围、枚举、零值语义和字段关系说明；运行、查看器和夹爪检测 YAML 的资源范围与特殊值也明确写在字段旁。
+- 新增文档契约：扫描 config、kit、scene collection 的所有 scalar YAML key，若未提供行尾注释则测试失败；现有 YAML 解析后语义与注释前快照完全一致。
+- YAML 注释检查相关 **37 项通过（1.231 秒）**，quick **242 项通过（46.900 秒）**；Ruff、compileall 与 `git diff --check` 通过。注释不会改变配置指纹或运行行为。

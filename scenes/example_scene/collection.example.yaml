@@ -1,42 +1,50 @@
-# 复制到 scenes/<scene>/<batch>/collection.yaml；示例文件不会被自动发现。
-kit: kit_001
+# 复制到 scenes/<scene>/<batch>/collection.yaml；示例文件不被自动发现。
+# 本文件不填写 schema_version；未填写的可选项使用以下说明的默认/继承规则。
+kit: kit_001  # 必填：kits/ 下已有目录名；字母/数字/中文/下划线/连字符，kit 决定设备与安装资产。
 
-recording:
-  arms: [left, right]         # 必填；批次默认使用手
+recording:  # 必填：批次默认采集使用手；不能由缺失录像推断为单手。
+  arms: [left, right]  # 必填：候选 [left] / [right] / [left, right]；必须是 kit 设备绑定的非空子集。
 
-scene:
-  description: example scene
+scene:  # 必填配置表；场景身份来自目录名，此处不放算法参数。
+  description: example scene  # 任意文本字符串，可为 ""；省略为空，不影响几何定义。
 
-map:
-  layout: auto                 # auto | shared | per_arm
-  reference_arm: left          # left | right
-  selection:
-    policy: latest_prior       # 当前只能是 latest_prior
-    version: null              # null 或已发布地图版本 ID
+map:  # 可选：scene_map/auto 的地图布局和默认绑定；无地图后端忽略地图选择。
+  layout: auto  # auto=由建图录像/已有记录推断；shared=共享工作镜头地图；per_arm=各手 front + 参考 rear 地图。
+  reference_arm: left  # 候选 left / right，默认 left；多路建图时必须属于实际建图录像的手。
+  selection:  # 可选：任务未显式选图时的默认规则。
+    policy: latest_prior  # 当前唯一候选 latest_prior：按登记采集顺序选不晚于任务的最近地图。
+    version: null  # null=按规划/已登记批次默认选择；或填写已发布版本 ID（字母/数字/_/-）。
+    # 非 null version 与本轮 mapping/ 建图原片不能同时声明；不要把 epoch 名当成版本 ID。
 
-environment_poster:
-  layout_path: ../../hardware/calibration_targets/environment_poster.json
-  # scene_map 需要海报融合时再声明用途，检测会随用途自动开启：
-  # task_constraint:
-  #   enabled: true
-  #   method: staged
-  # mapping:
-  #   enabled: true
-  #   scale_correction:
-  #     enabled: true
-  # poster_vio / poster_independent / auto 只需 layout_path，无需重复开启用途。
+environment_poster:  # 可选：海报布局和用途；poster_vio/poster_independent/auto 必须提供布局。
+  layout_path: ../../hardware/calibration_targets/environment_poster.json  # 必填非空 JSON 路径；相对 scenes/<scene>/，也可绝对路径。
+  # detection:  # 可选：仅检测诊断时使用；省略则随用途/后端自动推导。
+  #   enabled: true  # true=检测；false=显式关闭，与已开启用途或海报/auto 后端冲突。
+  # task_constraint:  # 可选：scene_map 中是否融合海报；海报/auto 后端不必重复声明。
+  #   enabled: true  # true=加入任务海报约束；false=关闭，与海报/auto 后端冲突；scene_map 省略为 false。
+  #   method: staged  # staged=地图+IMU 基线后加入海报；joint=视觉种子直接联合；默认 staged，仅 scene_map 生效。
+  # mapping:  # 可选：建图海报诊断与尺度修正；省略不启用。
+  #   enabled: true  # true=采集并记录建图海报证据；false=不使用，省略为 false。
+  #   scale_correction:  # 可选：是否把海报尺度用于米制建图。
+  #     enabled: true  # true=应用尺度修正，必须同时 mapping.enabled:true；false=仅诊断，省略为 false。
 
-reconstruction:
-  backend: scene_map            # scene_map | poster_independent | poster_vio | auto
+reconstruction:  # 必填：批次默认任务轨迹后端，take 可覆盖。
+  backend: scene_map  # scene_map=场景地图；poster_independent=独立引擎+海报；poster_vio=海报/自然点/IMU 联合图；auto=按此序回退。
+  # auto 顺序：scene_map → poster_vio → poster_independent；后两者及 auto 由 backend 推导海报能力。
 
-tasks:
-  take_001:
-    instruction: 拿起物体并放到指定位置
-    # arms: [right]           # 省略继承批次；仅需单手时覆盖
-    synchronization:
-      mode: assumed_simultaneous # audio_auto | assumed_simultaneous | manual
-    # reconstruction:
-    #   backend: poster_independent
-    # map:
-    #   epoch: epoch_001
-    #   version: 20261113_100000-a1b2c3d4
+tasks:  # 可选：按实际任务目录名填写；未列出的任务继承批次默认值。
+  take_001:  # 示例任务名，不是枚举；可用字母/数字/中文/_/-，不能占用 mapping/results 等内部目录名。
+    instruction: 拿起物体并放到指定位置  # 任意文本字符串，省略为空；训练导出要求非空操作指令。
+    # arms: [right]  # 可选 [left] / [right] / [left, right]；必须是 recording.arms 的非空子集，省略继承批次。
+    synchronization:  # 可选配置表，也可简写 audio_auto / assumed_simultaneous；单手通常省略。
+      mode: assumed_simultaneous  # audio_auto=音频估计（仅双手）；assumed_simultaneous=假设同时开始；manual=人工偏移。
+      # offsets_s:  # manual 必填：必须覆盖本 take 的全部使用手；t_task = t_video + offset，单位 s。
+      #   left: 0.0  # 参考手必须为 0；双手参考 left，单 right 参考 right。
+      #   right: 0.12  # 任意有限实数秒，可正可负；此值只是示例，需实测。audio_auto 不接受非零手工偏移。
+      # confirmed: false  # 候选 true / false；manual 必填；true 表示已人工核验，单手自动确认。
+      # note: ""  # 任意说明字符串，默认空；双手 confirmed:true 时必须填写核验依据。
+    # reconstruction:  # 可选：只覆盖当前 take 的后端。
+    #   backend: poster_independent  # 候选 scene_map / poster_independent / poster_vio / auto；省略继承批次。
+    # map:  # 可选：当前 take 显式选图；epoch 与 version 互斥，只取消其中一项注释。
+    #   epoch: epoch_001  # 已登记 epoch 名字符串；对应地图必须已构建后才能 scene_map 执行。
+    #   version: 20261113_100000-a1b2c3d4  # 已发布地图版本 ID；不是文件路径，显式选择优先于默认规划。

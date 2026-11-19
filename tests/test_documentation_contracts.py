@@ -71,6 +71,22 @@ class DocumentationContractsTests(unittest.TestCase):
                 count += 1
         self.assertGreater(count, 0)
 
+    def test_yaml_scalar_keys_have_user_facing_comments(self):
+        # YAML defaults and examples are user-facing; every scalar declaration
+        # must state its unit, candidate values, default or special-value rule.
+        import re
+        paths = [* (ROOT / 'config').rglob('*.yaml'),
+                 * (ROOT / 'kits').glob('*/kit.yaml'),
+                 * (ROOT / 'scenes').rglob('collection.yaml'),
+                 ROOT / 'scenes/example_scene/collection.example.yaml']
+        for path in paths:
+            if '.pipeline' in path.parts or path.name.endswith('.local.yaml'):
+                continue
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                match = re.match(r'^\s*[A-Za-z_][\w-]*:(?:\s*(.*))?$', line)
+                if match and (match.group(1) or '').strip() and '#' not in line:
+                    self.fail(f'{path}:{number} scalar YAML key lacks a comment: {line.strip()}')
+
     def test_scene_call_chain_references_existing_functions(self):
         # 指南的明确阅读入口必须存在；解析 AST，不导入或启动求解器。
         references = {

@@ -1,10 +1,19 @@
 # kits/kit_002/kit.yaml
-arms:
-  right:
-    serial: IAQEB26097M4CP
-    intrinsics:
-      front: measured
-      rear: factory
-    gripper:
-      tcp: ../tcp_camera.json       # kits/ 根目录共享安装几何
-      tag_distance: ../tag_distance.json  # kits/ 根目录共享标签尺寸
+arms:  # 设备绑定表；只写 left / right / 两者；这不是采集使用手，采集手由 collection 声明。
+  right:  # 右手设备与夹爪安装；可省略此整项表示套件没有右手。
+    serial: IAQEB26097M4CP  # 必填完整相机序列号字符串（字母/数字/_/-），须已登记，左右手不能相同。
+    intrinsics:  # 可选：每镜头选择当前完整参数来源；省略 front=measured、rear=factory。
+      front: measured  # 工作镜头来源：measured=实测整包；factory=工厂内参及配套外参/时差；需已安装该来源。
+      rear: factory  # 环境镜头来源：measured=已独立验收实测整包；factory=已装整包或原片工厂推导（NOT_EVALUATED）。
+    gripper:  # 必填：夹爪资产；文件路径相对本 kit.yaml，允许 ../ 共享 kits/ 资产，禁止越出 kits/ 根目录。
+      tcp: ../tcp_camera.json  # 必填 .json 相机–TCP 实测安装变换路径；米制，不可用标签尺寸替代。
+      tag_distance: ../tag_distance.json  # 可选 .json ID 0/1 标签实测黑框尺寸，用于中心距；省略不输出中心距，不等于夹爪开口。
+
+# 以下可选项放在相应手的 gripper 下；未测量/未安装时保持省略：
+# width: left_width.json  # .json 实测像素距离–开口 mm 关系；省略不推断开口/闭合状态。
+# mask: hand_mask.png  # .png 自定义遮手图路径；省略用项目通用图，非零像素表示遮挡。
+# base_tag:  # 刚性夹爪基座标签，不随开合移动；单手跳过，双手有效跨手观测时估计安装。
+#   id: 2  # 整数 0–99；左右唯一，避开场景海报 ID（默认 12–88）；配置宽度/测距时还需避开 0/1。
+#   size_mm: 10.0  # 有限正数，单位 mm；实测黑框边长，不包含白边，示例不是通用默认尺寸。
+#   dictionary: DICT_4X4_100  # 当前唯一候选，省略也使用此字典；被跨手使用时至少需 3 个有效自身时刻。
+# 全局 user.features.factory_intrinsics.enabled:true 会把两个镜头的来源都覆盖为 factory。
