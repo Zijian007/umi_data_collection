@@ -1,6 +1,6 @@
 # 场景代码阅读指南
 
-用户入口为 `umi-scene`。`run <批次>` 由 `management/processing.py` 读取批次根目录唯一的 `collection.yaml`，自动保存设备快照和登记原片，再调用 workflow 的地图与任务流水线；旧的 `scene.yaml`、`batch.yaml`、`task.yaml` 已移除。场景代码按“每类事实一个权威来源”组织，具体边界见 [SSOT 与权威来源](../../docs/SSOT与权威来源.md)。`export --format training` 调用 software.dataset。标定统一由 umi-calib 发起，查看由 umi-view 提供。
+用户入口为 `umi-scene`。 硬核数学实现的统一变量、变换方向和优化边界见 [算法实现约定](../../docs/算法实现约定.md)。`run <批次>` 由 `management/processing.py` 读取批次根目录唯一的 `collection.yaml`，自动保存设备快照和登记原片，再调用 workflow 的地图与任务流水线；旧的 `scene.yaml`、`batch.yaml`、`task.yaml` 已移除。场景代码按“每类事实一个权威来源”组织，具体边界见 [SSOT 与权威来源](../../docs/SSOT与权威来源.md)。`export --format training` 调用 software.dataset。标定统一由 umi-calib 发起，查看由 umi-view 提供。
 
 从 `cli.py` 找命令入口，再读 `pipeline/maps/lifecycle.py` 的 `build_scene()` 或 `workflow.py` 的 `run_episode()`。用户操作见[场景指南](../../docs/场景处理.md)，完整选项见[命令行参数](../../docs/命令行参数.md#umi-scene)。
 

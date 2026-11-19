@@ -1370,3 +1370,11 @@ rear measured 缺少当前参数时拒绝；rear factory 优先使用当前已�
 - 发现并修正 workflow 的一个边界：`Episode.map_selection` 由 epoch 规划选出 `collection_sequence` 地图版本时，旧 `_requested_map_version()` 没有把该版本传给 scene-map 绑定层，可能回退到批次旧地图。现在 collection sequence、显式 task version/epoch 都传递同一个解析版本；batch_default 仍由批次绑定层管理。
 - 扫描并修正文档中残留的旧 `collection.yaml.scene.tags`、旧 `config/user.yaml.calibration.intrinsics_source` 和过时的 scene/vision/标定说明；代码内部 `scene.tags` 仅作为 normalize 后的内部结构，不再作为用户入口。
 - 相关 task resolution、地图规划、scene workflow 与文档契约 **62 项通过（25.622 秒）**，此前完整 Python 回归 **1069 项通过**；工作流修正后执行/配置展示对照通过。Ruff、compileall、`git diff --check` 通过。
+
+
+## 2026-11-19：补充硬核数学实现阅读约定
+
+- 新增 `docs/算法实现约定.md`，统一说明 `T_a_b` 的方向、长度/角度/四元数约定、相机/IMU/TCP/base-tag 变换链、时间轴边界，以及共享场景和 poster_vio 的状态变量、固定变量、因子图、剔除和质量边界。
+- 文档按建图 → 固定地图定位 → 尺度/重力对齐 → 地图放置 → GTSAM 融合 → poster_vio 联合图给出代码阅读顺序，并明确 ORB-SLAM3 外部引擎与本项目坐标/时间/验收适配层的责任边界。
+- 修正 `docs/算法原理.md` 中过时的 fusion 路径和 `collection.yaml.scene.layout` 字段，补充统一数学约定入口；scene/trajectory README 增加入口链接。
+- 相关文档链接、场景管理、poster_vio 和 base-tag 回归 **71 项通过（34.024 秒）**；compileall、`git diff --check` 通过。未改数值算法和运行结果。
