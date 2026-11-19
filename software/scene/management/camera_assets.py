@@ -97,7 +97,7 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
     if scene.parameters.tag_fusion_enabled and 'rear' not in lens_calibrations:
         raise ValueError('启用环境海报融合需要海报布局与本设备可用的环境镜头参数')
     return CalibratedCamera(device_record['serial'], calibration_selection, lens_calibrations, asset_paths,
-                            width_measurement, tag_distance_measurement, base_tag, factory_rear)
+                            width_measurement, tag_distance_measurement, factory_rear=factory_rear, base_tag=base_tag)
 
 
 def snapshot_cameras(cameras: dict[str, CalibratedCamera], directory: Path,

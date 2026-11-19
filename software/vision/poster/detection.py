@@ -30,8 +30,11 @@ class DetectionSettings:
     ids: tuple[int, ...] = tuple(range(12, 89))
     dictionary: str = 'DICT_4X4_100'
     full_frame_every: int = 15
+    lens: str = 'rear'
 
     def __post_init__(self):
+        if self.lens not in ('front', 'rear'):
+            raise ValueError('标签检测镜头必须是 front/rear')
         if self.dictionary != 'DICT_4X4_100':
             raise ValueError('环境海报当前只支持 DICT_4X4_100')
         if type(self.border_bits) is not int or self.border_bits < 1:
@@ -49,7 +52,7 @@ class DetectionSettings:
 
 @dataclass(frozen=True)
 class TagObservations:
-    """N 个采样时刻，M 次唯一 ID 观测；像素为原片左半幅坐标。
+    """N 个采样时刻，M 次唯一 ID 观测；像素为所选镜头的原片半幅坐标。
 
     sample_indices 将 M 次观测关联到 N 个采样帧，不将同帧的多个 ID 当成多个时刻。
     保留标定视场外角点供报告，但 usable=False，后续几何不得使用。
@@ -121,9 +124,9 @@ class PosterDetector:
         self.detector = cv2.aruco.ArucoDetector(dictionary, parameters)
 
     def detect(self, gray: np.ndarray, roi=None):
-        """仅接收原始环境镜头半幅，返回唯一 ID 角点和拒绝计数。"""
+        """仅接收原始单镜头半幅，返回唯一 ID 角点和拒绝计数。"""
         if gray.shape != (SRC_H, SRC_H) or gray.dtype != np.uint8:
-            raise ValueError('环境标签检测需要原始 1920×1920 灰度左半幅')
+            raise ValueError('标签检测需要原始 1920×1920 单镜头灰度半幅')
         offset = np.zeros(2, dtype=float)
         image = gray
         if roi is not None:
@@ -181,7 +184,8 @@ class PosterDetection:
         self.previous_time = timestamp
         if source_index % self.settings.frame_step:
             return
-        gray = np.ascontiguousarray(frame.to_ndarray(format='gray')[:, :SRC_H])
+        begin = SRC_H if self.settings.lens == 'front' else 0
+        gray = np.ascontiguousarray(frame.to_ndarray(format='gray')[:, begin:begin + SRC_H])
         follow = None
         if self.last_corners and self.sample_count % self.settings.full_frame_every:
             points = np.concatenate(list(self.last_corners.values()), axis=0)
@@ -251,7 +255,7 @@ def report(observations: TagObservations, settings: DetectionSettings) -> dict:
             usable=_visibility(observations, observations.sample_indices[selected & valid], settings.frame_step),
             side_px_quantiles=np.quantile(sides, [.1, .5, .9]).tolist() if len(sides) else None)
     total = len(observations.tag_ids)
-    return dict(kind='umi_environment_tag_visibility', schema_version=1, lens='rear',
+    return dict(kind='umi_environment_tag_visibility', schema_version=1, lens=settings.lens,
         dictionary=settings.dictionary, sampled_frames=n, observations=total,
         detection_schedule=dict(frame_step=settings.frame_step,
                                 full_frame_every=settings.full_frame_every,
@@ -262,7 +266,7 @@ def report(observations: TagObservations, settings: DetectionSettings) -> dict:
         outside_calibrated_crop_fraction=float((~observations.in_calibrated_crop).mean()) if total else None,
         rejected_duplicate_ids=int(observations.duplicate_ids.sum()),
         unknown_detections=int(observations.unknown_detections.sum()), per_id=per_id,
-        coordinates=dict(corners_half_px='original_rear_1920', corners_px='calibrated_crop_1440',
+        coordinates=dict(corners_half_px=f'original_{settings.lens}_1920', corners_px='calibrated_crop_1440',
                          time='source_video_pts_seconds', imu_offset_applied=False),
         geometry_status='not_evaluated', actual_error='not_measured',
         note='采样可见性报告；usable 仅表示像素尺寸及标定裁切筛选通过，不代表位姿可观测或轨迹精度。')
@@ -280,7 +284,7 @@ def cached(video: Path, output: Path, settings: DetectionSettings, *, force: boo
     if video.is_relative_to(output):
         raise ValueError('检测输出目录不能包含输入原片，请指定独立目录')
     if layout is not None and (settings.dictionary != layout.dictionary or settings.border_bits != layout.border_bits
-                               or not set(layout.ids).issubset(settings.ids)):
+                               or not set(settings.ids).issubset(layout.ids) or settings.lens != 'rear'):
         raise ValueError('检测字典、黑边或 ID 与海报布局不一致')
     source_files = (Path(__file__), Path(__file__).parent.parent / 'decoding.py',
                     provenance.ROOT / 'software/camera/x3/frame.py',

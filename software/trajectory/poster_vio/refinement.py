@@ -51,6 +51,7 @@ def initial_selection(item):
 
 def subset(item, observation, selection):
     tags = selection['tags']
+    base_selected = selection.get('base_tags', np.ones(len(observation.base_tag_times_s), dtype=bool))
     tracks = []
     for track in item.natural_tracks:
         keep = selection['tracks'][track_key(track)]
@@ -63,10 +64,11 @@ def subset(item, observation, selection):
                     tag_initialization_mask=None),
             replace(observation, times_s=observation.times_s[tags], tag_ids=observation.tag_ids[tags],
                     tag_corners_px=observation.tag_corners_px[tags], natural_tracks=tuple(tracks),
-                    base_tag_target_arms=observation.base_tag_target_arms,
-                    base_tag_times_s=observation.base_tag_times_s,
-                    base_tag_ids=observation.base_tag_ids,
-                    base_tag_corners_px=observation.base_tag_corners_px))
+                    base_tag_target_arms=tuple(target for target, keep in zip(
+                        observation.base_tag_target_arms, base_selected) if keep),
+                    base_tag_times_s=observation.base_tag_times_s[base_selected],
+                    base_tag_ids=observation.base_tag_ids[base_selected],
+                    base_tag_corners_px=observation.base_tag_corners_px[base_selected]))
 
 
 def propose_cull(item, observation, selection, evidence):
@@ -106,8 +108,21 @@ def propose_cull(item, observation, selection, evidence):
                 removed.append(dict(kind='natural', camera=key[0], track_id=key[1],
                     observation=int(index), node=int(track['node_indices'][index]), error_px=float(error),
                     reason='residual' if error > parameters.poster_vio_natural_cull_threshold_px else 'insufficient_geometry'))
+    base_keep = selection.get('base_tags', np.ones(len(observation.base_tag_times_s), dtype=bool)).copy()
+    active_base = np.flatnonzero(base_keep)
+    base_records = evidence.get('base_tag', {}).get('observations', [])
+    for record in base_records:
+        if record['status'] != 'used' or record['rms_px'] is None:
+            continue
+        original = int(active_base[record['observation']])
+        if record['rms_px'] > cull_threshold(parameters):
+            base_keep[original] = False
+            removed.append(dict(kind='base_tag', observation=original,
+                target=observation.base_tag_target_arms[original],
+                time_s=float(observation.base_tag_times_s[original]), error_px=record['rms_px']))
     if not removed:
         return selection, dict(status='clean', removed=[])
+
 
     training = training_tags(item)
     # The shared tag rule is applied against the ORIGINAL training set on every
@@ -122,6 +137,19 @@ def propose_cull(item, observation, selection, evidence):
             or np.ptp(times) < parameters.poster_vio_minimum_time_span_s
             or np.max(np.diff(times)) > parameters.poster_vio_maximum_observation_gap_s):
         reasons.append('tag_time_coverage')
+    base_budgets = {}
+    for target in set(observation.base_tag_target_arms):
+        original = np.array([owner == target for owner in observation.base_tag_target_arms])
+        total = int(np.count_nonzero(original))
+        count = int(np.count_nonzero(original & ~base_keep))
+        maximum = int(np.floor(total * parameters.tag_maximum_cull_fraction + 1e-12))
+        base_budgets[target] = dict(original_observations=total, cumulative_removed=count,
+                                    maximum_removed=maximum)
+        if count > maximum:
+            reasons.append(target + '_base_tag_count_budget')
+        if target == item.arm and count:
+            if len(np.unique(observation.base_tag_times_s[original & base_keep])) < parameters.poster_vio_base_tag_minimum_self_frames:
+                reasons.append('base_tag_self_coverage')
     budgets = {}
     for camera in ('front', 'rear'):
         original = [track for track in item.natural_tracks if track_key(track)[0] == camera]
@@ -131,8 +159,8 @@ def propose_cull(item, observation, selection, evidence):
         budgets[camera] = dict(original_observations=total, cumulative_removed=count, maximum_removed=maximum)
         if count > maximum:
             reasons.append(camera + '_natural_count_budget')
-    return dict(tags=tags, tracks=tracks), dict(status='refine' if not reasons else 'rejected',
-        reasons=reasons, tag_budget=tag_decision, natural_budgets=budgets, removed=removed)
+    return dict(tags=tags, tracks=tracks, base_tags=base_keep), dict(status='refine' if not reasons else 'rejected',
+        reasons=reasons, tag_budget=tag_decision, natural_budgets=budgets, base_tag_budgets=base_budgets, removed=removed)
 
 
 def residual_summary(errors):

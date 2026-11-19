@@ -73,6 +73,11 @@ class SceneParameters:
     poster_vio_keyframe_minimum_translation_m: float
     poster_vio_keyframe_minimum_rotation_deg: float
     poster_vio_precull_iterations: int
+    poster_vio_base_tag_prior_rotation_sigma_rad: float
+    poster_vio_base_tag_prior_translation_sigma_m: float
+    poster_vio_base_tag_maximum_rotation_correction_deg: float
+    poster_vio_base_tag_maximum_translation_correction_m: float
+    poster_vio_base_tag_minimum_self_frames: int
     localization_bidirectional: bool
     localization_reverse_context_s: float
     localization_minimum_overlap_frames: int
@@ -278,8 +283,8 @@ class CalibratedCamera:
     files: dict[str, Path]
     width_measurement: dict | None = None
     tag_distance_measurement: dict | None = None
-    base_tag: dict | None = None
     factory_rear: FactoryRearCalibration | None = None
+    base_tag: dict | None = None
 
     @cached_property
     def asset_hashes(self) -> dict[str, str]:

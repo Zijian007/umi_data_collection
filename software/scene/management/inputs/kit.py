@@ -16,7 +16,7 @@ from software.infrastructure.paths import PROJECT_ROOT
 KITS = PROJECT_ROOT / 'kits'
 
 
-def gripper_paths(declaration: dict, directory: Path | None = None) -> dict[str, str]:
+def gripper_paths(declaration: dict, directory: Path | None = None) -> dict:
     """kit 中使用相对路径；允许引用套件目录上一级的共享资产。"""
     require_keys(declaration, {'tcp', 'width', 'mask', 'tag_distance', 'base_tag'}, {'tcp'}, 'gripper')
     resolved = {}
@@ -25,7 +25,7 @@ def gripper_paths(declaration: dict, directory: Path | None = None) -> dict[str,
             require_keys(filename, {'id', 'size_mm', 'dictionary'}, {'id', 'size_mm'}, 'gripper.base_tag')
             if type(filename['id']) is not int or not 0 <= filename['id'] < 100:
                 raise ValueError('gripper.base_tag.id 必须是 0–99 整数')
-            if not isinstance(filename['size_mm'], (int, float)) or not math.isfinite(filename['size_mm']) or filename['size_mm'] <= 0:
+            if type(filename['size_mm']) not in (int, float) or not math.isfinite(filename['size_mm']) or filename['size_mm'] <= 0:
                 raise ValueError('gripper.base_tag.size_mm 必须是正数')
             dictionary = filename.get('dictionary', 'DICT_4X4_100')
             if dictionary != 'DICT_4X4_100':
@@ -48,6 +48,9 @@ def gripper_paths(declaration: dict, directory: Path | None = None) -> dict[str,
         if path.suffix.lower() != suffix:
             raise ValueError(f'gripper.{asset} 需要 {suffix} 文件')
         resolved[asset] = str(path)
+    if ('base_tag' in resolved and resolved['base_tag']['id'] in (0, 1)
+            and ('width' in resolved or 'tag_distance' in resolved)):
+        raise ValueError('base tag ID 不能与夹爪宽度/测距标签 0/1 冲突')
     return resolved
 
 
@@ -134,6 +137,10 @@ def validate_kit(declaration: dict, *, name: str | None = None, intrinsics_sourc
         resolved[arm] = camera
     if len({camera['serial'] for camera in resolved.values()}) != len(resolved):
         raise ValueError('套件的左右手必须使用不同相机')
+    tag_ids = [camera['gripper']['base_tag']['id'] for camera in resolved.values()
+               if 'base_tag' in camera['gripper']]
+    if len(tag_ids) != len(set(tag_ids)):
+        raise ValueError('套件左右手 base tag ID 必须唯一')
     kit = dict(id=identity, arms=resolved)
     if declaration.get('description'):
         kit['description'] = declaration['description']

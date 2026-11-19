@@ -19,7 +19,7 @@ from software.vision.poster.quality import position_support_metrics
 
 from .contract import validate_result, validate_request
 from .models import PosterVioQuality, PosterVioRequest, PosterVioResult
-from . import refinement, keyframes
+from . import refinement, keyframes, base_tags
 
 
 @dataclass(frozen=True)
@@ -66,7 +66,7 @@ class ArmSolveInput:
     natural_cameras: dict[str, NaturalCamera] = field(default_factory=dict)
     tag_holdout_mask: np.ndarray | None = None
     tag_initialization_mask: np.ndarray | None = None
-    base_tag_T_imu: np.ndarray | None = None
+    base_tag_T_imu: np.ndarray | None = None  # T_imu_base_tag, tag -> native IMU; initial mount seed.
     base_tag_indices: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=int))
 
 
@@ -181,6 +181,7 @@ def _resolve_inputs(request, arms):
     observations = {item.arm: item for item in request.observations}
     arms = tuple(replace(item, natural_tracks=item.natural_tracks or observations[item.arm].natural_tracks)
                  for item in arms)
+    arms = base_tags.expand_nodes(request, arms)
     for item in arms:
         _validate_arm_input(item)
         observation = observations[item.arm]
@@ -200,7 +201,6 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
     # This is a coordinate gauge, not measured geometric information.
     graph.add(gtsam.NonlinearEqualityPose3(board_key, board_pose))
     keys_by_arm = {}
-    graph_items = []
     full_arms = arms
     arms = tuple(keyframes.graph_input(item, graph_nodes[item.arm]) for item in arms)
     for arm_index, item in enumerate(arms):
@@ -217,7 +217,6 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
             initial_gyro_bias=item.initial_gyro_bias)
         graph.push_back(arm_graph)
         values.insert(arm_values)
-        graph_items.append(item)
         # Quiet IMU measurements also occur during constant-velocity motion.
         # VIO has no independently confirmed stationary intervals yet.
         # VIO's first version fixes measured extrinsics for both pixel factor types.
@@ -237,42 +236,8 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
                     _point_key(arm_index, camera_name, track_id),
                 T_camera_imu=camera.T_cam_imu, model=camera.model, tracks=tracks)
 
-    cross_records = []
-    observations = {observation.arm: observation for observation in request.observations}
-    for observer in graph_items:
-        observation = observations[observer.arm]
-        if not len(observation.base_tag_times_s):
-            continue
-        observer_camera = natural_camera(observer, 'rear')
-        for target, time_s, tag_id, pixels in zip(
-                observation.base_tag_target_arms, observation.base_tag_times_s,
-                observation.base_tag_ids, observation.base_tag_corners_px):
-            if target == observer.arm or target not in keys_by_arm:
-                continue
-            owner = next(item for item in graph_items if item.arm == target)
-            if owner.base_tag_T_imu is None:
-                continue
-            session_time = float(time_s) + float(request.clock_offsets_s.get(observer.arm, 0.0))
-            owner_local = session_time - float(request.clock_offsets_s.get(target, 0.0))
-            observer_index = int(np.argmin(np.abs(observer.times_s - float(time_s))))
-            owner_index = int(np.argmin(np.abs(owner.times_s - owner_local)))
-            if (abs(observer.times_s[observer_index] - float(time_s)) > 1e-7
-                    or abs(owner.times_s[owner_index] - owner_local) > 1e-7):
-                continue
-            spec = request.base_tag_specs.get(target)
-            if spec is None:
-                continue
-            factors.add_cross_base_tag_factor(
-                graph, observer_key=keys_by_arm[observer.arm].pose(observer_index),
-                owner_key=keys_by_arm[owner.arm].pose(owner_index),
-                T_cam_imu=observer_camera.T_cam_imu, model=observer_camera.model,
-                T_imu_tag=owner.base_tag_T_imu, pixels=pixels,
-                parameters={'size_m': float(spec['size_m']), 'scene': observer.scene_parameters})
-            cross_records.append(dict(observer=observer.arm, owner=owner.arm,
-                observer_index=observer_index, owner_index=owner_index,
-                pixels=np.asarray(pixels, dtype=float), model=observer_camera.model,
-                T_cam_imu=observer_camera.T_cam_imu, T_imu_tag=owner.base_tag_T_imu,
-                size_m=float(spec['size_m'])))
+    base_tag_keys, base_records = base_tags.add_graph(
+        request, arms, graph, values, keys_by_arm, natural_camera)
 
     solver = gtsam.LevenbergMarquardtParams()
     solver.setMaxIterations(maximum_iterations or arms[0].trajectory_parameters.fusion.lm_iterations)
@@ -282,7 +247,7 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
         for key in values.keys():
             if warm.exists(key):
                 kind = chr(gtsam.Symbol(key).chr())
-                value = (warm.atPose3(key) if kind in ('x', 'l') else warm.atConstantBias(key) if kind == 'b'
+                value = (warm.atPose3(key) if kind in ('x', 'l', 't') else warm.atConstantBias(key) if kind == 'b'
                          else warm.atPoint3(key) if kind == 'p' else warm.atVector(key))
                 values.update(key, value)
     ordering = gtsam.Ordering()
@@ -299,6 +264,8 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
         for index in range(len(item.times_s)):
             for key in (keys.pose(index), keys.velocity(index), keys.bias(index)):
                 ordering.push_back(key)
+    for key in base_tag_keys.values():
+        ordering.push_back(key)
     solver.setOrdering(ordering)
     initial_error = float(graph.error(values))
     if not np.isfinite(initial_error):
@@ -308,20 +275,12 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
     final_error = float(graph.error(optimized))
     board_pose = optimized.atPose3(board_key).matrix()
     trajectories, evidence, counts, support_fraction, rms_values = {}, {}, {}, {}, []
-    cross_errors = []
-    rejected = not np.isfinite(final_error) or final_error > initial_error + 1e-5
-    for record in cross_records:
-        residual, _, _ = factors.residual_and_jacobians(
-            optimized.atPose3(keys_by_arm[record['observer']].pose(record['observer_index'])).matrix(),
-            optimized.atPose3(keys_by_arm[record['owner']].pose(record['owner_index'])).matrix(),
-            record['T_cam_imu'],
-            factors.transform(record['T_imu_tag'], factors.base_tag_corners_m(record['size_m'])),
-            record['pixels'], record['model'])
-        cross_errors.extend(np.linalg.norm(residual.reshape(-1, 2), axis=1).tolist())
-    if cross_errors:
-        cross_rms = float(np.sqrt(np.mean(np.square(cross_errors))))
-        rms_values.append(cross_rms)
-        rejected |= cross_rms > max(item.scene_parameters.tag_maximum_reprojection_rms_px for item in full_arms)
+    base_evidence, base_rejected = base_tags.evaluate(full_arms, base_tag_keys, base_records, optimized)
+    rejected = base_rejected or not np.isfinite(final_error) or final_error > initial_error + 1e-5
+    for record in base_evidence.values():
+        for kind in ('self', 'cross'):
+            if record[kind]['rms_px'] is not None:
+                rms_values.append(record[kind]['rms_px'])
     for arm_index, item in enumerate(full_arms):
         keys = keys_by_arm[item.arm]
         poses, velocities, biases, recovery = keyframes.recover_states(item, graph_nodes[item.arm], optimized, keys)
@@ -395,10 +354,9 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
             position_support=support, maximum_acc_bias_m_s2=max_acc_bias,
             observation_imu_times_s=np.unique(item.times_s[item.tag_indices]).tolist(),
             gravity_output_m_s2=(board_pose[:3, :3].T @ gravity).tolist(),
-            extrinsics_fixed=True, actual_error='not_measured',
-            cross_camera_base_tag_observations=sum(1 for row in cross_records if row['observer'] == item.arm),
-            cross_camera_base_tag_rms_px=(float(np.sqrt(np.mean(np.square(cross_errors))))
-                                          if cross_errors else None))
+            extrinsics_fixed=True, base_tag_extrinsics_optimized=item.arm in base_tag_keys,
+            actual_error='not_measured', base_tag=base_evidence[item.arm])
+
     quality = PosterVioQuality('rejected' if rejected else 'solved', counts,
                                float(max(rms_values)), support_fraction)
     result = PosterVioResult(trajectories, request.coordinate_record, quality,
@@ -412,7 +370,8 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
     """Refine with fixed cumulative budgets, then assess untouched tag frames."""
     arms = _resolve_inputs(request, arms)
     observations = {item.arm: item for item in request.observations}
-    selections = {item.arm: refinement.initial_selection(item) for item in arms}
+    selections = {item.arm: dict(refinement.initial_selection(item), base_tags=np.ones(
+        len(observations[item.arm].base_tag_times_s), dtype=bool)) for item in arms}
     records = {item.arm: [] for item in arms}
     max_rounds = min(item.scene_parameters.poster_vio_maximum_cull_rounds for item in arms)
     budget_rejected = False
@@ -462,7 +421,9 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
                 refinement.training_tags(item) & ~selections[item.arm]['tags'])),
             initialization_removed=int(np.count_nonzero(refinement.training_tags(item)
                 & ~refinement.initial_selection(item)['tags'])),
-            original_training_tag_observations=int(np.count_nonzero(refinement.training_tags(item))))
+            original_training_tag_observations=int(np.count_nonzero(refinement.training_tags(item))),
+            original_base_tag_observations=len(observations[item.arm].base_tag_times_s),
+            cumulative_base_tag_removed=int(np.count_nonzero(~selections[item.arm]['base_tags'])))
         held = (np.zeros(len(item.pixels), dtype=bool) if item.tag_holdout_mask is None else item.tag_holdout_mask)
         frames = len(np.unique(item.tag_indices[held]))
         holdout = dict(status=('not_prepared' if item.tag_holdout_mask is None else

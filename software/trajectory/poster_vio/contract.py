@@ -37,7 +37,8 @@ def _validate_observation(observation, arms: tuple[str, ...]) -> None:
             or base_corners.shape != (len(targets), 4, 2)
             or any(target not in arms for target in targets)
             or not np.isfinite(base_times).all() or not np.all(np.diff(base_times) >= 0)
-            or not np.issubdtype(base_ids.dtype, np.integer) or np.any(base_ids < 0)
+            or base_times.ndim != 1 or not np.issubdtype(base_ids.dtype, np.integer)
+            or np.any(base_ids < 0) or np.any(base_ids >= 100)
             or not np.isfinite(base_corners).all()):
         raise ValueError('poster_vio 夹爪 base tag 观测契约无效')
     if len(targets) and len(set(zip(base_times.tolist(), base_ids.tolist(), targets))) != len(targets):
@@ -62,11 +63,13 @@ def validate_request(request: PosterVioRequest) -> None:
     ids = []
     for arm, spec in request.base_tag_specs.items():
         if (type(spec.get('id')) is not int or not 0 <= spec['id'] < 100
-                or not isinstance(spec.get('size_m'), (int, float)) or not math.isfinite(spec['size_m'])
+                or type(spec.get('size_m')) not in (int, float) or not math.isfinite(spec['size_m'])
                 or spec['size_m'] <= 0):
             raise ValueError(f'{arm} poster_vio base tag 配置无效')
         if spec['id'] in ids:
             raise ValueError('poster_vio 左右手 base tag ID 必须不同')
+        if spec.get('dictionary', 'DICT_4X4_100') != 'DICT_4X4_100':
+            raise ValueError('base tag 字典必须为 DICT_4X4_100')
         ids.append(spec['id'])
     if request.clock_offsets_s and (
             set(request.clock_offsets_s) != set(request.arms)
@@ -77,6 +80,11 @@ def validate_request(request: PosterVioRequest) -> None:
         raise ValueError('poster_vio 必须声明 task_poster 坐标系')
     for observation in request.observations:
         _validate_observation(observation, request.arms)
+        if len(observation.base_tag_times_s) and set(request.clock_offsets_s) != set(request.arms):
+            raise ValueError('base tag 跨手观测需要完整的本机 IMU 到任务时钟偏移')
+        for owner, tag_id in zip(observation.base_tag_target_arms, observation.base_tag_ids):
+            if owner not in request.base_tag_specs or request.base_tag_specs[owner]['id'] != int(tag_id):
+                raise ValueError('base tag 观测 ID 与所有手归属不匹配')
 
 
 def validate_result(result: PosterVioResult, arms: tuple[str, ...]) -> None:

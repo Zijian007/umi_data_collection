@@ -57,11 +57,8 @@ def prepare_detections(episode: Episode, arm: str, recording: PreparedRecording,
                            reason='本手未配置夹爪标签距离资产')
     if scene.environment_tag_detection:
         board = tag_board.load(scene.tag_layout)
-        base_tag = getattr(camera, 'base_tag', None)
-        configured_ids = tuple(sorted(set(board.ids) | (
-            {int(base_tag['id'])} if base_tag is not None else set())))
         environment_tags.cached(video, cache / 'environment_tags' / arm,
-            environment_tags.DetectionSettings(border_bits=board.border_bits, ids=configured_ids, dictionary=board.dictionary,
+            environment_tags.DetectionSettings(border_bits=board.border_bits, ids=board.ids, dictionary=board.dictionary,
                                    minimum_side_px=scene.parameters.tag_minimum_side_px),
             layout=board, progress=progress, decoder=decoder, cache_audit=cache_audit)
     elif cache_audit is not None:

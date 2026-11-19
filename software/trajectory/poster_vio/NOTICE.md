@@ -15,6 +15,10 @@ Reference paths under `src/specialist/vi_ba/`:
   revisit candidates and descriptors, track caps and batched triangulation.
 - `reference_solve.py`, `landmark_cull.py`: short initial optimization, residual
   rejection and warm continuation.
+- `compose.py`: a per-camera rigid base-tag Pose3 variable with a soft seed
+  prior, self corner reprojection, and cross-camera corner factors connecting
+  observer, owner and owner mount. UMI uses analytic KB4 Jacobians, its own
+  time-node expansion and cumulative base-observation cull budgets.
 - `highrate.py`, `build.py`: keyframe states and IMU-rate reconstruction.
 
 Local implementations use KB4 and the known rigid ArUco board rather than MEI

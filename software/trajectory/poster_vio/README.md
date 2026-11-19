@@ -2,7 +2,45 @@
 
 `poster_vio` 是实验性任务后端，直接使用本任务的海报角点、自然特征像素和 IMU，不读取预建场景地图，也不调用 ORB 初始化。当前已实现数值求解和任务发布，独立精度尚未验收。
 
-当两只手在 kit.yaml 的 gripper.base_tag 中分别声明唯一的 DICT_4X4_100 标签 ID 和黑色外框尺寸时，任务还会检测环境镜头看到的夹爪基座标签，并把跨手四角点重投影加入同一联合图。该约束默认关闭；标签自身的 IMU 外参由本手的观测初始化，双手音频偏移用于把观察者和被观察者的节点配到同一任务时刻。结果证据中会记录跨相机 base tag 观测数和残差。
+可选的夹爪 base tag 在 kit.yaml 的 `gripper.base_tag` 声明 ID、黑框边长和
+`DICT_4X4_100` 字典。工作镜头 `front`（specialist 中叫 rear）检测自身和
+对方基座标签，缓存与环境镜头海报分开。单手也可用自身标签细化安装，但自身
+观测只约束相机到标签的安装关系，不提供世界定位。
+
+每手的 `T_imu_base_tag` 是独立 Pose3 变量。自身观测因子连接该安装变量；跨手
+因子连接观察者 IMU 位姿、拥有者 IMU 位姿和拥有者安装变量。角点因子使用解析
+Jacobian 和 Huber 核，复用 KB4 投影与噪声模型。相机内外参保持冻结，TCP
+定义保持 kit 中的实测几何；优化得到的 base tag 外参不覆盖设备登记或 TCP。
+
+初值以至少 3 个自身观测时刻作多帧刚性重投影拟合。初始化只选择种子，不丢弃
+原观测；原观测进入联合图。软先验中心来自这份自身观测种子，用于正则化，不能
+视为独立安装测量。专家配置可设置：
+
+```yaml
+parameters:
+  poster_vio:
+    base_tag:
+      prior_rotation_sigma_rad: 0.2
+      prior_translation_sigma_m: 0.03
+      maximum_rotation_correction_deg: 10.0
+      maximum_translation_correction_m: 0.05
+      minimum_self_frames: 3
+```
+
+跨手观测通过 `t_task = t_native_imu - front_cam_time_offset + video_sync_offset`
+匹配物理时刻。在双方链中插入精确时间节点并用实际 IMU 约束求解；不把最近
+曝光帧当成同时刻。超出共同时间范围的观测显式记为 skipped，不外推、不静默配对。
+
+自身/跨手异常观测按完整四角点单元剔除，每个观察者/拥有者组合使用原始观测数
+作为累计预算，沿用 `tag_maximum_cull_fraction` 和有限轮热启动重解。剔除后的
+自身观测仍须满足最少时刻数。非有限投影、非正深度、安装修正超限或残差超限
+均拒绝任务，不靠删点掩盖几何错误。海报与自然点的留出检查继续执行。
+
+冻结输入包含 base tag 原始 NPZ、时间/ID/拥有者/像素数组、初始外参、同步偏移
+及文件哈希。结果 `arm_evidence.<arm>.base_tag` 保存自身/跨手残差、逐条观测的
+使用/跳过状态，以及初始/优化后的 `T_imu_base_tag`、平移和旋转修正量。
+`refinement` 记录原始 base tag 数、累计剔除数和每轮原始观测行号。这些是内部
+一致性证据，真实 TCP 和双手相对精度仍需独立实拍验收。
 
 ## 调用链
 
@@ -11,6 +49,7 @@
 - `models.py` / `contract.py`：每次 ID 观测的 IMU 时刻、冻结资产、自然点轨迹、任务坐标和结果契约。
 - `initialization.py`：逐帧整板/标签子集的 KB4 PnP 假设、完整标签多数一致性、平面多解和累计剔除预算；先按保留标签旋转与陀螺仪积分拟合零偏，再估计速度、加速度零偏、海报坐标重力。种子只作初值。
 - `frontend.py`：顺序解码一次原始 INSV，同时处理 front/rear 各自的 1440 标定裁切；前后向光流检查、补点、长度/数量上限、视差和正深度三角化。front 使用冻结遮手图，rear 排除已检测的标签区域。不把缓存帧号或像素吸附到另一个镜头。
+- `base_tags.py`：刚性安装变量、自身与跨相机观测、精确异步时间节点和质量证据。
 - `solver.py`：两手分别持有位姿、速度和零偏，自然点按“手臂 + 镜头 + 特征 ID”隔离；共享海报规范和初始化后的重力。两镜头像素连接同一组 IMU 状态，内外参和时差固定；先短求解、后验剔除后热启动，保持物理时间对应的状态键不变，优先消元三维点。
 - `feature_geometry.py`：KB4 视线极几何、旋转退化分支、确定性本质矩阵 RANSAC、分批三角化，以及 ORB 描述子与米制重投影联合验证的重关联。
 - `keyframes.py`：按时间、平移和旋转选择关键帧；所有标签/自然观测时刻保留为主图节点，其余输出状态用固定端点的局部惯性图恢复。
@@ -69,7 +108,7 @@ LK 前后向检查之外，匹配还需通过米制初值的视线极几何，�
 
 ## 配置和边界
 
-选择 `collection.yaml.reconstruction.mode: poster_vio`，运行方式见 [场景处理](../../../docs/场景处理.md#选择轨迹估计后端)。观测/缺口/双手重力门槛及 `initialization`、`keyframes`、`frontend`、`culling`、`holdout` 集中于 `config/algorithms/scene_parameters.yaml`，可通过 `parameters.poster_vio` 专家覆盖。`culling.maximum_rounds: 0` 关闭重求解，`holdout.stride: 0` / `natural_stride: 0` 分别关闭标签/自然点留出。海报像素和条件几何质量继续使用公共环境标签参数。
+选择 `collection.yaml.reconstruction.backend: poster_vio`，运行方式见 [场景处理](../../../docs/场景处理.md#选择轨迹估计后端)。观测/缺口/双手重力门槛及 `initialization`、`keyframes`、`frontend`、`culling`、`holdout` 集中于 `config/algorithms/scene_parameters.yaml`，可通过 `parameters.poster_vio` 专家覆盖。`culling.maximum_rounds: 0` 关闭重求解，`holdout.stride: 0` / `natural_stride: 0` 分别关闭标签/自然点留出。海报像素和条件几何质量继续使用公共环境标签参数。
 
 当前已接入整板鲁棒初始化、双镜头自然点、几何异常筛选、描述子重关联、有限轮热启动剔除、标签/自然点留出，以及关键帧和条件惯性恢复。语义动态分割、滑窗边缘化和 GPU 加速未接入；真实录像精度和规模基准仍待验收。当前遇到几何冲突或质量不足会拒绝；不声称具备长期标签失联恢复能力。`auto` 在场景地图质量不足后尝试本后端，失败再回退到 `poster_independent`。
 

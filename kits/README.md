@@ -15,7 +15,7 @@ arms:
       tcp: left_tcp_camera.json
       width: left_width.json
       base_tag:
-        id: 20
+        id: 2
         size_mm: 10.0
         dictionary: DICT_4X4_100
   right:
@@ -27,7 +27,7 @@ arms:
       tcp: right_tcp_camera.json
       width: right_width.json
       base_tag:
-        id: 21
+        id: 3
         size_mm: 10.0
         dictionary: DICT_4X4_100
 ```
@@ -43,6 +43,16 @@ arms:
 | `gripper.base_tag` | 可选；poster_vio 用于跨相机约束的固定夹爪基座标签，ID 必须在两手间唯一，尺寸单位为 mm |
 | `intrinsics.front` | 工作镜头来源：`measured`（默认）或 `factory`；选择该设备此来源的当前完整参数 |
 | `intrinsics.rear` | 环境镜头来源：`factory`（默认）或 `measured`；与 front 独立选择 |
+
+base tag 固定在不随开合运动的夹爪基座上，配置写在 kit 内，不是文件路径。
+当前只对 poster_vio 生效；自身和跨相机观测均来自工作镜头 front。每个已声明标签
+至少需要 3 个有效自身观测时刻来确定安装初值；只看到对方而看不到自身时，无法
+仅凭 ID 和尺寸确定安装外参。没有可用观测时不会伪造跨相机约束。
+
+同一套件的 base tag ID 必须唯一，且不能与场景海报 ID 冲突；默认海报为 12–88，
+示例使用 2/3。已配置宽度或测距时也不能占用 0/1。尺寸为黑框实测边长，白边不计。
+安装变换会在任务图内带先验联合细化，修正量和自身/跨相机残差保存在质量证据中。
+参数与验收边界见 [poster_vio](../software/trajectory/poster_vio/README.md)。
 
 左右安装几何相同时，可以共同引用一个共享 `tcp_camera.json`；不同时分别填写。没有实测开口关系时省略 `width`，不要填写示例数值。TCP 格式与方向见[设备与坐标](../docs/设备与坐标.md#几何资产)，宽度格式与测量方法见[训练数据指南](../docs/训练数据.md#夹爪宽度标定与接入)。
 

@@ -41,6 +41,7 @@ jobs:
           software/trajectory/poster_vio/initialization.py
           software/trajectory/poster_vio/frontend.py
           software/trajectory/poster_vio/solver.py
+          software/trajectory/poster_vio/base_tags.py
           software/trajectory/poster_vio/refinement.py
           software/trajectory/poster_vio/feature_geometry.py
           software/trajectory/poster_vio/keyframes.py

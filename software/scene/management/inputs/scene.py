@@ -110,6 +110,10 @@ def load_scene_parameters(path: Path | None = None, *, overrides: dict | None = 
             raise ValueError(f'{field.name} 必须为{bound} {typ.__name__}')
         parameter_values[field.name] = typ(value)
     parameters = SceneParameters(**parameter_values)
+    if parameters.poster_vio_base_tag_minimum_self_frames < 3:
+        raise ValueError('poster_vio.base_tag.minimum_self_frames 至少为 3')
+    if parameters.poster_vio_base_tag_maximum_rotation_correction_deg > 180:
+        raise ValueError('poster_vio.base_tag.maximum_rotation_correction_deg 不能超过 180')
     if parameters.poster_vio_minimum_tag_frames < 3:
         raise ValueError('poster_vio.minimum_tag_frames 至少为 3')
     if parameters.poster_vio_maximum_gravity_difference_deg > 180:

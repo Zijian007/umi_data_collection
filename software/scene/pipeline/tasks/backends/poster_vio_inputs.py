@@ -18,6 +18,7 @@ from software.trajectory.poster_vio import ArmSolveInput, NaturalCamera, PosterV
 from software.trajectory.poster_vio.frontend import FeatureCameraInput, track_cameras
 from software.trajectory.poster_vio.refinement import select_holdout
 from software.trajectory.poster_vio.keyframes import select_indices
+from software.trajectory.poster_vio import base_tags
 from software.trajectory.poster_vio.initialization import (
     select_observations, robust_seed_poses, align_inertial, interpolate_seed,
     estimate_static_tag_extrinsic)
@@ -47,7 +48,6 @@ def prepare_task_inputs(inputs: TaskInputs):
         raise ValueError('双手 base tag ID 必须唯一')
     if set(base_tag_ids.values()) & set(board.ids):
         raise ValueError('base tag ID 不能与环境海报 ID 冲突')
-    configured_detection_ids = tuple(sorted(set(board.ids) | set(base_tag_ids.values())))
     for arm in arms:
         recording = inputs.recordings[arm]
         camera = recording.camera
@@ -67,7 +67,7 @@ def prepare_task_inputs(inputs: TaskInputs):
         # prepare_detections may skip a lone detector; cached validates source identity
         # in both cases and runs the missing detector when necessary.
         detection.cached(episode.recordings[arm], cache,
-            detection.DetectionSettings(border_bits=board.border_bits, ids=configured_detection_ids,
+            detection.DetectionSettings(border_bits=board.border_bits, ids=board.ids,
                 dictionary=board.dictionary, minimum_side_px=scene.parameters.tag_minimum_side_px),
             layout=board, progress=inputs.console.write, cache_audit=inputs.cache_audit)
         directory = inputs.directory / 'poster_vio' / arm
@@ -81,16 +81,31 @@ def prepare_task_inputs(inputs: TaskInputs):
         if len(np.unique(tag_times)) != len(tag_times):
             raise ValueError('poster_vio 标签时刻在纳秒舍入后不唯一')
         tag_indices = np.searchsorted(tag_times, np.round(raw_times, 9))
-        all_detection_times = detections.imu_times_s(measured['cam_time_offset_ns'])
-        base_rows = np.flatnonzero(
-            detections.usable & np.isin(detections.tag_ids, tuple(base_tag_ids.values()))
-            & (all_detection_times >= output_times[0]) & (all_detection_times <= output_times[-1]))
-        base_target_arms = tuple(next(arm_name for arm_name, tag_id in base_tag_ids.items()
-                                      if int(tag_id) == int(detections.tag_ids[index]))
-                                 for index in base_rows)
-        base_times = np.round(all_detection_times[base_rows], 9)
-        base_ids = detections.tag_ids[base_rows].astype(int, copy=False)
-        base_pixels = np.asarray(detections.corners_px[base_rows], dtype=float)
+        base_target_arms = ()
+        base_times = np.empty(0, dtype=float)
+        base_ids = np.empty(0, dtype=int)
+        base_pixels = np.empty((0, 4, 2), dtype=float)
+        base_frame_polygons = {}
+        if base_tag_specs:
+            base_cache = layout.metadata(episode.root, 'cache/base_tags') / arm
+            detection.cached(episode.recordings[arm], base_cache,
+                detection.DetectionSettings(border_bits=1, ids=tuple(sorted(base_tag_ids.values())),
+                    lens='front', minimum_side_px=scene.parameters.tag_minimum_side_px),
+                progress=inputs.console.write, cache_audit=inputs.cache_audit)
+            shutil.copyfile(base_cache / 'observations.npz', directory / 'base_tag_observations.npz')
+            base_detections = detection.load_observations(directory / 'base_tag_observations.npz')
+            base_imu_times = base_detections.imu_times_s(camera.measurements['front']['cam_time_offset_ns'])
+            valid = (base_detections.usable & (base_imu_times >= output_times[0])
+                     & (base_imu_times <= output_times[-1]))
+            base_rows = np.flatnonzero(valid)
+            base_target_arms = tuple(next(name for name, tag_id in base_tag_ids.items()
+                                          if tag_id == int(base_detections.tag_ids[row])) for row in base_rows)
+            base_times = np.round(base_imu_times[base_rows], 9)
+            base_ids = base_detections.tag_ids[base_rows]
+            base_pixels = base_detections.corners_px[base_rows]
+            for row in base_rows:
+                source_frame = int(base_detections.source_frame_indices[base_detections.sample_indices[row]])
+                base_frame_polygons.setdefault(source_frame, []).append(base_detections.corners_px[row])
         model = camera_model(measured)
         ext = np.linalg.inv(imu_from_camera(measured))
         holdout = select_holdout(np.round(raw_times, 9), scene.parameters)
@@ -110,7 +125,7 @@ def prepare_task_inputs(inputs: TaskInputs):
         held_times = np.unique(np.round(raw_times[holdout], 9))
         feature_selected = selected & ~np.isin(np.round(all_rear_times, 9), held_times)
         # Output and rear-feature nodes are included even where no tag is visible.
-        node_times = np.unique(np.round(np.r_[output_times, rear_times], 9))
+        node_times = np.unique(np.round(np.r_[output_times, rear_times, base_times], 9))
         seed = interpolate_seed(training_times, tag_seeds, node_times)
         node_velocities = np.column_stack([np.interp(node_times, training_times, velocities[:, i]) for i in range(3)])
         tag_indices = np.searchsorted(node_times, np.round(raw_times, 9))
@@ -125,10 +140,16 @@ def prepare_task_inputs(inputs: TaskInputs):
         own_base = None
         own_base_evidence = None
         if arm in base_tag_specs:
-            own_rows = [index for index, target in zip(base_rows, base_target_arms) if target == arm]
-            if own_rows:
+            own_rows = np.array([target == arm for target in base_target_arms], dtype=bool)
+            if np.count_nonzero(own_rows):
+                if len(np.unique(base_times[own_rows])) < scene.parameters.poster_vio_base_tag_minimum_self_frames:
+                    raise ValueError(f'{arm} base tag 自身观测时刻不足')
                 own_base, own_base_evidence = estimate_static_tag_extrinsic(
-                    detections.corners_px[own_rows], ext, model, base_tag_specs[arm]['size_m'])
+                    base_pixels[own_rows], natural_cameras['front'].T_cam_imu,
+                    natural_cameras['front'].model, base_tag_specs[arm]['size_m'],
+                    maximum_rms_px=scene.parameters.tag_maximum_reprojection_rms_px,
+                    maximum_cull_fraction=scene.parameters.tag_maximum_cull_fraction,
+                    minimum_frames=scene.parameters.poster_vio_base_tag_minimum_self_frames)
         front_selection = select_indices(output_times, seed[np.searchsorted(node_times, np.round(output_times, 9))], scene.parameters)
         rear_samples = np.flatnonzero(feature_selected)
         rear_nodes = np.searchsorted(node_times, np.round(all_rear_times[rear_samples], 9))
@@ -139,7 +160,7 @@ def prepare_task_inputs(inputs: TaskInputs):
                 np.asarray(recording.video_times_s)[front_selection],
                 np.searchsorted(node_times, np.round(output_times[front_selection], 9)),
                 seed, natural_cameras['front'].T_cam_imu, natural_cameras['front'].model,
-                mask_path=camera.files['mask']),
+                mask_path=camera.files['mask'], excluded_polygons=base_frame_polygons),
             FeatureCameraInput('rear', detections.source_frame_indices[rear_samples],
                 detections.video_times_s[rear_samples], rear_nodes[rear_selection],
                 seed, ext, model, excluded_polygons=frame_polygons),
@@ -170,7 +191,7 @@ def prepare_task_inputs(inputs: TaskInputs):
                                 initialization=initialization,
                                 frontend=frontend_diagnostics,
                                 feature_tracks=len(natural_tracks), tag_frames=len(tag_times),
-                                base_tag_observations=len(base_rows),
+                                base_tag_observations=len(base_times),
                                 base_tag_self_evidence=own_base_evidence,
                                 initialization_tag_frames=len(training_times),
                                 holdout_tag_frames=len(np.unique(raw_times[holdout])),
@@ -183,6 +204,17 @@ def prepare_task_inputs(inputs: TaskInputs):
     shared_gravity = np.mean(gravity_vectors, axis=0)
     shared_gravity *= scene.trajectory.values.fusion.gravity_m_s2 / np.linalg.norm(shared_gravity)
     solve_inputs = tuple(replace(item, gravity_m_s2=shared_gravity) for item in solve_inputs)
+    coordinate = dict(name=scene.name, session=episode.session.name, version=None,
+                       scope='task_poster', frame_id=f'poster:{inputs.directory.name}',
+                       axes='board_layout', units='metres', gravity_difference_deg=difference)
+    # Native IMU -> common task clock. Lens calibration offset must be removed
+    # before applying the cross-camera video-clock shift.
+    clock_offsets = {arm: float(inputs.offsets_s[arm])
+                     - inputs.recordings[arm].camera.measurements['front']['cam_time_offset_ns'] * 1e-9
+                     for arm in arms}
+    request = PosterVioRequest(arms, board.asset_hash, tuple(observations), camera_assets, imu_assets,
+                               coordinate, base_tag_specs=base_tag_specs, clock_offsets_s=clock_offsets)
+    solve_inputs = base_tags.expand_nodes(request, solve_inputs)
     assets = {}
     for item in solve_inputs:
         directory = inputs.directory / 'poster_vio' / item.arm
@@ -193,7 +225,13 @@ def prepare_task_inputs(inputs: TaskInputs):
                       initial_gyro_bias=item.initial_gyro_bias, tag_holdout_mask=item.tag_holdout_mask,
                       tag_initialization_mask=item.tag_initialization_mask,
                       base_tag_indices=item.base_tag_indices,
+                      base_tag_present=np.array(item.base_tag_T_imu is not None),
                       base_tag_T_imu=item.base_tag_T_imu if item.base_tag_T_imu is not None else np.eye(4))
+        observation = next(obs for obs in observations if obs.arm == item.arm)
+        arrays.update(base_tag_times_s=observation.base_tag_times_s,
+                      base_tag_ids=observation.base_tag_ids,
+                      base_tag_target_arms=np.asarray(observation.base_tag_target_arms, dtype='U5'),
+                      base_tag_corners_px=observation.base_tag_corners_px)
         for lens, calibration in item.natural_cameras.items():
             arrays[f'natural_{lens}_T_cam_imu'] = calibration.T_cam_imu
             arrays[f'natural_{lens}_intrinsics'] = np.array([
@@ -207,17 +245,13 @@ def prepare_task_inputs(inputs: TaskInputs):
         np.savez_compressed(directory / 'numerical_inputs.npz', **arrays)
         assets[item.arm] = {name: file_hash(directory / name)
                             for name in ('observations.npz', 'numerical_inputs.npz')}
-    coordinate = dict(name=scene.name, session=episode.session.name, version=None,
-                       scope='task_poster', frame_id=f'poster:{inputs.directory.name}',
-                       axes='board_layout', units='metres', gravity_difference_deg=difference)
-    request = PosterVioRequest(arms, board.asset_hash, tuple(observations), camera_assets, imu_assets,
-                               coordinate, base_tag_specs=base_tag_specs,
-                               clock_offsets_s={arm: float(inputs.offsets_s[arm]) for arm in arms})
+        if (directory / 'base_tag_observations.npz').is_file():
+            assets[item.arm]['base_tag_observations.npz'] = file_hash(directory / 'base_tag_observations.npz')
     write_json(inputs.directory / 'poster_vio' / 'inputs.json', dict(
         kind='umi_poster_vio_inputs', schema_version=1,
         board=board.record(), camera_assets=camera_assets, imu_assets=imu_assets,
         assets=assets, diagnostics=diagnostics, shared_gravity_m_s2=shared_gravity.tolist(),
         coordinate=coordinate, base_tag_specs=base_tag_specs,
-        clock_offsets_s={arm: float(inputs.offsets_s[arm]) for arm in arms},
+        clock_offsets_s=clock_offsets,
         scene_map_priors_used=False))
     return request, solve_inputs, np.eye(4)

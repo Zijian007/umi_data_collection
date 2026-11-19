@@ -65,6 +65,18 @@ def execute_task(inputs: TaskInputs, *, fallback=None) -> ArmExecutionResult:
         if not np.array_equal(item.board_points_m, points):
             raise ValueError('poster_vio 数值角点与冻结布局或 ID 不一致')
         used_cameras = {track.get('camera', 'rear') for track in item.natural_tracks or observation.natural_tracks}
+        if len(observation.base_tag_times_s):
+            used_cameras.add('front')
+        base_spec = getattr(recording.camera, 'base_tag', None)
+        expected_spec = (None if base_spec is None else dict(id=base_spec['id'],
+            size_m=base_spec['size_mm'] / 1000., dictionary=base_spec.get('dictionary', 'DICT_4X4_100')))
+        if request.base_tag_specs.get(item.arm) != expected_spec:
+            raise ValueError('poster_vio base tag 配置与冻结任务资产不一致')
+        if request.base_tag_specs:
+            clock_offset = (float(inputs.offsets_s[item.arm])
+                            - recording.camera.measurements['front']['cam_time_offset_ns'] * 1e-9)
+            if not np.isclose(request.clock_offsets_s.get(item.arm, np.nan), clock_offset, rtol=0, atol=1e-9):
+                raise ValueError('poster_vio base tag 时钟与冻结任务同步不一致')
         for lens in used_cameras:
             calibration = natural_camera(item, lens)
             measured = recording.camera.measurements[lens]

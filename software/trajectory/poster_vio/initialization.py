@@ -203,28 +203,48 @@ def robust_seed_poses(times, tag_indices, points, pixels, camera_from_imu, model
         budget=decision, removed=removed, retained_observations=int(keep.sum()))
 
 
-def estimate_static_tag_extrinsic(corners, camera_from_imu, model, size_m):
-    """Estimate an owner's IMU-to-base-tag transform from its own sightings."""
+def estimate_static_tag_extrinsic(corners, camera_from_imu, model, size_m, *,
+                                  maximum_rms_px=5., maximum_cull_fraction=.15,
+                                  minimum_frames=3):
+    """Fit one rigid mount to all self observations; never average world poses.
+
+    PnP chooses a deterministic seed only. Every original corner remains in the
+    subsequent joint graph and counts toward its cumulative rejection budget.
+    """
+    import gtsam
     from software.vision.poster.factors import base_tag_corners_m
 
     corners = np.asarray(corners, dtype=float)
-    if corners.ndim != 3 or corners.shape[1:] != (4, 2) or not len(corners):
-        raise ValueError('base tag 自身观测至少需要一个有限四角点')
+    if (corners.ndim != 3 or corners.shape[1:] != (4, 2)
+            or len(corners) < minimum_frames or not np.isfinite(corners).all()):
+        raise ValueError('base tag 自身观测数量不足或四角点无效')
     tag_points = base_tag_corners_m(float(size_m))
     candidates = []
     for pixels in corners:
         try:
-            camera_tag, rms = _solve_frame(tag_points, pixels, model, 5.0)
+            camera_tag, _ = _solve_frame(tag_points, pixels, model, maximum_rms_px)
         except ValueError:
             continue
-        candidates.append((np.linalg.inv(camera_from_imu) @ camera_tag, rms))
-    if not candidates:
-        raise ValueError('base tag 没有有效的自身位姿观测')
-    candidates.sort(key=lambda item: item[1])
-    # The best finite observation is a deterministic seed.  The optimizer
-    # constrains cross-camera factors; we retain the full list for diagnostics.
-    return candidates[0][0], dict(observations=len(candidates),
-                                 reprojection_rms_px=float(candidates[0][1]))
+        candidates.append(np.linalg.inv(camera_from_imu) @ camera_tag)
+    if len(candidates) < minimum_frames:
+        raise ValueError('base tag 没有足够的无歧义自身位姿观测')
+    # Score mounts against all self pixels, not just the frame that seeded them.
+    def errors(mount):
+        points = tag_points @ (camera_from_imu @ mount)[:3, :3].T + (camera_from_imu @ mount)[:3, 3]
+        return model.project(points)[None] - corners
+    initial = min(candidates, key=lambda pose: float(np.median(np.linalg.norm(errors(pose), axis=2))))
+    seed = gtsam.Pose3(initial)
+    fit = least_squares(lambda delta: errors(seed.retract(delta).matrix()).ravel(),
+                        np.zeros(6), loss='huber', f_scale=maximum_rms_px, max_nfev=100)
+    if not fit.success or not np.isfinite(fit.x).all():
+        raise ValueError('base tag 安装初值未收敛')
+    mount = seed.retract(fit.x).matrix()
+    rms = np.sqrt(np.mean(np.sum(errors(mount) ** 2, axis=2), axis=1))
+    if np.count_nonzero(rms > maximum_rms_px) > int(np.floor(len(rms) * maximum_cull_fraction)):
+        raise ValueError('base tag 自身观测不符合刚性安装或残差超预算')
+    return mount, dict(observations=len(corners), pnp_candidates=len(candidates),
+                       per_observation_rms_px=rms.tolist(),
+                       seed_only=True, observations_discarded=0)
 
 
 def align_inertial(times, poses, imu, parameters):

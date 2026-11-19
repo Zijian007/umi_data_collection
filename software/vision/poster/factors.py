@@ -117,28 +117,81 @@ def base_tag_corners_m(size_m):
                      [1., -1., 0.], [-1., -1., 0.]]) * float(size_m) / 2.
 
 
-def add_cross_base_tag_factor(graph, *, observer_key, owner_key, T_cam_imu,
-                              model, T_imu_tag, pixels, parameters):
-    """Connect an observer pose to the owner pose through a rigid base tag."""
+def _base_tag_noise(pixels, model, parameters):
     import gtsam
-
-    points = transform(np.asarray(T_imu_tag, dtype=float), base_tag_corners_m(
-        parameters['size_m'] if isinstance(parameters, dict) else parameters.size_m))
     sigma = corner_sigma_px(np.asarray(pixels, dtype=float), model, parameters['scene'])
-    noise = gtsam.noiseModel.Robust.Create(
+    return gtsam.noiseModel.Robust.Create(
         gtsam.noiseModel.mEstimator.Huber.Create(float(parameters['scene'].tag_huber)),
         gtsam.noiseModel.Diagonal.Sigmas(np.repeat(sigma, 2)))
 
+
+def base_tag_self_error(tag_pose, T_cam_imu, model, pixels, size_m):
+    """Eight corner residuals and the analytic right-Pose3 mount Jacobian."""
+    corners = base_tag_corners_m(size_m)
+    in_imu = transform(tag_pose.matrix(), corners)
+    in_camera = transform(T_cam_imu, in_imu)
+    projection = model.project_jacobian(in_camera)
+    from software.vision.poster.geometry import _skew_batch
+    twist = np.concatenate((-_skew_batch(corners),
+                            np.broadcast_to(np.eye(3), (4, 3, 3))), axis=2)
+    jac = np.einsum('nij,jk,nkl->nil', projection,
+                   T_cam_imu[:3, :3] @ tag_pose.rotation().matrix(), twist)
+    return (model.project(in_camera) - pixels).ravel(), jac.reshape(8, 6)
+
+
+def cross_base_tag_error(observer_pose, owner_pose, tag_pose, T_cam_imu,
+                         model, pixels, size_m):
+    """Residual/Jacobians for observer, owner and rigid tag mount variables."""
+    corners = base_tag_corners_m(size_m)
+    in_owner = transform(tag_pose.matrix(), corners)
+    residual, observer_jac, owner_jac = residual_and_jacobians(
+        observer_pose.matrix(), owner_pose.matrix(), T_cam_imu, in_owner, pixels, model)
+    camera_owner = T_cam_imu @ np.linalg.inv(observer_pose.matrix()) @ owner_pose.matrix()
+    _, tag_jac = base_tag_self_error(tag_pose, camera_owner, model, pixels, size_m)
+    return residual, observer_jac, owner_jac, tag_jac
+
+
+def add_base_tag_self_factor(graph, *, tag_key, T_cam_imu, model, pixels, parameters):
+    """Self sightings measure the mount, never the world trajectory."""
+    import gtsam
+
     def error(factor, state, jacobians):
-        residual, observer_jac, owner_jac = residual_and_jacobians(
-            state.atPose3(observer_key).matrix(), state.atPose3(owner_key).matrix(),
-            T_cam_imu, points, np.asarray(pixels, dtype=float), model)
+        residual, jac = base_tag_self_error(state.atPose3(tag_key), T_cam_imu,
+                                            model, pixels, parameters['size_m'])
         if jacobians is not None:
-            jacobians[0] = observer_jac
-            jacobians[1] = owner_jac
+            jacobians[0] = jac
         return residual
 
-    graph.add(gtsam.CustomFactor(noise, [observer_key, owner_key], error))
+    graph.add(gtsam.CustomFactor(_base_tag_noise(pixels, model, parameters), [tag_key], error))
+
+
+def add_cross_base_tag_factor_variable(graph, *, observer_key, owner_key, tag_key,
+                                       T_cam_imu, model, pixels, parameters):
+    """One coupled factor for two moving IMUs and their rigid owner tag mount."""
+    import gtsam
+
+    def error(factor, state, jacobians):
+        residual, *derivatives = cross_base_tag_error(
+            state.atPose3(observer_key), state.atPose3(owner_key), state.atPose3(tag_key),
+            T_cam_imu, model, pixels, parameters['size_m'])
+        if jacobians is not None:
+            for index, jac in enumerate(derivatives):
+                jacobians[index] = jac
+        return residual
+
+    graph.add(gtsam.CustomFactor(_base_tag_noise(pixels, model, parameters),
+                                [observer_key, owner_key, tag_key], error))
+
+
+def add_base_tag_prior(graph, values, tag_key, initial, *, rotation_sigma_rad,
+                       translation_sigma_m):
+    """A soft seed prior is regularization, not an independent mount measurement."""
+    import gtsam
+
+    pose = gtsam.Pose3(initial)
+    values.insert(tag_key, pose)
+    graph.add(gtsam.PriorFactorPose3(tag_key, pose, gtsam.noiseModel.Diagonal.Sigmas(
+        np.array([rotation_sigma_rad] * 3 + [translation_sigma_m] * 3))))
 
 
 def solved_rear_extrinsic(optimized, rear_key, base_ext, parameters):
