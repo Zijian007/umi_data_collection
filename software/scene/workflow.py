@@ -37,6 +37,7 @@ from software.scene.pipeline import recording_checks
 from software.scene.pipeline.cache_audit import CacheAudit
 from software.scene.pipeline import synchronization
 from software.scene.pipeline.tasks import estimation
+from software.scene.run_audit import RunAudit
 from software.vision import runtime
 from software.scene.errors import ITEM_FAILURES, MapCompatibilityError, fallback_record
 
@@ -45,19 +46,21 @@ console = Console('场景')
 
 
 def record_failure(episode: Episode, directory: Path, reason: str, *, identity: dict,
-                   status='failed', error: Exception | None = None) -> None:
+                   status='failed', error: Exception | None = None) -> Path | None:
     """同一输入和原因只保留一份失败现场；成功运行不参与去重。"""
     key = artifact_identity.canonical_hash(dict(inputs=identity, reason=reason, status=status))[:24]
     target = directory.parent / ('failed-' + key)
     write_json(directory / 'error.json', dict(status=status, reason=reason,
         traceback=''.join(traceback.format_exception(error)) if error else '', input_hash=artifact_identity.canonical_hash(identity),
         inputs=identity, batch=read_yaml(episode.session.path)))
-    if target.exists():
+    retained = not target.exists()
+    if not retained:
         shutil.rmtree(directory)
     else:
         directory.rename(target)
     episodes.record_attempt(episode, status, target)
     cleanup.after_task(episode.root)
+    return target if retained else None
 
 
 def _resolve_episode_synchronization(episode, *, force: bool, dry_run: bool):
@@ -168,10 +171,18 @@ def _reject_preflight(episode: Episode, check_report, *, dry_run: bool):
         with locked(episode.root):
             run_dir = layout.metadata(episode.root, 'runs') / uuid.uuid4().hex
             write_json(run_dir / 'preflight_report.json', asdict(check_report))
-            record_failure(episode, run_dir, message, status='rejected_preflight',
-                identity=dict(episode=artifact_identity.file_hash(episode.path),
-                              session=artifact_identity.file_hash(episode.session.path),
-                              preflight=asdict(check_report)))
+            identity = dict(episode=artifact_identity.file_hash(episode.path),
+                            session=artifact_identity.file_hash(episode.session.path),
+                            preflight=asdict(check_report))
+            audit = RunAudit(layout.metadata(episode.root, 'logs') / run_dir.name,
+                             task=episode.root.name, session=episode.session.root.name,
+                             input_identity=identity, run_directory=run_dir)
+            audit.event('preflight', status='rejected', reasons=check_report.reasons)
+            retained = record_failure(episode, run_dir, message, status='rejected_preflight',
+                identity=identity)
+            if retained is not None:
+                audit.finish('rejected_preflight', error=recording_checks.RecordingCheckError(message),
+                             directory=retained)
     raise recording_checks.RecordingCheckError(message)
 
 
@@ -281,6 +292,20 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
         work_dir = layout.metadata(episode.root, 'work') / run_dir.name
         started, started_at = time.monotonic(), time.time()
         cache_audit = _create_cache_audit(episode, cameras, sync_cache_status, sync_cache_reason)
+        audit = RunAudit(layout.metadata(episode.root, 'logs') / run_dir.name,
+                         task=name, session=episode.session.root.name,
+                         input_identity=input_identity, run_directory=run_dir)
+        run_console = console.child(line_sink=audit.write_line, event_sink=audit.event)
+        audit.event('stage_started', stage='isolated_run')
+        audit.event(
+            'inputs_resolved',
+            mode=mode,
+            map_directory=map_dir,
+            map_version=(map_manifest or {}).get('version') if map_manifest else None,
+            synchronization_status=sync_cache_status,
+            synchronization_reason=sync_cache_reason,
+            preflight=(asdict(check_report) if check_report is not None else None),
+        )
 
         try:
             if check_report is not None:
@@ -289,13 +314,16 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             cameras = camera_assets.snapshot_cameras(cameras, run_dir)
             episode = _freeze_tag_layout(episode, run_dir, input_identity)
             # Step 1: 准备录像与公共时间区间
-            console.write('准备任务录像与时间轴', recording=name, step=(1, 3))
+            audit.event('stage_started', stage='prepare_recordings')
+            run_console.write('准备任务录像与时间轴', recording=name, step=(1, 3))
             arm_cpu_sets = cpu_budget.arm_cores(tuple(episode.recordings), cores, parallel=parallel_arms)
             prepared_recordings = recording_preparation.prepare_episode_recordings(episode, cameras, video_offsets_s,
                 work_dir=work_dir, cores=cores, arm_cores=arm_cpu_sets, cache_audit=cache_audit)
             # Step 2: 各手独立求解轨迹、夹爪测量与共享海报融合
+            audit.event('stage_finished', stage='prepare_recordings')
+            audit.event('stage_started', stage='estimate_tracks')
             task_inputs = TaskInputs(episode, prepared_recordings, video_offsets_s,
-                                     run_dir, arm_cpu_sets, cache_audit, console)
+                                     run_dir, arm_cpu_sets, cache_audit, run_console)
             arm_execution = estimation.execute(task_inputs, map_selection)
             tracks = arm_execution.tracks
             coordinate_record = arm_execution.coordinate_record
@@ -306,8 +334,10 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
                 from software.scene.asset_identity import validate_assets
                 validate_assets(map_dir, map_manifest['assets'])
 
+            audit.event('stage_finished', stage='estimate_tracks')
             # Step 3: 双手对齐、防篡改校验与原子发布
-            console.write('写入轨迹、报告并发布结果', recording=name, step=(3, 3))
+            audit.event('stage_started', stage='publish')
+            run_console.write('写入轨迹、报告并发布结果', recording=name, step=(3, 3))
             common_interval_s = trajectory_writers.write_bimanual_trajectory(tracks, run_dir)
 
             publication = episode_publication.publish_episode(
@@ -329,8 +359,12 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             )
             is_local = publication.is_local
             output = publication.output
+            audit.event('stage_finished', stage='publish', output=output)
+            audit.finish('ok', output=output)
         except Exception as error:
-            record_failure(episode, run_dir, str(error), identity=input_identity, error=error)
+            retained = record_failure(episode, run_dir, str(error), identity=input_identity, error=error)
+            if retained is not None:
+                audit.finish('failed', error=error, directory=retained)
             raise
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)

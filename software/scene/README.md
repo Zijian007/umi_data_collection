@@ -159,6 +159,8 @@ run → workflow.run_episode()
 
 任务准备和定位数据保存在 `<批次>/.pipeline/tasks/<任务>/cache/`；`run` 不提供 `--keep-work`。建图、环境镜头标定仍可保留求解中间文件。进度写 stderr，结构化 JSON 写 stdout。
 
+每次真正执行的任务会在 `<任务>/.pipeline/logs/<run-id>/` 持久化 `run.log`、`events.jsonl` 和 `run_manifest.json`。前者保留人读进度，第二个记录逐行的阶段/终端事件，最后一个记录输入指纹、状态、起止时间、耗时、结果路径及对应 `.pipeline/runs/` 现场；成功和失败（包括原片预检拒绝）都写入。日志目录独立于紧凑的 `results/` 发布布局，不参与数值计算，也不会替代 `run_report.json` 的质量证据。
+
 地图清单的建图定义只存于 `inputs.definition`，读取旧清单也使用此字段。地图成功导出后移除原始展示 JSON 和空日志，保留有内容的日志及失败现场；已发布版本不因整理而改写。
 
 `results.arm_writer.write_arm_result()` 将同帧 TCP 位姿与已配置的测量写入各手唯一的主表 `trajectory.csv`，未配置开口标定时不生成宽度列，随后返回 `ArmTrajectory`，携带任务时间、`T_reference_tcp`、参考坐标 ID、TCP 轴向定义和各手运行元数据。`results.result_writer.write_episode_result()` 将各手指标/测量合并到 schema 4 的 `episode.json.arm_results`，共享地图引用仅保存在任务层 `map`；预检全文收入 `preflight` 后移除临时检查文件，人工报告只保留根 `report.txt`。双手表与任务元数据直接消费内存对象，不重新读取刚写出的文件。
