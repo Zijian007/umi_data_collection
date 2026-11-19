@@ -33,6 +33,7 @@ jobs:
           software/dataset/sampling.py
           software/dataset/export.py
           software/scene/cli.py
+          software/scene/arms.py
           software/scene/spatial/poster.py
           software/trajectory/algorithms/fusion/graph.py
           software/trajectory/poster_vio/models.py

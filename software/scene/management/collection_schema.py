@@ -8,8 +8,10 @@ poster and reconstruction concepts from leaking into unrelated readers.
 from __future__ import annotations
 
 
+from software.scene.arms import ARMS, read_arms, resolve_arms
+
+
 MODES = ('scene_map', 'poster_independent', 'poster_vio', 'auto')
-ARMS = ('left', 'right')
 
 
 def _mapping(value, label):
@@ -37,10 +39,10 @@ def _backend(record, label):
     return backend
 
 
-def _arms(value, label):
-    if not isinstance(value, list) or not value or len(set(value)) != len(value) or set(value) - set(ARMS):
+def _arms(value, label, available=ARMS):
+    if not isinstance(value, list):
         raise ValueError(f'{label} 必须为 left、right 或两者的非空列表')
-    return list(value)
+    return list(read_arms(value, available, label=label))
 
 
 def _synchronization(record, arms, label):
@@ -68,7 +70,7 @@ def _synchronization(record, arms, label):
 
 
 def normalize_collection(document: dict) -> dict:
-    """Validate v2 and return the compact declaration consumed internally."""
+    """Validate the public layout and return the compact declaration consumed internally."""
     document = _mapping(document, 'collection.yaml')
     if 'schema_version' in document:
         raise ValueError('collection.yaml 不再使用 schema_version；请直接使用当前字段布局')
@@ -165,10 +167,10 @@ def normalize_collection(document: dict) -> dict:
                 raise ValueError(f'tasks.{name}.instruction 必须为文本')
             normalized['instruction'] = task['instruction']
         if 'arms' in task:
-            normalized['expected_arms'] = _arms(task['arms'], f'tasks.{name}.arms')
+            normalized['expected_arms'] = _arms(task['arms'], f'tasks.{name}.arms', arms)
         if 'synchronization' in task:
             normalized['synchronization'] = _synchronization(
-                task['synchronization'], normalized.get('expected_arms', arms),
+                task['synchronization'], resolve_arms(normalized, arms),
                 f'tasks.{name}.synchronization')
         task_map = _mapping(task.get('map', {}), f'tasks.{name}.map')
         if set(task_map) - {'epoch', 'version'}:

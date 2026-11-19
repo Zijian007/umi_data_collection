@@ -13,10 +13,10 @@ from software.infrastructure.file_store import read_yaml
 from software.scene.management.inputs import (
     batch as batch_inputs,
     episode as episode_inputs,
-    kit as kit_inputs,
     scene as scene_inputs,
 )
 from software.scene.management import ingest
+from software.scene.arms import read_arms
 from software.infrastructure.file_store import write_json, write_yaml
 import test_scene as fixtures
 
@@ -139,7 +139,6 @@ class IngestTests(unittest.TestCase):
     def test_manual_instruction_edit_is_validated(self):
         result = self.run_ingest()
         path = Path(result['episodes'][0]['path'])
-        configuration_path = layout.owner(path) / 'collection.yaml'
         data = dict(instruction='取出货架商品')
         write_task_configuration(layout.owner(path), data)
         self.assertEqual(episode_inputs.read_episode(path).instruction, '取出货架商品')
@@ -160,6 +159,23 @@ class IngestTests(unittest.TestCase):
         self.assertNotIn('instruction', read_yaml(path))
         self.assertEqual(set(episode_inputs.read_episode(path).recordings), {'left', 'right'})
 
+    def test_reader_and_ingest_share_task_override_and_batch_inheritance(self):
+        session = batch_inputs.read_batch(self.f.session_path)
+        path = write_task(session, 'take_001', {'right': self.f.recording_paths['right']}, expected_arms=['right'])
+        episode = episode_inputs.read_episode(path)
+        info = replace(self.infos[1], path=episode.recordings['right'])
+        serials = {arm: session.arm_serials[arm] for arm in session.expected_arms}
+        plans, pending = ingest.plan_tasks([info], serials, session.scene.parameters, session.root)
+        self.assertEqual(episode.expected_arms, ('right',))
+        self.assertEqual(set(plans[0][1]), {'right'})
+        self.assertEqual(pending, [])
+        write_task_configuration(layout.owner(path), {})
+        episode = episode_inputs.read_episode(path)
+        _, pending = ingest.plan_tasks([info], serials, session.scene.parameters, session.root)
+        self.assertEqual(episode.expected_arms, ('left', 'right'))
+        self.assertEqual(pending[0]['status'], 'missing_peer')
+        self.assertNotIn('expected_arms', read_yaml(path))
+
     def test_task_cannot_expand_the_hands_declared_by_its_session(self):
         data = read_yaml(self.f.session_path)
         data['expected_arms'] = ['right']
@@ -169,7 +185,7 @@ class IngestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '预期使用的手'):
             episode_inputs.read_episode(path)
         with self.assertRaisesRegex(ValueError, '预期使用的手'):
-            kit_inputs.read_arms(['left'], session.expected_arms)
+            read_arms(['left'], session.expected_arms)
 
     def test_manual_task_names_cannot_shadow_internal_directories(self):
         for name in scene_inputs.INTERNAL_DIRECTORIES:

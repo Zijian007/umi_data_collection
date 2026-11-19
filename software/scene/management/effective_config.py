@@ -12,7 +12,8 @@ from software.scene.management.batch import snapshot as batches
 from software.scene.management import episodes
 from software.scene.management.inputs import kit as kit_inputs
 from software.scene.management.batch.discovery import configured_batches
-from software.scene.management.inputs.batch import mapping_records, read_arms
+from software.scene.management.inputs.batch import mapping_records
+from software.scene.arms import resolve_arms
 from software.scene.management.inputs.kit import validate_kit
 from software.scene.management.inputs.scene import ROOT, read_scene
 from software.scene.parameter_schema import nested_snapshot
@@ -67,7 +68,7 @@ def _target_report(directory: Path, *, overrides: SceneOverrides | None,
         # A frozen batch does not switch calibration versions. The requested
         # source is verified against installed assets during input checks.
         kit = validate_kit(manifest['kit'])
-        selection = batches.KitSelection(kit, read_arms(manifest.get('expected_arms', list(kit['arms'])), kit['arms']),
+        selection = batches.KitSelection(kit, resolve_arms(manifest, kit['arms']),
                                          manifest.get('intrinsics_source'))
         # A frozen batch keeps the original collection declaration in the
         # manifest so configuration reports remain reproducible.

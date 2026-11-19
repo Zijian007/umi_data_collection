@@ -32,6 +32,20 @@ class CollectionSchemaTests(unittest.TestCase):
         self.assertEqual(normalized['tasks']['take_001']['map_epoch'], 'epoch_001')
         self.assertEqual(normalized['tasks']['take_001']['reconstruction']['backend'], 'poster_vio')
 
+    def test_recording_arms_are_required_and_tasks_cannot_expand_them(self):
+        document = self.base()
+        document['recording'] = {}
+        with self.assertRaisesRegex(ValueError, 'recording.arms'):
+            normalize_collection(document)
+        document['recording'] = dict(arms=['right'])
+        document['tasks'] = dict(take_001=dict(arms=['left']))
+        with self.assertRaisesRegex(ValueError, 'tasks.take_001.arms'):
+            normalize_collection(document)
+        for value in (None, [], ['right', 'right'], [['right']]):
+            document['tasks']['take_001']['arms'] = value
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                normalize_collection(document)
+
     def test_rejects_old_schema_and_conflicting_task_map_selectors(self):
         with self.assertRaisesRegex(ValueError, '当前字段布局'):
             normalize_collection(dict(schema_version=1))

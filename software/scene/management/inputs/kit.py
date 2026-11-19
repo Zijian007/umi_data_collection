@@ -67,12 +67,6 @@ def read_devices(bindings: dict) -> dict[str, dict]:
     return devices
 
 
-def read_arms(value: list | tuple, available=ARMS) -> tuple[str, ...]:
-    if not isinstance(value, (list, tuple)) or not value or len(set(value)) != len(value) or set(value) - set(available):
-        raise ValueError('预期使用的手必须为 left、right 或两者，且属于该套件')
-    return tuple(arm for arm in ARMS if arm in value)
-
-
 def validate_kit(declaration: dict, *, name: str | None = None, intrinsics_source: str | None = None) -> dict:
     """套件按镜头来源解析当前参数；已固定的历史记录保留原绑定。
 

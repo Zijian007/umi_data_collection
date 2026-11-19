@@ -14,7 +14,8 @@ from software.scene import layout
 from software.scene.management import camera_assets
 from software.scene.management.inputs import kit as kit_inputs
 from software.scene.management.collection_schema import normalize_collection
-from software.scene.management.inputs.batch import read_arms, read_batch, read_recordings
+from software.scene.management.inputs.batch import read_batch, read_recordings
+from software.scene.arms import resolve_arms
 from software.scene.asset_identity import recording_identity
 from software.scene.management.inputs.scene import (
     require_keys,
@@ -144,7 +145,7 @@ def read_episode(path: Path, *, verify: bool = True, overrides: SceneOverrides |
         map_version = None
     if map_version is not None:
         registry.validate_id(map_version)
-    expected = read_arms(episode_document.get('expected_arms', session.expected_arms), session.expected_arms)
+    expected = resolve_arms(task_configuration, session.expected_arms)
     recording_paths, serials = read_recordings(root, episode_document['recordings'], verify=verify)
     if set(serials.keys()) - set(expected):
         raise ValueError('实际录像包含本次任务未声明使用的手')

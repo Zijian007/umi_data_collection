@@ -22,7 +22,8 @@ from software.scene.management.inputs.scene import (
     validate_episode_name,
     validate_name,
 )
-from software.scene.management.inputs.kit import read_arms, read_kit
+from software.scene.management.inputs.kit import read_kit
+from software.scene.arms import read_arms
 from software.scene.management.inputs.batch import mapping_records, task_video_sources
 from software.scene.management.collection_schema import normalize_collection
 
@@ -64,7 +65,7 @@ class KitSelection:
 
 def select_kit(declaration: dict, *, intrinsics_source: str | None = None) -> KitSelection:
     """执行与配置展示共用同一套来源优先级，不读取录像或创建批次。"""
-    require_keys(declaration, {'kit', 'arms', 'map_version', 'map_policy'}, {'kit'}, 'batch')
+    require_keys(declaration, {'kit', 'arms', 'map_version', 'map_policy'}, {'kit', 'arms'}, 'batch')
     validate_name(declaration['kit'])
     if 'map_version' in declaration:
         registry.validate_id(declaration['map_version'])
@@ -73,7 +74,7 @@ def select_kit(declaration: dict, *, intrinsics_source: str | None = None) -> Ki
         validate(intrinsics_source)
     selected_source = (intrinsics_source or user_config.current().values['calibration']['intrinsics_source'])
     kit = read_kit(declaration['kit'], intrinsics_source=selected_source)
-    expected_arms = read_arms(declaration.get('arms', list(kit['arms'])), kit['arms'])
+    expected_arms = read_arms(declaration['arms'], kit['arms'])
     return KitSelection(kit, expected_arms, selected_source)
 
 
@@ -230,8 +231,7 @@ def make_record(batch: BatchInputs) -> dict:
     if (batch.scene.reconstruction_mode != 'scene_map' and not batch.mapping_records
             and batch.previous_record.get('map') and batch.previous_record.get('kit') == kit_snapshot):
         record['map'] = batch.previous_record['map']
-    if batch.expected_arms != read_arms(list(batch.kit['arms'])):
-        record['expected_arms'] = list(batch.expected_arms)
+    record['expected_arms'] = list(batch.expected_arms)
     return record
 
 

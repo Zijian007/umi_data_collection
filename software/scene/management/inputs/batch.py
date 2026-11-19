@@ -11,7 +11,8 @@ from software.infrastructure import provenance as artifact_identity
 from software.scene import layout
 from software.scene.overrides import SceneOverrides
 from software.scene.management import camera_assets
-from software.scene.management.inputs.kit import read_arms, read_devices, validate_kit
+from software.scene.management.inputs.kit import read_devices, validate_kit
+from software.scene.arms import read_arms, resolve_arms
 from software.scene.management.inputs.scene import (
     ARMS,
     require_keys,
@@ -140,7 +141,7 @@ def batch_from_record(path: Path, manifest_record: dict, *, verify_mapping=False
     if path.name != 'manifest.yaml' or root.parent != scene.root:
         raise ValueError('采集批次必须位于 scenes/<场景>/<批次>/')
     validate_batch_name(root.name)
-    expected = read_arms(manifest_record.get('expected_arms', list(kit['arms'])), kit['arms'])
+    expected = resolve_arms(manifest_record, kit['arms'])
     version, digest = None, None
     if manifest_record.get('map') is not None:
         require_keys(manifest_record['map'], {'version', 'manifest_sha256'}, {'version', 'manifest_sha256'}, '批次地图')

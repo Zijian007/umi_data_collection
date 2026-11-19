@@ -12,11 +12,10 @@ import numpy as np
 from software.configuration import loader as config
 from software.infrastructure import provenance as artifact_identity
 from software.scene import layout
+from software.scene.arms import ARMS
 from software.trajectory.calibration import selection
 from software.vision.models import LensVideo, VisualContext
 
-
-ARMS = ('left', 'right')
 
 if TYPE_CHECKING:
     from software.trajectory.poster_vio.models import PosterVioRequest

@@ -21,10 +21,10 @@ from software.infrastructure.file_store import read_yaml, write_json, write_yaml
 from software.scene.management.inputs.batch import (
     batch_task_directories,
     batch_video_sources,
-    read_arms,
     task_video_sources,
 )
 from software.scene.management.inputs.episode import read_episode
+from software.scene.arms import read_arms, resolve_arms
 
 
 @dataclass(frozen=True)
@@ -130,7 +130,7 @@ def plan_tasks(recording_infos: list[RecordingMetadata], arms: dict[str, str], p
     expected = read_arms(list(arms))
     plans, pending = [], []
     for path, items in sorted(grouped.items()):
-        task_expected = read_arms(layout.task_configuration(layout.owner(path)).get('expected_arms', expected), expected)
+        task_expected = resolve_arms(layout.task_configuration(layout.owner(path)), expected)
         if any(item.serial not in {arms[arm] for arm in task_expected} for item in items):
             raise ValueError(f'{layout.owner(path).name} 原片与 collection.yaml.tasks 预期使用的手不一致')
         plan = {arm: [item for item in items if item.serial == arms[arm]] for arm in task_expected}

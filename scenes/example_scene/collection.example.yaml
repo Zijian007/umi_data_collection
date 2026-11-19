@@ -2,7 +2,7 @@
 kit: kit_001
 
 recording:
-  arms: [left, right]
+  arms: [left, right]         # 必填；批次默认使用手
 
 scene:
   description: example scene
@@ -32,7 +32,7 @@ reconstruction:
 tasks:
   take_001:
     instruction: 拿起物体并放到指定位置
-    arms: [left, right]
+    # arms: [right]           # 省略继承批次；仅需单手时覆盖
     synchronization:
       mode: assumed_simultaneous # audio_auto | assumed_simultaneous | manual
     # reconstruction:

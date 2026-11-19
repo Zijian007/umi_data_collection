@@ -57,6 +57,8 @@ software/scene/
 
 ## 采集管理
 
+使用手的校验和继承统一在 `arms.py`；kit 负责设备绑定，批次声明默认使用手，任务可覆盖为子集，下游消费 `Episode.expected_arms`。
+
 输入解析位于 `management/inputs/`：`scene.py`、`batch.py`、`episode.py`、`kit.py` 对应四类声明与内部输入。批次操作位于 `management/batch/`：`discovery.py` 发现目录，`snapshot.py` 解析批次配置并冻结资产记录，`execution.py` 准备/构建单批，`epochs.py` 编排多地图批次。`management/processing.py` 保留公共批处理入口及任务运行编排，状态/验收、清理、原片登记和设备资产仍各有唯一实现。包初始化不转发旧模块。
 
 批次入口和显式任务入口共用 `processing._prepare_for_run()`，统一准备批次并阻断错误、待补齐或忽略的原片。失败摘要都包含具体原因和 `details`，预览也执行相同检查；一个批次失败不阻断其他批次。显式任务先按所属批次分组，每批只准备一次，最后按原输入顺序把可执行任务交给调度器。

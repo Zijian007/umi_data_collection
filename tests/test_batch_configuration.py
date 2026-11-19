@@ -1,5 +1,4 @@
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import kit as kit_inputs
 """套件单/双手、批次配置、离线处理、验收和导出的完整业务回归。"""
 from software.scene.management import camera_assets
 from pathlib import Path
@@ -12,8 +11,6 @@ from software.scene.management.batch import snapshot as batches
 from software.scene.management.inputs import (
     kit as kit_inputs,
     batch as batch_inputs,
-    episode as episode_inputs,
-    scene as scene_inputs,
 )
 from software.infrastructure.file_store import write_yaml
 import test_scene_management as registry_fixtures
@@ -104,6 +101,7 @@ class KitTests(unittest.TestCase):
         data = read_yaml(resolved.path)
         self.assertIn('scene', data)
         self.assertIn('resolved_mode', data)
+        self.assertEqual(data['expected_arms'], ['right'])
         self.assertEqual(set(data['kit']), {'id', 'arms'})
         self.assertEqual(resolved.expected_arms, ('right',))
         self.assertTrue(declaration.is_file())
