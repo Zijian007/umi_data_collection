@@ -42,7 +42,7 @@ class RecordingFixture(unittest.TestCase):
             path.write_text(name)
             paths.append(path)
         paths[0].write_bytes(calibration_assets.SAMPLE_CAMERA_JSON.read_bytes())
-        paths[2].write_bytes((runtime.HERE / 'assets/config/front_hand_mask.png').read_bytes())
+        paths[2].write_bytes(selection.DEFAULT_FRONT_MASK.read_bytes())
         self.selected = SelectedCalibration(CalibrationAssets(*paths), self.root, 'calib-id',
                                             'camera', 'registry', 'registry', 'active', 100)
         self.output = self.root / 'results' / self.video.stem

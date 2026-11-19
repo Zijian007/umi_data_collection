@@ -11,7 +11,7 @@ import subprocess
 from software.configuration import parameter_models
 from software.infrastructure.terminal import Console
 from software.infrastructure.runtime_environment import python_executable
-from software.trajectory.calibration import assets as calibration_assets
+from software.trajectory.calibration import assets as calibration_assets, selection
 from software.trajectory.models import ReconstructionSettings
 from software.vision import runtime as visual_runtime
 from software.infrastructure.paths import PROJECT_ROOT
@@ -93,7 +93,7 @@ def check() -> int:
         result = subprocess.run([str(exe), "--help"], capture_output=True, text=True, env=environment, timeout=10)
         line(result.returncode == 0, "x3_mono_slam 可运行", "" if result.returncode == 0 else (result.stderr or result.stdout)[-300:])
     for path in (HERE / "assets" / "samples" / "calibration_r1440.json",
-              HERE / "assets" / "config" / "front_x3_r1440_720.yaml", HERE / "assets" / "config" / "front_hand_mask.png"):
+              HERE / "assets" / "config" / "front_x3_r1440_720.yaml", selection.DEFAULT_FRONT_MASK):
         line(path.is_file(), "配置文件 " + str(path.relative_to(REPO)))
     try:
         from software.calibration.inventory import device_inventory

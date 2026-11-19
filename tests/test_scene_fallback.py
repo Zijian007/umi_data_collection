@@ -14,7 +14,7 @@ from software.configuration import loader as config
 from software.scene.models import PreparedRecording
 from software.scene.pipeline.tasks.backends import independent_reconstruction
 from software.scene.management.inputs import scene as scene_inputs
-from software.trajectory.calibration import assets
+from software.trajectory.calibration import assets, selection
 from software.trajectory.pipeline import runtime
 from software.vision.models import LensVideo, RecordingPaths
 from trajectory_fakes import FakeEngines
@@ -40,7 +40,7 @@ class SceneFallbackAdapterTests(unittest.TestCase):
                                                              environment_tag_detection=False))
         times = np.loadtxt(self.paths.dataset / 'mav0/cam0/data.csv', delimiter=',', usecols=0) / 1e9 - 1
         self.recording = PreparedRecording(
-            SimpleNamespace(files={'front': self.camera, 'mask': runtime.HERE / 'assets/config/front_hand_mask.png'}),
+            SimpleNamespace(files={'front': self.camera, 'mask': selection.DEFAULT_FRONT_MASK}),
             SimpleNamespace(paths=self.paths, cores='', parameters=configuration.values),
             (LensVideo('front', self.video, self.root / 'scene-settings.yaml', None),), times, np.empty((0, 7)))
         for mocked in (patch.dict(os.environ, self.engines.environment),

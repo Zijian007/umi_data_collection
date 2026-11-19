@@ -11,11 +11,12 @@ from software.configuration import loader as config
 from software.camera.geometry import imu_from_camera, camera_from_tcp, tcp_frame_definition
 from software.camera.x3.frame import geometry_record
 from software.trajectory.calibration.assets import FUSION_SCRIPT, read_basalt
+from software.trajectory.calibration.selection import DEFAULT_FRONT_MASK
 
 
 HERE = Path(__file__).resolve().parents[1]
 CALIB_IMU_CAM = HERE / 'assets/samples/calibration_r1440.json'
-FRONT_MASK = HERE / 'assets/config/front_hand_mask.png'
+FRONT_MASK = DEFAULT_FRONT_MASK
 REAR_YAML = HERE / 'assets/config/rear_basalt065_720.yaml'
 
 

@@ -39,7 +39,7 @@ arms:
 | `gripper.tcp` | 必填；相机与 TCP 的安装变换 JSON，平移单位为米 |
 | `gripper.width` | 可选；当前安装的像素距离与实际开口毫米数的实测对应关系 JSON |
 | `gripper.tag_distance` | 可选；ID 0/1 黑色外框边长 JSON，用于鱼眼三维标签中心间距 |
-| `gripper.mask` | 可选；自定义遮手 PNG，省略时使用通用遮手图 |
+| `gripper.mask` | 可选；自定义遮手 PNG，省略时使用硬件通用遮手图（hardware/grippers/masks/front_hand_mask.png） |
 | `gripper.base_tag` | 可选；poster_vio 用于跨相机约束的固定夹爪基座标签，ID 必须在两手间唯一，尺寸单位为 mm |
 | `intrinsics.front` | 工作镜头来源：`measured`（默认）或 `factory`；选择该设备此来源的当前完整参数 |
 | `intrinsics.rear` | 环境镜头来源：`factory`（默认）或 `measured`；与 front 独立选择 |

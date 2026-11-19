@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from software.vision import recordings as visual_recordings, runtime as visual_runtime, slam as visual_slam
 from software.configuration import loader as config
-from software.trajectory.calibration import assets as calibration_assets
+from software.trajectory.calibration import assets as calibration_assets, selection
 from software.trajectory.pipeline import reconstruction, runtime
 from software.trajectory.models import FusionArtifacts, RecordingPaths, ReconstructionContext, TrajectoryRequest
 from software.vision.models import RecordingData, ProcessingError
@@ -26,7 +26,7 @@ class ReconstructionTests(unittest.TestCase):
         self.paths.logs.mkdir(parents=True)
         environment = dict(os.environ, **self.engines.environment)
         self.settings = runtime.reconstruction_settings(environment, camera_json=calibration_assets.SAMPLE_CAMERA_JSON,
-                                                        front_mask=runtime.HERE / "assets/config/front_hand_mask.png",
+                                                        front_mask=selection.DEFAULT_FRONT_MASK,
                                                         output=self.paths.debug / "settings", parameters=config.load("trajectory").values)
         self.context = ReconstructionContext(self.paths, config.resolve_trajectory_request(TrajectoryRequest()), self.settings, 100)
         self.engines.write_dataset(self.paths.dataset)
@@ -113,7 +113,7 @@ class ReconstructionTests(unittest.TestCase):
                  for lens, camera in dict(front=front, rear=rear).items()}
         output = self.root/'measured-settings'
         settings = visual_runtime.visual_settings({**os.environ, **self.engines.environment, 'UMI_PY_TOOLS': '/tools/python'},
-            lens_settings=texts, front_mask=runtime.HERE/'assets/config/front_hand_mask.png',
+            lens_settings=texts, front_mask=selection.DEFAULT_FRONT_MASK,
             output=output, parameters=self.context.parameters)
         self.assertEqual(settings.front_settings.read_text(), texts['front'])
         self.assertEqual(settings.rear_settings.read_text(), texts['rear'])
@@ -131,7 +131,7 @@ class ReconstructionTests(unittest.TestCase):
         request = config.resolve_trajectory_request(TrajectoryRequest(configuration=configuration, mode='handheld'))
         settings = runtime.reconstruction_settings(dict(os.environ, **self.engines.environment),
             camera_json=calibration_assets.SAMPLE_CAMERA_JSON,
-            front_mask=runtime.HERE / 'assets/config/front_hand_mask.png',
+            front_mask=selection.DEFAULT_FRONT_MASK,
             output=self.paths.debug / 'settings-960', parameters=configuration.values)
         context = replace(self.context, request=request, settings=settings)
         videos = visual_recordings.prepare_lens_videos(self.video, context.visual, lenses=('front', 'rear') if context.request.mode == 'dual' else ('front',))
@@ -144,7 +144,7 @@ class ReconstructionTests(unittest.TestCase):
         record = run_metadata.collect_run_settings(self.paths.output, {}, 'handheld', 'VID.insv',
             calib=dict(yaml=str(settings.front_settings), mask=str(settings.front_mask),
                        tcp_json=str(Path(__file__).parent / 'fixtures/tcp_camera.json'),
-                       source_mask=str(runtime.HERE / 'assets/config/front_hand_mask.png')),
+                       source_mask=str(selection.DEFAULT_FRONT_MASK)),
             command=dict(parameters={'configuration': configuration.snapshot()}))
         self.assertEqual(record['frame_geometry']['slam_video_px'], [960, 960])
         self.assertEqual(record['assets']['orbslam3_front_settings']['scalars']['Camera.width'], '960')

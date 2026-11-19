@@ -14,9 +14,10 @@ import json
 
 from .assets import FUSION_SCRIPT
 from software.camera.geometry import camera_from_tcp, validate_transform
+from software.infrastructure.paths import PROJECT_ROOT
 
 
-DEFAULT_FRONT_MASK = Path(__file__).resolve().parents[1] / "assets/config/front_hand_mask.png"
+DEFAULT_FRONT_MASK = PROJECT_ROOT / 'hardware/grippers/masks/front_hand_mask.png'
 
 
 def read_tcp_geometry(path: Path) -> dict:

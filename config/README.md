@@ -105,7 +105,7 @@ map_max_points: 20000
 | [scene_parameters.yaml](algorithms/scene_parameters.yaml) | 场景尺度/放置验收、固定坐标融合、原片配对、宽度处理与录制检查规则 | `umi-scene`；操作和覆盖方式见 [场景指南](../docs/场景处理.md) |
 | [environment_tags.yaml](algorithms/environment_tags.yaml) | 环境海报共享几何数值：角点噪声、观测筛选和重投影门槛 | `umi-scene`、独立轨迹、标定 C；不承载流程策略开关 |
 | 相机内参、实测相机–IMU 参数与时间差 | `registry/` 中的版本化相机标定；含实测/工厂内参来源 | 按序列号及套件的前后镜头来源选择当前参数，通过验收后统一执行 `install` |
-| TCP、宽度、遮手图 | 套件引用的测量文件；未自定义遮手图时用项目通用图 | 按 `kit.yaml` 选择，更新后重新运行 |
+| TCP、宽度、遮手图 | 套件引用的测量文件；未自定义遮手图时用 `hardware/grippers/masks/front_hand_mask.png` | 按 `kit.yaml` 选择，更新后重新运行 |
 | 输入/输出路径、CPU、并行数、保留中间文件 | 命令行请求 | 只影响执行方式，不写入算法配置 |
 | 原片规格、标定区域、像素变换与派生帧率规则 | `software/camera/x3/frame.py` | 相机图像规格；在结果中记录 |
 

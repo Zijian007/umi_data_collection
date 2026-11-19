@@ -126,7 +126,7 @@ ORB 金字塔各层的特征、方向和描述子并行计算，随后按原层�
 
 ## 输出
 
-标定 C 验证和开发测试使用内部逐段引擎。默认只输出相机/IMU 轨迹；需要 TCP 时显式提供 `--tcp kits/kit_001/tcp_camera.json`，可用 `--mask <PNG>` 覆盖通用遮手图。相机验收不依赖套件或夹爪。单段输出布局如下：
+标定 C 验证和开发测试使用内部逐段引擎。默认只输出相机/IMU 轨迹；需要 TCP 时显式提供 `--tcp kits/kit_001/tcp_camera.json`，可用 `--mask <PNG>` 覆盖硬件通用遮手图 `hardware/grippers/masks/front_hand_mask.png`。相机验收不依赖套件或夹爪。单段输出布局如下：
 
 ```text
 umi_traj_out/VID_20261003_182246_00_067/

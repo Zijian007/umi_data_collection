@@ -11,7 +11,7 @@ arms:  # 设备绑定表；只写 left / right / 两者；这不是采集使用�
 
 # 以下可选项放在相应手的 gripper 下；未测量/未安装时保持省略：
 # width: left_width.json  # .json 实测像素距离–开口 mm 关系；省略不推断开口/闭合状态。
-# mask: hand_mask.png  # .png 自定义遮手图路径；省略用项目通用图，非零像素表示遮挡。
+# mask: hand_mask.png  # .png 自定义遮手图路径；省略用硬件通用图（hardware/grippers/masks/front_hand_mask.png），非零像素表示遮挡。
 # base_tag:  # 刚性夹爪基座标签，不随开合移动；单手跳过，双手有效跨手观测时估计安装。
 #   id: 2  # 整数 0–99；左右唯一，避开场景海报 ID（默认 12–88）；配置宽度/测距时还需避开 0/1。
 #   size_mm: 10.0  # 有限正数，单位 mm；实测黑框边长，不包含白边，示例不是通用默认尺寸。

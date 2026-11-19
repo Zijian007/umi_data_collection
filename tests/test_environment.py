@@ -17,14 +17,18 @@ class TrajectoryHealthTests(unittest.TestCase):
             root = Path(temporary)
             trajectory = root/'trajectory'
             for relative in ('assets/samples/calibration_r1440.json', 'assets/config/front_x3_r1440_720.yaml',
-                             'assets/config/front_hand_mask.png', 'Vocabulary/ORBvoc.txt', 'solver',
+                             'Vocabulary/ORBvoc.txt', 'solver',
                              'umi_export_atlas'):
                 target = trajectory/relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text('test')
+            hardware_mask = root/'hardware/grippers/masks/front_hand_mask.png'
+            hardware_mask.parent.mkdir(parents=True, exist_ok=True)
+            hardware_mask.write_bytes(b'test mask')
             healthy = dict(serial='CAMERA', status='active', front_default='001', ok=True, errors=[], versions=[])
             broken = dict(healthy, ok=False, versions=[dict(ok=False, error='资产哈希不一致')])
             with patch.object(runtime, 'HERE', trajectory), patch.object(runtime, 'REPO', root), \
+                 patch.object(runtime.selection, 'DEFAULT_FRONT_MASK', hardware_mask), \
                  patch.dict(os.environ, dict(ORB3_DIR=str(trajectory), ORB3_VOCAB=str(trajectory/'Vocabulary/ORBvoc.txt'))), \
                  patch.object(runtime.shutil, 'which', return_value='test-tool'), \
                  patch.object(runtime.visual_runtime, 'orb_executable',
