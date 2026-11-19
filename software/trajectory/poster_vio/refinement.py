@@ -62,7 +62,11 @@ def subset(item, observation, selection):
                     tag_indices=item.tag_indices[tags], natural_tracks=tuple(tracks), tag_holdout_mask=None,
                     tag_initialization_mask=None),
             replace(observation, times_s=observation.times_s[tags], tag_ids=observation.tag_ids[tags],
-                    tag_corners_px=observation.tag_corners_px[tags], natural_tracks=tuple(tracks)))
+                    tag_corners_px=observation.tag_corners_px[tags], natural_tracks=tuple(tracks),
+                    base_tag_target_arms=observation.base_tag_target_arms,
+                    base_tag_times_s=observation.base_tag_times_s,
+                    base_tag_ids=observation.base_tag_ids,
+                    base_tag_corners_px=observation.base_tag_corners_px))
 
 
 def propose_cull(item, observation, selection, evidence):

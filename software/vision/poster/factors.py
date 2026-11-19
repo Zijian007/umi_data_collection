@@ -2,7 +2,8 @@
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.vision.poster.geometry import PosterGeometryError, residual_and_jacobians, rotation_correction_jacobian
+from software.vision.poster.geometry import (
+    PosterGeometryError, residual_and_jacobians, rotation_correction_jacobian, transform)
 from software.vision.poster.quality import corner_sigma_px
 
 
@@ -106,6 +107,38 @@ def add_tag_factors(graph, *, pose_key, board_key, rear_key, base_ext, model, po
 
         keys = [pose_key(int(node)), board_key] + ([rear_key] if enabled else [])
         graph.add(gtsam.CustomFactor(noise, keys, error))
+
+
+def base_tag_corners_m(size_m):
+    """Return ArUco corner coordinates in the tag frame, in detector order."""
+    if not np.isfinite(size_m) or size_m <= 0:
+        raise ValueError('base tag 尺寸必须为正')
+    return np.array([[-1., 1., 0.], [1., 1., 0.],
+                     [1., -1., 0.], [-1., -1., 0.]]) * float(size_m) / 2.
+
+
+def add_cross_base_tag_factor(graph, *, observer_key, owner_key, T_cam_imu,
+                              model, T_imu_tag, pixels, parameters):
+    """Connect an observer pose to the owner pose through a rigid base tag."""
+    import gtsam
+
+    points = transform(np.asarray(T_imu_tag, dtype=float), base_tag_corners_m(
+        parameters['size_m'] if isinstance(parameters, dict) else parameters.size_m))
+    sigma = corner_sigma_px(np.asarray(pixels, dtype=float), model, parameters['scene'])
+    noise = gtsam.noiseModel.Robust.Create(
+        gtsam.noiseModel.mEstimator.Huber.Create(float(parameters['scene'].tag_huber)),
+        gtsam.noiseModel.Diagonal.Sigmas(np.repeat(sigma, 2)))
+
+    def error(factor, state, jacobians):
+        residual, observer_jac, owner_jac = residual_and_jacobians(
+            state.atPose3(observer_key).matrix(), state.atPose3(owner_key).matrix(),
+            T_cam_imu, points, np.asarray(pixels, dtype=float), model)
+        if jacobians is not None:
+            jacobians[0] = observer_jac
+            jacobians[1] = owner_jac
+        return residual
+
+    graph.add(gtsam.CustomFactor(noise, [observer_key, owner_key], error))
 
 
 def solved_rear_extrinsic(optimized, rear_key, base_ext, parameters):

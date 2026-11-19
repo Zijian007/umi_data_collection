@@ -29,6 +29,19 @@ def _validate_observation(observation, arms: tuple[str, ...]) -> None:
     if (np.any(tag_ids < 0) or np.any(tag_ids >= 100)
             or len(set(zip(times.tolist(), tag_ids.tolist()))) != len(tag_ids)):
         raise ValueError('poster_vio 标签 ID 越界或同帧重复')
+    targets = tuple(observation.base_tag_target_arms)
+    base_times = np.asarray(observation.base_tag_times_s)
+    base_ids = np.asarray(observation.base_tag_ids)
+    base_corners = np.asarray(observation.base_tag_corners_px)
+    if (len(targets) != len(base_times) or base_ids.shape != (len(targets),)
+            or base_corners.shape != (len(targets), 4, 2)
+            or any(target not in arms for target in targets)
+            or not np.isfinite(base_times).all() or not np.all(np.diff(base_times) >= 0)
+            or not np.issubdtype(base_ids.dtype, np.integer) or np.any(base_ids < 0)
+            or not np.isfinite(base_corners).all()):
+        raise ValueError('poster_vio 夹爪 base tag 观测契约无效')
+    if len(targets) and len(set(zip(base_times.tolist(), base_ids.tolist(), targets))) != len(targets):
+        raise ValueError('poster_vio 夹爪 base tag 同一时刻重复观测')
 
 
 def validate_request(request: PosterVioRequest) -> None:
@@ -44,6 +57,21 @@ def validate_request(request: PosterVioRequest) -> None:
         raise ValueError('poster_vio 每只使用手都必须提供观测对象')
     if set(request.camera_assets) != set(request.arms) or set(request.imu_assets) != set(request.arms):
         raise ValueError('poster_vio 相机和 IMU 资产必须覆盖全部使用手')
+    if set(request.base_tag_specs) - set(request.arms):
+        raise ValueError('poster_vio base tag 配置包含未知手')
+    ids = []
+    for arm, spec in request.base_tag_specs.items():
+        if (type(spec.get('id')) is not int or not 0 <= spec['id'] < 100
+                or not isinstance(spec.get('size_m'), (int, float)) or not math.isfinite(spec['size_m'])
+                or spec['size_m'] <= 0):
+            raise ValueError(f'{arm} poster_vio base tag 配置无效')
+        if spec['id'] in ids:
+            raise ValueError('poster_vio 左右手 base tag ID 必须不同')
+        ids.append(spec['id'])
+    if request.clock_offsets_s and (
+            set(request.clock_offsets_s) != set(request.arms)
+            or any(not math.isfinite(float(value)) for value in request.clock_offsets_s.values())):
+        raise ValueError('poster_vio 双手时钟偏移必须覆盖全部手且为有限数')
     record = request.coordinate_record
     if record.get('scope') != 'task_poster' or not str(record.get('frame_id', '')).startswith('poster:'):
         raise ValueError('poster_vio 必须声明 task_poster 坐标系')

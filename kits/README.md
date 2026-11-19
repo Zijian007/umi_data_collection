@@ -14,6 +14,10 @@ arms:
     gripper:
       tcp: left_tcp_camera.json
       width: left_width.json
+      base_tag:
+        id: 20
+        size_mm: 10.0
+        dictionary: DICT_4X4_100
   right:
     serial: RIGHT_CAMERA_SERIAL
     intrinsics:
@@ -22,6 +26,10 @@ arms:
     gripper:
       tcp: right_tcp_camera.json
       width: right_width.json
+      base_tag:
+        id: 21
+        size_mm: 10.0
+        dictionary: DICT_4X4_100
 ```
 
 只保留实际使用的手。工作镜头参数必须已按相机序列号登记；kit 只选来源，不填写版本号。夹爪文件路径相对 `kit.yaml`，可引用当前套件目录或 `kits/` 根目录的共享资产：
@@ -32,6 +40,7 @@ arms:
 | `gripper.width` | 可选；当前安装的像素距离与实际开口毫米数的实测对应关系 JSON |
 | `gripper.tag_distance` | 可选；ID 0/1 黑色外框边长 JSON，用于鱼眼三维标签中心间距 |
 | `gripper.mask` | 可选；自定义遮手 PNG，省略时使用通用遮手图 |
+| `gripper.base_tag` | 可选；poster_vio 用于跨相机约束的固定夹爪基座标签，ID 必须在两手间唯一，尺寸单位为 mm |
 | `intrinsics.front` | 工作镜头来源：`measured`（默认）或 `factory`；选择该设备此来源的当前完整参数 |
 | `intrinsics.rear` | 环境镜头来源：`factory`（默认）或 `measured`；与 front 独立选择 |
 

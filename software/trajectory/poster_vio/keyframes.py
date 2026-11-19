@@ -39,7 +39,8 @@ def select_indices(times, poses, parameters):
 def graph_indices(item):
     # Freeze this set BEFORE culling so an X/V/B key keeps its physical time
     # through every warm-started solve, even when observations are removed.
-    nodes = [select_indices(item.times_s, item.seed_poses, item.scene_parameters), item.tag_indices]
+    nodes = [select_indices(item.times_s, item.seed_poses, item.scene_parameters),
+             item.tag_indices, item.base_tag_indices]
     nodes += [np.asarray(track['node_indices']) for track in item.natural_tracks]
     return np.unique(np.concatenate(nodes)).astype(int)
 
@@ -50,6 +51,7 @@ def graph_input(item, indices):
     return replace(item, times_s=item.times_s[indices], seed_poses=item.seed_poses[indices],
         seed_velocities=None if item.seed_velocities is None else item.seed_velocities[indices],
         tag_indices=np.searchsorted(indices, item.tag_indices),
+        base_tag_indices=np.searchsorted(indices, item.base_tag_indices),
         natural_tracks=tuple(dict(track, node_indices=np.searchsorted(indices, track['node_indices']))
                              for track in item.natural_tracks))
 

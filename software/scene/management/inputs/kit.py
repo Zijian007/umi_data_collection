@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 
 from software.camera import registry
 from software.camera import calibration_source
@@ -17,9 +18,20 @@ KITS = PROJECT_ROOT / 'kits'
 
 def gripper_paths(declaration: dict, directory: Path | None = None) -> dict[str, str]:
     """kit 中使用相对路径；允许引用套件目录上一级的共享资产。"""
-    require_keys(declaration, {'tcp', 'width', 'mask', 'tag_distance'}, {'tcp'}, 'gripper')
+    require_keys(declaration, {'tcp', 'width', 'mask', 'tag_distance', 'base_tag'}, {'tcp'}, 'gripper')
     resolved = {}
     for asset, filename in declaration.items():
+        if asset == 'base_tag':
+            require_keys(filename, {'id', 'size_mm', 'dictionary'}, {'id', 'size_mm'}, 'gripper.base_tag')
+            if type(filename['id']) is not int or not 0 <= filename['id'] < 100:
+                raise ValueError('gripper.base_tag.id 必须是 0–99 整数')
+            if not isinstance(filename['size_mm'], (int, float)) or not math.isfinite(filename['size_mm']) or filename['size_mm'] <= 0:
+                raise ValueError('gripper.base_tag.size_mm 必须是正数')
+            dictionary = filename.get('dictionary', 'DICT_4X4_100')
+            if dictionary != 'DICT_4X4_100':
+                raise ValueError('gripper.base_tag.dictionary 当前必须为 DICT_4X4_100')
+            resolved[asset] = dict(id=filename['id'], size_mm=float(filename['size_mm']), dictionary=dictionary)
+            continue
         if not isinstance(filename, str) or not filename.strip():
             raise ValueError(f'gripper.{asset} 需要文件路径')
         path = Path(filename)

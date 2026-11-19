@@ -278,11 +278,14 @@ class CalibratedCamera:
     files: dict[str, Path]
     width_measurement: dict | None = None
     tag_distance_measurement: dict | None = None
+    base_tag: dict | None = None
     factory_rear: FactoryRearCalibration | None = None
 
     @cached_property
     def asset_hashes(self) -> dict[str, str]:
         hashes = {name: artifact_identity.file_hash(path) for name, path in sorted(self.files.items())}
+        if self.base_tag is not None:
+            hashes['base_tag'] = artifact_identity.canonical_hash(self.base_tag)
         if self.factory_rear is not None:
             hashes['rear'] = self.factory_rear.sha256
         return hashes

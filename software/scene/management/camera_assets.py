@@ -72,6 +72,7 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
     if 'tag_distance' in gripper:
         asset_paths['tag_distance'] = Path(gripper['tag_distance'])
         tag_distance_measurement = gripper_calibration.read_tag_sizes(asset_paths['tag_distance'])
+    base_tag = gripper.get('base_tag')
     lens_calibrations = dict(front=dict(device_record['measurement'], intrinsics_source=recorded_source))
     manifest = Path(device_record['dir'])/'manifest.json'
     if manifest.is_file(): asset_paths['front_manifest'] = manifest
@@ -96,7 +97,7 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
     if scene.parameters.tag_fusion_enabled and 'rear' not in lens_calibrations:
         raise ValueError('启用环境海报融合需要海报布局与本设备可用的环境镜头参数')
     return CalibratedCamera(device_record['serial'], calibration_selection, lens_calibrations, asset_paths,
-                            width_measurement, tag_distance_measurement, factory_rear)
+                            width_measurement, tag_distance_measurement, base_tag, factory_rear)
 
 
 def snapshot_cameras(cameras: dict[str, CalibratedCamera], directory: Path,

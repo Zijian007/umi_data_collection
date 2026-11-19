@@ -66,6 +66,8 @@ class ArmSolveInput:
     natural_cameras: dict[str, NaturalCamera] = field(default_factory=dict)
     tag_holdout_mask: np.ndarray | None = None
     tag_initialization_mask: np.ndarray | None = None
+    base_tag_T_imu: np.ndarray | None = None
+    base_tag_indices: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=int))
 
 
 def _validate_arm_input(item: ArmSolveInput) -> None:
@@ -128,6 +130,12 @@ def _validate_arm_input(item: ArmSolveInput) -> None:
                                ('velocities', item.seed_velocities, (len(times), 3))):
         if value is not None and (np.asarray(value).shape != shape or not np.isfinite(value).all()):
             raise ValueError(f'{item.arm} poster_vio {name} 初值无效')
+    if item.base_tag_T_imu is not None:
+        validate_transform(item.base_tag_T_imu)
+    base_indices = np.asarray(item.base_tag_indices)
+    if (base_indices.ndim != 1 or not np.issubdtype(base_indices.dtype, np.integer)
+            or np.any(base_indices < 0) or np.any(base_indices >= len(item.times_s))):
+        raise ValueError(f'{item.arm} poster_vio base tag 节点索引无效')
     if item.gravity_m_s2 is not None and not np.isclose(
             np.linalg.norm(item.gravity_m_s2), item.trajectory_parameters.fusion.gravity_m_s2, atol=1e-6):
         raise ValueError(f'{item.arm} poster_vio 重力模长不符合配置')
@@ -192,6 +200,7 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
     # This is a coordinate gauge, not measured geometric information.
     graph.add(gtsam.NonlinearEqualityPose3(board_key, board_pose))
     keys_by_arm = {}
+    graph_items = []
     full_arms = arms
     arms = tuple(keyframes.graph_input(item, graph_nodes[item.arm]) for item in arms)
     for arm_index, item in enumerate(arms):
@@ -208,6 +217,7 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
             initial_gyro_bias=item.initial_gyro_bias)
         graph.push_back(arm_graph)
         values.insert(arm_values)
+        graph_items.append(item)
         # Quiet IMU measurements also occur during constant-velocity motion.
         # VIO has no independently confirmed stationary intervals yet.
         # VIO's first version fixes measured extrinsics for both pixel factor types.
@@ -226,6 +236,43 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
                 point_key_fn=lambda track_id, arm_index=arm_index, camera_name=camera_name:
                     _point_key(arm_index, camera_name, track_id),
                 T_camera_imu=camera.T_cam_imu, model=camera.model, tracks=tracks)
+
+    cross_records = []
+    observations = {observation.arm: observation for observation in request.observations}
+    for observer in graph_items:
+        observation = observations[observer.arm]
+        if not len(observation.base_tag_times_s):
+            continue
+        observer_camera = natural_camera(observer, 'rear')
+        for target, time_s, tag_id, pixels in zip(
+                observation.base_tag_target_arms, observation.base_tag_times_s,
+                observation.base_tag_ids, observation.base_tag_corners_px):
+            if target == observer.arm or target not in keys_by_arm:
+                continue
+            owner = next(item for item in graph_items if item.arm == target)
+            if owner.base_tag_T_imu is None:
+                continue
+            session_time = float(time_s) + float(request.clock_offsets_s.get(observer.arm, 0.0))
+            owner_local = session_time - float(request.clock_offsets_s.get(target, 0.0))
+            observer_index = int(np.argmin(np.abs(observer.times_s - float(time_s))))
+            owner_index = int(np.argmin(np.abs(owner.times_s - owner_local)))
+            if (abs(observer.times_s[observer_index] - float(time_s)) > 1e-7
+                    or abs(owner.times_s[owner_index] - owner_local) > 1e-7):
+                continue
+            spec = request.base_tag_specs.get(target)
+            if spec is None:
+                continue
+            factors.add_cross_base_tag_factor(
+                graph, observer_key=keys_by_arm[observer.arm].pose(observer_index),
+                owner_key=keys_by_arm[owner.arm].pose(owner_index),
+                T_cam_imu=observer_camera.T_cam_imu, model=observer_camera.model,
+                T_imu_tag=owner.base_tag_T_imu, pixels=pixels,
+                parameters={'size_m': float(spec['size_m']), 'scene': observer.scene_parameters})
+            cross_records.append(dict(observer=observer.arm, owner=owner.arm,
+                observer_index=observer_index, owner_index=owner_index,
+                pixels=np.asarray(pixels, dtype=float), model=observer_camera.model,
+                T_cam_imu=observer_camera.T_cam_imu, T_imu_tag=owner.base_tag_T_imu,
+                size_m=float(spec['size_m'])))
 
     solver = gtsam.LevenbergMarquardtParams()
     solver.setMaxIterations(maximum_iterations or arms[0].trajectory_parameters.fusion.lm_iterations)
@@ -261,7 +308,20 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
     final_error = float(graph.error(optimized))
     board_pose = optimized.atPose3(board_key).matrix()
     trajectories, evidence, counts, support_fraction, rms_values = {}, {}, {}, {}, []
+    cross_errors = []
     rejected = not np.isfinite(final_error) or final_error > initial_error + 1e-5
+    for record in cross_records:
+        residual, _, _ = factors.residual_and_jacobians(
+            optimized.atPose3(keys_by_arm[record['observer']].pose(record['observer_index'])).matrix(),
+            optimized.atPose3(keys_by_arm[record['owner']].pose(record['owner_index'])).matrix(),
+            record['T_cam_imu'],
+            factors.transform(record['T_imu_tag'], factors.base_tag_corners_m(record['size_m'])),
+            record['pixels'], record['model'])
+        cross_errors.extend(np.linalg.norm(residual.reshape(-1, 2), axis=1).tolist())
+    if cross_errors:
+        cross_rms = float(np.sqrt(np.mean(np.square(cross_errors))))
+        rms_values.append(cross_rms)
+        rejected |= cross_rms > max(item.scene_parameters.tag_maximum_reprojection_rms_px for item in full_arms)
     for arm_index, item in enumerate(full_arms):
         keys = keys_by_arm[item.arm]
         poses, velocities, biases, recovery = keyframes.recover_states(item, graph_nodes[item.arm], optimized, keys)
@@ -335,7 +395,10 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
             position_support=support, maximum_acc_bias_m_s2=max_acc_bias,
             observation_imu_times_s=np.unique(item.times_s[item.tag_indices]).tolist(),
             gravity_output_m_s2=(board_pose[:3, :3].T @ gravity).tolist(),
-            extrinsics_fixed=True, actual_error='not_measured')
+            extrinsics_fixed=True, actual_error='not_measured',
+            cross_camera_base_tag_observations=sum(1 for row in cross_records if row['observer'] == item.arm),
+            cross_camera_base_tag_rms_px=(float(np.sqrt(np.mean(np.square(cross_errors))))
+                                          if cross_errors else None))
     quality = PosterVioQuality('rejected' if rejected else 'solved', counts,
                                float(max(rms_values)), support_fraction)
     result = PosterVioResult(trajectories, request.coordinate_record, quality,

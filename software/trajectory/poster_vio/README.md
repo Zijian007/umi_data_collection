@@ -2,6 +2,8 @@
 
 `poster_vio` 是实验性任务后端，直接使用本任务的海报角点、自然特征像素和 IMU，不读取预建场景地图，也不调用 ORB 初始化。当前已实现数值求解和任务发布，独立精度尚未验收。
 
+当两只手在 kit.yaml 的 gripper.base_tag 中分别声明唯一的 DICT_4X4_100 标签 ID 和黑色外框尺寸时，任务还会检测环境镜头看到的夹爪基座标签，并把跨手四角点重投影加入同一联合图。该约束默认关闭；标签自身的 IMU 外参由本手的观测初始化，双手音频偏移用于把观察者和被观察者的节点配到同一任务时刻。结果证据中会记录跨相机 base tag 观测数和残差。
+
 ## 调用链
 
 `scene.pipeline.tasks.estimation` → `backends.poster_vio.execute_task()` → `poster_vio_inputs.prepare_task_inputs()` → `solve_joint_poster_imu()` → 公共 TCP、测量和原子发布。

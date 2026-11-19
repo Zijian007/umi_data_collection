@@ -280,7 +280,7 @@ def cached(video: Path, output: Path, settings: DetectionSettings, *, force: boo
     if video.is_relative_to(output):
         raise ValueError('检测输出目录不能包含输入原片，请指定独立目录')
     if layout is not None and (settings.dictionary != layout.dictionary or settings.border_bits != layout.border_bits
-                               or not set(settings.ids).issubset(layout.ids)):
+                               or not set(layout.ids).issubset(settings.ids)):
         raise ValueError('检测字典、黑边或 ID 与海报布局不一致')
     source_files = (Path(__file__), Path(__file__).parent.parent / 'decoding.py',
                     provenance.ROOT / 'software/camera/x3/frame.py',

@@ -17,6 +17,10 @@ class PosterVioObservation:
     tag_ids: np.ndarray
     tag_corners_px: np.ndarray
     natural_tracks: tuple[dict[str, Any], ...] = ()
+    base_tag_target_arms: tuple[str, ...] = ()
+    base_tag_times_s: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
+    base_tag_ids: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=int))
+    base_tag_corners_px: np.ndarray = field(default_factory=lambda: np.empty((0, 4, 2), dtype=float))
 
 
 @dataclass(frozen=True)
@@ -29,6 +33,8 @@ class PosterVioRequest:
     camera_assets: dict[str, dict[str, Any]]
     imu_assets: dict[str, dict[str, Any]]
     coordinate_record: dict[str, Any]
+    base_tag_specs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    clock_offsets_s: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
