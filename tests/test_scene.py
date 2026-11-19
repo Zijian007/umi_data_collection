@@ -39,6 +39,7 @@ from software.trajectory.calibration import assets as calibration_assets, select
 from software.vision.models import LensVideo, MapAtlas
 from software.viewer.results.catalog import RecordingCatalog
 from software.viewer.errors import ViewerDataError
+from software.camera import registry
 from software.scene import asset_identity
 
 
@@ -148,6 +149,10 @@ class SceneWorkflowTests(unittest.TestCase):
         for arm, video in self.recording_paths.items():
             video.write_bytes(arm.encode())
         self.device_pins = {f'SERIAL_{arm}': dict(calibration='test', gripper=dict(tcp=str(self.source / arm / 'tcp.json'))) for arm in models.ARMS}
+        current_camera = patch.object(registry, 'current_camera', side_effect=lambda serial, **kwargs:
+            dict(serial=serial, **{key: value for key, value in self.device_pins.get(serial, {'calibration': 'test'}).items()
+                                  if key != 'gripper'}))
+        current_camera.start(); self.addCleanup(current_camera.stop)
         write_yaml(self.scene_path, dict(kit='test_kit',
                    recording=dict(arms=['left', 'right']),
                    scene=dict(description='test'),

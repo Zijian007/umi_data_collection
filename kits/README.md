@@ -101,7 +101,7 @@ kit 使用 `intrinsics.front/rear` 选择来源和当前登记版本；不再接
 
 ## 临时覆盖与检查
 
-通常只在 kit 中分别选择来源。需要把两镜头统一切换为同一来源时，编辑根目录 `config/user.yaml` 的 `calibration.intrinsics_source`；它覆盖 kit 中的两个镜头选择。缺失或不匹配的登记资产直接报错。
+通常只在 kit 中分别选择来源。临时把所有 kit 的两个镜头统一切到 factory 时，在 `config/user.yaml` 设置 `features.factory_intrinsics.enabled: true`；省略或 false 时沿用 kit。该开关会影响后续所有批次，缺失或不匹配的登记资产直接报错。需要 measured 时在 kit 中逐镜头选择，不使用已退役的 `calibration.intrinsics_source` 用户字段。
 
 ```bash
 ./umi-calib devices
@@ -114,4 +114,4 @@ kit 使用 `intrinsics.front/rear` 选择来源和当前登记版本；不再接
 
 ## 海报采集
 
-需要独立验收的环境镜头时，按[双镜头标定](../docs/标定.md#双镜头标定与海报接入)完成 rear 求解与登记，再将 `intrinsics.rear` 设为对应来源。海报布局和开关写在批次 `collection.yaml.scene.tags`，不写入 kit 或 registry。共享单手回退继续使用本次冻结的相机参数与布局。
+需要独立验收的环境镜头时，按[双镜头标定](../docs/标定.md#双镜头标定与海报接入)完成 rear 求解与登记，再将 `intrinsics.rear` 设为对应来源。海报布局和开关写在批次 `collection.yaml.environment_poster`，不写入 kit 或 registry。共享单手回退继续使用本次冻结的相机参数与布局。

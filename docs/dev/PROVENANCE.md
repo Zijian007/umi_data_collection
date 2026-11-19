@@ -1332,3 +1332,14 @@ rear measured 缺少当前参数时拒绝；rear factory 优先使用当前已�
 - 新批次快照始终写出已解析 `expected_arms`；旧快照省略时由统一解析器从快照内的冻结 kit 恢复，不查询当前设备配置。原片不足继续保持不完整，不推断成单手。
 - 修正场景处理文档中根级 arms 和可省略使用手的旧说明；示例任务省略重复的双手声明，明确批次继承；SSOT 和代码指南补充使用手权威边界。顺带移除修改到的测试文件中的重复/未用导入和无效局部变量。
 - 新增 schema 必填/子集/畸形值检查，以及同一 take 修改覆盖后入库和读取同时恢复批次继承的回归；确认任务清单不保存第二份使用手声明。相关 **67 项通过（10.516 秒）**，场景/管理/配置/回退/地图/海报发布 **97 项通过（38.398 秒）**，最终规则复验 **17 项通过（2.061 秒）**。日志 `/tmp/umi_arms_ssot_targeted.log`、`/tmp/umi_arms_ssot_workflows.log`、`/tmp/umi_arms_ssot_final_rules.log`；Ruff、compileall 和 `git diff --check` 通过。
+
+
+## 2026-11-19：收敛 YAML 配置入口、用途权限和生效来源
+
+- 修正文档中误标的 collection schema、已退役的 scene.tags 海报示例、旧用户内参来源字段及 kit 固定版本说明；文档海报示例新增真实 public schema 解析检查。多地图采集顺序明确由 Organizer 交接或 plan-epochs --write 登记，map_epochs.yaml 是生成规划快照，不再指导用户手工填写内部状态。
+- 配置展示保留 take 目标，消费统一的使用手继承规则，展示任务后端、同步、地图请求及任务/批次范围；原片目录、集中清单及清单目录三个入口给出一致结果，不读取原片、不生成清单或运行目录。批次展示继续保留批次默认值。
+- 查看器传递逐字段覆盖来源，区分 user.yaml 与 command_line，并将 user_config 纳入操作配置的优先级报告；CLI 继续优先于本机偏好，本机偏好继续优先于 operation/local 默认值。
+- 当前 expert-config 拒绝覆盖海报建图/尺度/融合用途及融合方式，统一由 collection 声明；数值调参仍可用。历史 SceneOverrides.from_snapshot 继续读取已冻结覆盖以复现旧结果。
+- 当前 kit 只接受 serial、intrinsics 和 gripper，来源按 front/rear 当前选择解析；固定 calibration/calibrations 字段与旧来源协议只留在资产快照读取分支。迁移公共测试夹具为当前 kit 格式，保持旧快照、来源校验、错误资产拒绝与独立镜头选择覆盖。
+- 新增 user.defaults.yaml 作为用户偏好的唯一默认值来源，user.yaml 只保存本机覆盖；移除 Python 中重复的默认值和 v1 当前用户入口。现有工作区 user.yaml 原有值均为默认值，迁移后运行选择不变；用户配置报告记录默认值来源。
+- 更新仍依赖旧人工 kit/专家用途开关的测试，以及使用手快照显式 expected_arms 的旧断言。相关入口 **76 项通过（11.354 秒）**、最终配置展示 **8 项通过（0.423 秒）**、最后修正的设备清单/快照 **17 项通过（1.268 秒）**。最终完整 ./test.sh --unit **1061 项通过（251.622 秒）**，日志 /tmp/umi_yaml_cleanup_final_all_unit.log；修改文件 Ruff、compileall 和 git diff --check 通过。配置读取及报告相关源文件已加入 CI lint。

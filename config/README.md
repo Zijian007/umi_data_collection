@@ -17,7 +17,7 @@
 
 ## 用户日常配置
 
-普通使用只维护项目根目录的 `config/user.yaml`。用户只需要打开或关闭功能；算法细节仍在内部配置文件中。`schema_version: 2` 是当前 collection.yaml 格式，旧的 collection schema 不再读取。
+日常采集维护批次 `collection.yaml`；设备或夹爪变化时维护 `kit.yaml`；本机通用偏好写入 `config/user.yaml`。用户偏好的唯一默认值在 `config/user.defaults.yaml`，`user.yaml` 只填需要覆盖的字段。用户偏好使用 `schema_version: 2`；`collection.yaml` 不填写 schema_version。
 
 ```yaml
 schema_version: 2
@@ -36,13 +36,13 @@ viewer:
   port: null
 ```
 
-`features.audio_sync.enabled` 只影响没有任务级同步声明的双手 take；`features.factory_intrinsics.enabled` 为 true 时全局优先选择 factory 内参，否则沿用 kit.yaml。`runtime.parallel_tasks.enabled` 为 false 时强制任务并发为 1；为 true 时使用 `jobs`。`null` 表示沿用 `config/operations/viewer.yaml` 的默认值。`config/algorithms/` 保存算法参数，`config/operations/` 保存机器、查看器和检测预算；这些文件属于内部/专家配置，日常用户只维护 `user.yaml`。
+`features.audio_sync.enabled` 只影响没有任务级同步声明的双手 take；`features.factory_intrinsics.enabled` 为 true 时全局优先选择 factory 内参，否则沿用 kit.yaml。`runtime.parallel_tasks.enabled` 为 false 时强制任务并发为 1；为 true 时使用 `jobs`。`null` 表示沿用 `config/operations/viewer.yaml` 的默认值。`config/algorithms/` 保存算法参数，`config/operations/` 保存机器、查看器和检测预算；这些文件属于内部/专家配置，日常用户无需修改算法与操作默认文件。
 
 日常运行先选输入目录；算法调参写 YAML；设备和实测几何写入各自的资产声明。三个程序的分工如下：
 
 | 入口 | 命令行输入 | YAML / 资产 |
 |---|---|---|
-| `umi-scene run / build` | 路径、`--cores`、`--force`、`--dry-run`；run 另有 `--jobs`、`--skip-preflight`，build 另有 `--keep-work` | `algorithms/trajectory.yaml`、`algorithms/scene_parameters.yaml` 提供算法默认值；批次日常配置统一写 `collection.yaml`（场景、kit、手和任务）；专家调参使用 `--expert-config`；`kit.yaml` 固定设备版本与测量文件；旧的 `scene.yaml`、`batch.yaml`、`task.yaml` 已移除 |
+| `umi-scene run / build` | 路径、`--cores`、`--force`、`--dry-run`；run 另有 `--jobs`、`--skip-preflight`，build 另有 `--keep-work` | `algorithms/trajectory.yaml`、`algorithms/scene_parameters.yaml` 提供算法默认值；批次日常配置统一写 `collection.yaml`（场景、kit、手和任务）；专家调参使用 `--expert-config`；`kit.yaml` 选择每镜头当前参数来源与测量文件；旧的 `scene.yaml`、`batch.yaml`、`task.yaml` 已移除 |
 | `umi-calib run / verify` | 录像、输出路径、`--tag-size-mm` 实测板边长、CPU/线程、继续/重算、保留中间文件 | `algorithms/calibration.yaml` 保存求解与验收参数；C 验证读取 `algorithms/trajectory.yaml`；板布局和版本化测量是独立资产 |
 | `umi-view` | 结果根目录、`--host`、`--port` | `operations/viewer.yaml` 管理服务、预览和缓存；读取已有结果，不重新计算轨迹 |
 
@@ -70,7 +70,7 @@ viewer:
 | [viewer.yaml](operations/viewer.yaml) | `127.0.0.1:9092`；画面解码并发 2，预览并发 1、含运行中最多 2 个任务；画面内存缓存 64 张、地图缓存 4 份；预览 720 宽、1500 kbps、CRF 12、GOP 30；每图显示最多 50000 点 | 画质、尺寸、码率、GOP 只影响对应查看器派生缓存；线程、超时和缓存容量不改变内容身份 |
 | [gripper_tag_detection.yaml](operations/gripper_tag_detection.yaml) | 夹爪双标签全区域搜索间隔 30、候选上限 96、补检候选上限 16、每批补检 32 帧 | 检测缓存和使用夹爪测量的最终任务结果均重新计算；不重建场景地图 |
 
-覆盖顺序为 **项目 YAML → 同名 `.local.yaml` → 已支持的环境变量 → CLI 显式值**。目前运行参数的环境覆盖为 `UMI_OPENCV_THREADS`，只覆盖场景 OpenCV；CLI 的 `--workers` 覆盖标定自动 worker 预算，但仍受 `--cores` 与当前 CPU affinity 限制。`--jobs` 控制同时处理的任务数；仅 `jobs=1` 且满足双手 CPU 预算时并行处理两手。查看器的 `--host` / `--port` 覆盖 YAML，`--port 0` 仍表示自动分配。
+操作配置的覆盖顺序为 **项目 YAML → 同名 `.local.yaml` → 已支持的环境变量 → `user.yaml` 中对应的本机偏好 → CLI 显式值**。目前运行参数的环境覆盖为 `UMI_OPENCV_THREADS`，只覆盖场景 OpenCV；CLI 的 `--workers` 覆盖标定自动 worker 预算，但仍受 `--cores` 与当前 CPU affinity 限制。`--jobs` 控制同时处理的任务数；仅 `jobs=1` 且满足双手 CPU 预算时并行处理两手。查看器的 `--host` / `--port` 覆盖 YAML，`--port 0` 仍表示自动分配。
 
 例如，只调整当前机器：
 
@@ -378,21 +378,32 @@ Basalt/ORB/OpenCV/GTSAM 内部尚未暴露的参数，通过当前引擎内容/�
 
 在批次 `collection.yaml` 的 `environment_poster` 中声明环境标签布局和用途开关（路径相对场景根目录）。用户配置统一使用 `enabled` 字段：
 
+<!-- check: collection -->
 ```yaml
+kit: kit_001
+recording:
+  arms: [left, right]
 scene:
-  tags:
-    enabled: false   # 环境标签总开关
-    layout: ../../hardware/calibration_targets/environment_poster.json
-    mapping:
-      enabled: false # 建图阶段检测并记录海报诊断
-      scale:
-        enabled: false # 应用海报尺度修正
-    fusion:
-      enabled: false # 任务阶段加入视觉–IMU 融合
-      method: staged  # staged：先地图+IMU再海报；joint：初值图直接联合地图、IMU和海报
+  description: 海报采集
+reconstruction:
+  backend: scene_map
+environment_poster:
+  layout_path: ../../hardware/calibration_targets/environment_poster.json
+  detection:
+    enabled: false
+  mapping:
+    enabled: false
+    scale_correction:
+      enabled: false
+  task_constraint:
+    enabled: false
+    method: staged
 ```
 
-`enabled` 是总开关；`mapping.enabled`、`mapping.scale.enabled` 和 `fusion.enabled` 是三个独立用途，`fusion.method` 可选 `staged` 或 `joint`，任一用途开启时必须同时开启总开关；尺度修正还要求 `mapping.enabled`。布局可以先声明而全部开关保持关闭，此时不检测环境标签。旧批次中的扁平 `detection/scale/fusion` 仍可读取，但新文件不再使用它们。
+`detection.enabled` 控制环境标签检测；`mapping.enabled`、`mapping.scale_correction.enabled`
+和 `task_constraint.enabled` 声明建图诊断、尺度修正和任务融合用途，统一由 collection 决定。
+用途开启前须开启 detection，尺度修正还要求 mapping；专家配置只调整数值参数。
+`task_constraint.method` 的 staged/joint 只作用于 scene_map。旧的 `scene.tags` 不能作为当前用户配置。
 
 `tag_minimum_side_px` / `tag_minimum_frames` 筛选像素尺寸和独立观测时刻；`tag_corner_sigma_px` / `tag_sigma_per_radius_px` 设置角点噪声；`tag_huber` 是每 ID 四角点共同的鲁棒核阈值；`tag_maximum_reprojection_rms_px` 检查初始化和最终像素残差。默认值只经合成数据验证。无足够观测保留基线，启用后的几何冲突明确失败。每段录像独立求解海报位姿，海报在录像内须静止、平整；任务融合本身不会改变已发布地图尺度；建图修正由下述开关单独控制。打印尺寸状态仍为 PDF 设计值，需核对成品尺寸后评估实拍效果。
 

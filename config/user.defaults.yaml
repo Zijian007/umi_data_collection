@@ -1,0 +1,15 @@
+# 用户偏好的唯一默认值；日常覆盖写入 user.yaml，不在这里维护本机选择。
+schema_version: 2
+features:
+  audio_sync:
+    enabled: false
+  factory_intrinsics:
+    enabled: false
+runtime:
+  parallel_tasks:
+    enabled: false
+    jobs: 1
+  cores: auto
+viewer:
+  host: null
+  port: null

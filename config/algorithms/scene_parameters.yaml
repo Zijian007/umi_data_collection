@@ -102,7 +102,7 @@ poster_vio:  # 实验性联合图的观测门槛；与独立引擎后端分开�
 
 fusion:  # 固定场景任务的视觉融合权重和环境海报因子。
   environment_tags:  # 场景任务是否把环境海报角点加入视觉–IMU 图。
-    enabled: false  # collection.yaml.scene.tags.fusion.enabled 会覆盖此默认值。
+    enabled: false  # collection.yaml.environment_poster.task_constraint.enabled 会覆盖此默认值。
     method: staged  # staged 用地图+IMU基线初值，joint 用视觉位姿种子；最终图均含地图、IMU和海报。
   front_position_sigma_m: 0.015  # 工作镜头位置观测标准差，单位 m。
   rear_position_sigma_m: 0.020  # 环境镜头位置观测标准差，单位 m。

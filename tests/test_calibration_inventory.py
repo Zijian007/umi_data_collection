@@ -13,12 +13,6 @@ from software.infrastructure import provenance
 from software.camera import registry
 from software.calibration import cli, inventory
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import (
-    batch as batch_inputs,
-    episode as episode_inputs,
-    kit as kit_inputs,
-    scene as scene_inputs,
-)
 from software.infrastructure.file_store import write_json, write_yaml
 from software.trajectory.calibration import assets
 from test_intrinsics_source import factory_bundle
@@ -50,16 +44,14 @@ class InventoryTests(unittest.TestCase):
         write_json(path, raw)
         return registry.register_rear(path)['version']
 
-    def kit(self, *, rear=None, profiles=None):
-        binding = dict(serial='camera', gripper=dict(tcp='tcp.json'))
-        if profiles is None:
-            binding['calibration'] = self.measured['calibration_version']
-            binding['intrinsics_source'] = 'measured'
-            if rear is not None:
-                binding['rear_calibration'] = rear
-        else:
-            binding['calibrations'] = profiles
+    def kit(self, *, rear=None):
+        binding = dict(serial='camera', gripper=dict(tcp='tcp.json'),
+                       intrinsics=dict(front='measured', rear='measured' if rear else 'factory'))
         write_yaml(kit_inputs.KITS / 'test/kit.yaml', dict(arms=dict(right=binding)))
+        if rear == 'rear_missing':
+            index = registry.load_index()
+            index['devices']['camera']['rear_calibration_sources']['measured'] = rear
+            registry.save_index(index)
 
     def command(self, *args):
         stream = io.StringIO()
@@ -105,8 +97,8 @@ class InventoryTests(unittest.TestCase):
         self.kit(rear='rear_missing')
         code, result = self.command('--kit', 'test')
         self.assertEqual(code, 1)
-        self.assertTrue(result['devices'][0]['ok'])
-        self.assertFalse(result['kit']['arms']['right']['rear']['ok'])
+        self.assertFalse(result['devices'][0]['ok'])
+        self.assertTrue(result['kit']['errors'])
 
     def test_valid_pair_is_not_claimed_as_combination_validation(self):
         self.kit(rear=self.rear)
@@ -114,29 +106,31 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(result['kit']['arms']['right']['dual_calibrations_available'])
         self.assertEqual(result['kit']['combination_validation'], 'not_checked')
-        # Kit pins the measured immutable version even though registry default is factory.
+        # Kit selects current measured parameters even though the registry default is factory.
         self.assertEqual(result['kit']['arms']['right']['front']['version'], self.measured['calibration_version'])
 
-    def test_factory_profile_and_source_mismatch(self):
-        factory_rear = self.add_rear(source='factory')
-        self.kit(profiles=dict(measured=dict(front=self.measured['calibration_version'], rear=self.rear),
-                               factory=dict(front=self.factory['calibration_version'], rear=factory_rear)))
+    def test_factory_override_selects_both_current_lenses(self):
+        self.add_rear(source='factory')
+        self.kit(rear=self.rear)
         user = SimpleNamespace(values={'calibration': {'intrinsics_source': 'factory'},
                                        'runtime': {'cores': 'auto'}}, report=lambda: {})
         with patch.object(cli.user_config, 'current', return_value=user):
-            self.assertEqual(self.command('--kit', 'test', '--require-rear')[0], 0)
-        self.kit(rear=factory_rear)
-        code, result = self.command('--kit', 'test')
-        self.assertEqual(code, 1)
-        self.assertIn('来源', result['kit']['arms']['right']['rear']['error'])
+            code, result = self.command('--kit', 'test', '--require-rear')
+        self.assertEqual(code, 0)
+        for lens in ('front', 'rear'):
+            self.assertEqual(result['kit']['arms']['right'][lens]['intrinsics_source'], 'factory')
 
-    def test_scene_and_inventory_reject_same_mixed_source_legacy_binding(self):
-        from types import SimpleNamespace
+    def test_current_kit_allows_independent_sources_and_frozen_binding_still_checks_identity(self):
         from software.scene.management.camera_assets import select_camera
         factory_rear = self.add_rear(source='factory')
-        self.kit(rear=factory_rear)
-        self.assertFalse(inventory.kit_status('test')['ok'])
-        # No explicit intrinsics_source: infer it from the pinned front version.
+        self.kit()
+        path = kit_inputs.KITS / 'test/kit.yaml'
+        data = read_yaml(path)
+        data['arms']['right']['intrinsics']['rear'] = 'factory'
+        write_yaml(path, data)
+        self.assertTrue(inventory.kit_status('test')['ok'])
+        # A historical fixed binding with no separate rear source still uses
+        # the front source, so a mismatched rear file must fail verification.
         scene = SimpleNamespace(devices={'camera': dict(calibration=self.measured['calibration_version'],
                                                          intrinsics_source='measured')}, mode='dual',
                                 rear_calibrations={'camera': registry.rear_path('camera', factory_rear)})
@@ -179,7 +173,7 @@ class InventoryTests(unittest.TestCase):
                 registry.save_index(index)
                 result = inventory.kit_status('test')
                 self.assertFalse(result['ok'])
-                self.assertTrue(result['arms']['right']['errors'])
+                self.assertTrue(result['errors'])
 
     def test_missing_kit_and_broken_index_are_machine_readable(self):
         self.assertEqual(self.command('--kit', 'absent')[0], 1)

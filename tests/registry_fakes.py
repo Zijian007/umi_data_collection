@@ -1,11 +1,10 @@
 from software.scene.management.inputs import kit as kit_inputs
 """在临时目录生成测试标定包，不依赖工作区里的设备登记或演示数据。"""
-import json
 import shutil
 from copy import deepcopy
 from pathlib import Path
 
-from software.infrastructure.file_store import read_yaml, write_json, write_yaml
+from software.infrastructure.file_store import read_yaml, write_yaml
 from software.trajectory.calibration import assets as calibration_assets
 
 
@@ -21,14 +20,19 @@ def device_record() -> dict:
 
 def write_kit(name: str, arms: dict, *, description='') -> dict:
     """Write an explicit test kit exactly as an operator writes kit.yaml."""
-    from software.infrastructure.file_store import read_yaml
-    from software.scene.management.inputs import kit as kit_inputs
     from software.infrastructure.file_store import write_yaml
 
     arms = deepcopy(arms)
     directory = kit_inputs.KITS / name
     directory.mkdir(parents=True, exist_ok=True)
     for binding in arms.values():
+        # Older numerical fixtures name fixed assets; public kit files use
+        # current lens selections. Historical snapshots are tested separately.
+        if 'intrinsics' not in binding:
+            binding['intrinsics'] = dict(front=binding.get('intrinsics_source', 'measured'),
+                rear=binding.get('rear_intrinsics_source', 'measured' if 'rear_calibration' in binding else 'factory'))
+            for field in ('calibration', 'rear_calibration', 'calibrations', 'intrinsics_source', 'rear_intrinsics_source'):
+                binding.pop(field, None)
         for asset, filename in binding['gripper'].items():
             source = Path(filename)
             if source.is_absolute():
@@ -49,7 +53,6 @@ def write_kit(name: str, arms: dict, *, description='') -> dict:
 def write_batch(scene: Path, name: str, *, kit: str, arms=None, map_version=None) -> Path:
     """Write a manual declaration and persist its resolved test snapshot."""
     from software.scene.management.batch import snapshot as batches
-    from software.scene.management.inputs import kit as kit_inputs
     from software.infrastructure.file_store import write_yaml
 
     if scene.suffix in ('.yaml', '.yml'):

@@ -10,9 +10,6 @@ from unittest.mock import patch
 from software.infrastructure.file_store import read_yaml
 from software.scene.management.inputs import (
     batch as batch_inputs,
-    episode as episode_inputs,
-    kit as kit_inputs,
-    scene as scene_inputs,
 )
 from software.scene.management import processing
 from software.scene.overrides import SceneOverrides
@@ -29,9 +26,7 @@ class CurrentConfigurationTests(unittest.TestCase):
         self.kit = kit_inputs.KITS / 'rig/kit.yaml'
 
     def update_calibration(self, value='updated'):
-        data = read_yaml(self.kit)
-        data['arms']['left']['calibration'] = value
-        write_yaml(self.kit, data)
+        self.f.f.device_pins['SERIAL_left']['calibration'] = value
 
     def test_single_mapping_has_no_left_label_and_retired_schema_is_rejected(self):
         processing.prepare_batch(self.batch)

@@ -34,6 +34,12 @@ jobs:
           software/dataset/export.py
           software/scene/cli.py
           software/scene/arms.py
+          software/configuration/user_settings.py
+          software/configuration/operational_settings.py
+          software/scene/management/effective_config.py
+          software/scene/management/inputs/kit.py
+          software/scene/overrides.py
+          software/viewer/server.py
           software/scene/spatial/poster.py
           software/trajectory/algorithms/fusion/graph.py
           software/trajectory/poster_vio/models.py

@@ -193,9 +193,11 @@ def main(argv: list[str] | None = None) -> int:
         common = user_config.current().values['viewer']
         explicit = {key: getattr(args, key) for key in ('host', 'port') if getattr(args, key) is not None}
         common_overrides = {key: value for key, value in common.items() if value is not None}
+        origins = {key: f'{user_config.current().path}:viewer.{key}' for key in common_overrides}
         common_overrides.update(explicit)
+        origins.update({key: f'command_line:--{key}' for key in explicit})
         configured = settings.load('viewer', environment={settings.SNAPSHOT_ENV: json.dumps({'viewer': defaults.report()})},
-                                   overrides=common_overrides)
+                                   overrides=common_overrides, origins=origins)
         args.host, args.port = configured.values['host'], configured.values['port']
         if args.show_config:
             print(json.dumps(dict(program='umi-view', operation='serve', scope='configuration_only',

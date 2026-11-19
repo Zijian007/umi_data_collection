@@ -22,7 +22,7 @@ from software.calibration.validation import factory as diagnostic
 from software.scene import cli as scene_cli
 from software.infrastructure.file_store import read_yaml
 from software.scene.management.batch import snapshot as batches
-from software.scene.management.inputs import batch as batch_inputs, kit as kit_inputs, scene as scene_inputs
+from software.scene.management.inputs import batch as batch_inputs, kit as kit_inputs
 from software.infrastructure.file_store import write_json, write_yaml
 from software.trajectory.calibration import assets
 from test_factory_comparison import offset
@@ -185,13 +185,18 @@ class BatchSourceTests(unittest.TestCase):
             kits=root/'kits';gripper=kits/'rig/tcp.json'
             write_json(gripper,dict(units='metres',T_camera_tcp=dict(R_rows=np.eye(3).tolist(),t_m=[0.,0.,0.])))
             write_yaml(kits/'rig/kit.yaml',dict(arms=dict(left=dict(serial='camera',gripper=dict(tcp='tcp.json'),
-                calibrations=dict(measured=dict(front='001',rear='rear_001'),factory=dict(front='002',rear='rear_002'))))))
+                intrinsics=dict(front='measured',rear='factory')))))
             write_yaml(batch/'collection.yaml',dict(
                 scene=dict(description=''),
                 map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
                 reconstruction=dict(backend='scene_map'),
                 kit='rig', recording=dict(arms=['left'])))
-            with patch.object(kit_inputs,'KITS',kits), patch.object(registry,'rear_path',side_effect=lambda serial,version:root/version):
+            def current_camera(serial, *, front, rear):
+                return dict(serial=serial, calibration='001' if front == 'measured' else '002',
+                    rear_calibration='rear_001' if rear == 'measured' else 'rear_002',
+                    intrinsics_source=front, rear_intrinsics_source=rear)
+            with patch.object(kit_inputs,'KITS',kits), patch.object(registry,'current_camera', side_effect=current_camera), \
+                    patch.object(registry,'rear_path',side_effect=lambda serial,version:root/version):
                 factory=kit_inputs.read_kit('rig',intrinsics_source='factory')
                 video=batch/'mapping/video.insv';video.parent.mkdir();video.write_bytes(b'video')
                 metadata=dict(serial='camera',sha256=artifact_identity.file_hash(video))

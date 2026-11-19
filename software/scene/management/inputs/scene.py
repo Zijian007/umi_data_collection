@@ -239,7 +239,7 @@ def read_scene(path: Path, *, overrides: SceneOverrides | None = None, document:
         raise ValueError('场景 mode 必须为 shared_front、dual 或 auto')
     if scene_document['reference_arm'] not in ARMS:
         raise ValueError('map_reference_arm 必须为 left 或 right')
-    # 优先级：默认值 → collection.yaml 的 scene.tags 开关 → --expert-config。
+    # 用途开关来自 collection；当前 expert-config 只覆盖算法参数。历史覆盖按冻结值复现。
     parameters = load_scene_parameters()
     tag_layout = None
     environment_tags_enabled = False

@@ -70,13 +70,12 @@ def read_devices(bindings: dict) -> dict[str, dict]:
 def validate_kit(declaration: dict, *, name: str | None = None, intrinsics_source: str | None = None) -> dict:
     """套件按镜头来源解析当前参数；已固定的历史记录保留原绑定。
 
-    来源优先级：调用方的 CLI/批次选择、套件、每手配置；多来源未指定时选 measured。
-    旧单版本配置保留原绑定，显式来源仍在 select_camera 中核对，不能自动替换版本。
+    当前 kit 只接受按镜头的来源选择；固定版本与旧配置只在资产快照路径中读取。
     """
-    require_keys(declaration, {'id', 'arms', 'description', 'intrinsics_source'}, {'arms'} if name is not None else {'id', 'arms'}, '套件')
+    require_keys(declaration, {'arms', 'description'} if name is not None
+                 else {'id', 'arms', 'description', 'intrinsics_source'},
+                 {'arms'} if name is not None else {'id', 'arms'}, '套件')
     identity = name if name is not None else declaration['id']
-    if declaration.get('id', identity) != identity:
-        raise ValueError('套件目录与配置 ID 不一致')
     validate_name(identity)
     if not isinstance(declaration.get('description', ''), str):
         raise ValueError('套件 description 必须为字符串')
@@ -90,43 +89,44 @@ def validate_kit(declaration: dict, *, name: str | None = None, intrinsics_sourc
         calibration_source.validate(source)
     resolved = {}
     for arm, binding in arms.items():
-        require_keys(binding, {'serial', 'calibration', 'calibrations', 'gripper', 'rear_calibration', 'intrinsics_source', 'rear_intrinsics_source', 'intrinsics'},
-                     {'serial', 'gripper'}, '套件设备')
-        selected = source or binding.get('intrinsics_source')
-        profiles = binding.get('calibrations')
-        if 'intrinsics' in binding or not ({'calibration', 'calibrations'} & binding.keys()):
-            if name is None:
-                raise ValueError('资产快照必须包含已解析的标定身份，不能重新选择当前参数')
-            if {'calibration', 'calibrations', 'rear_calibration', 'rear_intrinsics_source', 'intrinsics_source'} & binding.keys():
-                raise ValueError('intrinsics 不能与旧标定版本或来源字段混用')
+        if name is not None:
+            require_keys(binding, {'serial', 'intrinsics', 'gripper'}, {'serial', 'gripper'}, '当前 kit 设备')
             lenses = binding.get('intrinsics', {})
             require_keys(lenses, {'front', 'rear'}, set(), 'intrinsics')
-            for value in lenses.values(): calibration_source.validate(value)
+            for value in lenses.values():
+                calibration_source.validate(value)
             camera = registry.current_camera(registry.validate_id(binding['serial']),
                 front=source or lenses.get('front', 'measured'), rear=source or lenses.get('rear', 'factory'))
-        elif profiles is not None:
-            if 'calibration' in binding or 'rear_calibration' in binding:
-                raise ValueError('calibrations 与旧的 calibration/rear_calibration 不能混用')
-            if not isinstance(profiles, dict) or not profiles or profiles.keys()-set(calibration_source.SOURCES):
-                raise ValueError('calibrations 只允许 measured/factory 来源')
-            for variant in profiles.values():
-                require_keys(variant, {'front', 'rear'}, {'front'}, '镜头标定版本')
-                for value in variant.values(): registry.validate_id(value)
-            selected = selected or 'measured'
-            calibration_source.validate(selected)
-            if selected not in profiles:
-                raise ValueError(f'套件 {identity} 的 {arm} 缺少 {selected} 完整标定版本')
-            profile = profiles[selected]
-            camera = dict(serial=registry.validate_id(binding['serial']), calibration=profile['front'],
-                          intrinsics_source=selected)
-            if 'rear' in profile: camera['rear_calibration'] = profile['rear']
         else:
-            if 'calibration' not in binding:
-                raise ValueError('套件设备需要 calibration 或 calibrations')
-            camera = {field: registry.validate_id(value) for field, value in binding.items()
-                      if field not in ('gripper', 'calibrations')}
-            if selected is not None:
-                camera['intrinsics_source'] = calibration_source.validate(selected)
+            # Frozen snapshots retain fixed identities and never select current assets.
+            require_keys(binding, {'serial', 'calibration', 'calibrations', 'gripper',
+                'rear_calibration', 'intrinsics_source', 'rear_intrinsics_source'},
+                {'serial', 'gripper'}, '套件资产快照')
+            selected = source or binding.get('intrinsics_source')
+            profiles = binding.get('calibrations')
+            if profiles is not None:
+                if 'calibration' in binding or 'rear_calibration' in binding:
+                    raise ValueError('calibrations 与旧的 calibration/rear_calibration 不能混用')
+                if not isinstance(profiles, dict) or not profiles or profiles.keys()-set(calibration_source.SOURCES):
+                    raise ValueError('calibrations 只允许 measured/factory 来源')
+                for variant in profiles.values():
+                    require_keys(variant, {'front', 'rear'}, {'front'}, '镜头标定版本')
+                    for value in variant.values(): registry.validate_id(value)
+                selected = selected or 'measured'
+                calibration_source.validate(selected)
+                if selected not in profiles:
+                    raise ValueError(f'套件 {identity} 的 {arm} 缺少 {selected} 完整标定版本')
+                profile = profiles[selected]
+                camera = dict(serial=registry.validate_id(binding['serial']), calibration=profile['front'],
+                              intrinsics_source=selected)
+                if 'rear' in profile: camera['rear_calibration'] = profile['rear']
+            else:
+                if 'calibration' not in binding:
+                    raise ValueError('套件设备需要 calibration 或 calibrations')
+                camera = {field: registry.validate_id(value) for field, value in binding.items()
+                          if field not in ('gripper', 'calibrations')}
+                if selected is not None:
+                    camera['intrinsics_source'] = calibration_source.validate(selected)
         camera['gripper'] = gripper_paths(binding['gripper'], KITS / name if name is not None else None)
         resolved[arm] = camera
     if len({camera['serial'] for camera in resolved.values()}) != len(resolved):

@@ -1,9 +1,6 @@
 from software.infrastructure.file_store import read_yaml
 """套件单/双手、批次配置、离线处理、验收和导出的完整业务回归。"""
-from software.scene.management import camera_assets
-from pathlib import Path
 import unittest
-from unittest.mock import patch
 from registry_fakes import write_kit, write_batch
 
 from software.camera import registry
@@ -135,11 +132,8 @@ class KitTests(unittest.TestCase):
         data = read_yaml(kit_file)
         data['arms']['left']['calibration'] = 'missing'
         write_yaml(kit_file, data)
-        session = batch_inputs.read_batch(write_batch(self.scene_path, 'invalid', kit='rig'))
-        from dataclasses import replace
-        scene = replace(session.scene, devices=session.devices)
-        with patch.object(registry, 'read_insv_serial', return_value='CAMERA_A'), self.assertRaises(registry.RegistryError):
-            camera_assets.select_camera(Path('video.insv'), scene)
+        with self.assertRaisesRegex(ValueError, '当前 kit'):
+            write_batch(self.scene_path, 'invalid', kit='rig')
 
     def test_current_kit_identity_matches_its_directory(self):
         write_kit('rig', {arm: dict(serial=serial, calibration='001', gripper=dict(tcp='tcp_camera.json')) for arm, serial in ({'left': 'CAMERA_A'}).items()})
@@ -147,5 +141,5 @@ class KitTests(unittest.TestCase):
         data = read_yaml(kit_file)
         data['id'] = 'other'
         write_yaml(kit_file, data)
-        with self.assertRaisesRegex(ValueError, '配置 ID'):
+        with self.assertRaisesRegex(ValueError, '未知项'):
             kit_inputs.read_kit('rig')

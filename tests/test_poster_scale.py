@@ -177,11 +177,11 @@ class PosterMappingWorkflowTests(unittest.TestCase):
         declaration = read_yaml(declaration_path)
         declaration['environment_poster'] = dict(
             layout_path=str(tag_board.DEFAULT_LAYOUT), detection=dict(enabled=True),
-            task_constraint=dict(enabled=False, method='staged'))
+            task_constraint=dict(enabled=False, method='staged'),
+            mapping=dict(enabled=True, scale_correction=dict(enabled=correction)))
         write_yaml(declaration_path, declaration)
         expert = helper.root / 'expert.yaml'
-        write_yaml(expert, dict(parameters=dict(mapping=dict(environment_tags=dict(
-            enabled=True, scale=dict(enabled=correction))))))
+        write_yaml(expert, dict(parameters=dict(mapping=dict(environment_tags=dict(minimum_frames=6)))))
         helper.scene_overrides = SceneOverrides.load(expert)
         helper.scene = batch_inputs.read_batch(helper.session_path, overrides=helper.scene_overrides).scene
         for video, camera in list(helper.cameras.items()):

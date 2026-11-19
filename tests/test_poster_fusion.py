@@ -478,11 +478,14 @@ class PosterWorkflowTests(unittest.TestCase):
             write_yaml(path, dict(kit='rig', recording=dict(arms=['left', 'right']),
                                   scene=dict(description=''),
                                   map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
-                                  environment_poster=dict(layout_path=str(tag_board.DEFAULT_LAYOUT), detection=dict(enabled=True)),
+                                  environment_poster=dict(layout_path=str(tag_board.DEFAULT_LAYOUT), detection=dict(enabled=True),
+                                      task_constraint=dict(enabled=True)),
                                   reconstruction=dict(backend='scene_map')))
             expert = Path(temporary)/'expert.yaml'
             write_yaml(expert, dict(parameters=dict(fusion=dict(environment_tags=dict(enabled=True)))))
-            self.assertTrue(scene_inputs.read_scene(path, overrides=SceneOverrides.load(expert)).parameters.tag_fusion_enabled)
+            with self.assertRaisesRegex(ValueError, 'collection.yaml'):
+                SceneOverrides.load(expert)
+            self.assertTrue(scene_inputs.read_scene(path).parameters.tag_fusion_enabled)
             for override in (dict(tag_minimum_frames=2), dict(tag_corner_sigma_px=0.), dict(tag_fusion_enabled=1)):
                 with self.subTest(override=override), self.assertRaises(ValueError):
                     load_scene_parameters(overrides=override)

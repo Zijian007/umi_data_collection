@@ -13,11 +13,8 @@ from software.calibration import cli as calibration_cli
 from software.scene import cli as scene_cli
 from software.scene.overrides import SceneOverrides, apply_overrides
 from software.scene.parameter_schema import nested_snapshot
-from software.infrastructure.file_store import read_yaml
 from software.scene.management.inputs import (
-    batch as batch_inputs,
     episode as episode_inputs,
-    kit as kit_inputs,
     scene as scene_inputs,
 )
 from software.infrastructure.file_store import write_yaml
@@ -48,15 +45,16 @@ class EffectiveConfigurationTests(unittest.TestCase):
         self.assertEqual(scene.trajectory.sources[-1], str(override_path))
         self.assertNotEqual(scene_inputs.read_scene(scene_path).trajectory.values.video.frame_step, 4)
 
-    def test_partial_overlay_validates_after_scene_merge(self):
-        override_path = self.root/'override.yaml'
-        write_yaml(override_path, dict(parameters=dict(mapping=dict(environment_tags=dict(scale=dict(enabled=True))))))
-        overrides = SceneOverrides.load(override_path)
+    def test_expert_policy_switches_are_rejected_but_historical_snapshots_remain_readable(self):
+        path = self.root / 'override.yaml'
+        values = dict(parameters=dict(mapping=dict(environment_tags=dict(scale=dict(enabled=True)))))
+        write_yaml(path, values)
+        with self.assertRaisesRegex(ValueError, 'collection.yaml'):
+            SceneOverrides.load(path)
+        frozen = SceneOverrides.from_snapshot(dict(path=str(path), sha256='frozen', values=values))
         parameters = scene_inputs.load_scene_parameters(overrides=dict(tag_mapping_enabled=True))
-        _, effective = apply_overrides(config.load('trajectory'), parameters, overrides)
+        _, effective = apply_overrides(config.load('trajectory'), parameters, frozen)
         self.assertTrue(effective.tag_mapping_scale_enabled)
-        with self.assertRaisesRegex(ValueError, 'tag_mapping_enabled'):
-            apply_overrides(config.load('trajectory'), scene_inputs.load_scene_parameters(), overrides)
 
     def test_scene_overlay_rejects_asset_fields_and_unknown_parameters(self):
         override_path = self.root/'override.yaml'
@@ -82,6 +80,49 @@ class EffectiveConfigurationTests(unittest.TestCase):
         self.assertEqual(report['configuration'][0]['effective']['parameters'],
                          nested_snapshot(asdict(scene_inputs.load_scene_parameters())))
         self.assertEqual({path: path.read_bytes() for path in self.root.rglob('*') if path.is_file()}, before)
+
+    def test_task_show_config_preserves_overrides_and_never_reads_recordings(self):
+        from software.scene.management import effective_config
+        batch = self.root / 'batch'
+        task = batch / 'take_001'
+        task.mkdir(parents=True)
+        write_yaml(batch / 'collection.yaml', dict(kit='rig', recording=dict(arms=['left', 'right']),
+            scene=dict(description=''), map=dict(layout='per_arm'), reconstruction=dict(backend='scene_map'),
+            tasks=dict(take_001=dict(arms=['right'], reconstruction=dict(backend='poster_vio')))))
+        episode = batch / '.pipeline/tasks/take_001/episode.yaml'
+        write_yaml(episode, dict(schema_version=5, recordings={}))
+        before = {p: p.read_bytes() for p in batch.rglob('*') if p.is_file()}
+        with patch.object(effective_config.batches, 'read_kit',
+                          return_value=dict(id='rig', arms=dict(left={}, right={}))), \
+                patch.object(episode_inputs, 'read_recordings', side_effect=AssertionError('recording IO')):
+            for target in (task, episode, episode.parent):
+                with self.subTest(target=target):
+                    report = effective_config.effective_report([target])[0]
+                    self.assertEqual(report['scope'], 'task')
+                    self.assertEqual(report['target'], str(task))
+                    self.assertEqual(report['selection']['arms'], ['right'])
+                    self.assertEqual(report['effective']['reconstruction_mode'], 'poster_vio')
+                    self.assertEqual(report['effective']['mode'], 'shared_front')
+                    self.assertEqual(report['effective']['synchronization']['method'], 'single_camera')
+            batch_report = effective_config.effective_report([batch])[0]
+            self.assertEqual(batch_report['selection']['arms'], ['left', 'right'])
+            self.assertEqual(batch_report['effective']['reconstruction_mode'], 'scene_map')
+        self.assertEqual(before, {p: p.read_bytes() for p in batch.rglob('*') if p.is_file()})
+
+    def test_viewer_user_origin_is_distinct_from_cli_origin(self):
+        from software.configuration import user_settings
+        path = self.root / 'user.yaml'
+        write_yaml(path, dict(schema_version=2, viewer=dict(port=12345)))
+        user = user_settings.load(path)
+        with patch.object(server.user_config, 'current', return_value=user):
+            for args, expected, origin in (([], 12345, str(path) + ':viewer.port'),
+                                           (['--port', '0'], 0, 'command_line:--port')):
+                with redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(server.main(['--show-config'] + args), 0)
+                report = json.loads(output.getvalue())
+                self.assertEqual(report['effective']['port'], expected)
+                self.assertEqual(report['configuration']['origins']['port'], origin)
+                self.assertIn('user_config', report['configuration']['precedence'])
 
     def test_calibration_show_config_without_recordings_or_environment(self):
         overlay = self.root/'calibration.yaml'

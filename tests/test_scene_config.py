@@ -3,16 +3,12 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from software.infrastructure.file_store import read_yaml
 from software.scene.management.inputs import (
-    batch as batch_inputs,
     episode as episode_inputs,
-    kit as kit_inputs,
     scene as scene_inputs,
 )
 from software.scene import layout
 from software.scene.overrides import SceneOverrides
-from software.scene.management.inputs import scene as scene_inputs
 from software.scene.pipeline.maps import lifecycle as map_lifecycle
 from software.infrastructure.file_store import write_yaml as _write_yaml
 
@@ -244,24 +240,15 @@ class SceneConfigurationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'environment_poster'):
                     scene_inputs.read_scene(collection)
 
-    def test_expert_config_overrides_collection_tag_switches(self):
-        board = scene_inputs.ROOT / 'hardware/calibration_targets/environment_poster.json'
-        if not board.is_file():
-            self.skipTest('environment poster fixture unavailable')
-        collection = self.root / 'expert' / 'collection.yaml'
-        collection.parent.mkdir()
-        write_yaml(collection, dict(schema_version=1, kit='rig', scene=dict(
-            layout='shared', map_reference_arm='left', tags=dict(
-                enabled=True, layout=str(board), fusion=dict(enabled=False)))))
+    def test_expert_config_cannot_override_collection_tag_switches(self):
         expert = self.root / 'expert.yaml'
-        write_yaml(expert, dict(parameters=dict(fusion=dict(environment_tags=dict(enabled=True)))))
-        scene = scene_inputs.read_scene(collection, overrides=SceneOverrides.load(expert))
-        self.assertTrue(scene.parameters.tag_fusion_enabled)
-        # 覆盖之后仍要求总开关：tags.enabled=false 时专家配置不能单独打开融合。
-        write_yaml(collection, dict(schema_version=1, kit='rig', scene=dict(
-            layout='shared', map_reference_arm='left', tags=dict(enabled=False, layout=str(board)))))
-        with self.assertRaisesRegex(ValueError, 'scene.tags.enabled'):
-            scene_inputs.read_scene(collection, overrides=SceneOverrides.load(expert))
+        for values in (dict(parameters=dict(fusion=dict(environment_tags=dict(enabled=True)))),
+                       dict(parameters=dict(mapping=dict(environment_tags=dict(enabled=True)))),
+                       dict(parameters=dict(fusion=dict(environment_tags=dict(method='joint')))),
+                       dict(trajectory=dict(environment_tags=dict(tag_fusion_enabled=True)))):
+            write_yaml(expert, values)
+            with self.subTest(values=values), self.assertRaisesRegex(ValueError, 'collection.yaml'):
+                SceneOverrides.load(expert)
 
     def test_environment_tag_policy_uses_canonical_enabled_fields(self):
         board = scene_inputs.ROOT / 'hardware/calibration_targets/environment_poster.json'

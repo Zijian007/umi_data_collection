@@ -15,6 +15,8 @@ from software.scene.management.batch.discovery import configured_batches
 from software.scene.management.inputs.batch import mapping_records
 from software.scene.arms import resolve_arms
 from software.scene.management.inputs.kit import validate_kit
+from software.scene.management.inputs.episode import read_synchronization
+from software.scene.pipeline.tasks.policy import read_mode, task_modes
 from software.scene.management.inputs.scene import ROOT, read_scene
 from software.scene.parameter_schema import nested_snapshot
 
@@ -35,11 +37,13 @@ def _report_targets(paths: list[Path]) -> list[Path]:
             if requested_path.name not in {'collection.yaml', 'manifest.yaml', 'episode.yaml'}:
                 raise ValueError('请指定场景、批次、任务目录或对应 YAML 清单')
         directory = layout.owner(requested_path) if requested_path.is_file() else requested_path
+        if directory.parent.name == 'tasks' and directory.parent.parent.name == layout.INTERNAL:
+            directory = layout.owner(directory / 'episode.yaml')
         if directory.name == layout.INTERNAL:
             directory = directory.parent
         if ((directory.parent/'collection.yaml').is_file()
                 or layout.manifest(directory, 'episode.yaml').is_file()):
-            targets.add(directory.parent)
+            targets.add(directory)
         else:
             discovered = configured_batches([requested_path])
             discovered.extend(layout.owner(path).parent
@@ -50,6 +54,10 @@ def _report_targets(paths: list[Path]) -> list[Path]:
 
 def _target_report(directory: Path, *, overrides: SceneOverrides | None,
                    intrinsics_source: str | None) -> dict:
+    task_root = (directory if not (directory / 'collection.yaml').is_file()
+                 and (directory.parent / 'collection.yaml').is_file() else None)
+    if task_root is not None:
+        directory = directory.parent
     scene_path = directory/'collection.yaml'
     selection = None
     declarations = []
@@ -70,8 +78,7 @@ def _target_report(directory: Path, *, overrides: SceneOverrides | None,
         kit = validate_kit(manifest['kit'])
         selection = batches.KitSelection(kit, resolve_arms(manifest, kit['arms']),
                                          manifest.get('intrinsics_source'))
-        # A frozen batch keeps the original collection declaration in the
-        # manifest so configuration reports remain reproducible.
+        # The snapshot points to the collection declaration; no raw video IO is needed.
         declared_scene = manifest.get('scene')
         if isinstance(declared_scene, str):
             candidate = (directory / declared_scene).resolve()
@@ -80,24 +87,40 @@ def _target_report(directory: Path, *, overrides: SceneOverrides | None,
                 scene_path = candidate
         declarations = [str(layout.manifest(directory, 'manifest.yaml'))]
     scene = read_scene(scene_path, document=scene_document, overrides=overrides)
-    from software.scene.pipeline.tasks.policy import task_modes
     _, modes = task_modes(read_yaml(scene_path))
-    if frozen_mapping:
+    task_arms = None
+    task_effective = {}
+    if task_root is not None:
+        task_configuration = layout.task_configuration(task_root)
+        task_arms = resolve_arms(task_configuration, selection.expected_arms)
+        map_version = (None if 'map_epoch' in task_configuration
+                       else task_configuration.get('map_version', map_version))
+        task_effective = dict(synchronization=read_synchronization(
+            task_configuration.get('synchronization'), task_arms),
+            task_map_request={key: task_configuration[key] for key in ('map_version', 'map_epoch')
+                              if key in task_configuration})
+        scene = replace(scene, reconstruction_mode=read_mode(
+            task_configuration.get('reconstruction'), default=scene.reconstruction_mode))
+        if scene.reconstruction_mode in ('poster_independent', 'poster_vio'):
+            scene = replace(scene, mode='shared_front')
+            map_version = None
+    if frozen_mapping and scene.reconstruction_mode not in ('poster_independent', 'poster_vio'):
         scene = replace(scene, mode='shared_front' if len(frozen_mapping) == 1 else 'dual',
                         reference_arm=manifest.get('mapping_reference_arm', next(iter(frozen_mapping))))
     return dict(
-        target=str(directory), sources=dict(
+        target=str(task_root or directory), scope='task' if task_root else 'batch', sources=dict(
             defaults=list(DEFAULT_SOURCES),
             scene=str(scene_path) if scene_path.is_file() else None, declarations=declarations,
             override=overrides.snapshot() if overrides else None),
         effective=dict(mode=scene.mode, reconstruction_mode=scene.reconstruction_mode,
+            **task_effective,
             task_reconstruction_modes=modes,
             reference_arm=scene.reference_arm,
             tag_layout=str(scene.tag_layout) if scene.tag_layout else None,
             environment_tag_policy=scene.environment_tag_policy,
             trajectory=scene.trajectory.snapshot(),
             parameters=nested_snapshot(asdict(scene.parameters))),
-        selection=(dict(kit=selection.kit, arms=list(selection.expected_arms),
+        selection=(dict(kit=selection.kit, arms=list(task_arms or selection.expected_arms),
                         intrinsics_source=selection.intrinsics_source,
                         map_version=map_version,
                         requested_intrinsics_source=intrinsics_source) if selection else None))

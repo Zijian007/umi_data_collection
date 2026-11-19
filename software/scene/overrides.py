@@ -24,7 +24,14 @@ class SceneOverrides:
         from software.infrastructure.file_store import read_yaml
         path = path.expanduser().resolve()
         declaration = read_yaml(path)
-        return cls.from_snapshot(dict(path=str(path), sha256=provenance.file_hash(path), values=declaration))
+        result = cls.from_snapshot(dict(path=str(path), sha256=provenance.file_hash(path), values=declaration))
+        from software.scene.parameter_schema import flatten
+        parameters = flatten(declaration.get('parameters', {}), label='parameters')
+        policy = {'tag_mapping_enabled', 'tag_mapping_scale_enabled', 'tag_fusion_enabled', 'tag_fusion_method'}
+        if (parameters.keys() & policy or 'tag_fusion_enabled' in
+                declaration.get('trajectory', {}).get('environment_tags', {})):
+            raise ValueError('海报用途开关和融合方式只允许在 collection.yaml.environment_poster 中配置')
+        return result
 
     @classmethod
     def from_snapshot(cls, snapshot: dict) -> SceneOverrides:

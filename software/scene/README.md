@@ -243,7 +243,7 @@ KIWI 方法来源和许可证见 [NOTICE.md](NOTICE.md)，运行时不依赖本�
 
 环境镜头 `umi-calib run <rear目录>` 的 A/B/D、恢复、验收和记录均复用 `calibration/workflow.py`。scene 只负责纯视觉建图、米制对齐和 IMU 融合，返回视频时间上的相机位置；板参考时间匹配和误差比较由标定模块统一计算。通过后生成的 `rear_calibration.json` 保持已有登记/消费接口，并绑定本次运行证据。
 
-`config/user.yaml` 的 `calibration.intrinsics_source` 先在 `inputs.batch.read_batch()` 中覆盖 kit 的来源选择，再由 `inputs.kit.validate_kit()` 将来源配置解析成具体工作/环境镜头版本。`camera_assets.select_camera()` 检查标定身份；factory 还核对 B 输入内参哈希、原片工厂射线一致性及真实引擎的前向 KB4 能力。来源、标定和引擎纳入复用身份，固定地图也须匹配；来源切换更新当前批次记录并清除不匹配的地图绑定；地图和任务成果保留各自输入与设备副本，不另存批次快照归档。配置格式与优先级见[套件说明](../../kits/README.md#同时保存实测与工厂来源)。
+`config/user.yaml` 的 `features.factory_intrinsics.enabled` 先在 `inputs.batch.read_batch()` 中覆盖 kit 的来源选择，再由 `inputs.kit.validate_kit()` 将来源配置解析成具体工作/环境镜头版本。`camera_assets.select_camera()` 检查标定身份；factory 还核对 B 输入内参哈希、原片工厂射线一致性及真实引擎的前向 KB4 能力。来源、标定和引擎纳入复用身份，固定地图也须匹配；来源切换更新当前批次记录并清除不匹配的地图绑定；地图和任务成果保留各自输入与设备副本，不另存批次快照归档。配置格式与优先级见[套件说明](../../kits/README.md#前后镜头独立选择来源)。
 
 ## 场景配置的唯一来源
 

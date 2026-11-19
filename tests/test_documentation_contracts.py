@@ -56,6 +56,18 @@ class DocumentationContractsTests(unittest.TestCase):
                         self.assertEqual(parsed.format, 'training')
         self.assertTrue(all(counts.values()))
 
+    def test_collection_examples_use_the_public_schema(self):
+        from ruamel.yaml import YAML
+        from software.scene.management.collection_schema import normalize_collection
+        count = 0
+        for name in ('config/README.md',):
+            examples = re.findall(r'<!-- check: collection -->\s*```yaml\n(.*?)```',
+                                  (ROOT / name).read_text(), re.S)
+            for source in examples:
+                normalize_collection(YAML(typ='safe').load(source))
+                count += 1
+        self.assertGreater(count, 0)
+
     def test_scene_call_chain_references_existing_functions(self):
         # 指南的明确阅读入口必须存在；解析 AST，不导入或启动求解器。
         references = {

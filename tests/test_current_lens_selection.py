@@ -17,7 +17,7 @@ from software.calibration import cli, devices, inventory
 from software.camera import calibration_source
 from software.scene.management.batch import snapshot as batches
 from software.scene.management import camera_assets
-from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs, scene as scene_inputs
+from software.scene.management.inputs import batch as batch_inputs
 from software.scene.pipeline.maps import lifecycle as map_lifecycle
 from software.infrastructure.file_store import write_json, write_yaml
 from software.trajectory.calibration import assets
@@ -173,7 +173,7 @@ class CurrentLensSelectionTests(unittest.TestCase):
         self.assertEqual(devices.activation_status(document)['state'], 'active')
 
     def test_map_rejects_changed_rear_and_allows_another_camera_source(self):
-        rear = self.rear('factory')
+        self.rear('factory')
         selected = kit_inputs.read_kit('rig')
         manifest = dict(inputs=dict(cameras=dict(right=dict(serial='camera', intrinsics_source='measured',
             calibration_version=self.measured['calibration_version'], assets=dict(rear='old-hash')))))
@@ -192,7 +192,7 @@ class CurrentLensSelectionTests(unittest.TestCase):
             data = deepcopy(original)
             data['arms']['right'].update(extra)
             write_yaml(self.kit_path, data)
-            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, '混用'):
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, '当前 kit'):
                 kit_inputs.read_kit('rig')
 
     def test_manual_version_commands_are_retired(self):

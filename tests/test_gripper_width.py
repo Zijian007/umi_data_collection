@@ -3,11 +3,8 @@ from software.scene.management.inputs import kit as kit_inputs
 from software.infrastructure import provenance as artifact_identity
 """main 宽度算法的场景集成：标定冻结、原片检测、时钟、缺失值与训练导出。"""
 from software.scene.management import camera_assets
-from software.scene.overrides import SceneOverrides
-import csv
 from dataclasses import replace
 from fractions import Fraction
-import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,24 +14,15 @@ from unittest.mock import patch
 import av
 import cv2
 import numpy as np
-from software.scene.result_io import pose_rows
 
 from software.camera import registry
-from software.dataset.export import build
-from software.dataset.reader import load_episode
 from software.gripper_width import calibration, pipeline, series
 from software.gripper_width.detection import markers as detection
 from software.scene.management.batch import snapshot as batches
-from software.scene.management import episodes
 from software.scene.management.inputs import (
-    kit as kit_inputs,
     batch as batch_inputs,
-    episode as episode_inputs,
-    scene as scene_inputs,
 )
-from software.scene import layout, workflow
 from software.infrastructure.file_store import write_json, write_yaml
-import test_dataset as dataset_fixtures
 import test_scene_management as registry_fixtures
 
 
@@ -218,14 +206,18 @@ class WidthKitTests(unittest.TestCase):
         for filename in ('../../escape.json', str(self.f.root / 'width.json'), '', 'left_width.yaml', None):
             with self.subTest(filename=filename):
                 self.arms['left']['gripper']['width'] = filename
-                write_yaml(self.width.parent / 'kit.yaml', dict(arms=self.arms))
+                write_yaml(self.width.parent / 'kit.yaml', dict(arms={
+                    arm: dict(serial=binding['serial'], intrinsics=dict(front='measured', rear='factory'),
+                              gripper=binding['gripper']) for arm, binding in self.arms.items()}))
                 with self.assertRaisesRegex(ValueError, 'gripper.width'):
                     kit_inputs.read_kit('rig')
         outside = self.f.root / 'outside.json'
         write_json(outside, measurement())
         (self.width.parent / 'linked.json').symlink_to(outside)
         self.arms['left']['gripper']['width'] = 'linked.json'
-        write_yaml(self.width.parent / 'kit.yaml', dict(arms=self.arms))
+        write_yaml(self.width.parent / 'kit.yaml', dict(arms={
+                    arm: dict(serial=binding['serial'], intrinsics=dict(front='measured', rear='factory'),
+                              gripper=binding['gripper']) for arm, binding in self.arms.items()}))
         with self.assertRaisesRegex(ValueError, '套件目录或共享 kits 目录内'):
             kit_inputs.read_kit('rig')
 

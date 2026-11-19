@@ -58,7 +58,7 @@ class CompactManifestTests(unittest.TestCase):
         self.assertEqual(stored_kit['description'], '设备备注，与采集无关')
         path = self.session()
         batch = read_yaml(path)
-        self.assertEqual(set(batch), {'schema_version', 'scene', 'kit', 'map_policy', 'resolved_mode'})
+        self.assertEqual(set(batch), {'schema_version', 'scene', 'kit', 'map_policy', 'resolved_mode', 'expected_arms'})
         self.assertEqual(batch['kit'], dict(id='rig', arms=kit['arms']))
         self.kit(('right',), description='已更换设备配置')
         self.assertEqual(batch_inputs.read_batch(path).expected_arms, ('left', 'right'))
@@ -88,7 +88,7 @@ class CompactManifestTests(unittest.TestCase):
         path = write_task(session, 'take_001', {'right': self.f.recording_paths['right']}, expected_arms=['right'])
         task_record = read_task_configuration(layout.owner(path))
         task_record['instruction'] = '把盒子放入托盘'
-        configuration_path = write_task_configuration(layout.owner(path), task_record)
+        write_task_configuration(layout.owner(path), task_record)
         data = read_yaml(path)
         self.assertEqual(read_task_configuration(layout.owner(path))['expected_arms'], ['right'])
         self.assertNotIn('synchronization', data)
@@ -118,7 +118,7 @@ class CompactManifestTests(unittest.TestCase):
         path = write_task(session, 'take_001', self.f.recording_paths)
         data = {}
         data['synchronization'] = dict(offsets_s=dict(left=0., right=-.12), confirmed=True, note='首尾已核验共同事件')
-        configuration_path = write_task_configuration(layout.owner(path), data)
+        write_task_configuration(layout.owner(path), data)
         task_record = read_task_configuration(layout.owner(path))
         task_record['instruction'] = '双手移动盒子'
         write_task_configuration(layout.owner(path), task_record)

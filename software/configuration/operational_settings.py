@@ -65,15 +65,16 @@ class Settings:
 
     def report(self) -> dict:
         return dict(values=dict(self.values), origins=dict(self.origins), sources=list(self.sources),
-                    precedence=['project_defaults', 'local_override', 'environment', 'command_line'])
+                    precedence=['project_defaults', 'local_override', 'environment', 'user_config', 'command_line'])
 
 
-def load(kind: str, *, directory: Path | None = None, environment=None, overrides=None) -> Settings:
+def load(kind: str, *, directory: Path | None = None, environment=None, overrides=None, origins=None) -> Settings:
     """显式加载用于启动/测试；常规消费者使用 current()，不在逐帧路径读文件。"""
     environment = os.environ if environment is None else environment
     directory = DIRECTORY if directory is None else directory
     if kind not in SCHEMA:
         raise ValueError(f'未知配置类别：{kind}')
+    override_origins = origins or {}
     values, origins, sources = {}, {}, []
     inherited = json.loads(environment.get(SNAPSHOT_ENV, '{}'))
     if kind in inherited:
@@ -102,7 +103,8 @@ def load(kind: str, *, directory: Path | None = None, environment=None, override
     if overrides:
         _validate(kind, overrides)
         values.update(overrides)
-        origins.update({key: f'command_line:--{key.replace("_", "-")}' for key in overrides})
+        origins.update({key: override_origins.get(key, f'command_line:--{key.replace("_", "-")}')
+                        for key in overrides})
     _validate(kind, values, complete=True)
     return Settings(MappingProxyType(values), MappingProxyType(origins), tuple(sources))
 
@@ -177,7 +179,7 @@ def summary(*, cores: str = '', workers=None, jobs: int = 1, calibration: bool =
              for p in current(group).sources if '.local.' in p]
     budget = (f'，标定线程预算 {resources["calibration_workers"]}' if calibration else
               f'，双手并行预算 {"满足" if resources["dual_arm_eligible"] else "不足或多任务串行分手"}')
-    return (f'配置：operations/runtime.yaml / operations/gripper_tag_detection.yaml'
+    return ('配置：operations/runtime.yaml / operations/gripper_tag_detection.yaml'
             + (f'，本机覆盖：{", ".join(local)}' if local else '')
             + f'；可用 CPU {resources["cpu_count"]}，任务并发 {jobs}，'
             f'解码线程 {resources["decode_threads"]}，OpenCV {resources["opencv_threads"]}'

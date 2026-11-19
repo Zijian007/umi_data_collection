@@ -10,6 +10,7 @@
 | 相机、套件、TCP 和夹爪资产 | `kits/<kit>/kit.yaml` 选择资产，`registry/` 保存测量资产 | 运行目录中的 `devices/` 是本次运行冻结的副本 |
 | 原始录像内容 | 批次目录中的 `.insv` 文件 | `episode.yaml`、`manifest.yaml` 只保存路径、设备身份和内容哈希 |
 | Organizer 原片交接 | 批次根目录 `import_manifest.json`（只追加的导入输入） | UMI 校验路径和 SHA256 后把新条目追加进 `.pipeline/map_epochs.yaml`，已登记条目不可改；它不是第二份用户配置 |
+| 用户偏好默认值 | `config/user.defaults.yaml` | `config/user.yaml` 只声明本机覆盖，旧用户格式不再作为当前入口 |
 | 默认算法参数 | `config/*.yaml` | `--expert-config` 只覆盖本次运行，不改写公共配置 |
 | 多地图采集顺序与 epoch 规划 | `.pipeline/map_epochs.yaml` | `run_report.json` 和 `episode.json` 记录最终选择及选择理由 |
 | 当前批次绑定的默认地图 | `.pipeline/manifest.yaml.map` | 地图目录中的 `manifest.json` 是该不可变版本的完整身份和资产清单 |
@@ -41,6 +42,14 @@ kit 绑定恢复默认，不查询当前 kit。任务 `episode.yaml` 仍只登�
 | 标定板标签 | 相机标定用 AprilGrid，不属于夹爪或环境海报 | `tag36h11` 等由标定板资产声明 | `hardware/calibration_targets/aprilgrid.json` 与 `umi-calib --tag-size-mm` | `software/calibration/`；只服务相机标定和轨迹初始化 |
 
 特别约束：`gripper.tag_distance` 的 ID 0/1 尺寸不能填环境海报的 100 mm，也不能填 AprilGrid 的 `--tag-size-mm`；环境海报布局不能作为夹爪测距资产；标定板尺寸不能参与任务标签融合。
+
+## 当前配置与历史快照
+
+当前 kit 只接受设备序列号、逐镜头 intrinsics 来源和 gripper 资产；固定 calibration/calibrations 字段仅用于历史资产快照的读取。当前专家覆盖不接收海报用途开关或融合方式，这些意图由 collection 唯一声明；旧结果中冻结的专家覆盖仍可按原值读取。
+
+`--show-config` 指定 take 时展示该 take 的使用手、后端与同步配置；来源报告区分 user.yaml 和 CLI。
+
+地图规划快照由 Organizer 交接或 plan-epochs 登记，不是手工配置文件。
 
 ## 地图选择规则
 

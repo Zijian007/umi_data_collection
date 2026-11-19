@@ -160,7 +160,7 @@ class ProcessingTests(unittest.TestCase):
         episodes.export([task_path], self.f.root/'exported')
         # A task path also resolves its owning frozen batch after source removal.
         report = effective_report([layout.metadata(self.batch / 'take_001', 'episode.yaml')])
-        self.assertEqual(report[0]['target'], str(self.batch))
+        self.assertEqual(report[0]['target'], str(self.batch / 'take_001'))
         self.assertEqual(report[0]['effective']['mode'], 'shared_front')
 
     def test_build_cli_uses_runtime_algorithm_overrides(self):
