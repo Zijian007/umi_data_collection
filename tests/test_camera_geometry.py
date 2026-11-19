@@ -32,8 +32,8 @@ class CameraGeometryTests(unittest.TestCase):
 
     def test_optical_parallel_tcp_keeps_fingertip_positions_and_changes_only_basis(self):
         root = Path(__file__).resolve().parents[1]
-        new = json.loads((root / 'hardware/grippers/archive/handheld_v1/002/t_tcp_camera.json').read_text())
-        old_path = root / 'hardware/grippers/archive/handheld_v1/001/t_tcp_camera.json'
+        new = json.loads((root / 'tests/fixtures/grippers/handheld_v1/002/t_tcp_camera.json').read_text())
+        old_path = root / 'tests/fixtures/grippers/handheld_v1/001/t_tcp_camera.json'
         old = json.loads(old_path.read_text())
         np.testing.assert_array_equal(new['T_camera_tcp']['t_m'], old['T_camera_tcp']['t_m'])
         positions = np.array([[3., -2., 1.], [-1., 4., .2], [2., 3., 4.]])
@@ -50,8 +50,8 @@ class CameraGeometryTests(unittest.TestCase):
 
     def test_robot_tcp_axes_keep_position_and_point_x_toward_image_left(self):
         root = Path(__file__).resolve().parents[1]
-        new = json.loads((root / 'hardware/grippers/archive/handheld_v1/003/t_tcp_camera.json').read_text())
-        legacy = json.loads((root / 'hardware/grippers/archive/handheld_v1/001/t_tcp_camera.json').read_text())
+        new = json.loads((root / 'tests/fixtures/grippers/handheld_v1/003/t_tcp_camera.json').read_text())
+        legacy = json.loads((root / 'tests/fixtures/grippers/handheld_v1/001/t_tcp_camera.json').read_text())
         extrinsic = camera_from_tcp(new)
         expected = Rotation.from_euler('x', 21.5, degrees=True).as_matrix() @ np.diag([-1., -1., 1.])
         np.testing.assert_allclose(extrinsic[:3, :3], expected, atol=1e-8)
@@ -83,11 +83,11 @@ class CameraGeometryTests(unittest.TestCase):
         from software.trajectory.algorithms import postprocess
 
         root = Path(__file__).resolve().parents[1]
-        source = root / 'hardware/grippers/archive/handheld_v1/003/t_tcp_camera.json'
+        source = root / 'tests/fixtures/grippers/handheld_v1/003/t_tcp_camera.json'
         new = json.loads(source.read_text())
         sources = (
-            (root / 'hardware/grippers/archive/handheld_v1/001/t_tcp_camera.json', 'asset_defined'),
-            (root / 'hardware/grippers/archive/handheld_v1/002/t_tcp_camera.json', 'front_optical_parallel_v1'),
+            (root / 'tests/fixtures/grippers/handheld_v1/001/t_tcp_camera.json', 'asset_defined'),
+            (root / 'tests/fixtures/grippers/handheld_v1/002/t_tcp_camera.json', 'front_optical_parallel_v1'),
             (source, 'genie_omnipicker_axes_v1'),
         )
         with tempfile.TemporaryDirectory() as temporary:

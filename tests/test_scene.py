@@ -604,7 +604,7 @@ class SceneWorkflowTests(unittest.TestCase):
         expert = self.root / 'tcp-expert.yaml'
         write_yaml(expert, dict(parameters=dict(diagnostics=dict(export_auxiliary_trajectories=True))))
         self.scene_overrides = SceneOverrides.load(expert)
-        source = Path(__file__).resolve().parents[1] / 'hardware/grippers/archive/handheld_v1/003/t_tcp_camera.json'
+        source = Path(__file__).resolve().parents[1] / 'tests/fixtures/grippers/handheld_v1/003/t_tcp_camera.json'
         for camera in self.cameras.values():
             camera.files['tcp'].write_bytes(source.read_bytes())
         self.build_scene()
