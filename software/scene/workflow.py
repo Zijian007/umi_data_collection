@@ -240,6 +240,13 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
     video_offsets_s = episode.offsets()
     name = episode.root.name
     requested_map_version = _requested_map_version(episode, map_version)
+    console.write(
+        f'任务开始：手={"、".join(episode.expected_arms)}；'
+        f'后端={episode.scene.reconstruction_mode}；'
+        f'同步={episode.synchronization.get("method", "unknown")}',
+        recording=name,
+        state='开始',
+    )
 
     # --- 阶段 0: 原片录像预检 (Preflight Check) ---
     check_report = recording_checks.check_episode(episode) if check_recordings else None
@@ -273,6 +280,16 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
                 map_selection = estimation.MapSelection.without_map(fallback_record(error))
                 map_dir, map_manifest = None, None
         input_identity = episode_inputs(episode, cameras, map_manifest)
+
+        map_text = (f'{map_manifest["version"]}（{map_manifest["frame_id"]}）'
+                    if map_manifest is not None else '无预建场景地图')
+        console.write(
+            f'输入已固定：地图={map_text}；'
+            f'镜头={", ".join(f"{arm}:{camera.serial}" for arm, camera in cameras.items())}；'
+            f'结果={episode.output}',
+            recording=name,
+            state='就绪',
+        )
 
         if dry_run:
             return dict(status='planned', inputs=input_identity, output=str(episode.output),
@@ -319,6 +336,18 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             arm_cpu_sets = cpu_budget.arm_cores(tuple(episode.recordings), cores, parallel=parallel_arms)
             prepared_recordings = recording_preparation.prepare_episode_recordings(episode, cameras, video_offsets_s,
                 work_dir=work_dir, cores=cores, arm_cores=arm_cpu_sets, cache_audit=cache_audit)
+            common_start = max(recording.video_times_s[0] + video_offsets_s[arm]
+                               for arm, recording in prepared_recordings.items())
+            common_end = min(recording.video_times_s[-1] + video_offsets_s[arm]
+                             for arm, recording in prepared_recordings.items())
+            run_console.write(
+                f'录像准备完成：' + '；'.join(
+                    f'{arm} {len(recording.video_times_s)} 帧/{recording.video_times_s[-1] - recording.video_times_s[0]:.2f}s'
+                    for arm, recording in prepared_recordings.items())
+                + f'；共同时间 {common_start:.3f}–{common_end:.3f}s',
+                recording=name,
+                state='完成',
+            )
             # Step 2: 各手独立求解轨迹、夹爪测量与共享海报融合
             audit.event('stage_finished', stage='prepare_recordings')
             audit.event('stage_started', stage='estimate_tracks')
@@ -327,6 +356,19 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             arm_execution = estimation.execute(task_inputs, map_selection)
             tracks = arm_execution.tracks
             coordinate_record = arm_execution.coordinate_record
+            backend_names = sorted({
+                track.metadata.get('fusion', {}).get('reconstruction_backend')
+                for track in tracks.values()
+                if track.metadata.get('fusion', {}).get('reconstruction_backend')
+            })
+            backend_text = ','.join(backend_names) if backend_names else '详见 reconstruction.json'
+            fallback_text = '；发生自动回退' if coordinate_record.get('fallback') else ''
+            run_console.write(
+                f'轨迹求解完成：坐标={coordinate_record.get("frame_id", "unknown")}；'
+                f'实际后端={backend_text}；手={", ".join(sorted(tracks))}{fallback_text}',
+                recording=name,
+                state='完成',
+            )
             # 局部回退结果不引用共享地图。
             display_map_path = (None if is_local_scene(coordinate_record) or is_poster_scene(coordinate_record)
                                 else map_dir / 'map.json')
@@ -360,6 +402,10 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             is_local = publication.is_local
             output = publication.output
             audit.event('stage_finished', stage='publish', output=output)
+            completion_message = (
+                f'任务完成：状态={"局部成功" if is_local else "成功"}；输出={output}；'
+                f'共同时间={common_interval_s[0]:.3f}–{common_interval_s[1]:.3f}s')
+            run_console.write(completion_message, recording=name, state='完成')
             audit.finish('ok', output=output)
         except Exception as error:
             retained = record_failure(episode, run_dir, str(error), identity=input_identity, error=error)

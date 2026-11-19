@@ -72,6 +72,16 @@ def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '
         try:
             imported = _prepare_for_run(batch, dry_run=dry_run,
                                         intrinsics_source=intrinsics_source, overrides=overrides)
+            registration_status = imported.get('status', 'unknown')
+            workflow.console.write(
+                f'批次 {batch.name}：原片扫描 {imported.get("total_scanned", 0)} 段；'
+                f'任务 {len(imported.get("episodes", []))} 个；'
+                f'待处理 {len(imported.get("pending", []))}；'
+                f'忽略 {len(imported.get("ignored", []))}；'
+                f'错误 {len(imported.get("errors", []))}',
+                recording=batch.name,
+                state='预览' if dry_run else ('完成' if registration_status == 'ok' else registration_status),
+            )
             registered = episodes.episode_paths([batch])
             if dry_run:
                 for item in imported['episodes']:
@@ -128,6 +138,11 @@ def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '
     ready.extend(direct)
     ready = list(dict.fromkeys(ready))
     if ready:
+        workflow.console.write(
+            f'处理计划：{len(ready)} 个任务；任务并发 {jobs}；'
+            f'原片预检={"启用" if check_recordings else "跳过"}',
+            state='开始',
+        )
         summaries.extend(workflow.run_episodes(ready, jobs=jobs, force=force, cores=cores, dry_run=dry_run,
             check_recordings=check_recordings, map_version=map_version,
             map_epoch=map_epoch,
