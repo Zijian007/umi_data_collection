@@ -498,6 +498,7 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
         holdout = dict(status=('not_prepared' if item.tag_holdout_mask is None else
                               'disabled' if not item.scene_parameters.poster_vio_holdout_stride else 'insufficient_evidence'),
             independent_frames=frames, observations=int(np.count_nonzero(held)),
+            invalid_depth_observations=0,
             initialization_and_graph_excluded=item.tag_holdout_mask is not None,
             independent_physical_accuracy=False,
             maximum_rms_px=item.scene_parameters.poster_vio_maximum_holdout_rms_px)
@@ -508,7 +509,9 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
             if not np.isfinite(prediction).all() or not np.isfinite(points).all():
                 raise ValueError(f'{item.arm} poster_vio 留出投影出现非有限值')
             metrics = residual_metrics(prediction, item.pixels[held])
-            failed = bool(np.any(points[:, :, 2] <= 0)
+            invalid_depth_observations = int(np.count_nonzero(points[:, :, 2] <= 0))
+            holdout['invalid_depth_observations'] = invalid_depth_observations
+            failed = bool(invalid_depth_observations
                           or metrics['rms_px'] > item.scene_parameters.poster_vio_maximum_holdout_rms_px)
             holdout.update(metrics=metrics, imu_times_s=np.unique(item.times_s[item.tag_indices[held]]).tolist(),
                            status='rejected' if failed else 'passed' if frames >= 2 else 'insufficient_evidence')
