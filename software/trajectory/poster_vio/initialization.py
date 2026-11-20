@@ -40,8 +40,8 @@ def select_observations(detections, board, measured, parameters, *, start_s=None
     return node_times, tag_indices.astype(int), ids, points, pixels, observation_times
 
 
-def _solve_frame(points, pixels, model, maximum_rms_px):
-    """Solve one planar frame in normalized KB4 rays and choose a valid pose."""
+def _solve_frame_candidates(points, pixels, model, maximum_rms_px):
+    """Return valid IPPE candidates for one planar frame."""
     rays = model.unproject(np.asarray(pixels, dtype=float))
     if not np.isfinite(rays).all() or np.any(rays[:, 2] <= np.cos(np.deg2rad(85))):
         raise ValueError('poster_vio 海报观测不在相机前向有效视野内')
@@ -75,6 +75,12 @@ def _solve_frame(points, pixels, model, maximum_rms_px):
     if not candidates:
         raise ValueError('poster_vio 海报 PnP 候选均为非正深度')
     candidates.sort(key=lambda item: item[0])
+    return candidates
+
+
+def _solve_frame(points, pixels, model, maximum_rms_px):
+    """Solve one planar frame and reject unresolved planar ambiguity."""
+    candidates = _solve_frame_candidates(points, pixels, model, maximum_rms_px)
     best_rms, best_pose = candidates[0]
     if best_rms > maximum_rms_px:
         raise ValueError(f'poster_vio 海报 PnP 重投影误差过大：{best_rms:.3f} px')
@@ -117,7 +123,8 @@ def seed_poses(node_times, tag_indices, points, pixels, camera_from_imu, model,
     return poses, np.asarray(frame_rms, dtype=float)
 
 
-def robust_seed_poses(times, tag_indices, points, pixels, camera_from_imu, model, parameters):
+def robust_seed_poses(times, tag_indices, points, pixels, camera_from_imu, model, parameters,
+                      *, imu=None, max_rotation_step_deg=None):
     """Whole-tag board consensus with a single cumulative initialization budget.
 
     Hypotheses use fixed board coordinates, never a consensus of moving camera
@@ -127,36 +134,40 @@ def robust_seed_poses(times, tag_indices, points, pixels, camera_from_imu, model
     times, tag_indices, points, pixels = map(np.asarray, (times, tag_indices, points, pixels))
     keep = np.zeros(len(points), dtype=bool)
     seeds, seed_times, rms_values, removed = [], [], [], []
+    # A single square tag has a planar two-solution ambiguity. It can remain
+    # in the raw observation stream, but it must never seed a moving camera.
+    minimum_seed_tags = 2
+    rejection_counts = {}
+    imu = None if imu is None else np.asarray(imu, dtype=float)
+    if imu is not None and (imu.ndim != 2 or imu.shape[1] < 4 or not np.isfinite(imu).all()
+                            or len(imu) < 2 or np.any(np.diff(imu[:, 0]) <= 0)):
+        raise ValueError('poster_vio 初始化 IMU 时间轴无效')
+    previous_pose = None
+    previous_time = None
+
+    def continuity_error(camera_board_pose, time):
+        if imu is None or previous_pose is None or previous_time is None:
+            return 0.0
+        if time <= previous_time:
+            return float('inf')
+        delta = integrate_gyro_rotation(imu[:, 0], imu[:, 1:4], np.zeros(3), previous_time, time)
+        predicted = previous_pose[:3, :3] @ delta
+        pose = np.linalg.inv(camera_board_pose) @ camera_from_imu
+        return float(np.degrees(Rotation.from_matrix(
+            predicted.T @ pose[:3, :3]).magnitude()))
+
+    max_rotation_step_deg = (None if max_rotation_step_deg is None
+                              else float(max_rotation_step_deg))
     for frame, time in enumerate(times):
         indices = np.flatnonzero(tag_indices == frame)
         local_points, local_pixels = points[indices], pixels[indices]
         rays = model.unproject(local_pixels.reshape(-1, 2)).reshape(-1, 4, 3)
         usable = np.isfinite(rays).all(axis=(1, 2)) & (rays[:, :, 2] > np.cos(np.deg2rad(85))).all(axis=1)
         valid_indices = np.flatnonzero(usable)
-        # A full-board solution that already passes the planar ambiguity check
-        # and every complete-tag gate needs no subset search on a clean frame.
-        if len(indices) and usable.all():
-            try:
-                pose, rms = _solve_frame(local_points.reshape(-1, 3), local_pixels.reshape(-1, 2),
-                                        model, parameters.tag_maximum_reprojection_rms_px)
-                camera_points = local_points @ pose[:3, :3].T + pose[:3, 3]
-                predicted = model.project(camera_points.reshape(-1, 3)).reshape(-1, 4, 2)
-                if not np.isfinite(predicted).all():
-                    raise ValueError('poster_vio PnP 投影产生非有限像素')
-                with np.errstate(over='ignore', invalid='ignore'):
-                    errors = np.linalg.norm(predicted - local_pixels, axis=2)
-                if not np.isfinite(errors).all():
-                    raise ValueError('poster_vio PnP 残差非有限')
-                if np.all(np.sqrt(np.mean(errors ** 2, axis=1)) <= cull_threshold(parameters)):
-                    keep[indices] = True
-                    seeds.append(np.linalg.inv(pose) @ camera_from_imu)
-                    seed_times.append(float(time))
-                    rms_values.append(rms)
-                    continue
-            except ValueError:
-                pass
-        # Full board + individual tags + distributed pairs, with deterministic cap.
-        groups = [valid_indices] + [np.array([i]) for i in valid_indices]
+        # Full board + distributed tag pairs, with deterministic cap. Single
+        # tags are deliberately excluded: their planar PnP solution is not a
+        # reliable camera-pose seed.
+        groups = [valid_indices] if len(valid_indices) >= minimum_seed_tags else []
         groups += [np.array([valid_indices[i], valid_indices[j]]) for i in range(len(valid_indices))
                    for j in range(i + 1, len(valid_indices))]
         if len(groups) > parameters.poster_vio_initialization_maximum_hypotheses:
@@ -165,54 +176,99 @@ def robust_seed_poses(times, tag_indices, points, pixels, camera_from_imu, model
             groups = [groups[i] for i in chosen]
         candidates = []
         for group in groups:
-            if not len(group):
+            if len(group) < minimum_seed_tags:
                 continue
             try:
-                pose, _ = _solve_frame(local_points[group].reshape(-1, 3), local_pixels[group].reshape(-1, 2),
-                                        model, parameters.tag_maximum_reprojection_rms_px)
+                group_candidates = _solve_frame_candidates(
+                    local_points[group].reshape(-1, 3), local_pixels[group].reshape(-1, 2),
+                    model, parameters.tag_maximum_reprojection_rms_px)
             except ValueError:
                 continue
-            camera_points = local_points @ pose[:3, :3].T + pose[:3, 3]
-            predicted = model.project(camera_points.reshape(-1, 3)).reshape(-1, 4, 2)
-            if not np.isfinite(predicted).all():
-                continue
-            with np.errstate(over='ignore', invalid='ignore'):
-                errors = np.sqrt(np.mean(np.sum((predicted - local_pixels) ** 2, axis=2), axis=1))
-            inliers = usable & np.isfinite(errors) & (errors <= cull_threshold(parameters))
-            inliers &= (camera_points[:, :, 2] > 0).all(axis=1)
-            count = int(inliers.sum())
-            if count * 2 <= len(indices):
-                continue
-            candidates.append((count, float(np.sqrt(np.mean(errors[inliers] ** 2))), pose, inliers))
-        candidates.sort(key=lambda row: (-row[0], row[1]))
-        reason = 'no_majority'
+            for _, pose in group_candidates:
+                camera_points = local_points @ pose[:3, :3].T + pose[:3, 3]
+                predicted = model.project(camera_points.reshape(-1, 3)).reshape(-1, 4, 2)
+                if not np.isfinite(predicted).all():
+                    continue
+                with np.errstate(over='ignore', invalid='ignore'):
+                    errors = np.sqrt(np.mean(np.sum((predicted - local_pixels) ** 2, axis=2), axis=1))
+                inliers = usable & np.isfinite(errors) & (errors <= cull_threshold(parameters))
+                inliers &= (camera_points[:, :, 2] > 0).all(axis=1)
+                count = int(inliers.sum())
+                if count * 2 <= len(indices):
+                    continue
+                local_rms = float(np.sqrt(np.mean(errors[inliers] ** 2))) if np.any(inliers) else float('inf')
+                candidates.append((count, local_rms, pose, inliers, len(group)))
+        candidates.sort(key=lambda row: (-row[0], -row[4], row[1]))
+        reason = 'insufficient_tags' if len(valid_indices) < minimum_seed_tags else 'no_majority'
         if candidates:
-            count, _, pose, inliers = candidates[0]
-            ambiguous = any(other[0] == count and other[1] <= candidates[0][1] + .1
+            # Prefer a candidate that is both a board majority and continuous
+            # with the previous accepted pose/IMU prediction. A lower pixel
+            # RMS alone must not select the opposite IPPE branch.
+            continuity = [continuity_error(row[2], float(time)) for row in candidates]
+            viable = [row for row, error in zip(candidates, continuity)
+                      if max_rotation_step_deg is None or error <= max_rotation_step_deg]
+            if not viable:
+                reason = 'imu_discontinuity'
+                viable = []
+            if viable:
+                candidates = viable
+                candidates.sort(key=lambda row: (-row[0], -row[4],
+                                                  continuity_error(row[2], float(time)), row[1]))
+                count, _, pose, inliers, _ = candidates[0]
+            else:
+                count = 0
+                pose = None
+                inliers = np.zeros(len(indices), dtype=bool)
+            ambiguous = pose is not None and any(other[0] == count and other[1] <= candidates[0][1] + .1
                 and (Rotation.from_matrix(pose[:3, :3].T @ other[2][:3, :3]).magnitude() > np.deg2rad(5)
-                     or np.linalg.norm(pose[:3, 3] - other[2][:3, 3]) > .05) for other in candidates[1:])
-            if ambiguous:
+                     or np.linalg.norm(pose[:3, 3] - other[2][:3, 3]) > .05)
+                for other in candidates[1:])
+            if pose is None:
+                pass
+            elif ambiguous:
                 reason = 'ambiguous_board_pose'
             else:
                 try:
-                    pose, rms = _solve_frame(local_points[inliers].reshape(-1, 3),
-                        local_pixels[inliers].reshape(-1, 2), model, parameters.tag_maximum_reprojection_rms_px)
+                    camera_points = local_points[inliers] @ pose[:3, :3].T + pose[:3, 3]
+                    predicted = model.project(camera_points.reshape(-1, 3)).reshape(-1, 4, 2)
+                    residual = predicted - local_pixels[inliers]
+                    rms = float(np.sqrt(np.mean(np.sum(residual ** 2, axis=2))))
+                    if not np.isfinite(rms) or rms > parameters.tag_maximum_reprojection_rms_px:
+                        raise ValueError('PnP 共识内点重投影误差超限')
                     keep[indices[inliers]] = True
                     seeds.append(np.linalg.inv(pose) @ camera_from_imu)
                     seed_times.append(float(time))
                     rms_values.append(rms)
                     reason = 'board_consensus_outlier'
+                    previous_pose = seeds[-1]
+                    previous_time = float(time)
                 except ValueError:
                     reason = 'ambiguous_or_high_residual'
         for index in indices[~keep[indices]]:
             removed.append(dict(observation=int(index), time_s=float(time), reason=reason))
+        if reason != 'board_consensus_outlier':
+            rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
     decision = cull_decision(~keep, tag_indices, times[tag_indices], parameters,
                              parameters.poster_vio_minimum_tag_frames)
     retained_times = np.asarray(seed_times)
-    if (np.any(~keep) and not decision['allowed'] or len(retained_times) < parameters.poster_vio_minimum_tag_frames
-            or np.ptp(retained_times) < parameters.poster_vio_minimum_time_span_s
-            or np.max(np.diff(retained_times)) > parameters.poster_vio_maximum_observation_gap_s):
-        raise ValueError(f'poster_vio 鲁棒初始化预算、共识或时间覆盖不足：{decision["reason"]}')
+    failure_reasons = []
+    if np.any(~keep) and not decision['allowed']:
+        failure_reasons.append(f'观测剔除预算/覆盖={decision["reason"]}')
+    if len(retained_times) < parameters.poster_vio_minimum_tag_frames:
+        failure_reasons.append(f'有效标签时刻不足({len(retained_times)}<{parameters.poster_vio_minimum_tag_frames})')
+    if len(retained_times) and np.ptp(retained_times) < parameters.poster_vio_minimum_time_span_s:
+        failure_reasons.append(f'时间跨度不足({np.ptp(retained_times):.3f}s<{parameters.poster_vio_minimum_time_span_s:.3f}s)')
+    if len(retained_times) > 1:
+        max_gap = float(np.max(np.diff(retained_times)))
+        if max_gap > parameters.poster_vio_maximum_observation_gap_s:
+            failure_reasons.append(
+                f'最大海报观测缺口{max_gap:.3f}s>{parameters.poster_vio_maximum_observation_gap_s:.3f}s')
+    if rejection_counts.get('imu_discontinuity'):
+        failure_reasons.append(f'PnP/IMU 连续性拒绝{rejection_counts["imu_discontinuity"]}个观测时刻')
+    if rejection_counts.get('insufficient_tags'):
+        failure_reasons.append(f'单帧标签不足{rejection_counts["insufficient_tags"]}个观测时刻')
+    if failure_reasons:
+        raise ValueError('poster_vio 鲁棒初始化失败：' + '；'.join(failure_reasons))
     return retained_times, np.asarray(seeds), np.asarray(rms_values), keep, dict(
         status='culled' if np.any(~keep) else 'clean',
         budget=decision, removed=removed, retained_observations=int(keep.sum()))

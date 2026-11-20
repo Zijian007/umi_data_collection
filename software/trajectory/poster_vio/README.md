@@ -51,7 +51,7 @@ parameters:
 `scene.pipeline.tasks.estimation` → `backends.poster_vio.execute_task()` → `poster_vio_inputs.prepare_task_inputs()` → `solve_joint_poster_imu()` → 公共 TCP、测量和原子发布。
 
 - `models.py` / `contract.py`：每次 ID 观测的 IMU 时刻、冻结资产、自然点轨迹、任务坐标和结果契约。
-- `initialization.py`：逐帧整板/标签子集的 KB4 PnP 假设、完整标签多数一致性、平面多解和累计剔除预算；先按保留标签旋转与陀螺仪积分拟合零偏，再估计速度、加速度零偏、海报坐标重力。种子只作初值。
+- `initialization.py`：逐帧整板/多标签子集的 KB4 PnP 假设、完整标签多数一致性、平面多解、跨帧/IMU 旋转连续性和累计剔除预算；单个标签不能作为位姿种子。先按保留标签旋转与陀螺仪积分拟合零偏，再估计速度、加速度零偏、海报坐标重力。种子只作初值。
 - `frontend.py`：顺序解码一次原始 INSV，同时处理 front/rear 各自的 1440 标定裁切；前后向光流检查、补点、长度/数量上限、视差和正深度三角化。front 使用冻结遮手图，rear 排除已检测的标签区域。不把缓存帧号或像素吸附到另一个镜头。
 - `base_tags.py`：刚性安装变量、自身与跨相机观测、精确异步时间节点和质量证据。
 - `solver.py`：两手分别持有位姿、速度和零偏，自然点按“手臂 + 镜头 + 特征 ID”隔离；共享海报规范和初始化后的重力。两镜头像素连接同一组 IMU 状态，内外参和时差固定；先短求解、后验剔除后热启动，保持物理时间对应的状态键不变，优先消元三维点。

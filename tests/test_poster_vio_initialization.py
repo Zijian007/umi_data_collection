@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from software.trajectory.poster_vio.initialization import select_observations, seed_poses
+from software.trajectory.poster_vio.initialization import select_observations, seed_poses, robust_seed_poses
 from software.trajectory.poster_vio.initialization import align_inertial
 from software.trajectory.poster_vio.frontend import triangulate_track
 from software.vision.poster.geometry import camera_model
@@ -37,6 +37,21 @@ class PosterVioInitializationTests(unittest.TestCase):
             seed_poses(node_times[:2], tag_indices[tag_indices < 2],
                        points[tag_indices < 2], pixels[tag_indices < 2],
                        extrinsics['rear'], camera_model(measured))
+
+    def test_robust_initializer_never_seeds_from_single_tag_frames(self):
+        from test_poster_fusion import fixture
+
+        _, _, _, _, extrinsics, _, parameters, detections, board, measured, _, _ = fixture()
+        node_times, tag_indices, _, points, pixels, _ = select_observations(
+            detections, board, measured, parameters)
+        # Keep exactly one tag observation per time to model a weak
+        # reappearance after an occlusion; this must remain a gap.
+        selected = np.array([np.flatnonzero(tag_indices == frame)[0]
+                             for frame in range(len(node_times))])
+        with self.assertRaisesRegex(ValueError, '单帧标签不足'):
+            robust_seed_poses(
+                node_times, np.arange(len(node_times)), points[selected], pixels[selected],
+                extrinsics['rear'], camera_model(measured), parameters)
 
     def test_triangulation_uses_task_poster_seed_without_map_state(self):
         from test_poster_fusion import fixture

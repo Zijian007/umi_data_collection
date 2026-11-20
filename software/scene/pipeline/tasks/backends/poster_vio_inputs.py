@@ -160,7 +160,9 @@ def prepare_task_inputs(inputs: TaskInputs):
         holdout = select_holdout(np.round(raw_times, 9), scene.parameters)
         training_times, training_indices = np.unique(np.round(raw_times[~holdout], 9), return_inverse=True)
         training_times, tag_seeds, pnp_rms, initialization_keep, initialization = robust_seed_poses(
-            training_times, training_indices, points[~holdout], pixels[~holdout], ext, model, scene.parameters)
+            training_times, training_indices, points[~holdout], pixels[~holdout], ext, model, scene.parameters,
+            imu=recording.imu,
+            max_rotation_step_deg=scene.trajectory.values.fusion.split_rotation_deg)
         initialization_mask = np.ones(len(points), dtype=bool)
         initialization_mask[~holdout] = initialization_keep
         for record in initialization['removed']:
