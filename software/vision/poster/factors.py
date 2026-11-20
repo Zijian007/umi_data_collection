@@ -8,6 +8,9 @@ from software.vision.poster.quality import corner_sigma_px
 
 
 _MIN_NATURAL_DEPTH_M = 1e-3
+_TAG_DEPTH_BARRIER_Z_MIN_M = 1e-3
+_TAG_DEPTH_BARRIER_TAU_M = 2e-4
+_TAG_DEPTH_BARRIER_SIGMA_M = 5e-3
 
 
 def skew(point):
@@ -162,6 +165,77 @@ def add_tag_factors(graph, *, pose_key, board_key, rear_key, base_ext, model, po
 
             keys = [pose_key(int(tag_indices[rows[0]])), board_key] + ([rear_key] if enabled else [])
             graph.add(gtsam.CustomFactor(noise, keys, error))
+
+
+def _depth_barrier(z):
+    """Smooth one-sided penalty for a tag corner approaching the camera plane."""
+    deficit = (_TAG_DEPTH_BARRIER_Z_MIN_M - np.asarray(z, dtype=float)) / _TAG_DEPTH_BARRIER_TAU_M
+    active = deficit > -8.0
+    residual = np.zeros_like(deficit)
+    derivative = np.zeros_like(deficit)
+    if np.any(active):
+        value = deficit[active]
+        residual[active] = _TAG_DEPTH_BARRIER_TAU_M * np.logaddexp(0.0, value)
+        derivative[active] = -1.0 / (1.0 + np.exp(-value))
+    return residual / _TAG_DEPTH_BARRIER_SIGMA_M, derivative / _TAG_DEPTH_BARRIER_SIGMA_M
+
+
+def depth_barrier_and_jacobians(body, board, T_camera_imu, points):
+    """Depth-only residual and Pose3 Jacobians for fixed-board tag corners."""
+    world = transform(board, points)
+    in_body = transform(np.linalg.inv(body), world)
+    in_camera = transform(T_camera_imu, in_body)
+    camera_rotation = T_camera_imu[:3, :3]
+    board_rotation = body[:3, :3].T @ board[:3, :3]
+    count = len(points)
+    skew_body = np.zeros((count, 3, 3))
+    skew_body[:, 0, 1] = -in_body[:, 2]
+    skew_body[:, 0, 2] = in_body[:, 1]
+    skew_body[:, 1, 0] = in_body[:, 2]
+    skew_body[:, 1, 2] = -in_body[:, 0]
+    skew_body[:, 2, 0] = -in_body[:, 1]
+    skew_body[:, 2, 1] = in_body[:, 0]
+    skew_board = np.zeros((count, 3, 3))
+    skew_board[:, 0, 1] = -points[:, 2]
+    skew_board[:, 0, 2] = points[:, 1]
+    skew_board[:, 1, 0] = points[:, 2]
+    skew_board[:, 1, 2] = -points[:, 0]
+    skew_board[:, 2, 0] = -points[:, 1]
+    skew_board[:, 2, 1] = points[:, 0]
+    identity = np.broadcast_to(np.eye(3), (count, 3, 3))
+    body_twist = np.concatenate((skew_body, -identity), axis=2)
+    board_twist = np.concatenate((-skew_board, identity), axis=2)
+    camera_depth = np.array([0., 0., 1.]) @ camera_rotation
+    depth_body = np.einsum('j,njk->nk', camera_depth, body_twist)
+    board_rotation_twist = np.einsum('ij,njk->nik', board_rotation, board_twist)
+    depth_board = np.einsum('j,njk->nk', camera_depth, board_rotation_twist)
+    residual, derivative = _depth_barrier(in_camera[:, 2])
+    return residual, derivative[:, None] * depth_body, derivative[:, None] * depth_board
+
+
+def add_tag_depth_barrier_factors(graph, *, pose_key, board_key, base_ext, points, tag_indices):
+    """Add depth-only factors for training tag rows without using held pixels."""
+    import gtsam
+
+    rows_by_node = {}
+    for row, node in enumerate(tag_indices):
+        rows_by_node.setdefault(int(node), []).append(row)
+    for node_rows in rows_by_node.values():
+        rows = tuple(node_rows)
+        row_indices = np.asarray(rows, dtype=int)
+        noise = gtsam.noiseModel.Isotropic.Sigma(len(rows) * 4, 1.0)
+
+        def error(factor, state, jacobians, row_indices=row_indices):
+            body = state.atPose3(factor.keys()[0]).matrix()
+            board = state.atPose3(factor.keys()[1]).matrix()
+            residuals, body_jacobians, board_jacobians = depth_barrier_and_jacobians(
+                body, board, base_ext, points[row_indices].reshape(-1, 3))
+            if jacobians is not None:
+                jacobians[0] = body_jacobians
+                jacobians[1] = board_jacobians
+            return residuals
+
+        graph.add(gtsam.CustomFactor(noise, [pose_key(int(tag_indices[rows[0]])), board_key], error))
 
 
 def base_tag_corners_m(size_m):

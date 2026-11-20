@@ -260,6 +260,12 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
             graph, pose_key=keys.pose, board_key=board_key, rear_key=None,
             base_ext=item.T_cam_imu, model=item.camera_model, points=item.board_points_m,
             pixels=item.pixels, tag_indices=item.tag_indices, parameters=fixed_parameters)
+        training_tags = (np.ones(len(item.pixels), dtype=bool)
+                         if item.tag_holdout_mask is None else ~np.asarray(item.tag_holdout_mask))
+        if np.any(training_tags):
+            factors.add_tag_depth_barrier_factors(
+                graph, pose_key=keys.pose, board_key=board_key, base_ext=item.T_cam_imu,
+                points=item.board_points_m[training_tags], tag_indices=item.tag_indices[training_tags])
         _add_holdout_pose_priors(graph, keys, item)
         for camera_name in ('rear', 'front'):
             tracks = tuple(track for track in item.natural_tracks if track.get('camera', 'rear') == camera_name)
@@ -357,8 +363,20 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
             board_pose, poses[item.tag_indices] @ np.linalg.inv(item.T_cam_imu),
             item.board_points_m, item.camera_model)
         metrics = residual_metrics(prediction, item.pixels)
-        if np.any(camera_points[:, :, 2] <= 0):
-            raise ValueError(f'{item.arm} poster_vio 优化后标签出现非正深度')
+        tag_depths = camera_points[:, :, 2]
+        invalid_tag_depths = tag_depths <= 0
+        tag_depth_diagnostics = dict(
+            threshold_m=0.0,
+            invalid_depth_observations=int(np.count_nonzero(invalid_tag_depths)),
+            min_m=float(np.min(tag_depths)), p01_m=float(np.percentile(tag_depths, 1)),
+            median_m=float(np.median(tag_depths)), max_m=float(np.max(tag_depths)),
+            positive_fraction=float(np.mean(tag_depths > 0)),
+            invalid_details=[dict(observation=int(row), node=int(item.tag_indices[row]),
+                imu_time_s=float(item.times_s[item.tag_indices[row]]),
+                invalid_corner_indices=np.flatnonzero(invalid_tag_depths[row]).astype(int).tolist(),
+                depths_m=np.asarray(tag_depths[row], dtype=float).tolist())
+                for row in np.flatnonzero(np.any(invalid_tag_depths, axis=1))])
+        rejected |= tag_depth_diagnostics['invalid_depth_observations'] > 0
         rms_values.append(metrics['rms_px'])
         rejected |= metrics['rms_px'] > item.scene_parameters.tag_maximum_reprojection_rms_px
         support = position_support_metrics(
@@ -427,6 +445,7 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
             keyframes=recovery, warm_started=warm is not None, optimizer_iterations=optimizer.iterations(),
             initial_error=initial_error, final_error=final_error, factor_count=graph.size(),
             tag_metrics=metrics, natural_reprojection_rms_px=natural_rms,
+            tag_depth=tag_depth_diagnostics,
             tag_observation_rms_px=np.sqrt(np.mean(np.sum((prediction - item.pixels) ** 2, axis=-1), axis=-1)).tolist(),
             natural_residuals=natural_residuals,
             natural_tracks=len(item.natural_tracks), natural_observations=len(natural_errors),
@@ -527,6 +546,10 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
                               'disabled' if not item.scene_parameters.poster_vio_holdout_stride else 'insufficient_evidence'),
             independent_frames=frames, observations=int(np.count_nonzero(held)),
             invalid_depth_observations=0,
+            invalid_depth_details=[],
+            depth_summary=None,
+            depth_barrier=dict(z_min_m=1e-3, transition_m=2e-4, sigma_m=5e-3,
+                               training_only=True),
             initialization_and_graph_excluded=item.tag_holdout_mask is not None,
             independent_physical_accuracy=False,
             maximum_rms_px=item.scene_parameters.poster_vio_maximum_holdout_rms_px)
@@ -537,7 +560,21 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
             if not np.isfinite(prediction).all() or not np.isfinite(points).all():
                 raise ValueError(f'{item.arm} poster_vio 留出投影出现非有限值')
             metrics = residual_metrics(prediction, item.pixels[held])
-            invalid_depth_observations = int(np.count_nonzero(points[:, :, 2] <= 0))
+            depths = points[:, :, 2]
+            invalid_mask = depths <= 0
+            invalid_depth_observations = int(np.count_nonzero(invalid_mask))
+            holdout['depth_summary'] = dict(min_m=float(np.min(depths)),
+                p01_m=float(np.percentile(depths, 1)), median_m=float(np.median(depths)),
+                max_m=float(np.max(depths)), positive_fraction=float(np.mean(depths > 0)))
+            held_rows = np.flatnonzero(held)
+            tag_ids = np.asarray(observations[item.arm].tag_ids)
+            holdout['invalid_depth_details'] = [dict(
+                observation=int(row), node=int(item.tag_indices[row]),
+                imu_time_s=float(item.times_s[item.tag_indices[row]]),
+                tag_id=int(tag_ids[row]),
+                invalid_corner_indices=np.flatnonzero(invalid_mask[index]).astype(int).tolist(),
+                depths_m=np.asarray(depths[index], dtype=float).tolist())
+                for index, row in enumerate(held_rows) if np.any(invalid_mask[index])]
             holdout['invalid_depth_observations'] = invalid_depth_observations
             failed = bool(invalid_depth_observations
                           or metrics['rms_px'] > item.scene_parameters.poster_vio_maximum_holdout_rms_px)
