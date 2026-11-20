@@ -319,3 +319,9 @@ def main(argv: list[str] | None = None) -> int:
     except ITEM_FAILURES as error:
         workflow.console.write(str(error), state='失败')
         return 2
+    except KeyboardInterrupt:
+        # A poster-VIO worker may still be inside native GTSAM code after the
+        # workflow has recorded the interrupted run.  Returning normally would
+        # enter interpreter teardown while that daemon thread still owns a
+        # Python callback and can abort with ``thread state must be current``.
+        os._exit(130)
