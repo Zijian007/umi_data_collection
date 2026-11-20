@@ -242,7 +242,9 @@ def estimate_static_tag_extrinsic(corners, camera_from_imu, model, size_m, *,
             continue
         candidates.append(np.linalg.inv(camera_from_imu) @ camera_tag)
     if len(candidates) < minimum_frames:
-        raise ValueError('base tag 没有足够的无歧义自身位姿观测')
+        raise ValueError(
+            f'base tag 没有足够的无歧义自身位姿观测：候选帧={len(candidates)}，'
+            f'要求={minimum_frames}，原始帧={len(corners)}')
     # Score mounts against all self pixels, not just the frame that seeded them.
     def errors(mount):
         points = tag_points @ (camera_from_imu @ mount)[:3, :3].T + (camera_from_imu @ mount)[:3, 3]
@@ -252,11 +254,18 @@ def estimate_static_tag_extrinsic(corners, camera_from_imu, model, size_m, *,
     fit = least_squares(lambda delta: errors(seed.retract(delta).matrix()).ravel(),
                         np.zeros(6), loss='huber', f_scale=maximum_rms_px, max_nfev=100)
     if not fit.success or not np.isfinite(fit.x).all():
-        raise ValueError('base tag 安装初值未收敛')
+        raise ValueError(
+            f'base tag 安装初值未收敛：success={fit.success}，状态={fit.status}，'
+            f'函数评估次数={fit.nfev}')
     mount = seed.retract(fit.x).matrix()
     rms = np.sqrt(np.mean(np.sum(errors(mount) ** 2, axis=2), axis=1))
-    if np.count_nonzero(rms > maximum_rms_px) > int(np.floor(len(rms) * maximum_cull_fraction)):
-        raise ValueError('base tag 自身观测不符合刚性安装或残差超预算')
+    rejected = int(np.count_nonzero(rms > maximum_rms_px))
+    budget = int(np.floor(len(rms) * maximum_cull_fraction))
+    if rejected > budget:
+        raise ValueError(
+            f'base tag 自身观测不符合刚性安装或残差超预算：观测帧={len(rms)}，'
+            f'超阈值帧={rejected}，允许={budget}，阈值={maximum_rms_px:.3f}px，'
+            f'RMS中位数={np.median(rms):.3f}px，RMS最大值={np.max(rms):.3f}px')
     return mount, dict(observations=len(corners), pnp_candidates=len(candidates),
                        per_observation_rms_px=rms.tolist(),
                        seed_only=True, observations_discarded=0)

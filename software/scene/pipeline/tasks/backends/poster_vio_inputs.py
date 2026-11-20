@@ -299,12 +299,23 @@ def prepare_task_inputs(inputs: TaskInputs):
         if len(np.unique(observation.base_tag_times_s[own_rows])) < scene.parameters.poster_vio_base_tag_minimum_self_frames:
             raise ValueError(f'{item.arm} base tag 跨手约束需要足够的自身观测时刻')
         front = item.natural_cameras['front']
-        mount, evidence = estimate_static_tag_extrinsic(
-            observation.base_tag_corners_px[own_rows], front.T_cam_imu, front.model,
-            base_tag_specs[item.arm]['size_m'],
-            maximum_rms_px=scene.parameters.tag_maximum_reprojection_rms_px,
-            maximum_cull_fraction=scene.parameters.tag_maximum_cull_fraction,
-            minimum_frames=scene.parameters.poster_vio_base_tag_minimum_self_frames)
+        try:
+            mount, evidence = estimate_static_tag_extrinsic(
+                observation.base_tag_corners_px[own_rows], front.T_cam_imu, front.model,
+                base_tag_specs[item.arm]['size_m'],
+                maximum_rms_px=scene.parameters.tag_maximum_reprojection_rms_px,
+                maximum_cull_fraction=scene.parameters.tag_maximum_cull_fraction,
+                minimum_frames=scene.parameters.poster_vio_base_tag_minimum_self_frames)
+        except ValueError as error:
+            diagnostics[item.arm]['base_tag_self_evidence'] = dict(
+                status='rejected', observations=int(np.count_nonzero(own_rows)),
+                unique_frames=int(len(np.unique(observation.base_tag_times_s[own_rows]))),
+                reason=str(error))
+            write_json(inputs.directory / 'poster_vio' / 'inputs_failure.json', dict(
+                status='failed', stage='base_tag_mount', arm=item.arm,
+                diagnostics=diagnostics, base_tag_specs=base_tag_specs,
+                reason=str(error)))
+            raise ValueError(f'{item.arm} base tag 安装拟合失败：{error}') from error
         solve_inputs[index] = replace(item, T_imu_base_tag=mount)
         diagnostics[item.arm]['base_tag_self_evidence'] = evidence
     solve_inputs = base_tags.expand_nodes(request, solve_inputs)

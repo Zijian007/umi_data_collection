@@ -58,9 +58,33 @@ def record_failure(episode: Episode, directory: Path, reason: str, *, identity: 
         shutil.rmtree(directory)
     else:
         directory.rename(target)
+        _rewrite_failure_paths(target, directory, target)
     episodes.record_attempt(episode, status, target)
     cleanup.after_task(episode.root)
     return target
+
+
+def _rewrite_failure_paths(root: Path, old_root: Path, new_root: Path) -> None:
+    """Keep diagnostics valid after a failed run receives its stable name.
+
+    External reconstruction stages receive the temporary run directory as an
+    absolute path and persist it in logs and JSON.  Failed runs are renamed to
+    ``failed-<content hash>`` during collection, so those references need to
+    follow the rename for the retained evidence to remain directly usable.
+    """
+    old_text, new_text = str(old_root), str(new_root)
+    if old_text == new_text:
+        return
+    text_suffixes = {'.json', '.log', '.txt', '.csv', '.yaml', '.yml'}
+    for path in root.rglob('*'):
+        if not path.is_file() or path.is_symlink() or path.suffix.lower() not in text_suffixes:
+            continue
+        try:
+            content = path.read_text(encoding='utf-8')
+        except (OSError, UnicodeError):
+            continue
+        if old_text in content:
+            path.write_text(content.replace(old_text, new_text), encoding='utf-8')
 
 
 def _resolve_episode_synchronization(episode, *, force: bool, dry_run: bool):
