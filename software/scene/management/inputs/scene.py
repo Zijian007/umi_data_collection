@@ -120,6 +120,8 @@ def load_scene_parameters(path: Path | None = None, *, overrides: dict | None = 
         raise ValueError('poster_vio.maximum_gravity_difference_deg 不能超过 180')
     if not 2 <= parameters.poster_vio_minimum_track_length <= parameters.poster_vio_maximum_track_length:
         raise ValueError('poster_vio.frontend 轨迹长度必须满足 2 <= minimum <= maximum')
+    if parameters.poster_vio_maximum_observations_per_track < parameters.poster_vio_minimum_track_length:
+        raise ValueError('poster_vio.frontend.maximum_observations_per_track 不能少于 minimum_track_length')
     if not 0 <= parameters.poster_vio_maximum_natural_cull_fraction < 1:
         raise ValueError('poster_vio.culling.maximum_natural_fraction 必须在 [0, 1) 内')
     if parameters.poster_vio_holdout_stride == 1:

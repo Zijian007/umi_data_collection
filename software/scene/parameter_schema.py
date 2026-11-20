@@ -57,6 +57,7 @@ FIELD_PATHS: dict[tuple[str, ...], str] = {
     ('poster_vio', 'frontend', 'maximum_tracks'): 'poster_vio_maximum_tracks',
     ('poster_vio', 'frontend', 'minimum_track_length'): 'poster_vio_minimum_track_length',
     ('poster_vio', 'frontend', 'maximum_track_length'): 'poster_vio_maximum_track_length',
+    ('poster_vio', 'frontend', 'maximum_observations_per_track'): 'poster_vio_maximum_observations_per_track',
     ('poster_vio', 'culling', 'maximum_rounds'): 'poster_vio_maximum_cull_rounds',
     ('poster_vio', 'culling', 'maximum_natural_fraction'): 'poster_vio_maximum_natural_cull_fraction',
     ('poster_vio', 'culling', 'natural_threshold_px'): 'poster_vio_natural_cull_threshold_px',

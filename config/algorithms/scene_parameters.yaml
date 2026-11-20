@@ -83,6 +83,7 @@ poster_vio:  # 实验性联合图的观测门槛；与独立引擎后端分开�
     maximum_tracks: 500  # 每镜头保留给联合图的轨迹总预算，按录像时间分配；不限制持续补点。标签+IMU已提供主约束，控制自然点规模以避免联合图过大。
     minimum_track_length: 3  # 三角化所需的最少观测数。
     maximum_track_length: 40  # 单条轨迹的观测数上限，达到后重新检测。
+    maximum_observations_per_track: 8  # 联合图每条自然轨迹最多保留的观测数；保留首尾和均匀中间观测。
     geometric_threshold_px: 3.0  # KB4 视线极几何/旋转门槛的像素等效值。
     revisit:
       enabled: true  # ORB 描述子 + 米制重投影验证后续接同镜头轨迹。

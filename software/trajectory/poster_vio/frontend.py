@@ -15,6 +15,25 @@ from software.configuration import operational_settings as settings
 from .feature_geometry import bearing_inliers, triangulate_batch, describe, match_revisits
 
 
+def subsample_observations(node_indices, pixels, maximum_observations):
+    """保留首尾和均匀分布的中间观测，限制单条轨迹进入联合图的规模。"""
+    nodes = np.asarray(node_indices)
+    points = np.asarray(pixels)
+    if nodes.ndim != 1 or points.shape != (len(nodes), 2):
+        raise ValueError('poster_vio 自然特征轨迹观测形状无效')
+    if maximum_observations is not None and (type(maximum_observations) is not int
+                                             or maximum_observations < 2):
+        raise ValueError('poster_vio 自然特征轨迹观测上限必须至少为 2')
+    if maximum_observations is None or len(nodes) <= maximum_observations:
+        return nodes, points
+    selected = np.rint(np.linspace(0, len(nodes) - 1, maximum_observations)).astype(int)
+    selected[0], selected[-1] = 0, len(nodes) - 1
+    selected = np.unique(selected)
+    if len(selected) != maximum_observations:
+        selected = np.linspace(0, len(nodes) - 1, maximum_observations, dtype=int)
+    return nodes[selected], points[selected]
+
+
 def triangulate_track(node_indices, pixels, seed_poses, camera_from_imu, model,
                       *, maximum_rms_px=3.0, minimum_parallax_deg=.5):
     """Return a finite, positive-depth landmark, or None for weak geometry."""
@@ -62,7 +81,8 @@ class FeatureCameraInput:
 
 
 class _FeatureTracker:
-    def __init__(self, item, *, max_features, maximum_tracks, minimum_track_length, maximum_track_length, parameters):
+    def __init__(self, item, *, max_features, maximum_tracks, minimum_track_length, maximum_track_length,
+                 parameters, maximum_observations_per_track=None):
         import cv2
 
         self.item = item
@@ -91,6 +111,7 @@ class _FeatureTracker:
         self.camera_from_imu_inverse = np.linalg.inv(item.camera_from_imu)
         self.max_features, self.maximum_tracks = max_features, maximum_tracks
         self.minimum_track_length, self.maximum_track_length = minimum_track_length, maximum_track_length
+        self.maximum_observations_per_track = maximum_observations_per_track
         self.histories, self.active, self.retained = {}, {}, {}
         self.descriptors, self.ages, self.revisits, self.bank = {}, {}, {}, {}
         self.pending = []
@@ -211,6 +232,7 @@ class _FeatureTracker:
             return
         nodes = np.asarray([item[0] for item in observations], dtype=int)
         pixels = np.asarray([item[1] for item in observations], dtype=float)
+        nodes, pixels = subsample_observations(nodes, pixels, self.maximum_observations_per_track)
         self.pending.append(dict(track_id=track_id, node_indices=nodes, pixels=pixels,
             camera=self.item.camera, descriptor=descriptor, revisit_count=revisit_count))
 
@@ -259,6 +281,7 @@ class _FeatureTracker:
 
 def track_cameras(video: Path, cameras: tuple[FeatureCameraInput, ...], *, max_features=200,
                   maximum_tracks=2000, minimum_track_length=3, maximum_track_length=40,
+                  maximum_observations_per_track=None,
                   parameters=None, diagnostics=None):
     """Decode once for both lenses, retaining one previous crop per camera.
 
@@ -274,10 +297,15 @@ def track_cameras(video: Path, cameras: tuple[FeatureCameraInput, ...], *, max_f
             (max_features, maximum_tracks, minimum_track_length, maximum_track_length))
             or not 2 <= minimum_track_length <= maximum_track_length):
         raise ValueError('poster_vio 自然特征数量必须为正整数，轨迹长度必须满足 2 <= 最短 <= 最长')
+    if (maximum_observations_per_track is not None
+            and (type(maximum_observations_per_track) is not int
+                 or maximum_observations_per_track < minimum_track_length)):
+        raise ValueError('poster_vio 自然特征观测上限必须为整数且不少于最短轨迹长度')
     if not cameras or len({item.camera for item in cameras}) != len(cameras):
         raise ValueError('poster_vio 自然特征需要不重复的相机输入')
     trackers = [_FeatureTracker(item, max_features=max_features, maximum_tracks=maximum_tracks,
-                minimum_track_length=minimum_track_length, maximum_track_length=maximum_track_length, parameters=parameters)
+                minimum_track_length=minimum_track_length, maximum_track_length=maximum_track_length,
+                maximum_observations_per_track=maximum_observations_per_track, parameters=parameters)
                 for item in cameras]
     if not all(tracker.done for tracker in trackers):
         with av.open(str(video)) as container:
@@ -298,17 +326,23 @@ def track_cameras(video: Path, cameras: tuple[FeatureCameraInput, ...], *, max_f
                     break
     result = {tracker.item.camera: tracker.finish() for tracker in trackers}
     if diagnostics is not None:
-        diagnostics.update({tracker.item.camera: dict(tracker.stats, retained_tracks=len(result[tracker.item.camera]))
+        diagnostics.update({tracker.item.camera: dict(
+            tracker.stats,
+            retained_tracks=len(result[tracker.item.camera]),
+            retained_observations=sum(len(track['node_indices']) for track in result[tracker.item.camera]),
+            maximum_observations_per_track=tracker.maximum_observations_per_track)
                             for tracker in trackers})
     return result
 
 
 def track_video(video: Path, source_frames, video_times_s, node_indices, seed_poses,
                 camera_from_imu, model, *, excluded_polygons=None, max_features=200,
-                maximum_tracks=2000, minimum_track_length=3, maximum_track_length=40, parameters=None, diagnostics=None):
+                maximum_tracks=2000, minimum_track_length=3, maximum_track_length=40,
+                maximum_observations_per_track=None, parameters=None, diagnostics=None):
     """Single rear stream entry, sharing the same tracking/geometry implementation."""
     item = FeatureCameraInput('rear', source_frames, video_times_s, node_indices,
                                seed_poses, camera_from_imu, model, excluded_polygons=excluded_polygons or {})
     return track_cameras(video, (item,), max_features=max_features, maximum_tracks=maximum_tracks,
         minimum_track_length=minimum_track_length, maximum_track_length=maximum_track_length,
+        maximum_observations_per_track=maximum_observations_per_track,
         parameters=parameters, diagnostics=diagnostics)['rear']

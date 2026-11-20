@@ -55,6 +55,7 @@ class SceneParameters:
     poster_vio_maximum_tracks: int
     poster_vio_minimum_track_length: int
     poster_vio_maximum_track_length: int
+    poster_vio_maximum_observations_per_track: int
     poster_vio_maximum_cull_rounds: int
     poster_vio_maximum_natural_cull_fraction: float
     poster_vio_natural_cull_threshold_px: float

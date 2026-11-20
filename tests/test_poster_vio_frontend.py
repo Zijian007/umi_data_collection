@@ -10,7 +10,8 @@ import cv2
 import numpy as np
 
 from software.camera.x3.factory import Kb4Model
-from software.trajectory.poster_vio.frontend import FeatureCameraInput, track_cameras, track_video, triangulate_track
+from software.trajectory.poster_vio.frontend import (
+    FeatureCameraInput, subsample_observations, track_cameras, track_video, triangulate_track)
 
 
 class PosterVioFrontendTests(unittest.TestCase):
@@ -40,6 +41,17 @@ class PosterVioFrontendTests(unittest.TestCase):
             streams=SimpleNamespace(video=[SimpleNamespace(codec_context=SimpleNamespace(width=3840, height=1920))]),
             decode=lambda stream: iter(frames))
         return context
+
+    def test_subsample_observations_keeps_endpoints_and_uniform_middle(self):
+        nodes = np.arange(11)
+        pixels = np.column_stack([nodes, nodes + .5])
+        selected_nodes, selected_pixels = subsample_observations(nodes, pixels, 5)
+        np.testing.assert_array_equal(selected_nodes, [0, 2, 5, 8, 10])
+        np.testing.assert_array_equal(selected_pixels, pixels[[0, 2, 5, 8, 10]])
+
+    def test_subsample_observations_rejects_invalid_limit(self):
+        with self.assertRaises(ValueError):
+            subsample_observations(np.arange(5), np.zeros((5, 2)), 1)
 
     def test_actual_optical_flow_preserves_crop_coordinates_and_graph_node_mapping(self):
         node_indices = np.array([1, 3, 5, 7])

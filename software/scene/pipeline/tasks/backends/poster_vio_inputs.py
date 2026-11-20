@@ -232,6 +232,7 @@ def prepare_task_inputs(inputs: TaskInputs):
             maximum_tracks=scene.parameters.poster_vio_maximum_tracks,
             minimum_track_length=scene.parameters.poster_vio_minimum_track_length,
             maximum_track_length=scene.parameters.poster_vio_maximum_track_length,
+            maximum_observations_per_track=scene.parameters.poster_vio_maximum_observations_per_track,
             parameters=scene.parameters, diagnostics=frontend_diagnostics)
         return tracks_by_camera, frontend_diagnostics
 
