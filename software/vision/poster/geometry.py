@@ -141,13 +141,22 @@ def residual_metrics(prediction, pixels, frame_ids=None, tag_ids=None):
 
 def estimate_board(cameras, points, pixels, model, maximum_rms, frame_ids=None, tag_ids=None,
                    return_metrics=False):
-    """多帧固定轨迹上的共同海报初值；按唯一观测时刻选平面双解候选。"""
+    """多帧固定轨迹上的共同海报初值；按唯一观测时刻选平面双解候选。
+
+    The fixed trajectory can contain a small number of geometrically invalid
+    tag rows.  Fit each candidate on the positive-depth subset and let the
+    caller apply the normal observation and time-coverage budget afterwards.
+    This keeps a single bad row from poisoning every planar initialization.
+    """
     cameras = np.asarray(cameras)
     points = np.asarray(points)
     pixels = np.asarray(pixels)
     if len(cameras) == 0 or len(points) != len(cameras) or len(pixels) != len(cameras):
         raise ValueError('海报观测数量不一致或为空')
     groups = _frame_groups(cameras, frame_ids)
+    row_groups = np.empty(len(points), dtype=int)
+    for group_index, rows in enumerate(groups):
+        row_groups[rows] = group_index
     candidates = []
     # 每个输入是一次 ID 观测；选择分散的唯一时刻，并联合该时刻所有 ID。
     group_indices = np.unique(np.linspace(0, len(groups)-1, min(3, len(groups))).astype(int))
@@ -178,32 +187,62 @@ def estimate_board(cameras, points, pixels, model, maximum_rms, frame_ids=None, 
         pose[:3, 3] = state[3:]
         return pose
 
-    def residual(state):
-        prediction, _ = project_observations(unpack(state), cameras, points, model)
-        return (prediction-pixels).ravel()
-
     solutions = []
     for candidate in candidates:
         initial = np.r_[Rotation.from_matrix(candidate[:3, :3]).as_rotvec(), candidate[:3, 3]]
-        fit = least_squares(residual, initial, loss='huber', f_scale=2., max_nfev=100)
-        pose = unpack(fit.x)
-        prediction, camera_points = project_observations(pose, cameras, points, model)
-        rms = float(np.sqrt(np.mean(np.sum((prediction-pixels)**2, axis=2))))
-        if fit.success and np.isfinite(rms) and np.all(camera_points[:, :, 2] > 0):
-            solutions.append((rms, pose, fit.jac))
+        active = np.ones(len(points), dtype=bool)
+        fit = None
+        pose = None
+        prediction = camera_points = None
+        for _ in range(4):
+            if np.count_nonzero(active) < 2:
+                break
+
+            def residual(state):
+                projected, _ = project_observations(
+                    unpack(state), cameras[active], points[active], model)
+                values = projected - pixels[active]
+                return np.nan_to_num(values, nan=1e6, posinf=1e6, neginf=-1e6).ravel()
+
+            fit = least_squares(residual, initial, loss='huber', f_scale=2., max_nfev=100)
+            pose = unpack(fit.x)
+            prediction, camera_points = project_observations(pose, cameras, points, model)
+            valid = (np.isfinite(camera_points).all(axis=2).all(axis=1)
+                     & (camera_points[:, :, 2] > 0).all(axis=1))
+            next_active = active & valid
+            if np.array_equal(next_active, active):
+                break
+            if len(np.unique(row_groups[next_active])) < 2:
+                break
+            active = next_active
+            initial = fit.x
+
+        if fit is None or pose is None or prediction is None or camera_points is None:
+            continue
+        valid_active = active & np.isfinite(camera_points).all(axis=2).all(axis=1)
+        valid_active &= (camera_points[:, :, 2] > 0).all(axis=1)
+        if (not fit.success or not np.any(valid_active)
+                or not np.array_equal(valid_active, active)):
+            continue
+        errors = prediction[active] - pixels[active]
+        rms = float(np.sqrt(np.mean(np.sum(errors**2, axis=2))))
+        if np.isfinite(rms):
+            solutions.append((rms, pose, fit.jac, active.copy()))
     if not solutions:
         raise PosterGeometryError('海报位姿优化未收敛到有效正深度解')
     solutions.sort(key=lambda item: item[0])
-    rms, pose, jac = solutions[0]
+    rms, pose, jac, active = solutions[0]
     singular = np.linalg.svd(jac, compute_uv=False)
     if singular[-1] <= singular[0]*1e-8:
         raise PosterGeometryError('海报位姿约束退化')
-    for other_rms, other, _ in solutions[1:]:
+    for other_rms, other, _, _ in solutions[1:]:
         angle = Rotation.from_matrix(pose[:3, :3].T @ other[:3, :3]).magnitude()
         if other_rms <= rms+.1 and (angle > np.deg2rad(5) or np.linalg.norm(pose[:3, 3]-other[:3, 3]) > .05):
             raise PosterGeometryError('海报平面位姿存在无法区分的多解')
     prediction, _ = project_observations(pose, cameras, points, model)
-    metrics = residual_metrics(prediction, pixels, frame_ids=frame_ids, tag_ids=tag_ids)
+    metrics = residual_metrics(prediction[active], pixels[active],
+                               frame_ids=None if frame_ids is None else np.asarray(frame_ids)[active],
+                               tag_ids=None if tag_ids is None else np.asarray(tag_ids)[active])
     if rms > maximum_rms:
         raise PosterGeometryError(
             f'海报与固定地图轨迹不一致：角点 RMS {rms:.2f} px，'

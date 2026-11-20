@@ -27,6 +27,8 @@ from . import refinement, keyframes, base_tags
 
 _MIN_NATURAL_DEPTH_M = 1e-3
 _INVALID_NATURAL_RESIDUAL_PX = 1e6
+_HOLDOUT_POSE_PRIOR_ROTATION_SIGMA_RAD = float(np.deg2rad(12.0))
+_HOLDOUT_POSE_PRIOR_TRANSLATION_SIGMA_M = 0.25
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,31 @@ def natural_camera(item, camera):
 def _point_key(arm_index, camera, track_id):
     # X/V/B keep one namespace per arm; P has one per arm AND camera.
     return gtsam.symbol('p', (arm_index * 2 + ('rear', 'front').index(camera)) * 1_000_000 + track_id)
+
+
+def _add_holdout_pose_priors(graph, keys, item):
+    """Keep tag-holdout nodes near their training-only inertial seed.
+
+    A held tag time has no pixel factor by design.  Its state can therefore
+    drift through the IMU chain until it crosses the poster plane.  The seed
+    was built from training observations before the holdout split, so this
+    weak prior stabilizes the state without adding held pixels to the graph.
+    """
+    if item.tag_holdout_mask is None:
+        return 0
+    held = np.asarray(item.tag_holdout_mask, dtype=bool)
+    if not held.any():
+        return 0
+    nodes = np.unique(item.tag_indices[held])
+    noise = gtsam.noiseModel.Robust.Create(
+        gtsam.noiseModel.mEstimator.Huber.Create(2.0),
+        gtsam.noiseModel.Diagonal.Sigmas(np.array(
+            [_HOLDOUT_POSE_PRIOR_ROTATION_SIGMA_RAD] * 3
+            + [_HOLDOUT_POSE_PRIOR_TRANSLATION_SIGMA_M] * 3)))
+    for node in nodes:
+        graph.add(gtsam.PriorFactorPose3(
+            keys.pose(int(node)), gtsam.Pose3(item.seed_poses[int(node)]), noise))
+    return int(len(nodes))
 
 
 @dataclass(frozen=True)
@@ -233,6 +260,7 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
             graph, pose_key=keys.pose, board_key=board_key, rear_key=None,
             base_ext=item.T_cam_imu, model=item.camera_model, points=item.board_points_m,
             pixels=item.pixels, tag_indices=item.tag_indices, parameters=fixed_parameters)
+        _add_holdout_pose_priors(graph, keys, item)
         for camera_name in ('rear', 'front'):
             tracks = tuple(track for track in item.natural_tracks if track.get('camera', 'rear') == camera_name)
             if not tracks:

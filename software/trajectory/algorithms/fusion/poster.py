@@ -155,12 +155,17 @@ def prepare(inputs, baseline, parameters, *, _allow_cull=True):
         if getattr(error, 'metrics', None) is not None:
             rejected['reprojection_metrics'] = error.metrics
         return None, rejected
-    prediction, _ = project_observations(
+    prediction, camera_points = project_observations(
         pose, bodies @ np.linalg.inv(camera_from_imu), points, model)
-    errors = np.linalg.norm(prediction - pixels, axis=2)
-    sighting_rms = np.sqrt(np.mean(errors ** 2, axis=1))
+    with np.errstate(over='ignore', invalid='ignore'):
+        errors = np.linalg.norm(prediction - pixels, axis=2)
+        sighting_rms = np.sqrt(np.mean(errors ** 2, axis=1))
+    invalid_geometry = ((not np.isfinite(camera_points).all())
+                        or np.any(camera_points[:, :, 2] <= 0))
     cull_limit = cull_threshold(p)
-    cull_mask = sighting_rms > cull_limit
+    cull_mask = (~np.isfinite(sighting_rms) | (sighting_rms > cull_limit))
+    if invalid_geometry:
+        cull_mask |= (~np.isfinite(camera_points).all(axis=2) | (camera_points[:, :, 2] <= 0)).any(axis=1)
     if (_allow_cull and p.tag_fusion_enabled and isolated_cull(cull_mask, frame_ids,
             p.tag_minimum_frames, times=times, parameters=p)):
         filtered = replace(inputs.poster, observations=without_sightings(observations, selected, cull_mask))
