@@ -41,6 +41,7 @@ def main(argv=None) -> int:
     from software.trajectory.algorithms.fusion.solver import solve
     from software.trajectory.algorithms.fusion.alignment import AlignmentError
     from software.trajectory.algorithms.fusion.data import load_inputs, write_solution
+    from software.vision.poster.geometry import PosterGeometryError
 
     try:
         parameters = config.decode_parameters('trajectory', json.loads(args.parameters.read_text()))
@@ -64,6 +65,13 @@ def main(argv=None) -> int:
         diagnostic = args.output / 'alignment_failure.json'
         diagnostic.write_text(json.dumps(dict(status='failed', code='NO_USABLE_LENS',
             **error.diagnostics), indent=2, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+        parser.exit(2, f'{error}；诊断：{diagnostic}\n')
+    except PosterGeometryError as error:
+        args.output.mkdir(parents=True, exist_ok=True)
+        diagnostic = args.output / 'poster_failure.json'
+        diagnostic.write_text(json.dumps(dict(status='failed', code='POSTER_GEOMETRY_FAILURE',
+            message=str(error), metrics=error.metrics), indent=2, ensure_ascii=False,
+            allow_nan=True), encoding='utf-8')
         parser.exit(2, f'{error}；诊断：{diagnostic}\n')
     except (OSError, ValueError, KeyError) as error:
         parser.exit(2, str(error)+'\n')

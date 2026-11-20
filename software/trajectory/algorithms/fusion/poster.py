@@ -92,8 +92,25 @@ class PosterContext:
         metrics = residual_metrics(pixels, self.pixels,
                                    frame_ids=self.frame_ids, tag_ids=self.tag_ids)
         rms = metrics['rms_px']
-        if not np.isfinite(rms) or not np.isfinite(final_error) or final_error > initial_error+1e-5:
-            raise PosterGeometryError('独立海报融合未通过有限性或优化下降检查')
+        depths = points[:, :, 2]
+        depth_summary = dict(min_m=float(np.min(depths)),
+                             p01_m=float(np.percentile(depths, 1)),
+                             median_m=float(np.median(depths)),
+                             max_m=float(np.max(depths)),
+                             positive_fraction=float(np.mean(depths > 0)))
+        checks = dict(finite=bool(np.isfinite(pixels).all() and np.isfinite(points).all()),
+                      optimized_error_decreased=bool(np.isfinite(final_error)
+                                                     and final_error <= initial_error + 1e-5),
+                      reprojection_rms_px=float(rms),
+                      reprojection_limit_px=float(self.parameters.tag_maximum_reprojection_rms_px),
+                      reprojection_passed=bool(np.isfinite(rms)
+                                               and rms <= self.parameters.tag_maximum_reprojection_rms_px),
+                      positive_depth=bool(np.all(depths > 0)))
+        diagnostics = dict(metrics=metrics, depth_summary=depth_summary,
+                           invalid_depth_observations=int(np.count_nonzero(depths <= 0)),
+                           checks=checks, initial_error=float(initial_error), final_error=float(final_error))
+        if not checks['finite'] or not checks['optimized_error_decreased']:
+            raise PosterGeometryError('独立海报融合未通过有限性或优化下降检查', metrics=diagnostics)
         mask = np.sqrt(np.mean(np.linalg.norm(pixels-self.pixels, axis=2)**2, axis=1)) > cull_threshold(self.parameters)
         if np.any(mask):
             if (not self.evidence.get('culled_observations') and isolated_cull(mask, self.frame_ids,
@@ -104,12 +121,13 @@ class PosterContext:
                 raise PosterCullRequest(self.selected[mask], audit)
             raise PosterGeometryError('独立海报优化后异常观测无法在单轮预算内剔除', metrics=dict(metrics,
                 culling=cull_decision(mask, self.frame_ids, self.times, self.parameters)))
-        if rms > self.parameters.tag_maximum_reprojection_rms_px or np.any(points[:,:,2] <= 0):
-            raise PosterGeometryError('独立海报融合未通过正深度、像素残差或优化下降检查')
+        if not checks['reprojection_passed'] or not checks['positive_depth']:
+            raise PosterGeometryError('独立海报融合未通过正深度或像素残差检查', metrics=diagnostics)
         support = position_support_metrics(bodies, board, ext, self.points, self.pixels,
                                            self.model, self.times, self.parameters)
         return dict(self.evidence, status='fused', final_reprojection_rms_px=rms,
-                    final_reprojection_metrics=metrics, T_world_board=board.tolist(),
+                    final_reprojection_metrics=metrics, final_depth_summary=depth_summary,
+                    final_checks=checks, T_world_board=board.tolist(),
                     T_rear_camera_imu_optimized=ext.tolist(), position_support=support,
                     position_support_video_times_s=[frame['video_time_s'] for frame in support['frames']
                                                     if frame['position_supported']],

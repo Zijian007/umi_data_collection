@@ -201,6 +201,7 @@ umi_traj_out/VID_20261003_182246_00_067/
 | `front_loc_frames.csv` | 合并后的逐帧定位状态、位姿和地图来源 |
 | `fuse_info.json` | 融合全文，包括 chains、尺度与参数 |
 | `fuse.log` | 融合过程日志（源日志存在时保留） |
+| `fuse/poster_failure.json` | 独立海报优化失败条件、深度统计、像素 RMS、初末目标函数 |
 | `runner_tryN.log` | 各轮阶段摘要、失败阶段与原始日志位置 |
 
 ### debug/ 中间数据

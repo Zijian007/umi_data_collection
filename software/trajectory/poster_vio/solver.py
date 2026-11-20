@@ -102,6 +102,8 @@ class ArmSolveInput:
     tag_initialization_mask: np.ndarray | None = None
     T_imu_base_tag: np.ndarray | None = None  # Tag -> native IMU; initial rigid mount seed.
     base_tag_indices: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=int))
+    depth_barrier_points_m: np.ndarray | None = None
+    depth_barrier_indices: np.ndarray | None = None
 
 
 def _validate_arm_input(item: ArmSolveInput) -> None:
@@ -128,6 +130,19 @@ def _validate_arm_input(item: ArmSolveInput) -> None:
             or np.any(indices < 0) or np.any(indices >= len(times))
             or len(np.unique(indices)) < 3):
         raise ValueError(f'{item.arm} 海报观测节点索引无效或时刻不足')
+    barrier_points = item.depth_barrier_points_m
+    barrier_indices = item.depth_barrier_indices
+    if (barrier_points is None) != (barrier_indices is None):
+        raise ValueError(f'{item.arm} 正深度屏障输入必须成对提供')
+    if barrier_points is not None:
+        barrier_points = np.asarray(barrier_points)
+        barrier_indices = np.asarray(barrier_indices)
+        if (barrier_points.ndim != 3 or barrier_points.shape[1:] != (4, 3)
+                or not len(barrier_points) or not np.isfinite(barrier_points).all()
+                or barrier_indices.shape != (len(barrier_points),)
+                or not np.issubdtype(barrier_indices.dtype, np.integer)
+                or np.any(barrier_indices < 0) or np.any(barrier_indices >= len(times))):
+            raise ValueError(f'{item.arm} 正深度屏障输入形状或数值无效')
     if item.tag_holdout_mask is not None:
         held = np.asarray(item.tag_holdout_mask)
         if held.shape != (len(points),) or held.dtype != np.bool_:
@@ -260,12 +275,17 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
             graph, pose_key=keys.pose, board_key=board_key, rear_key=None,
             base_ext=item.T_cam_imu, model=item.camera_model, points=item.board_points_m,
             pixels=item.pixels, tag_indices=item.tag_indices, parameters=fixed_parameters)
-        training_tags = (np.ones(len(item.pixels), dtype=bool)
-                         if item.tag_holdout_mask is None else ~np.asarray(item.tag_holdout_mask))
-        if np.any(training_tags):
+        # The barrier is geometry-only. It does not consume held pixels, so it
+        # can keep every observed tag state in front of the camera while the
+        # holdout remains independent for pixel reprojection scoring.
+        barrier_points = (item.board_points_m if item.depth_barrier_points_m is None
+                          else item.depth_barrier_points_m)
+        barrier_indices = (item.tag_indices if item.depth_barrier_indices is None
+                           else item.depth_barrier_indices)
+        if len(barrier_points):
             factors.add_tag_depth_barrier_factors(
                 graph, pose_key=keys.pose, board_key=board_key, base_ext=item.T_cam_imu,
-                points=item.board_points_m[training_tags], tag_indices=item.tag_indices[training_tags])
+                points=barrier_points, tag_indices=barrier_indices)
         _add_holdout_pose_priors(graph, keys, item)
         for camera_name in ('rear', 'front'):
             tracks = tuple(track for track in item.natural_tracks if track.get('camera', 'rear') == camera_name)
@@ -549,7 +569,7 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
             invalid_depth_details=[],
             depth_summary=None,
             depth_barrier=dict(z_min_m=1e-3, transition_m=2e-4, sigma_m=5e-3,
-                               training_only=True),
+                               uses_pixels=False),
             initialization_and_graph_excluded=item.tag_holdout_mask is not None,
             independent_physical_accuracy=False,
             maximum_rms_px=item.scene_parameters.poster_vio_maximum_holdout_rms_px)
