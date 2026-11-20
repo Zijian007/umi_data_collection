@@ -57,12 +57,19 @@ def _solve_frame(points, pixels, model, maximum_rms_px):
     candidates = []
     for rvec, tvec in zip(solved[1], solved[2]):
         pose = transform(cv2.Rodrigues(rvec)[0], np.asarray(tvec, dtype=float).ravel())
+        # IPPE can return numerically valid but physically absurd translations
+        # for a weak planar hypothesis.  Reject them before distance/residual
+        # norms can overflow and obscure the actual initialization failure.
+        if (not np.isfinite(pose).all()
+                or np.max(np.abs(pose[:3, 3])) > 1e4):
+            continue
         camera_points = (pose[:3, :3] @ points.T).T + pose[:3, 3]
         if np.any(camera_points[:, 2] <= 0):
             continue
         predicted = model.project(camera_points)
         error = predicted - pixels
-        rms = float(np.sqrt(np.mean(np.sum(error * error, axis=1))))
+        with np.errstate(over='ignore', invalid='ignore'):
+            rms = float(np.sqrt(np.mean(np.sum(error * error, axis=1))))
         if np.isfinite(rms):
             candidates.append((rms, pose))
     if not candidates:
@@ -133,8 +140,13 @@ def robust_seed_poses(times, tag_indices, points, pixels, camera_from_imu, model
                 pose, rms = _solve_frame(local_points.reshape(-1, 3), local_pixels.reshape(-1, 2),
                                         model, parameters.tag_maximum_reprojection_rms_px)
                 camera_points = local_points @ pose[:3, :3].T + pose[:3, 3]
-                errors = np.linalg.norm(model.project(camera_points.reshape(-1, 3)).reshape(-1, 4, 2)
-                                        - local_pixels, axis=2)
+                predicted = model.project(camera_points.reshape(-1, 3)).reshape(-1, 4, 2)
+                if not np.isfinite(predicted).all():
+                    raise ValueError('poster_vio PnP 投影产生非有限像素')
+                with np.errstate(over='ignore', invalid='ignore'):
+                    errors = np.linalg.norm(predicted - local_pixels, axis=2)
+                if not np.isfinite(errors).all():
+                    raise ValueError('poster_vio PnP 残差非有限')
                 if np.all(np.sqrt(np.mean(errors ** 2, axis=1)) <= cull_threshold(parameters)):
                     keep[indices] = True
                     seeds.append(np.linalg.inv(pose) @ camera_from_imu)
@@ -162,7 +174,10 @@ def robust_seed_poses(times, tag_indices, points, pixels, camera_from_imu, model
                 continue
             camera_points = local_points @ pose[:3, :3].T + pose[:3, 3]
             predicted = model.project(camera_points.reshape(-1, 3)).reshape(-1, 4, 2)
-            errors = np.sqrt(np.mean(np.sum((predicted - local_pixels) ** 2, axis=2), axis=1))
+            if not np.isfinite(predicted).all():
+                continue
+            with np.errstate(over='ignore', invalid='ignore'):
+                errors = np.sqrt(np.mean(np.sum((predicted - local_pixels) ** 2, axis=2), axis=1))
             inliers = usable & np.isfinite(errors) & (errors <= cull_threshold(parameters))
             inliers &= (camera_points[:, :, 2] > 0).all(axis=1)
             count = int(inliers.sum())
