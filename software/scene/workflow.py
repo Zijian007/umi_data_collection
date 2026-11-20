@@ -8,7 +8,6 @@ from __future__ import annotations
 from contextlib import nullcontext, suppress
 from dataclasses import asdict, replace
 from pathlib import Path
-import concurrent.futures as cf
 import json
 import os
 import shutil
@@ -17,6 +16,7 @@ import traceback
 import uuid
 
 
+from software.infrastructure.concurrency import daemon_map
 from software.infrastructure import provenance as artifact_identity
 from software.infrastructure.terminal import Console
 from software.scene import layout, cpu_budget
@@ -294,12 +294,14 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
             return dict(status='planned', inputs=input_identity, output=str(episode.output),
                         synchronization=episode.synchronization)
 
-        if mode != 'poster_vio':
-            runtime.validate_engines(dict(os.environ))
-
         reused = _reuse_existing_result(episode, input_identity, force=force)
         if reused is not None:
             return reused
+
+        # A valid published result is a complete, self-contained artifact.  Do
+        # not require native reconstruction engines on a cache-hit rerun.
+        if mode != 'poster_vio':
+            runtime.validate_engines(dict(os.environ))
 
         # --- 阶段 2: 独立计算隔离运行 (Isolated Run) ---
         run_dir = layout.metadata(episode.root, 'runs') / uuid.uuid4().hex
@@ -478,9 +480,7 @@ def run_episodes(paths: list[Path], *, jobs: int = 1, force=False, cores='', dry
     if jobs == 1 or len(valid) == 1:
         return rejected + [_execute(path, requested, task_episode)
                            for path, requested, task_episode in valid]
-    with cf.ThreadPoolExecutor(max_workers=jobs) as executor:
-        return rejected + list(executor.map(
-            lambda item: _execute(*item), valid))
+    return rejected + daemon_map(lambda item: _execute(*item), valid, max_workers=jobs)
 
 
 def format_batch_summary(summaries: list[dict]) -> str:

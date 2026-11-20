@@ -9,6 +9,7 @@ import struct
 import numpy as np
 
 from software.camera.x3 import frame, imu_reader, insv_reader
+from software.infrastructure.concurrency import daemon_map
 from software.scene.management.inputs.scene import load_scene_parameters
 from software.scene.models import SceneParameters
 
@@ -125,7 +126,12 @@ def check_video(path: Path, parameters: SceneParameters | None = None) -> Record
 
 def check_episode(episode, parameters: SceneParameters | None = None) -> EpisodeCheckReport:
     parameters = parameters or episode.scene.parameters
-    recording_reports = {arm: check_video(video, parameters) for arm, video in episode.recordings.items()}
+    def check(item):
+        arm, video = item
+        return arm, check_video(video, parameters)
+
+    items = tuple(episode.recordings.items())
+    recording_reports = dict(daemon_map(check, items)) if len(items) > 1 else dict(check(item) for item in items)
     reasons = [f'[{arm}] {message}' for arm, report in recording_reports.items() for message in report.reasons]
     missing = set(episode.expected_arms) - set(episode.recordings.keys())
     if missing:

@@ -5,10 +5,10 @@ raw-feature visual BA backend and it never receives a scene map as input.
 """
 
 from dataclasses import replace
-import concurrent.futures as cf
 
 import numpy as np
 
+from software.infrastructure.concurrency import daemon_map
 from software.infrastructure.file_store import write_json
 from software.scene.pipeline.tasks.backends import independent_reconstruction
 from software.scene.pipeline.tasks import measurements
@@ -27,8 +27,7 @@ def solve_task(episode, prepared_recordings, directory, *, parallel=False):
                                          directory / arm / 'independent', require_poster=True)
 
     if parallel and len(prepared_recordings) > 1:
-        with cf.ThreadPoolExecutor(max_workers=len(prepared_recordings)) as executor:
-            trajectories = dict(executor.map(solve, prepared_recordings))
+        trajectories = dict(daemon_map(solve, tuple(prepared_recordings)))
     else:
         trajectories = dict(solve(arm) for arm in prepared_recordings)
 
@@ -68,8 +67,14 @@ def execute_task(inputs: TaskInputs, *, fallback=None) -> ArmExecutionResult:
     scene, prepared_recordings, run_dir = episode.scene, inputs.recordings, inputs.directory
     console = inputs.console
     console.write('本录像独立重建 + 持续海报约束 → 任务海报坐标', recording=episode.root.name, step=(2, 3))
-    for arm, recording in prepared_recordings.items():
-        measurements.prepare_detections(episode, arm, recording, cache_audit=inputs.cache_audit)
+    def prepare(arm):
+        measurements.prepare_detections(episode, arm, prepared_recordings[arm], cache_audit=inputs.cache_audit)
+
+    if inputs.arm_cpu_sets and len(prepared_recordings) > 1:
+        daemon_map(prepare, tuple(prepared_recordings))
+    else:
+        for arm in prepared_recordings:
+            prepare(arm)
     results, coordinate_record = solve_task(episode, prepared_recordings, run_dir, parallel=bool(inputs.arm_cpu_sets))
     if fallback:
         coordinate_record['fallback'] = dict(fallback)

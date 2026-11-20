@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import concurrent.futures as cf
 
+from software.infrastructure.concurrency import daemon_map
 from software.infrastructure.file_store import write_json
 from software.scene.pipeline.tasks.backends import independent_reconstruction, scene_reconstruction
 from software.scene.pipeline.tasks import measurements
@@ -93,10 +93,7 @@ def execute_task(inputs: TaskInputs, *, map_dir: Path, map_manifest: dict,
 
     if inputs.arm_cpu_sets:
         console.write('左右手并行重建', recording=name, step=(2, 3))
-        with cf.ThreadPoolExecutor(
-            max_workers=len(prepared_recordings), thread_name_prefix='scene-arm'
-        ) as executor:
-            arm_results = list(executor.map(run_arm, prepared_recordings))
+        arm_results = daemon_map(run_arm, tuple(prepared_recordings))
     else:
         arm_results = [run_arm(arm) for arm in prepared_recordings]
 

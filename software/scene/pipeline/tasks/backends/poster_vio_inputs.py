@@ -68,6 +68,24 @@ def prepare_task_inputs(inputs: TaskInputs):
     else:
         prepare_arm_detections(arms[0])
 
+    base_tag_cache_dirs = {}
+    if len(arms) > 1 and base_tag_specs:
+        def prepare_base_tag_cache(arm: str):
+            cache_dir = layout.metadata(episode.root, 'cache/base_tags') / arm
+            detection.cached(
+                episode.recordings[arm], cache_dir,
+                detection.DetectionSettings(border_bits=1, ids=tuple(sorted(owners_by_tag_id)),
+                    lens='front', minimum_side_px=scene.parameters.tag_minimum_side_px),
+                progress=inputs.console.write, cache_audit=inputs.cache_audit)
+            return arm, cache_dir
+
+        base_tag_started = time.monotonic()
+        inputs.console.write('双手夹爪基座标签检测并行', recording=episode.root.name, step=(2, 3))
+        base_tag_cache_dirs = dict(daemon_map(prepare_base_tag_cache, arms))
+        inputs.console.write(
+            f'双手夹爪基座标签检测完成；耗时 {time.monotonic() - base_tag_started:.1f} 秒',
+            recording=episode.root.name, state='完成')
+
     for arm in arms:
         recording = inputs.recordings[arm]
         camera = recording.camera
@@ -105,11 +123,7 @@ def prepare_task_inputs(inputs: TaskInputs):
         base_pixels = np.empty((0, 4, 2), dtype=float)
         base_frame_polygons = {}
         if len(arms) > 1 and base_tag_specs:
-            base_cache = layout.metadata(episode.root, 'cache/base_tags') / arm
-            detection.cached(episode.recordings[arm], base_cache,
-                detection.DetectionSettings(border_bits=1, ids=tuple(sorted(owners_by_tag_id)),
-                    lens='front', minimum_side_px=scene.parameters.tag_minimum_side_px),
-                progress=inputs.console.write, cache_audit=inputs.cache_audit)
+            base_cache = base_tag_cache_dirs[arm]
             shutil.copyfile(base_cache / 'observations.npz', directory / 'base_tag_observations.npz')
             base_detections = detection.load_observations(directory / 'base_tag_observations.npz')
             base_imu_times = base_detections.imu_times_s(camera.measurements['front']['cam_time_offset_ns'])
