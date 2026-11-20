@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import time
 
 import numpy as np
 
 from software.camera.timing import video_to_imu_seconds
 from software.camera.geometry import imu_from_camera
+from software.infrastructure.concurrency import daemon_map
 from software.trajectory.poster_vio.solver import natural_camera
 from software.vision.poster.geometry import camera_model
 from software.infrastructure.file_store import write_json
@@ -94,7 +96,21 @@ def execute_task(inputs: TaskInputs, *, fallback=None) -> ArmExecutionResult:
     if quality.status != 'ready':
         raise PosterVioQualityError(f'poster_vio 海报观测质量不足：{quality.status}')
     try:
-        solved = solve_joint_poster_imu(request, tuple(arms), np.asarray(board_seed, dtype=float))
+        started = time.monotonic()
+        inputs.console.write('poster_vio 联合优化开始', recording=episode.root.name, step=(2, 3))
+
+        def solve(_):
+            return solve_joint_poster_imu(
+                request, tuple(arms), np.asarray(board_seed, dtype=float),
+                progress=lambda message: inputs.console.write(
+                    f'poster_vio：{message}', recording=episode.root.name))
+
+        # GTSAM may stay in native code for a long LM iteration and cannot
+        # observe Python's SIGINT handler.  Keep the worker daemonized so the
+        # outer run boundary can record an interrupted attempt immediately.
+        solved = daemon_map(solve, (None,))[0]
+        inputs.console.write(f'poster_vio 联合优化完成；耗时 {time.monotonic() - started:.1f} 秒',
+                             recording=episode.root.name, state='完成')
     except PosterVioQualityError:
         raise
     except ValueError as error:

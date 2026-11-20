@@ -6,6 +6,8 @@ fixes the gauge; published poses are transformed to the poster layout frame.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from collections.abc import Callable
+import time
 
 import gtsam
 import numpy as np
@@ -366,7 +368,8 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
 
 
 def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput, ...],
-                           board_seed: np.ndarray) -> PosterVioResult:
+                           board_seed: np.ndarray, *,
+                           progress: Callable[[str], None] | None = None) -> PosterVioResult:
     """Refine with fixed cumulative budgets, then assess untouched tag frames."""
     arms = _resolve_inputs(request, arms)
     observations = {item.arm: item for item in request.observations}
@@ -378,14 +381,28 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
     graph_nodes = {item.arm: keyframes.graph_indices(item) for item in arms}
     warm, damping = None, None
     full_iterations = arms[0].trajectory_parameters.fusion.lm_iterations
+    if progress is not None:
+        progress('联合图规模：' + '；'.join(
+            f'{item.arm} 节点={len(graph_nodes[item.arm])}，标签观测={len(item.pixels)}，'
+            f'自然轨迹={len(item.natural_tracks)}'
+            for item in arms))
     for round_index in range(max_rounds + 1):
         training = [refinement.subset(item, observations[item.arm], selections[item.arm]) for item in arms]
         training_request = replace(request, observations=tuple(pair[1] for pair in training))
         limit = (min(full_iterations, arms[0].scene_parameters.poster_vio_precull_iterations)
                  if round_index == 0 else full_iterations)
         while True:
+            stage = '首轮预优化' if limit < full_iterations else '完整优化'
+            started = time.monotonic()
+            if progress is not None:
+                progress(f'联合优化第 {round_index + 1}/{max_rounds + 1} 轮：{stage}，最大迭代={limit}')
             solved, warm, damping = _solve_once(training_request, tuple(pair[0] for pair in training), board_seed,
                 graph_nodes=graph_nodes, warm=warm, initial_lambda=damping, maximum_iterations=limit)
+            if progress is not None:
+                iterations = max(int(evidence['optimizer_iterations'])
+                                 for evidence in solved.arm_evidence.values())
+                progress(f'联合优化第 {round_index + 1} 轮完成：耗时 {time.monotonic() - started:.1f} 秒；'
+                         f'实际迭代={iterations}；残差={solved.quality.reprojection_rms_px:.3f}px')
             proposals, changed = {}, False
             for item in arms:
                 evidence = solved.arm_evidence[item.arm]
