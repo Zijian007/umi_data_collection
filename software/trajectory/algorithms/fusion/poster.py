@@ -111,8 +111,15 @@ class PosterContext:
                       reprojection_passed=bool(np.isfinite(rms)
                                                and rms <= self.parameters.tag_maximum_reprojection_rms_px),
                       positive_depth=bool(np.all(depths > 0)))
+        invalid_depth_details = [
+            dict(observation=int(row), frame=int(self.frame_ids[row]),
+                 tag_id=int(self.tag_ids[row]), corner=int(corner),
+                 depth_m=float(depths[row, corner]))
+            for row, corner in zip(*np.nonzero(depths <= 0))
+        ]
         diagnostics = dict(metrics=metrics, depth_summary=depth_summary,
                            invalid_depth_observations=int(np.count_nonzero(depths <= 0)),
+                           invalid_depth_details=invalid_depth_details,
                            checks=checks, initial_error=float(initial_error), final_error=float(final_error))
         if not checks['finite'] or not checks['optimized_error_decreased']:
             raise PosterGeometryError('独立海报融合未通过有限性或优化下降检查', metrics=diagnostics)
