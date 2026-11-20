@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from collections.abc import Callable
+import threading
 import time
 
 import gtsam
@@ -193,7 +194,8 @@ def _resolve_inputs(request, arms):
     return arms
 
 
-def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_lambda=None, maximum_iterations=None):
+def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_lambda=None,
+                maximum_iterations=None, progress: Callable[[str], None] | None = None):
     """Build one graph from the currently retained training observations."""
     board_seed = validate_transform(board_seed)
     graph, values = gtsam.NonlinearFactorGraph(), gtsam.Values()
@@ -272,8 +274,37 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
     initial_error = float(graph.error(values))
     if not np.isfinite(initial_error):
         raise ValueError('poster_vio 初始图残差非有限')
+    iteration_started = time.monotonic()
+
+    def iteration_hook(iteration, error_before, error_after):
+        if progress is None:
+            return
+        progress(
+            f'LM 迭代 {int(iteration) + 1}：误差 {float(error_before):.3e} → '
+            f'{float(error_after):.3e}；耗时 {time.monotonic() - iteration_started:.1f} 秒')
+
+    # GTSAM invokes this hook after each native LM iteration.  Keeping the
+    # callback on the parameter object preserves the optimizer's own stopping
+    # criteria while making a long native call observable and interruptible.
+    solver.iterationHook = iteration_hook
     optimizer = gtsam.LevenbergMarquardtOptimizer(graph, values, solver)
-    optimized = optimizer.optimize()
+    heartbeat_stop = threading.Event()
+    heartbeat = None
+    if progress is not None:
+        def emit_heartbeat():
+            while not heartbeat_stop.wait(15.0):
+                progress(
+                    f'LM 迭代仍在进行：已耗时 {time.monotonic() - iteration_started:.1f} 秒；'
+                    f'当前最大迭代={solver.getMaxIterations()}')
+
+        heartbeat = threading.Thread(target=emit_heartbeat, name='poster-vio-lm-heartbeat', daemon=True)
+        heartbeat.start()
+    try:
+        optimized = optimizer.optimize()
+    finally:
+        heartbeat_stop.set()
+        if heartbeat is not None:
+            heartbeat.join(timeout=1.0)
     final_error = float(graph.error(optimized))
     board_pose = optimized.atPose3(board_key).matrix()
     trajectories, evidence, counts, support_fraction, rms_values = {}, {}, {}, {}, []
@@ -397,7 +428,8 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
             if progress is not None:
                 progress(f'联合优化第 {round_index + 1}/{max_rounds + 1} 轮：{stage}，最大迭代={limit}')
             solved, warm, damping = _solve_once(training_request, tuple(pair[0] for pair in training), board_seed,
-                graph_nodes=graph_nodes, warm=warm, initial_lambda=damping, maximum_iterations=limit)
+                graph_nodes=graph_nodes, warm=warm, initial_lambda=damping, maximum_iterations=limit,
+                progress=progress)
             if progress is not None:
                 iterations = max(int(evidence['optimizer_iterations'])
                                  for evidence in solved.arm_evidence.values())
