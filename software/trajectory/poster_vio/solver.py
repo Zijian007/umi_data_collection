@@ -26,6 +26,7 @@ from . import refinement, keyframes, base_tags
 
 
 _MIN_NATURAL_DEPTH_M = 1e-3
+_INVALID_NATURAL_RESIDUAL_PX = 1e6
 
 
 @dataclass(frozen=True)
@@ -352,22 +353,27 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
                 in_camera = camera.T_cam_imu[:3, :3] @ in_body + camera.T_cam_imu[:3, 3]
                 if not np.isfinite(in_camera).all() or in_camera[2] <= _MIN_NATURAL_DEPTH_M:
                     camera_evidence['invalid_depth_observations'] += 1
-                    error = float('inf')
+                    error = _INVALID_NATURAL_RESIDUAL_PX
                 else:
                     error = float(np.linalg.norm(camera.model.project(in_camera[None])[0] - observed))
+                    if not np.isfinite(error):
+                        camera_evidence['invalid_depth_observations'] += 1
+                        error = _INVALID_NATURAL_RESIDUAL_PX
                 natural_errors.append(error)
                 track_errors.append(error)
                 camera_evidence['errors'].append(error)
                 if error <= item.scene_parameters.tag_maximum_reprojection_rms_px:
                     camera_evidence['nodes'].append(int(node))
             natural_residuals.append(dict(key=list(refinement.track_key(track)), errors_px=track_errors))
-        finite_natural_errors = [error for error in natural_errors if np.isfinite(error)]
+        finite_natural_errors = [error for error in natural_errors
+                                 if np.isfinite(error) and error < _INVALID_NATURAL_RESIDUAL_PX]
         natural_rms = (float(np.sqrt(np.mean(np.square(finite_natural_errors))))
                        if finite_natural_errors else None)
         by_camera, supported_nodes = {}, []
         for camera_name, camera_evidence in per_camera.items():
             errors = camera_evidence['errors']
-            finite_errors = [error for error in errors if np.isfinite(error)]
+            finite_errors = [error for error in errors
+                             if np.isfinite(error) and error < _INVALID_NATURAL_RESIDUAL_PX]
             rms = (float(np.sqrt(np.mean(np.square(finite_errors))))
                    if finite_errors else None)
             if rms is not None:
@@ -530,12 +536,12 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
                 in_camera = calibration.T_cam_imu[:3, :3] @ in_body + calibration.T_cam_imu[:3, 3]
                 if not np.isfinite(in_camera).all() or in_camera[2] <= _MIN_NATURAL_DEPTH_M:
                     invalid_natural_holdout += 1
-                    error = float('inf')
+                    error = _INVALID_NATURAL_RESIDUAL_PX
                 else:
                     error = float(np.linalg.norm(calibration.model.project(in_camera[None])[0] - pixel))
                     if not np.isfinite(error):
                         invalid_natural_holdout += 1
-                        error = float('inf')
+                        error = _INVALID_NATURAL_RESIDUAL_PX
                 natural_holdout.append(dict(camera=camera_name, track_id=track['track_id'], node=int(node), error_px=error))
         metrics = refinement.residual_summary([row['error_px'] for row in natural_holdout])
         by_camera = {camera: refinement.residual_summary([row['error_px'] for row in natural_holdout
@@ -551,7 +557,7 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
                          for record in by_camera.values())
             status = 'rejected' if failed else status
             rejected |= failed
-            if np.isfinite(metrics['rms_px']):
+            if invalid_natural_holdout == 0 and np.isfinite(metrics['rms_px']):
                 rms_values.append(metrics['rms_px'])
         evidence['natural_holdout'] = dict(status=status, metrics=metrics, observations=natural_holdout,
             independent_frames=natural_frames, by_camera=by_camera,
