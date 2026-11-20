@@ -10,7 +10,7 @@ from software.vision.poster.quality import corner_sigma_px
 _MIN_NATURAL_DEPTH_M = 1e-3
 _TAG_DEPTH_BARRIER_Z_MIN_M = 1e-3
 _TAG_DEPTH_BARRIER_TAU_M = 2e-4
-_TAG_DEPTH_BARRIER_SIGMA_M = 5e-3
+_TAG_DEPTH_BARRIER_SIGMA_M = 1e-4
 
 
 def skew(point):

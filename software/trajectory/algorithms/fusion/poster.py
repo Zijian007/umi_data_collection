@@ -21,7 +21,9 @@ from software.vision.poster.quality import (
     culling_record,
     cull_decision,
 )
-from software.vision.poster.factors import add_rear_seat, add_tag_factors, solved_rear_extrinsic, rear_rotation_evidence
+from software.vision.poster.factors import (
+    add_rear_seat, add_tag_depth_barrier_factors, add_tag_factors,
+    solved_rear_extrinsic, rear_rotation_evidence)
 
 BOARD_KEY = gtsam.symbol('h', 0)  # l0 已被独立图的 rear 杆臂占用。
 REAR_SEAT_KEY = gtsam.symbol('s', 0)
@@ -83,6 +85,9 @@ class PosterContext:
         add_tag_factors(graph, pose_key=X, board_key=BOARD_KEY, rear_key=REAR_SEAT_KEY,
                         base_ext=self.camera_from_imu, model=self.model, points=self.points,
                         pixels=self.pixels, tag_indices=self.node_keys, parameters=self.parameters)
+        add_tag_depth_barrier_factors(
+            graph, pose_key=X, board_key=BOARD_KEY, base_ext=self.camera_from_imu,
+            points=self.points, tag_indices=np.asarray(self.node_keys, dtype=int))
 
     def measure(self, values, initial_error, final_error):
         board = values.atPose3(BOARD_KEY).matrix()
