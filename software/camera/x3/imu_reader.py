@@ -46,6 +46,22 @@ GYRO_LAYOUTS = ((56, "f64x6"), (20, "i16x6"))
 I16_BIAS = 32768.0
 
 
+def _stable_norm(values) -> float:
+    """Return a finite-safe Euclidean norm for layout probing.
+
+    The parser probes more than one binary layout.  A wrong ``f64x6`` probe can
+    decode arbitrary but finite IEEE-754 values whose squares overflow even
+    though the candidate will be rejected a few samples later.  Scaling before
+    squaring avoids a warning and keeps the probe side-effect free.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    scale = float(np.max(np.abs(values)))
+    if not np.isfinite(scale) or scale == 0.0:
+        return scale
+    with np.errstate(over='ignore', invalid='ignore'):
+        return float(scale * np.sqrt(np.sum(np.square(values / scale), dtype=np.float64)))
+
+
 class ImuReadError(RuntimeError):
     """The trailer IMU cannot be read as specified (refusal, never a silent fallback)."""
 
@@ -115,7 +131,7 @@ def parse_gyro(gyro_record_bytes: bytes) -> dict:
         n = len(gyro_record_bytes) // stride
         ts = np.empty(n, dtype=np.float64)
         ok = True
-        mags = []
+        sampled_values = []
         for i in range(n):
             chunk = gyro_record_bytes[i * stride:(i + 1) * stride]
             ts[i] = struct.unpack("<Q", chunk[:8])[0]
@@ -127,9 +143,10 @@ def parse_gyro(gyro_record_bytes: bytes) -> dict:
                 if not np.all(np.isfinite(vals)):
                     ok = False
                     break
-                mags.append(float(np.linalg.norm(vals[3:6])))
+                sampled_values.append(vals[3:6])
         if not ok or ts[-1] <= ts[0]:
             continue
+        mags = [_stable_norm(values) for values in sampled_values]
         integ = gyro_integrity(ts, gyro_record_bytes, stride)
         span_raw = float(ts[-1] - ts[0])
         tb = infer_timebase(span_raw, int(n))

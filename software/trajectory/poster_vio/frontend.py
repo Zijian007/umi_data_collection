@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from software.camera.x3.frame import CROP, SRC_H, SRC_W, LENS_HALF, crop_xywh
+from software.configuration import operational_settings as settings
 from .feature_geometry import bearing_inliers, triangulate_batch, describe, match_revisits
 
 
@@ -87,6 +88,7 @@ class _FeatureTracker:
             self.mask = np.where(cv2.resize(mask, (CROP, CROP), interpolation=cv2.INTER_NEAREST) == 0,
                                  255, 0).astype(np.uint8)
         self.frames, self.times, self.nodes = frames, times, nodes
+        self.camera_from_imu_inverse = np.linalg.inv(item.camera_from_imu)
         self.max_features, self.maximum_tracks = max_features, maximum_tracks
         self.minimum_track_length, self.maximum_track_length = minimum_track_length, maximum_track_length
         self.histories, self.active, self.retained = {}, {}, {}
@@ -133,10 +135,9 @@ class _FeatureTracker:
                              & (predicted >= 1).all(axis=1) & (predicted < CROP - 1).all(axis=1))
                     candidates = np.flatnonzero(valid)
                     if len(candidates):
-                        inverse = np.linalg.inv(self.item.camera_from_imu)
                         consistent = bearing_inliers(points[candidates], predicted[candidates], self.item.model,
-                            self.item.seed_poses[self.nodes[self.selected_index - 1]] @ inverse,
-                            self.item.seed_poses[node] @ inverse,
+                            self.item.seed_poses[self.nodes[self.selected_index - 1]] @ self.camera_from_imu_inverse,
+                            self.item.seed_poses[node] @ self.camera_from_imu_inverse,
                             threshold_px=self.parameters.poster_vio_geometric_threshold_px,
                             seed=int(source_index) * 2 + int(self.item.camera == 'front'))
                         self.stats['geometric_rejections'] += int(np.count_nonzero(~consistent))
@@ -167,7 +168,7 @@ class _FeatureTracker:
                 self.bank = {key: track for key, track in self.bank.items()
                              if timestamp - track['last_time_s'] <= self.parameters.poster_vio_revisit_maximum_gap_s}
                 matches = match_revisits(found, descriptors, self.bank,
-                    self.item.seed_poses[node] @ np.linalg.inv(self.item.camera_from_imu), self.item.model,
+                    self.item.seed_poses[node] @ self.camera_from_imu_inverse, self.item.model,
                     timestamp, maximum_gap_s=self.parameters.poster_vio_revisit_maximum_gap_s,
                     ratio=self.parameters.poster_vio_revisit_match_ratio,
                     maximum_reprojection_px=self.parameters.poster_vio_revisit_maximum_reprojection_px)
@@ -285,6 +286,7 @@ def track_cameras(video: Path, cameras: tuple[FeatureCameraInput, ...], *, max_f
             stream = container.streams.video[0]
             if (stream.codec_context.width, stream.codec_context.height) != (SRC_W, SRC_H):
                 raise ValueError('poster_vio 自然特征需要原始 3840×1920 X3 录像')
+            stream.codec_context.thread_count = settings.values('runtime')['decode_threads']
             for source_index, frame in enumerate(container.decode(stream)):
                 if any(not tracker.done and source_index == tracker.frames[tracker.selected_index]
                        for tracker in trackers):
