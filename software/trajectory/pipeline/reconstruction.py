@@ -14,6 +14,7 @@ import numpy as np
 
 from . import runtime
 from software.infrastructure.file_store import write_json
+from software.infrastructure.provenance import canonical_hash
 from software.trajectory.algorithms.fusion.quality import scale_failure
 from software.trajectory.models import AttemptResult, FusionArtifacts, ReconstructionContext
 from software.camera.timing import canonical_to_video_seconds
@@ -33,6 +34,7 @@ def run_attempts(videos: tuple[LensVideo, ...], run_inputs: RecordingData,
     """管理重试与选择；单轮具体阶段顺序见 run_attempt()。"""
     tries, best, last_stage = [], None, None
     alignment_failures = {}
+    poster_failures = set()
     for number in range(1, context.request.max_tries + 1):
         directory = context.paths.attempt(number)
         directory.mkdir(parents=True, exist_ok=True)
@@ -47,6 +49,11 @@ def run_attempts(videos: tuple[LensVideo, ...], run_inputs: RecordingData,
             return_code = error.return_code if isinstance(error, ProcessingError) else 1
             reason = str(error)
             repeated = isinstance(error, RepeatedAlignmentFailure)
+            poster_failure = _poster_failure(directory)
+            if poster_failure is not None:
+                signature = canonical_hash(poster_failure)
+                repeated = signature in poster_failures
+                poster_failures.add(signature)
             write_error_log(directory / 'stage_error.log', error)
         finally:
             # 每个命令保留独立原始日志；runner_tryN 汇总阶段进度及失败原因。
@@ -61,8 +68,12 @@ def run_attempts(videos: tuple[LensVideo, ...], run_inputs: RecordingData,
             try_entry.update({'failed_stage': last_stage, 'reason': reason})
         tries.append(try_entry)
         if repeated:
-            try_entry['stop_reason'] = 'identical_alignment_inputs'
-            runtime.console.write(reason, recording=Path(recording_name).stem, attempt=number, state='停止重试')
+            stop_reason = ('identical_poster_failure'
+                           if poster_failure is not None else 'identical_alignment_inputs')
+            try_entry['stop_reason'] = stop_reason
+            runtime.console.write(
+                f'{reason}；结构化诊断与上一轮完全一致，停止重试',
+                recording=Path(recording_name).stem, attempt=number, state='停止重试')
             break
         if quality is not None and quality['usable'] and (best is None or try_key(quality) < try_key(tries[best - 1])):
             best = number
@@ -80,6 +91,18 @@ def run_attempts(videos: tuple[LensVideo, ...], run_inputs: RecordingData,
         reason = f'{len(tries)} 次重建均失败（最后退出码 {last["rc"]}）：{last.get("reason")}'
         return AttemptResult(tries, None, None, reason, last.get('failed_stage', last_stage) or '重建质量检查')
     return AttemptResult(tries, best, context.paths.attempt(best))
+
+
+def _poster_failure(directory: Path) -> dict | None:
+    """Read a structured poster rejection produced by the fusion CLI."""
+    diagnostic = directory / 'fuse/poster_failure.json'
+    if not diagnostic.is_file():
+        return None
+    try:
+        value = json.loads(diagnostic.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    return value if value.get('code') == 'POSTER_GEOMETRY_FAILURE' else None
 
 
 def run_attempt(videos: tuple[LensVideo, ...], run_inputs: RecordingData, context: ReconstructionContext,
@@ -154,7 +177,17 @@ def fuse_visual_imu(localization: tuple[LensLocalization, ...], run_inputs: Reco
         try:
             evidence = json.loads(diagnostic.read_text())
         except (OSError, ValueError):
-            raise error
+            poster_diagnostic = directory / 'fuse/poster_failure.json'
+            try:
+                poster = json.loads(poster_diagnostic.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                raise error
+            if poster.get('code') != 'POSTER_GEOMETRY_FAILURE':
+                raise error
+            raise ProcessingError(
+                'IMU 融合',
+                f'{poster.get("message", "海报几何检查失败")}；诊断：{poster_diagnostic}',
+                return_code=4) from error
         if evidence.get('code') != 'NO_USABLE_LENS':
             raise error
         if alignment_failures is not None:
