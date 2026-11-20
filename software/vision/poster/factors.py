@@ -44,25 +44,42 @@ def add_natural_track_factors(graph, values, *, pose_key_fn, point_key_fn,
     """
     import gtsam
 
-    noise = gtsam.noiseModel.Robust.Create(
-        gtsam.noiseModel.mEstimator.Huber.Create(float(huber)),
-        gtsam.noiseModel.Isotropic.Sigma(2, float(sigma_px)))
     for track in tracks:
         point_key = point_key_fn(int(track['track_id']))
         values.insert(point_key, gtsam.Point3(*np.asarray(track['initial_point_m'], dtype=float)))
-        for node, observed in zip(track['node_indices'], track['pixels']):
-            pose_key = pose_key_fn(int(node))
+        nodes = np.asarray(track['node_indices'], dtype=int)
+        pixels = np.asarray(track['pixels'], dtype=float)
+        # Bound each factor to a short temporal batch. This cuts Python
+        # callback count while retaining sparse pose-to-point connectivity.
+        for start in range(0, len(nodes), 4):
+            batch_nodes = nodes[start:start + 4]
+            batch_pixels = pixels[start:start + 4]
+            pose_keys = [pose_key_fn(int(node)) for node in batch_nodes]
+            noise = gtsam.noiseModel.Robust.Create(
+                gtsam.noiseModel.mEstimator.Huber.Create(float(huber)),
+                gtsam.noiseModel.Isotropic.Sigma(2 * len(batch_nodes), float(sigma_px)))
 
-            def error(factor, state, jacobians, observed=observed, pose_key=pose_key,
-                      point_key=point_key):
-                residual, pose_jacobian, point_jacobian = natural_track_error(
-                    state, pose_key, point_key, T_camera_imu, model, observed)
+            def error(factor, state, jacobians, batch_pixels=batch_pixels,
+                      pose_keys=pose_keys, point_key=point_key,
+                      batch_size=len(batch_nodes)):
+                residuals = []
+                pose_derivatives = []
+                point_derivatives = []
+                for pose_key, observed in zip(pose_keys, batch_pixels):
+                    residual, pose_jacobian, point_jacobian = natural_track_error(
+                        state, pose_key, point_key, T_camera_imu, model, observed)
+                    residuals.append(residual)
+                    pose_derivatives.append(pose_jacobian)
+                    point_derivatives.append(point_jacobian)
                 if jacobians is not None:
-                    jacobians[0] = pose_jacobian
-                    jacobians[1] = point_jacobian
-                return residual
+                    for index, derivative in enumerate(pose_derivatives):
+                        block = np.zeros((2 * batch_size, 6), dtype=float)
+                        block[2 * index:2 * index + 2] = derivative
+                        jacobians[index] = block
+                    jacobians[-1] = np.vstack(point_derivatives)
+                return np.concatenate(residuals)
 
-            graph.add(gtsam.CustomFactor(noise, [pose_key, point_key], error))
+            graph.add(gtsam.CustomFactor(noise, pose_keys + [point_key], error))
 
 
 def rear_rotation_error(state, pose_key, board_key, seat_key, base_ext, corners, observed, model):
@@ -88,25 +105,52 @@ def add_tag_factors(graph, *, pose_key, board_key, rear_key, base_ext, model, po
                     tag_indices, parameters):
     import gtsam
     enabled = parameters.tag_rear_rotation_refinement_enabled
-    for node, corners, observed in zip(tag_indices, points, pixels):
-        noise = gtsam.noiseModel.Robust.Create(
-            gtsam.noiseModel.mEstimator.Huber.Create(parameters.tag_huber),
-            gtsam.noiseModel.Diagonal.Sigmas(np.repeat(corner_sigma_px(observed, model, parameters), 2)))
+    # A frame usually contains several board tags.  They share one pose key,
+    # so one small factor per frame batch avoids entering the Python callback
+    # once per tag while retaining every corner residual and Jacobian.  Keep
+    # batches bounded to avoid changing the sparsity pattern across many
+    # unrelated measurements or creating very large robust residual vectors.
+    rows_by_node = {}
+    for row, node in enumerate(tag_indices):
+        rows_by_node.setdefault(int(node), []).append(row)
+    for node_rows in rows_by_node.values():
+        for start in range(0, len(node_rows), 8):
+            rows = node_rows[start:start + 8]
+            sigmas = np.concatenate([
+                np.repeat(corner_sigma_px(pixels[row], model, parameters), 2)
+                for row in rows])
+            noise = gtsam.noiseModel.Robust.Create(
+                gtsam.noiseModel.mEstimator.Huber.Create(parameters.tag_huber),
+                gtsam.noiseModel.Diagonal.Sigmas(sigmas))
 
-        def error(factor, state, jacobians, corners=corners, observed=observed):
-            if enabled:
-                residual, *derivatives = rear_rotation_error(state, *factor.keys(), base_ext, corners, observed, model)
-            else:
-                residual, *derivatives = residual_and_jacobians(
-                    state.atPose3(factor.keys()[0]).matrix(), state.atPose3(board_key).matrix(),
-                    base_ext, corners, observed, model)
-            if jacobians is not None:
-                for i, derivative in enumerate(derivatives):
-                    jacobians[i] = derivative
-            return residual
+            def error(factor, state, jacobians, rows=rows):
+                residuals = []
+                pose_jacobians = []
+                board_jacobians = []
+                rear_jacobians = []
+                for row in rows:
+                    corners, observed = points[row], pixels[row]
+                    if enabled:
+                        residual, *derivatives = rear_rotation_error(
+                            state, *factor.keys(), base_ext, corners, observed, model)
+                    else:
+                        residual, *derivatives = residual_and_jacobians(
+                            state.atPose3(factor.keys()[0]).matrix(), state.atPose3(board_key).matrix(),
+                            base_ext, corners, observed, model)
+                    residuals.append(residual)
+                    pose_jacobians.append(derivatives[0])
+                    board_jacobians.append(derivatives[1])
+                    if enabled:
+                        rear_jacobians.append(derivatives[2])
+                if jacobians is not None:
+                    jacobians[0] = np.vstack(pose_jacobians)
+                    jacobians[1] = np.vstack(board_jacobians)
+                    if enabled:
+                        jacobians[2] = np.vstack(rear_jacobians)
+                return np.concatenate(residuals)
 
-        keys = [pose_key(int(node)), board_key] + ([rear_key] if enabled else [])
-        graph.add(gtsam.CustomFactor(noise, keys, error))
+            keys = [pose_key(int(tag_indices[rows[0]])), board_key] + ([rear_key] if enabled else [])
+            graph.add(gtsam.CustomFactor(noise, keys, error))
 
 
 def base_tag_corners_m(size_m):

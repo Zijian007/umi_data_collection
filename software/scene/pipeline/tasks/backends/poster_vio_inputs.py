@@ -28,6 +28,21 @@ from software.vision.poster import detection, layout as tag_board
 from software.vision.poster.geometry import camera_model
 
 
+def _solver_tag_selection(times, maximum_dt_s):
+    """Select complete tag frames for the joint graph without changing seeds."""
+    times = np.asarray(times, dtype=float)
+    if not len(times) or not maximum_dt_s:
+        return np.ones(len(times), dtype=bool)
+    unique = np.unique(np.round(times, 9))
+    selected_times = [unique[0]]
+    for time_s in unique[1:]:
+        if time_s - selected_times[-1] >= maximum_dt_s - 1e-9:
+            selected_times.append(time_s)
+    if selected_times[-1] != unique[-1]:
+        selected_times.append(unique[-1])
+    return np.isin(np.round(times, 9), np.asarray(selected_times))
+
+
 def prepare_task_inputs(inputs: TaskInputs):
     """Use only this task's pixels, IMU, layout and frozen camera assets."""
     episode, scene = inputs.episode, inputs.episode.scene
@@ -114,9 +129,10 @@ def prepare_task_inputs(inputs: TaskInputs):
         tag_times, _, ids, points, pixels, raw_times = select_observations(
             detections, board, measured, scene.parameters,
             start_s=output_times[0], end_s=output_times[-1])
-        tag_times = np.round(tag_times, 9)
-        if len(np.unique(tag_times)) != len(tag_times):
-            raise ValueError('poster_vio 标签时刻在纳秒舍入后不唯一')
+        raw_times = np.round(raw_times, 9)
+        tag_times = np.unique(raw_times)
+        if len(tag_times) < 3:
+            raise ValueError('poster_vio 标签时刻至少需要三个')
         base_target_arms = ()
         base_times = np.empty(0, dtype=float)
         base_ids = np.empty(0, dtype=int)
@@ -151,6 +167,17 @@ def prepare_task_inputs(inputs: TaskInputs):
             record['tag_id'] = int(ids[record['observation']])
         gravity, acc_bias, velocities, inertial = align_inertial(
             training_times, tag_seeds, recording.imu, scene.trajectory.values.fusion)
+        solver_keep = _solver_tag_selection(
+            raw_times, scene.parameters.poster_vio_keyframe_maximum_dt_s)
+        raw_times = raw_times[solver_keep]
+        ids = ids[solver_keep]
+        points = points[solver_keep]
+        pixels = pixels[solver_keep]
+        holdout = holdout[solver_keep]
+        initialization_mask = initialization_mask[solver_keep]
+        tag_times = np.unique(raw_times)
+        if len(tag_times) < 3:
+            raise ValueError('poster_vio 求解采样后标签时刻至少需要三个')
         all_rear_times = video_to_imu_seconds(detections.video_times_s, measured['cam_time_offset_ns'])
         selected = (all_rear_times >= output_times[0]) & (all_rear_times <= output_times[-1])
         rear_times = np.round(all_rear_times[selected], 9)
