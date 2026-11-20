@@ -14,8 +14,8 @@ if TYPE_CHECKING:
     from software.gripper_width.detection.markers import FrameDetection, MarkerDetector
 
 
-def crop_gray(frame: av.VideoFrame, roi: tuple[int, int, int, int],
-              converter: av.video.reformatter.VideoReformatter) -> np.ndarray:
+def _crop_gray_uncached(frame: av.VideoFrame, roi: tuple[int, int, int, int],
+                        converter: av.video.reformatter.VideoReformatter) -> np.ndarray:
     """直接裁剪源像素平面；对齐色度采样后转换，最后恢复精确 ROI 边界。"""
     left, top, right, bottom = roi
     left, right = left + SRC_W // 2, right + SRC_W // 2
@@ -49,6 +49,14 @@ def crop_gray(frame: av.VideoFrame, roi: tuple[int, int, int, int],
                                          source_left:source_left + target.width * sample_bytes]
     gray = converter.reformat(cropped, format='gray', threads=1).to_ndarray()
     return gray[top - aligned_top:bottom - aligned_top, left - aligned_left:right - aligned_left]
+
+
+def crop_gray(frame: av.VideoFrame, roi: tuple[int, int, int, int],
+              converter: av.video.reformatter.VideoReformatter) -> np.ndarray:
+    cached = getattr(frame, 'crop_gray', None)
+    if cached is not None:
+        return cached(roi, converter)
+    return _crop_gray_uncached(frame, roi, converter)
 
 
 def detect_frame(frame: av.VideoFrame, detector: MarkerDetector, roi: tuple[int, int, int, int],

@@ -9,6 +9,33 @@ from pathlib import Path
 from typing import Any, Protocol
 
 
+class _DecodedFrame:
+    """Per-frame fan-out view with lazy conversion caches."""
+
+    __slots__ = ('_frame', '_arrays', '_crop_grays')
+
+    def __init__(self, frame):
+        self._frame = frame
+        self._arrays = {}
+        self._crop_grays = {}
+
+    def __getattr__(self, name):
+        return getattr(self._frame, name)
+
+    def to_ndarray(self, *args, **kwargs):
+        key = (args, tuple(sorted(kwargs.items())))
+        if key not in self._arrays:
+            self._arrays[key] = self._frame.to_ndarray(*args, **kwargs)
+        return self._arrays[key]
+
+    def crop_gray(self, roi, converter):
+        key = tuple(roi)
+        if key not in self._crop_grays:
+            from software.gripper_width.detection.frames import _crop_gray_uncached
+            self._crop_grays[key] = _crop_gray_uncached(self._frame, key, converter)
+        return self._crop_grays[key]
+
+
 class FrameConsumer(Protocol):
     def validate(self, streams) -> None: ...
     def consume(self, index: int, frame) -> None: ...
@@ -40,8 +67,9 @@ class VideoDecode:
             stream = container.streams.video[0]
             stream.codec_context.thread_count = settings.values('runtime')['decode_threads']
             for index, frame in enumerate(container.decode(stream)):
+                shared = _DecodedFrame(frame)
                 for consumer, _ in self._consumers:
-                    consumer.consume(index, frame)
+                    consumer.consume(index, shared)
         results = [consumer.finish() for consumer, _ in self._consumers]
         for (_, save), result in zip(self._consumers, results):
             if save is not None:
