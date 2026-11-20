@@ -180,6 +180,21 @@ class SpecialistTaskTests(unittest.TestCase):
         self.assertTrue(records[-1]['warm_started'])
         self.assertFalse(any(record['applied'] for record in records))
 
+    def test_short_precull_budget_matches_long_precull_solution(self):
+        request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
+        long_arms = tuple(replace(item, scene_parameters=replace(
+            item.scene_parameters, poster_vio_precull_iterations=8)) for item in arms)
+        short_arms = tuple(replace(item, scene_parameters=replace(
+            item.scene_parameters, poster_vio_precull_iterations=3)) for item in arms)
+        long = solve_joint_poster_imu(request, long_arms, seed)
+        short = solve_joint_poster_imu(request, short_arms, seed)
+        self.assertEqual(long.quality.status, 'solved')
+        self.assertEqual(short.quality.status, 'solved')
+        self.assertAlmostEqual(long.quality.reprojection_rms_px,
+                               short.quality.reprojection_rms_px, delta=1e-8)
+        for arm in request.arms:
+            np.testing.assert_allclose(short.trajectories[arm], long.trajectories[arm], atol=1e-8)
+
     def test_natural_holdout_corruption_rejects_without_changing_training_solution(self):
         with patch.object(poster_vio_inputs, 'track_cameras', side_effect=self.helper.feature_tracks):
             request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
