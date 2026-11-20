@@ -361,14 +361,19 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
                 if error <= item.scene_parameters.tag_maximum_reprojection_rms_px:
                     camera_evidence['nodes'].append(int(node))
             natural_residuals.append(dict(key=list(refinement.track_key(track)), errors_px=track_errors))
-        natural_rms = float(np.sqrt(np.mean(np.square(natural_errors)))) if natural_errors else None
+        finite_natural_errors = [error for error in natural_errors if np.isfinite(error)]
+        natural_rms = (float(np.sqrt(np.mean(np.square(finite_natural_errors))))
+                       if finite_natural_errors else None)
         by_camera, supported_nodes = {}, []
         for camera_name, camera_evidence in per_camera.items():
             errors = camera_evidence['errors']
-            rms = float(np.sqrt(np.mean(np.square(errors)))) if errors else None
+            finite_errors = [error for error in errors if np.isfinite(error)]
+            rms = (float(np.sqrt(np.mean(np.square(finite_errors))))
+                   if finite_errors else None)
             if rms is not None:
                 rms_values.append(rms)
-                rejected |= not np.isfinite(rms) or rms > item.scene_parameters.tag_maximum_reprojection_rms_px
+                rejected |= rms > item.scene_parameters.tag_maximum_reprojection_rms_px
+            rejected |= camera_evidence['invalid_depth_observations'] > 0
             # Require three landmarks in one camera, without mixing lens pixels.
             unique, node_counts = np.unique(camera_evidence['nodes'], return_counts=True)
             nodes = unique[node_counts >= 3].astype(int)
@@ -502,7 +507,8 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
             holdout.update(metrics=metrics, imu_times_s=np.unique(item.times_s[item.tag_indices[held]]).tolist(),
                            status='rejected' if failed else 'passed' if frames >= 2 else 'insufficient_evidence')
             rejected |= failed
-            rms_values.append(metrics['rms_px'])
+            if np.isfinite(metrics['rms_px']):
+                rms_values.append(metrics['rms_px'])
         evidence['holdout'] = holdout
         natural_holdout, skipped = [], []
         invalid_natural_holdout = 0
@@ -545,7 +551,8 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
                          for record in by_camera.values())
             status = 'rejected' if failed else status
             rejected |= failed
-            rms_values.append(metrics['rms_px'])
+            if np.isfinite(metrics['rms_px']):
+                rms_values.append(metrics['rms_px'])
         evidence['natural_holdout'] = dict(status=status, metrics=metrics, observations=natural_holdout,
             independent_frames=natural_frames, by_camera=by_camera,
             invalid_depth_observations=invalid_natural_holdout, removed_tracks=skipped,
