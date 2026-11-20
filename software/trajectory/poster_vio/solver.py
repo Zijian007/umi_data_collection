@@ -60,20 +60,20 @@ def _add_holdout_pose_priors(graph, keys, item):
     was built from training observations before the holdout split, so this
     weak prior stabilizes the state without adding held pixels to the graph.
     """
-    if item.tag_holdout_mask is None:
+    if item.holdout_prior_nodes is None:
         return 0
-    held = np.asarray(item.tag_holdout_mask, dtype=bool)
-    if not held.any():
+    nodes = np.asarray(item.holdout_prior_nodes, dtype=int)
+    poses = np.asarray(item.holdout_prior_poses, dtype=float)
+    if not len(nodes):
         return 0
-    nodes = np.unique(item.tag_indices[held])
     noise = gtsam.noiseModel.Robust.Create(
         gtsam.noiseModel.mEstimator.Huber.Create(2.0),
         gtsam.noiseModel.Diagonal.Sigmas(np.array(
             [_HOLDOUT_POSE_PRIOR_ROTATION_SIGMA_RAD] * 3
             + [_HOLDOUT_POSE_PRIOR_TRANSLATION_SIGMA_M] * 3)))
-    for node in nodes:
+    for node, seed_pose in zip(nodes, poses):
         graph.add(gtsam.PriorFactorPose3(
-            keys.pose(int(node)), gtsam.Pose3(item.seed_poses[int(node)]), noise))
+            keys.pose(int(node)), gtsam.Pose3(seed_pose), noise))
     return int(len(nodes))
 
 
@@ -102,6 +102,8 @@ class ArmSolveInput:
     tag_initialization_mask: np.ndarray | None = None
     T_imu_base_tag: np.ndarray | None = None  # Tag -> native IMU; initial rigid mount seed.
     base_tag_indices: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=int))
+    holdout_prior_nodes: np.ndarray | None = None
+    holdout_prior_poses: np.ndarray | None = None
 
 
 def _validate_arm_input(item: ArmSolveInput) -> None:
@@ -128,6 +130,17 @@ def _validate_arm_input(item: ArmSolveInput) -> None:
             or np.any(indices < 0) or np.any(indices >= len(times))
             or len(np.unique(indices)) < 3):
         raise ValueError(f'{item.arm} 海报观测节点索引无效或时刻不足')
+    if (item.holdout_prior_nodes is None) != (item.holdout_prior_poses is None):
+        raise ValueError(f'{item.arm} 留出位姿先验输入必须成对提供')
+    if item.holdout_prior_nodes is not None:
+        prior_nodes = np.asarray(item.holdout_prior_nodes)
+        prior_poses = np.asarray(item.holdout_prior_poses)
+        if (prior_nodes.ndim != 1 or not np.issubdtype(prior_nodes.dtype, np.integer)
+                or prior_poses.shape != (len(prior_nodes), 4, 4)
+                or np.any(prior_nodes < 0) or np.any(prior_nodes >= len(times))):
+            raise ValueError(f'{item.arm} 留出位姿先验形状或节点无效')
+        for pose in prior_poses:
+            validate_transform(pose)
     if item.tag_holdout_mask is not None:
         held = np.asarray(item.tag_holdout_mask)
         if held.shape != (len(points),) or held.dtype != np.bool_:

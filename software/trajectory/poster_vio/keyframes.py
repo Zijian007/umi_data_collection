@@ -48,10 +48,13 @@ def graph_indices(item):
 def graph_input(item, indices):
     from dataclasses import replace
 
+    holdout_nodes = (None if item.holdout_prior_nodes is None else
+                     np.searchsorted(indices, item.holdout_prior_nodes))
     return replace(item, times_s=item.times_s[indices], seed_poses=item.seed_poses[indices],
         seed_velocities=None if item.seed_velocities is None else item.seed_velocities[indices],
         tag_indices=np.searchsorted(indices, item.tag_indices),
         base_tag_indices=np.searchsorted(indices, item.base_tag_indices),
+        holdout_prior_nodes=holdout_nodes,
         natural_tracks=tuple(dict(track, node_indices=np.searchsorted(indices, track['node_indices']))
                              for track in item.natural_tracks))
 
