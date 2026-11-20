@@ -6,12 +6,25 @@ MODES = ('scene_map', 'poster_independent', 'poster_vio', 'auto')
 def read_mode(record, *, default='scene_map'):
     if record is None:
         return default
-    if not isinstance(record, dict) or record.keys() - {'backend'}:
-        raise ValueError('reconstruction 只允许 backend')
+    if not isinstance(record, dict) or record.keys() - {'backend', 'base_tag'}:
+        raise ValueError('reconstruction 只允许 backend、base_tag')
     mode = record.get('backend', default)
     if not isinstance(mode, str) or mode not in MODES:
         raise ValueError(f'reconstruction.backend 必须是 {", ".join(MODES)}')
     return mode
+
+
+def read_base_tag_enabled(record, *, default=True):
+    """Read the optional collection/task switch; kit remains the asset source."""
+    if record is None or 'base_tag' not in record:
+        return bool(default)
+    base_tag = record['base_tag']
+    if not isinstance(base_tag, dict) or set(base_tag) - {'enabled'}:
+        raise ValueError('reconstruction.base_tag 只允许 enabled')
+    enabled = base_tag.get('enabled', default)
+    if type(enabled) is not bool:
+        raise ValueError('reconstruction.base_tag.enabled 必须为 true 或 false')
+    return enabled
 
 
 def require_poster(scene):
@@ -19,10 +32,14 @@ def require_poster(scene):
         raise ValueError('poster_independent/poster_vio/auto 需要 environment_poster.detection.enabled、layout_path 和 task_constraint.enabled')
 
 
-def apply_task_backend(scene, mode, poster):
+def apply_task_backend(scene, mode, poster, *, base_tag_enabled=None):
     """The selected backend derives required poster capabilities for this task."""
     from dataclasses import replace
-    scene = replace(scene, reconstruction_mode=mode)
+    if base_tag_enabled is not None and type(base_tag_enabled) is not bool:
+        raise ValueError('reconstruction.base_tag.enabled 必须为 true 或 false')
+    scene = replace(scene, reconstruction_mode=mode,
+                    **({'poster_vio_base_tag_enabled': base_tag_enabled}
+                       if base_tag_enabled is not None else {}))
     if mode == 'scene_map':
         return scene
     if not poster or scene.tag_layout is None:

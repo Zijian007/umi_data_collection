@@ -20,11 +20,8 @@ def prepare_batch(batch: Path, *, dry_run: bool = False, intrinsics_source: str 
     raw_collection = (read_yaml(batch / 'collection.yaml')
                       if (batch / 'collection.yaml').is_file() else {})
     collection = normalize_collection(raw_collection) if raw_collection else {}
-    from software.scene.pipeline.tasks.policy import task_modes
-    default_mode, modes = task_modes(raw_collection)
-    map_optional = default_mode != 'scene_map' or (bool(modes) and all(
-        mode != 'scene_map' for mode in modes.values()))
-    if not dry_run and not map_optional:
+    map_required, uses_scene_map, _ = batches.mapping_requirements(batch, raw_collection)
+    if not dry_run and map_required and uses_scene_map:
         from software.scene.management.import_manifest import ensure_epoch_plan
         ensure_epoch_plan(batch)
     epoch_mode = layout.metadata(batch, 'map_epochs.yaml').is_file()
@@ -36,8 +33,8 @@ def prepare_batch(batch: Path, *, dry_run: bool = False, intrinsics_source: str 
     has_bound_map = bool(previous.get('map') or collection.get('map_version'))
     batch_inputs = batches.read_inputs(
         batch,
-        require_mapping=not epoch_mode and not has_bound_map and not map_optional,
-        include_mapping=not epoch_mode and not map_optional,
+        require_mapping=not epoch_mode and not has_bound_map and map_required,
+        include_mapping=not epoch_mode and map_required,
         intrinsics_source=intrinsics_source,
         overrides=overrides,
     )

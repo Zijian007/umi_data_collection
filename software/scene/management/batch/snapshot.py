@@ -156,6 +156,24 @@ def _infer_mode(batch: Path, declaration: dict) -> str:
     raise ValueError('scene.layout=auto 无法确定地图布局；请先放置 mapping/ 或生成 map_epochs.yaml')
 
 
+def mapping_requirements(batch: Path, collection: dict) -> tuple[bool, bool, bool]:
+    """Return whether this batch should ingest mapping sources.
+
+    ``auto`` can use a batch's mapping recordings to build the preferred
+    scene map. If no mapping recordings are present, it remains mapless and
+    falls back to the poster backends. When task overrides are declared,
+    their modes describe the tasks that need preparation; otherwise the batch
+    default applies.
+    """
+    from software.scene.pipeline.tasks.policy import task_modes
+    default_mode, modes = task_modes(collection)
+    effective_modes = [default_mode] if not modes else list(modes.values())
+    has_mapping = bool(recordings.insv_files(batch / 'mapping'))
+    uses_scene_map = 'scene_map' in effective_modes
+    uses_auto_with_mapping = has_mapping and 'auto' in effective_modes
+    return uses_scene_map or uses_auto_with_mapping, uses_scene_map, has_mapping
+
+
 def read_inputs(batch: Path, *, require_mapping: bool = True, include_mapping: bool = True,
                 intrinsics_source: str | None = None, overrides: SceneOverrides | None = None) -> BatchInputs:
     validate_batch_name(batch.name)
@@ -169,10 +187,8 @@ def read_inputs(batch: Path, *, require_mapping: bool = True, include_mapping: b
     kit, expected_arms = selected_kit.kit, selected_kit.expected_arms
     scene = replace(read_scene(declaration_path, document=scene_document, overrides=overrides),
                     batch_root=batch)
-    from software.scene.pipeline.tasks.policy import task_modes
-    _, modes = task_modes(read_yaml(declaration_path))
-    map_optional = scene.reconstruction_mode != 'scene_map' or (
-        bool(modes) and all(mode != 'scene_map' for mode in modes.values()))
+    map_required, _, _ = mapping_requirements(batch, read_yaml(declaration_path))
+    map_optional = not map_required
     if scene.mode == 'auto':
         if map_optional and (not include_mapping or not recordings.insv_files(batch / 'mapping')):
             # Mapless runs must not need a healthy map just to infer its layout.

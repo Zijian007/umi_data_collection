@@ -101,6 +101,7 @@ def episode_inputs(episode, cameras, map_manifest) -> dict:
         scene_map_sha256=scene_map_identity(map_manifest) if map_manifest else None,
         scene_assets=map_manifest['assets'] if map_manifest else {},
         reconstruction_mode=episode.scene.reconstruction_mode,
+        poster_vio_base_tag_enabled=episode.scene.poster_vio_base_tag_enabled,
         scene_map_reference=({key: map_manifest[key] for key in ('version', 'frame_id')}
                              if map_manifest else None),
         session_manifest_sha256=artifact_identity.file_hash(episode.session.path),

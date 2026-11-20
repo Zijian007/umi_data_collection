@@ -56,7 +56,8 @@ def prepare_task_inputs(inputs: TaskInputs):
     base_tag_specs = {}
     prepared_arms = []
     for arm in arms:
-        spec = getattr(inputs.recordings[arm].camera, 'base_tag', None)
+        spec = (getattr(inputs.recordings[arm].camera, 'base_tag', None)
+                if getattr(scene, 'poster_vio_base_tag_enabled', True) else None)
         if spec is not None:
             base_tag_specs[arm] = dict(id=int(spec['id']), size_m=float(spec['size_mm']) / 1000.,
                                        dictionary=spec.get('dictionary', 'DICT_4X4_100'))

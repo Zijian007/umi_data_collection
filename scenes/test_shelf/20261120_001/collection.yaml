@@ -1,0 +1,20 @@
+kit: kit_001  # 已有 kits/<名称>/kit.yaml 的目录名字符串；必填，定义设备和夹爪资产。
+
+recording:  # 批次默认采集使用手；任务可覆盖为子集。
+  arms: [left, right]  # 候选 [left] / [right] / [left, right]；必须是 kit 的非空子集，缺片不会自动变单手。
+
+scene:  # 场景描述配置表；身份来自目录名，不在此处填写算法参数。
+  description: test shelf  # 任意描述字符串，可为空；不定义坐标系或算法。
+
+environment_poster:  # 海报布局与用途；海报/auto 后端只需布局即可推导必需能力。
+  layout_path: ../../hardware/calibration_targets/environment_poster.json  # 非空布局 JSON 路径；相对 scenes/<scene>/，也可绝对路径；文件须可读取。
+  detection:  # 可选检测开关；省略时随用途/后端推导。
+    enabled: true  # true=检测；false=显式关闭，与开启用途或海报/auto 后端冲突。
+  task_constraint:  # scene_map 的海报融合用途；海报/auto 后端可省略，不能显式关闭。
+    enabled: true  # true=融合海报；false=不融合，仅 scene_map 允许；scene_map 省略默认 false。
+    method: staged  # 候选 staged / joint：基线后海报细化 / 视觉种子联合图；默认 staged，仅 scene_map 使用。
+
+reconstruction:  # 批次默认任务后端；tasks.<take>.reconstruction 可覆盖。
+  backend: auto  # 有 mapping 原片时先建/复用地图；无 mapping 原片且无地图时回退 poster_vio → poster_independent。
+  base_tag:
+    enabled: false  # poster_vio 是否使用 kit.yaml 中声明的夹爪基座标签。

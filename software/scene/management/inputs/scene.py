@@ -253,9 +253,11 @@ def read_scene(path: Path, *, overrides: SceneOverrides | None = None, document:
             raise ValueError('启用环境标签需要 collection.yaml 的 scene.tags.layout')
         if not environment_tags_enabled:
             raise ValueError('启用环境标签建图或融合前必须开启 scene.tags.enabled')
-    from software.scene.pipeline.tasks.policy import read_mode
+    from software.scene.pipeline.tasks.policy import read_base_tag_enabled, read_mode
+    reconstruction = collection.get('reconstruction')
     return Scene(path, scene_document['name'], scene_document['mode'], scene_document['reference_arm'],
                  recordings={}, rear_calibrations={}, trajectory=trajectory_config, parameters=parameters,
                  tag_layout=tag_layout, overrides=overrides,
                  environment_tags_enabled=environment_tags_enabled,
-                 reconstruction_mode=read_mode(collection.get('reconstruction')))
+                 reconstruction_mode=read_mode(reconstruction),
+                 poster_vio_base_tag_enabled=read_base_tag_enabled(reconstruction))

@@ -14,7 +14,7 @@ from software.scene.arms import resolve_arms
 from software.scene.management.collection_schema import normalize_collection
 from software.scene.management.inputs.scene import require_keys, validate_episode_name
 from software.scene.pipeline.maps import epoch_selection
-from software.scene.pipeline.tasks.policy import read_mode, apply_task_backend
+from software.scene.pipeline.tasks.policy import read_base_tag_enabled, read_mode, apply_task_backend
 
 if TYPE_CHECKING:
     from software.scene.models import Scene
@@ -109,7 +109,10 @@ def resolve_task_configuration(root: Path, scene: Scene, batch_arms: tuple[str, 
     collection = normalize_collection(raw)
     declaration = collection['tasks'].get(root.name, {})
     mode = read_mode(declaration.get('reconstruction'), default=scene.reconstruction_mode)
-    scene = apply_task_backend(scene, mode, raw.get('environment_poster'))
+    base_tag_enabled = read_base_tag_enabled(
+        declaration.get('reconstruction'), default=scene.poster_vio_base_tag_enabled)
+    scene = apply_task_backend(scene, mode, raw.get('environment_poster'),
+                               base_tag_enabled=base_tag_enabled)
     arms = resolve_arms(declaration, batch_arms)
     synchronization = read_synchronization(declaration.get('synchronization'), arms)
     map_request = {key: declaration[key] for key in ('map_version', 'map_epoch') if key in declaration}

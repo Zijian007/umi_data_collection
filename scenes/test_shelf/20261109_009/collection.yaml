@@ -15,4 +15,4 @@ environment_poster:  # 海报布局与用途；海报/auto 后端只需布局即
     method: staged  # 候选 staged / joint：基线后海报细化 / 视觉种子联合图；默认 staged，仅 scene_map 使用。
 
 reconstruction:  # 批次默认任务后端；tasks.<take>.reconstruction 可覆盖。
-  backend: poster_vio  # scene_map=地图；poster_independent=独立引擎+海报；poster_vio=像素/IMU 联合图；auto=按此序回退。
+  backend: auto  # scene_map=地图；poster_independent=独立引擎+海报；poster_vio=像素/IMU 联合图；auto=按此序回退。

@@ -69,7 +69,8 @@ def execute_task(inputs: TaskInputs, *, fallback=None) -> ArmExecutionResult:
         used_cameras = {track.get('camera', 'rear') for track in item.natural_tracks or observation.natural_tracks}
         if len(observation.base_tag_times_s):
             used_cameras.add('front')
-        base_spec = getattr(recording.camera, 'base_tag', None)
+        base_spec = (getattr(recording.camera, 'base_tag', None)
+                      if getattr(episode.scene, 'poster_vio_base_tag_enabled', True) else None)
         expected_spec = (None if base_spec is None else dict(id=base_spec['id'],
             size_m=base_spec['size_mm'] / 1000., dictionary=base_spec.get('dictionary', 'DICT_4X4_100')))
         if request.base_tag_specs.get(item.arm) != expected_spec:

@@ -149,6 +149,7 @@ class Scene:
     batch_root: Path | None = None
     environment_tags_enabled: bool = False
     reconstruction_mode: str = 'scene_map'
+    poster_vio_base_tag_enabled: bool = True
 
     @property
     def root(self) -> Path:

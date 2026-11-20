@@ -98,6 +98,16 @@ class PosterVioWorkflowTests(unittest.TestCase):
             self.assertTrue((self.inputs.directory / 'poster_vio' / item.arm / 'numerical_inputs.npz').is_file())
         self.assertTrue((self.inputs.directory / 'poster_vio/inputs.json').is_file())
 
+    def test_collection_switch_skips_kit_base_tag_assets(self):
+        for index, arm in enumerate(('left', 'right'), start=2):
+            self.inputs.recordings[arm].camera.base_tag = dict(
+                id=index, size_mm=13.0, dictionary='DICT_4X4_100')
+        self.inputs.episode.scene.poster_vio_base_tag_enabled = False
+        request, _, _ = poster_vio_inputs.prepare_task_inputs(self.inputs)
+        self.assertEqual(request.base_tag_specs, {})
+        for arm in ('left', 'right'):
+            self.assertFalse((self.inputs.directory / f'poster_vio/{arm}/base_tag_observations.npz').exists())
+
     def test_route_publishes_optimized_exposure_nodes_and_truthful_support_masks(self):
         written = {}
 

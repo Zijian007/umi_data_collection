@@ -5,6 +5,7 @@
 可选的夹爪 base tag 在 kit.yaml 的 `gripper.base_tag` 声明 ID、黑框边长和
 `DICT_4X4_100` 字典。工作镜头 `front`（specialist 中叫 rear）检测自身和
 对方基座标签，缓存与环境镜头海报分开。单手跳过 base tag 检测和安装估计。
+collection.yaml 的 `reconstruction.base_tag.enabled` 可按批次关闭这项使用；省略时默认启用，任务级同名配置可覆盖批次设置。关闭时保留 kit 资产，但 `poster_vio` 不检测、不初始化也不优化 base tag。
 双手仅在共同时间范围内出现跨手观测时，为被观察标签启用安装变量；只有自身
 观测或跨手观测全部在共同范围外时，不估计或优化安装关系。自身观测只约束
 相机到标签的安装关系，不提供世界定位。

@@ -8,7 +8,7 @@
 
 任务后端位于 `pipeline/tasks/backends/`，结果写入与发布位于 `pipeline/tasks/results/`。两种后端直接使用公共 `results.arm_writer`，不通过另一后端获取写入函数；共用录像准备位于 `recording_preparation.py`，场景地图定位和融合位于 `backends/scene_reconstruction.py`。
 
-任务级估计路由位于 `pipeline/tasks/estimation.py`，共享输入 `TaskInputs` 和输出 `ArmExecutionResult` 定义在 `models.py`。 `TaskInputs.arm_cpu_sets` 保存各手 CPU 分配，`cache_audit` 为审计对象；输出的 `width_reports`、`tag_distance_reports` 为测量报告，`coordinate_record` 为实际输出坐标声明。三种数值后端直接接收同一个输入对象，包含所有使用手的冻结录像、时间偏移、输出目录、CPU 分配和缓存审计；场景及任务名称从其中的 `Episode` 获取。`poster_vio` 会从冻结录像加载标签观测和相机/IMU 资产，调用方也可注入冻结数值输入用于回放测试。`auto` 按“可用地图时 `scene_map → poster_vio → poster_independent`、无地图时 `poster_vio → poster_independent`”执行候选链，只对明确质量不足继续尝试。`MapSelection.available()` 表示目录与清单成对存在，`without_map()` 表示无地图或保留失败原因；无效组合在构造时拒绝。`scene_map` 保留地图布局、标签诊断/融合、`staged/joint` 初值和单双手分支；`poster_independent` 复用现有独立引擎持续融合海报；`poster_vio` 在任务海报坐标内联合优化共享海报位姿、每手 IMU 状态、标签角点和自然特征点，不读取旧场景地图。三者共用相机准备、TCP、测量、发布、验收和训练导出。
+任务级估计路由位于 `pipeline/tasks/estimation.py`，共享输入 `TaskInputs` 和输出 `ArmExecutionResult` 定义在 `models.py`。 `TaskInputs.arm_cpu_sets` 保存各手 CPU 分配，`cache_audit` 为审计对象；输出的 `width_reports`、`tag_distance_reports` 为测量报告，`coordinate_record` 为实际输出坐标声明。三种数值后端直接接收同一个输入对象，包含所有使用手的冻结录像、时间偏移、输出目录、CPU 分配和缓存审计；场景及任务名称从其中的 `Episode` 获取。`poster_vio` 会从冻结录像加载标签观测和相机/IMU 资产，调用方也可注入冻结数值输入用于回放测试。`auto` 在批次有 `mapping/` 原片时先构建或复用地图，再按 `scene_map → poster_vio → poster_independent` 执行；没有 mapping 原片且没有地图时按 `poster_vio → poster_independent` 执行，只对明确质量不足继续尝试。`MapSelection.available()` 表示目录与清单成对存在，`without_map()` 表示无地图或保留失败原因；无效组合在构造时拒绝。`scene_map` 保留地图布局、标签诊断/融合、`staged/joint` 初值和单双手分支；`poster_independent` 复用现有独立引擎持续融合海报；`poster_vio` 在任务海报坐标内联合优化共享海报位姿、每手 IMU 状态、标签角点和自然特征点，不读取旧场景地图。三者共用相机准备、TCP、测量、发布、验收和训练导出。
 
 ## 文件职责
 
@@ -107,7 +107,7 @@ build → map_lifecycle.build_scene()
 run → workflow.run_episode()
     inputs.episode.read_episode()                 批次、录像、预期使用手
     recording_checks.check_episode()      录制质量与完整性
-    estimation.select_map()              按 reconstruction.backend 选择已有地图或跳过
+    estimation.select_map()              按 reconstruction.backend 选择、构建或跳过地图
     camera_assets.select_cameras() / snapshot_cameras() 选择并冻结相机、TCP 与测量资产
     recording_preparation.prepare_episode_recordings() 准备各手录像、检查公共时间区间
         recording_preparation.prepare_with_cache()   复用地图与任务共用的录像准备缓存
@@ -121,7 +121,7 @@ run → workflow.run_episode()
         poster_vio → backends.poster_vio.execute_task()
             在冻结的任务级观测上建立共享海报 + 多手 IMU + 自然特征联合图
             将求解结果重采样到原录像时间轴，再进入公共测量和发布流程
-        auto → 有地图时 scene_map → poster_vio → poster_independent；无地图时 poster_vio → poster_independent
+        auto → 有 mapping 原片时先构建/复用地图，再按 scene_map → poster_vio → poster_independent；无 mapping 原片且无地图时 poster_vio → poster_independent
         两种数值后端共用测量、results.arm_writer.write_arm_result() 与 TCP 写入
     results.trajectory_writers.write_bimanual_trajectory() 公共时间轴与双手相对位姿
     asset_identity.recording_identity()   发布前仅核对原片；测量使用已冻结副本
@@ -131,7 +131,7 @@ run → workflow.run_episode()
     cleanup.after_task()                  删除被取代的运行和本次未用到的任务缓存
 ```
 
-`run_episodes()` 调度任务并汇总结果。以下 `BatchMap` 构建与绑定规则适用于显式 `scene_map`；`poster_independent` 和 `poster_vio` 跳过地图，`auto` 只读取并校验已有地图，不为回退新建地图。场景地图流程每次调用按批次持有独立 `BatchMap`。同批首次任务在锁内构建/校验并固定地图，后续任务复用同一绑定；共同建图失败只执行一次。每个任务仍核对自身标定与地图匹配，复用前检查批次配置、建图原片及地图资产的文件身份，变化即拒绝继续；发布前复核原片与地图资产，已开始的任务仍使用冻结配置，不因外部配置编辑而中断。不同批次的地图准备互不阻塞，只读预检不落盘。
+`run_episodes()` 调度任务并汇总结果。以下 `BatchMap` 构建与绑定规则适用于显式 `scene_map` 及带 mapping 原片的 `auto`；`poster_independent` 和 `poster_vio` 跳过地图。场景地图流程每次调用按批次持有独立 `BatchMap`。同批首次任务在锁内构建/校验并固定地图，后续任务复用同一绑定；共同建图失败只执行一次。每个任务仍核对自身标定与地图匹配，复用前检查批次配置、建图原片及地图资产的文件身份，变化即拒绝继续；发布前复核原片与地图资产，已开始的任务仍使用冻结配置，不因外部配置编辑而中断。不同批次的地图准备互不阻塞，只读预检不落盘。
 
 `--jobs 1` 且双手可用 CPU 至少 8 个时，按手拆分子进程的 CPU 集合，并行定位、融合、检测和结果写入；核心不足、单手或 `--jobs > 1` 时按手串行。任务级发布等待所有手成功；任一手失败时等其他线程退出后保存失败现场，不替换旧成功入口。
 
@@ -241,7 +241,7 @@ KIWI 方法来源和许可证见 [NOTICE.md](NOTICE.md)，运行时不依赖本�
 
 `inputs.batch.read_batch()` 每次读取当前 `collection.yaml`、kit.yaml 与 mapping/，返回具有明确字段的 `Session`；`save_record()` 更新最新解析记录，不让旧快照覆盖配置。单段 mapping 在 schema 5 中直接保存录像引用，per_arm 保留左右两段。run <任务> 也先刷新所属批次。
 
-`build_scene(<批次>)` 校验完整建图输入身份后复用或构建地图；map 字段仅是复用候选。成功结果保存当时的 kit 和完整输入身份；失败 error.json 保存 batch 与 inputs。计算期间 collection/kit 变化会拒绝绑定或发布，历史结果不改写。正式流程以 collection.yaml 和 kit.yaml 为准，不再读取旧位置的批次清单。
+`build_scene(<批次>)` 校验完整建图输入身份后复用或构建地图；map 字段仅是复用候选。`auto` 在批次存在 `mapping/` 原片且尚未绑定地图时，会通过同一入口先构建或复用地图，再进入场景地图后端。成功结果保存当时的 kit 和完整输入身份；失败 error.json 保存 batch 与 inputs。计算期间 collection/kit 变化会拒绝绑定或发布，历史结果不改写。正式流程以 collection.yaml 和 kit.yaml 为准，不再读取旧位置的批次清单。
 
 环境镜头 `umi-calib run <rear目录>` 的 A/B/D、恢复、验收和记录均复用 `calibration/workflow.py`。scene 只负责纯视觉建图、米制对齐和 IMU 融合，返回视频时间上的相机位置；板参考时间匹配和误差比较由标定模块统一计算。通过后生成的 `rear_calibration.json` 保持已有登记/消费接口，并绑定本次运行证据。
 

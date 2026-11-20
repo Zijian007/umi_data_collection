@@ -27,16 +27,27 @@ def _boolean(value, label, default=False):
     return value
 
 
-def _backend(record, label):
+def _reconstruction(record, label, *, require_backend=False):
     if record is None:
         return None
     record = _mapping(record, label)
-    if set(record) != {'backend'}:
-        raise ValueError(f'{label} 只允许 backend')
-    backend = record['backend']
-    if backend not in MODES:
+    if set(record) - {'backend', 'base_tag'}:
+        raise ValueError(f'{label} 只允许 backend、base_tag')
+    backend = record.get('backend')
+    if require_backend and backend is None:
+        raise ValueError(f'{label}.backend 是必需字段')
+    if backend is not None and (not isinstance(backend, str) or backend not in MODES):
         raise ValueError(f'{label}.backend 必须为 {"、".join(MODES)}')
-    return backend
+    normalized = {}
+    if backend is not None:
+        normalized['backend'] = backend
+    if 'base_tag' in record:
+        base_tag = _mapping(record['base_tag'], f'{label}.base_tag')
+        if set(base_tag) - {'enabled'}:
+            raise ValueError(f'{label}.base_tag 只允许 enabled')
+        normalized['base_tag'] = dict(enabled=_boolean(
+            base_tag.get('enabled'), f'{label}.base_tag.enabled', default=True))
+    return normalized
 
 
 def _arms(value, label, available=ARMS):
@@ -154,7 +165,7 @@ def normalize_collection(document: dict) -> dict:
         if tags['mapping']['scale']['enabled'] and not tags['mapping']['enabled']:
             raise ValueError('environment_poster.mapping.scale_correction.enabled 需要 mapping.enabled')
 
-    backend = _backend(document['reconstruction'], 'reconstruction')
+    reconstruction = _reconstruction(document['reconstruction'], 'reconstruction', require_backend=True)
     tasks = _mapping(document.get('tasks', {}), 'tasks')
     normalized_tasks = {}
     for name, task in tasks.items():
@@ -186,15 +197,15 @@ def normalize_collection(document: dict) -> dict:
             normalized['map_version'] = task_map['version']
         if {'epoch', 'version'} <= set(task_map) and task_map['epoch'] is not None and task_map['version'] is not None:
             raise ValueError(f'tasks.{name}.map.epoch 与 map.version 不能同时填写')
-        task_backend = _backend(task.get('reconstruction'), f'tasks.{name}.reconstruction')
-        if task_backend is not None:
-            normalized['reconstruction'] = {'backend': task_backend}
+        task_reconstruction = _reconstruction(task.get('reconstruction'), f'tasks.{name}.reconstruction')
+        if task_reconstruction is not None:
+            normalized['reconstruction'] = task_reconstruction
         normalized_tasks[name] = normalized
 
     result = dict(kit=document['kit'], arms=arms,
                   map_policy=policy, scene=dict(layout=layout,
                   map_reference_arm=reference_arm, description=description),
-                  reconstruction={'backend': backend}, tasks=normalized_tasks)
+                  reconstruction=reconstruction, tasks=normalized_tasks)
     if version is not None:
         result['map_version'] = version
     if tags is not None:

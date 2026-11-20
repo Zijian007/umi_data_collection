@@ -120,6 +120,19 @@ class TaskConfigurationTests(unittest.TestCase):
         self.configure(poster=True)
         self.assertFalse(read_episode(self.helper.episode_path, verify=False).scene.parameters.tag_fusion_enabled)
 
+    def test_base_tag_switch_inherits_and_task_can_override(self):
+        document = self.configure(backend='auto', poster=True)
+        document['reconstruction']['base_tag'] = dict(enabled=False)
+        write_yaml(self.collection, document)
+        episode = read_episode(self.helper.episode_path, verify=False)
+        self.assertFalse(episode.scene.poster_vio_base_tag_enabled)
+
+        document['tasks'] = dict(take_001=dict(
+            reconstruction=dict(base_tag=dict(enabled=True))))
+        write_yaml(self.collection, document)
+        episode = read_episode(self.helper.episode_path, verify=False)
+        self.assertTrue(episode.scene.poster_vio_base_tag_enabled)
+
     def test_invalid_epoch_selection_is_reported_and_execution_rejects_it(self):
         self.configure(task={'map': {'epoch': 'missing'}})
         self.epoch_plan()

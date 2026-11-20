@@ -36,6 +36,26 @@ class SceneVideoLayoutTests(unittest.TestCase):
             self.addCleanup(override.stop)
         write_kit('rig', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(left='SERIAL_left', right='SERIAL_right')).items()})
 
+    def test_auto_uses_mapping_sources_when_the_batch_has_them(self):
+        batch = self.f.scene.root / 'auto_mapping'
+        mapping = batch / 'mapping/map.insv'
+        mapping.parent.mkdir(parents=True)
+        mapping.write_text('mapping')
+        collection = dict(kit='rig', recording=dict(arms=['left']), scene=dict(description=''),
+                          reconstruction=dict(backend='auto'))
+        required, scene_map, has_mapping = batches.mapping_requirements(
+            batch, collection)
+        self.assertTrue(required)
+        self.assertFalse(scene_map)
+        self.assertTrue(has_mapping)
+
+        empty = self.f.scene.root / 'auto_without_mapping'
+        required, scene_map, has_mapping = batches.mapping_requirements(
+            empty, collection)
+        self.assertFalse(required)
+        self.assertFalse(scene_map)
+        self.assertFalse(has_mapping)
+
     def test_prepared_scene_and_batch_are_discovered_without_copying_local_videos(self):
         scene = self.f.root / 'scenes/shelf'
         batch = scene / '20261104_001'

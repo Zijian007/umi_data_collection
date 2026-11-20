@@ -410,7 +410,7 @@ rear 旋转修正改为共享因子实现：`tag_rear_rotation_refinement_enable
 
 ### 建图海报尺度
 
-任务估计后端由 `collection.yaml.reconstruction.backend` 选择，可由 `tasks.<take>.reconstruction.backend` 覆盖：`scene_map`（默认）沿用场景地图流程；`poster_independent` 用本录像独立重建并持续融合海报，统一为任务海报坐标；`poster_vio` 从本任务海报角点建立 PnP 种子，并在无预建地图的联合图中优化海报、IMU 和自然特征；`auto` 有可用地图时按 `scene_map → poster_vio → poster_independent` 尝试，地图缺失、损坏或不兼容时从 `poster_vio` 开始，只有明确质量失败才继续降级。无地图后端要求 `environment_poster.detection.enabled`、布局和 `task_constraint.enabled`，不要求 mapping 原片。`task_constraint.method: staged|joint` 仍只选择场景地图后端的海报图初值；`map.layout: auto` 只推断地图布局，与后端自动回退不同。具体边界见[估计后端说明](../docs/场景处理.md#选择轨迹估计后端)。
+任务估计后端由 `collection.yaml.reconstruction.backend` 选择，可由 `tasks.<take>.reconstruction.backend` 覆盖：`scene_map`（默认）沿用场景地图流程；`poster_independent` 用本录像独立重建并持续融合海报，统一为任务海报坐标；`poster_vio` 从本任务海报角点建立 PnP 种子，并在无预建地图的联合图中优化海报、IMU 和自然特征；`auto` 在批次有 `mapping/` 建图原片时先构建或复用场景地图，再按 `scene_map → poster_vio → poster_independent` 处理；没有 mapping 原片且没有可用地图时从 `poster_vio` 开始。`reconstruction.base_tag.enabled` 控制 `poster_vio` 是否使用 kit 中声明的夹爪基座标签，默认 true，也可在 `tasks.<take>.reconstruction.base_tag.enabled` 覆盖。无地图后端要求 `environment_poster.detection.enabled`、布局和 `task_constraint.enabled`。`task_constraint.method: staged|joint` 仍只选择场景地图后端的海报图初值；`map.layout: auto` 只推断地图布局，与后端自动回退不同。具体边界见[估计后端说明](../docs/场景处理.md#选择轨迹估计后端)。
 
 `parameters.poster_vio` 的 `initialization` 管理整板/标签子集假设上限；`keyframes` 管理时间、位移和旋转选帧，间隔为 0 时保留逐帧对照；`frontend` 管理活动点、轨迹预算、长度、几何筛选及有界重关联；`culling` 管理短求解迭代、热启动重求解轮数和累计剔除预算；`holdout` 管理标签/自然像素留出及验收 RMS。默认值见 `algorithms/scene_parameters.yaml`，完整覆盖示例及证据边界见[场景处理](../docs/场景处理.md#选择轨迹估计后端)。
 

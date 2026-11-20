@@ -52,7 +52,15 @@ def select_map(episode, requested_map_version, *, batch_map=None, dry_run=False,
         episode, directory, manifest = (batch_map.bind(episode) if batch_map is not None else
             map_lifecycle.bind_map(episode, requested_map_version, dry_run, cores=cores))
         return episode, MapSelection.available(directory, manifest)
-    # auto only consumes existing maps; it does not construct a scene map first.
+    if (mode == 'auto' and not requested_map_version and episode.session.mapping
+            and episode.session.map_version is None):
+        # A batch with mapping recordings should build its preferred scene map
+        # before auto tries the mapless poster backends. bind_map also reuses
+        # an identical published map and freezes the resulting batch pointer.
+        episode, directory, manifest = (batch_map.bind(episode) if batch_map is not None else
+            map_lifecycle.bind_map(episode, requested_map_version, dry_run, cores=cores))
+        return episode, MapSelection.available(directory, manifest)
+    # Auto without mapping recordings only consumes an existing map.
     try:
         if (episode.map_selection or {}).get('status') in ('unavailable', 'pending'):
             raise MapUnavailableError(episode.map_selection['reason'])
