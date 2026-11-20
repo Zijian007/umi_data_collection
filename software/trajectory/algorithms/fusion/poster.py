@@ -27,6 +27,7 @@ from software.vision.poster.factors import (
 
 BOARD_KEY = gtsam.symbol('h', 0)  # l0 已被独立图的 rear 杆臂占用。
 REAR_SEAT_KEY = gtsam.symbol('s', 0)
+_MIN_VALID_DEPTH_M = 1e-3
 
 
 class PosterCullRequest(PosterGeometryError):
@@ -102,7 +103,8 @@ class PosterContext:
                              p01_m=float(np.percentile(depths, 1)),
                              median_m=float(np.median(depths)),
                              max_m=float(np.max(depths)),
-                             positive_fraction=float(np.mean(depths > 0)))
+                             minimum_valid_m=_MIN_VALID_DEPTH_M,
+                             positive_fraction=float(np.mean(depths >= _MIN_VALID_DEPTH_M)))
         checks = dict(finite=bool(np.isfinite(pixels).all() and np.isfinite(points).all()),
                       optimized_error_decreased=bool(np.isfinite(final_error)
                                                      and final_error <= initial_error + 1e-5),
@@ -110,15 +112,15 @@ class PosterContext:
                       reprojection_limit_px=float(self.parameters.tag_maximum_reprojection_rms_px),
                       reprojection_passed=bool(np.isfinite(rms)
                                                and rms <= self.parameters.tag_maximum_reprojection_rms_px),
-                      positive_depth=bool(np.all(depths > 0)))
+                      positive_depth=bool(np.all(depths >= _MIN_VALID_DEPTH_M)))
         invalid_depth_details = [
             dict(observation=int(row), frame=int(self.frame_ids[row]),
                  tag_id=int(self.tag_ids[row]), corner=int(corner),
                  depth_m=float(depths[row, corner]))
-            for row, corner in zip(*np.nonzero(depths <= 0))
+            for row, corner in zip(*np.nonzero(depths < _MIN_VALID_DEPTH_M))
         ]
         diagnostics = dict(metrics=metrics, depth_summary=depth_summary,
-                           invalid_depth_observations=int(np.count_nonzero(depths <= 0)),
+                           invalid_depth_observations=int(np.count_nonzero(depths < _MIN_VALID_DEPTH_M)),
                            invalid_depth_details=invalid_depth_details,
                            checks=checks, initial_error=float(initial_error), final_error=float(final_error))
         if not checks['finite'] or not checks['optimized_error_decreased']:
@@ -126,7 +128,7 @@ class PosterContext:
         reprojection_mask = np.sqrt(
             np.mean(np.linalg.norm(pixels-self.pixels, axis=2)**2, axis=1)
         ) > cull_threshold(self.parameters)
-        depth_mask = np.any(depths <= 0, axis=1)
+        depth_mask = np.any(depths < _MIN_VALID_DEPTH_M, axis=1)
         mask = reprojection_mask | depth_mask
         if np.any(mask):
             if (not self.evidence.get('culled_observations') and isolated_cull(mask, self.frame_ids,
