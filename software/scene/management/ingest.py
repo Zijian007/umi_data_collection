@@ -198,8 +198,12 @@ def register_recordings(session: Session, *, dry_run: bool = False) -> dict:
                                and not recording.path.is_relative_to((batch / 'mapping').resolve())]
         arm_serials = {arm: session.arm_serials[arm] for arm in expected_arms}
         serial_arms = {serial: arm for arm, serial in arm_serials.items()}
-        ignored_recordings = [dict(recording.summary(), reason='不属于本批次预期使用的设备')
-                              for recording in recordings_metadata if recording.serial not in arm_serials.values()]
+        # recording.arms 是本批次的消费范围。双手套件下未声明的另一手原片
+        # 仍可能同时存在于 take 目录，但它不是设备不匹配，不应把单手任务
+        # 判为失败；只有套件之外的设备才进入 ignored 并阻断运行。
+        kit_serials = set(session.arm_serials.values())
+        ignored_recordings = [dict(recording.summary(), reason='不属于本套件的设备')
+                              for recording in recordings_metadata if recording.serial not in kit_serials]
         recordings_metadata = [recording for recording in recordings_metadata if recording.serial in arm_serials.values()]
         recording_owners, incomplete_tasks = {}, {}
         # batch_task_directories 已按任务名校验，内部目录与隐藏目录不会出现。

@@ -68,7 +68,7 @@ poster_vio:  # 实验性联合图的观测门槛；与独立引擎后端分开�
     maximum_translation_correction_m: 0.05  # 安装外参相对种子允许的最大平移修正，单位 m；正数，超出拒绝任务。
     minimum_self_frames: 3  # 跨手安装变量所需的不同自身观测时刻数；整数 >=3，单手不使用。
   minimum_tag_frames: 8  # 每手最少的独立训练标签时刻数，留出后仍需满足，不按同帧 ID 数累计。
-  maximum_observation_gap_s: 0.5  # 初始化标签时刻之间的最大间隔，单位 s。
+  maximum_observation_gap_s: 3.5  # 初始化标签时刻之间的最大间隔，单位 s。
   minimum_time_span_s: 1.0  # 每手标签观测的最小时间跨度，单位 s。
   maximum_position_support_gap_s: 2.0  # 含首尾、无自然视觉或合格海报支持的最大间隔，单位 s。
   maximum_gravity_difference_deg: 5.0  # 两手惯性初始化重力方向夹角上限，单位 deg。

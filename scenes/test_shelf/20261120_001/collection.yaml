@@ -15,6 +15,6 @@ environment_poster:  # 海报布局与用途；海报/auto 后端只需布局即
     method: staged  # 候选 staged / joint：基线后海报细化 / 视觉种子联合图；默认 staged，仅 scene_map 使用。
 
 reconstruction:  # 批次默认任务后端；tasks.<take>.reconstruction 可覆盖。
-  backend: auto  # 候选：scene_map=场景地图；poster_independent=独立重建+海报；poster_vio=海报/自然特征/IMU 联合图；auto=自动选择。有 mapping 原片时先建/复用地图，否则按可用地图与质量回退。
+  backend: scene_map  # 候选：scene_map=场景地图；poster_independent=独立重建+海报；poster_vio=海报/自然特征/IMU 联合图；auto=自动选择。有 mapping 原片时先建/复用地图，否则按可用地图与质量回退。
   base_tag:
     enabled: false  # poster_vio 是否使用 kit.yaml 中声明的夹爪基座标签。

@@ -104,6 +104,26 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(set(plans[0]), {'left'})
         self.assertFalse(pending)
 
+    def test_recording_arms_filters_a_stale_extra_hand_from_existing_task(self):
+        # 原任务清单曾按双手登记；批次后来明确改为只消费右手。
+        data = read_yaml(self.f.session_path)
+        data['expected_arms'] = ['right']
+        write_yaml(self.f.session_path, data)
+        session = batch_inputs.read_batch(self.f.session_path)
+        task = self.f.batch_root / 'take_001'
+        task.mkdir()
+        refs = {arm: item.reference(task) for arm, item in zip(('left', 'right'), self.infos)}
+        write_yaml(layout.manifest(task, 'episode.yaml'), dict(schema_version=5, recordings=refs))
+
+        episode = episode_inputs.read_episode(task, verify=False)
+        self.assertEqual(episode.expected_arms, ('right',))
+        self.assertEqual(set(episode.recordings), {'right'})
+        self.assertEqual(set(episode.recording_refs), {'right'})
+        result = self.run_ingest()
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['ignored'], [])
+        self.assertEqual(result['skipped'], ['take_001'])
+
     def test_dry_run_creates_no_directories_or_files(self):
         before={str(path.relative_to(self.f.root)):(path.stat().st_size,path.stat().st_mtime_ns)
                 for path in self.f.root.rglob('*') if path.is_file()}

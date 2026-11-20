@@ -48,12 +48,21 @@ def read_episode(path: Path, *, verify: bool = True, overrides: SceneOverrides |
     resolved.require_ready_map()
     session = replace(session, scene=resolved.scene)
     expected = resolved.expected_arms
-    recording_paths, serials = read_recordings(root, episode_document['recordings'], verify=verify)
-    if set(serials.keys()) - set(expected):
-        raise ValueError('实际录像包含本次任务未声明使用的手')
+    # collection.yaml 的 recording.arms（以及任务级 arms 子集）定义本次任务
+    # 实际消费的手。旧清单可能是在双手配置下生成的，即使后来把批次改成
+    # 单手，磁盘上的另一侧原片也不应阻断当前任务；过滤后再校验设备身份。
+    # 任务声明扩展批次手臂的情况已经由 resolve_task_configuration 拒绝，
+    # 因而这里的额外引用只能是历史清单中的未使用手臂。
+    raw_recording_references = episode_document['recordings']
+    require_keys(raw_recording_references, {'left', 'right'}, set(), 'recordings')
+    recording_references = {
+        arm: item for arm, item in raw_recording_references.items()
+        if arm in expected
+    }
+    recording_paths, serials = read_recordings(root, recording_references, verify=verify)
     if any(serial != session.arm_serials[arm] for arm, serial in serials.items()):
         raise ValueError('录像清单的设备身份与套件的左右手配置不一致')
-    return Episode(path, session, recording_paths, serials, expected, episode_document['recordings'],
+    return Episode(path, session, recording_paths, serials, expected, recording_references,
                    resolved.instruction, resolved.synchronization, resolved.map_version, resolved.map_selection)
 
 
