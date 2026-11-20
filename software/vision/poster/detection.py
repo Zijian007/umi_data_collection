@@ -195,6 +195,14 @@ class PosterDetection:
                       int(np.ceil(points[:, 0].max() + margin + 1)),
                       int(np.ceil(points[:, 1].max() + margin + 1)))
         found, duplicate, unknown = self.detector.detect(gray, roi=follow)
+        # A tracked ROI can retain one stale/partial tag after the board has
+        # been occluded or moved. Reacquire on the full half-frame whenever a
+        # follow-up scan does not recover a minimal two-tag board. The weak
+        # ROI result is kept only when the full scan finds no better evidence.
+        if follow is not None and len(found) < 2:
+            full_found, full_duplicate, full_unknown = self.detector.detect(gray, roi=None)
+            if len(full_found) > len(found):
+                found, duplicate, unknown = full_found, full_duplicate, full_unknown
         self.sample_count += 1
         sample_index = len(self.times)
         self.frames.append(source_index)
@@ -259,7 +267,8 @@ def report(observations: TagObservations, settings: DetectionSettings) -> dict:
         dictionary=settings.dictionary, sampled_frames=n, observations=total,
         detection_schedule=dict(frame_step=settings.frame_step,
                                 full_frame_every=settings.full_frame_every,
-                                follow_window_margin_px=160),
+                                follow_window_margin_px=160,
+                                reacquisition_minimum_tags=2),
         first_video_time_s=float(observations.video_times_s[0]), last_video_time_s=float(observations.video_times_s[-1]),
         at_least_one_usable=_visibility(observations, observations.sample_indices[valid], settings.frame_step),
         usable_ids_per_frame=counts.tolist(), usable_corners_per_frame=(counts * 4).tolist(),

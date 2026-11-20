@@ -144,7 +144,9 @@ class PosterDetectionTests(unittest.TestCase):
         settings = environment_tags.DetectionSettings(border_bits=1, full_frame_every=2)
         consumer = environment_tags.PosterDetection(settings)
         polygon = np.array([[400., 400.], [519., 400.], [519., 519.], [400., 519.]])
-        with patch.object(consumer.detector, 'detect', side_effect=[([(12, polygon)], 0, 0)] * 3) as detect:
+        with patch.object(consumer.detector, 'detect', side_effect=[
+                ([(12, polygon)], 0, 0), ([(12, polygon)], 0, 0),
+                ([(12, polygon)], 0, 0), ([(12, polygon)], 0, 0)]) as detect:
             for index in range(3):
                 frame = type('Frame', (), {
                     'pts': index, 'time_base': 1,
