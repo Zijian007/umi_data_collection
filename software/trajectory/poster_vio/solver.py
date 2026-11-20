@@ -27,6 +27,7 @@ from . import refinement, keyframes, base_tags
 
 _MIN_NATURAL_DEPTH_M = 1e-3
 _INVALID_NATURAL_RESIDUAL_PX = 1e6
+_LM_RELATIVE_ERROR_TOL = 1e-4
 _HOLDOUT_POSE_PRIOR_ROTATION_SIGMA_RAD = float(np.deg2rad(5.0))
 _HOLDOUT_POSE_PRIOR_TRANSLATION_SIGMA_M = 0.05
 
@@ -311,6 +312,10 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
 
     solver = gtsam.LevenbergMarquardtParams()
     solver.setMaxIterations(maximum_iterations or arms[0].trajectory_parameters.fusion.lm_iterations)
+    # Match specialist's accepted-step stopping rule. Once the joint graph
+    # improves by less than this fraction, further native LM iterations add
+    # cost without changing the accepted state materially.
+    solver.setRelativeErrorTol(_LM_RELATIVE_ERROR_TOL)
     if initial_lambda is not None:
         solver.setlambdaInitial(max(solver.getlambdaLowerBound(), min(solver.getlambdaUpperBound(), initial_lambda)))
     if warm is not None:
