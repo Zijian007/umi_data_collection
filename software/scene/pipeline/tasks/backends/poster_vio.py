@@ -125,10 +125,24 @@ def execute_task(inputs: TaskInputs, *, fallback=None) -> ArmExecutionResult:
         for arm, evidence in solved.arm_evidence.items():
             holdout = evidence.get('holdout', {})
             if holdout.get('status') == 'rejected':
+                depth_summary = holdout.get('depth_summary') or {}
+                invalid_depth_details = holdout.get('invalid_depth_details') or []
+                affected_times = {
+                    detail.get('imu_time_s')
+                    for detail in invalid_depth_details
+                    if detail.get('imu_time_s') is not None
+                }
+                depth_detail = ''
+                if depth_summary.get('min_m') is not None:
+                    depth_detail = (
+                        f', 最小深度={depth_summary["min_m"]:.6g}m'
+                        f', P01={depth_summary.get("p01_m", float("nan")):.6g}m'
+                        f', 受影响时刻={len(affected_times)}')
                 diagnostics.append(
                     f'{arm} 标签留出拒绝'
                     f'(非正深度={holdout.get("invalid_depth_observations", 0)}'
-                    f', RMS={holdout.get("metrics", {}).get("rms_px")})')
+                    f', RMS={holdout.get("metrics", {}).get("rms_px")}'
+                    f'{depth_detail})')
             natural = evidence.get('natural_holdout', {})
             if natural.get('status') == 'rejected':
                 diagnostics.append(
