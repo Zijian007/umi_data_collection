@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from concurrent.futures import ThreadPoolExecutor
 import shutil
 
 import numpy as np
@@ -10,6 +9,7 @@ import numpy as np
 from software.camera.geometry import imu_from_camera
 from software.camera.timing import video_to_imu_seconds
 from software.infrastructure.file_store import write_json
+from software.infrastructure.concurrency import daemon_map
 from software.infrastructure.provenance import file_hash
 from software.scene import layout
 from software.scene.models import TaskInputs
@@ -59,8 +59,7 @@ def prepare_task_inputs(inputs: TaskInputs):
     if len(arms) > 1:
         inputs.console.write('双手环境标签与夹爪检测并行', recording=episode.root.name,
                              step=(2, 3))
-        with ThreadPoolExecutor(max_workers=len(arms), thread_name_prefix='poster-detection') as executor:
-            list(executor.map(prepare_arm_detections, arms))
+        daemon_map(prepare_arm_detections, arms)
     else:
         prepare_arm_detections(arms[0])
 

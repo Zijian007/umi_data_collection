@@ -9,6 +9,8 @@ from dataclasses import asdict
 from pathlib import Path
 import argparse
 import json
+import os
+import signal
 
 
 from software.scene import layout, workflow
@@ -158,6 +160,16 @@ def _prepare_execution(args):
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    interrupts = {'count': 0}
+
+    def handle_interrupt(signum, frame):
+        interrupts['count'] += 1
+        if interrupts['count'] == 1:
+            workflow.console.write('收到中断请求；正在停止当前阶段，再按一次 Ctrl-C 立即退出。', state='中断')
+            raise KeyboardInterrupt
+        os._exit(130)
+
+    signal.signal(signal.SIGINT, handle_interrupt)
     try:
         overrides, handled = _prepare_execution(args)
         if handled:

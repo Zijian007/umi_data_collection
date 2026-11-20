@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
 from software.infrastructure import provenance as artifact_identity
+from software.infrastructure.concurrency import daemon_map
 from software.scene import layout
 from software.scene.models import Episode, CalibratedCamera, PreparedRecording
 from software.scene.pipeline import recordings
@@ -33,8 +33,7 @@ def prepare_episode_recordings(episode: Episode, cameras: dict[str, CalibratedCa
         # Each arm has independent source/cache directories and an already
         # partitioned CPU set.  Parallelize decode and lens-video preparation
         # without creating nested task-level parallelism.
-        with ThreadPoolExecutor(max_workers=len(arms), thread_name_prefix='scene-prepare') as executor:
-            prepared = dict(executor.map(prepare, arms))
+        prepared = dict(daemon_map(prepare, arms))
     else:
         prepared = dict(prepare(arm) for arm in arms)
     start = max(recording.video_times_s[0] + video_offsets_s[arm] for arm, recording in prepared.items())
