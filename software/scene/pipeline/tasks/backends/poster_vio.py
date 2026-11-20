@@ -121,7 +121,22 @@ def execute_task(inputs: TaskInputs, *, fallback=None) -> ArmExecutionResult:
         quality=asdict(solved.quality), arms=solved.arm_evidence,
         scene_map_priors_used=False, actual_error='not_measured'))
     if solved.quality.status != 'solved':
-        raise PosterVioQualityError(f'poster_vio 联合图质量拒绝：{solved.quality.status}')
+        diagnostics = []
+        for arm, evidence in solved.arm_evidence.items():
+            holdout = evidence.get('holdout', {})
+            if holdout.get('status') == 'rejected':
+                diagnostics.append(
+                    f'{arm} 标签留出拒绝'
+                    f'(非正深度={holdout.get("invalid_depth_observations", 0)}'
+                    f', RMS={holdout.get("metrics", {}).get("rms_px")})')
+            natural = evidence.get('natural_holdout', {})
+            if natural.get('status') == 'rejected':
+                diagnostics.append(
+                    f'{arm} 自然点留出拒绝'
+                    f'(非正深度={natural.get("invalid_depth_observations", 0)}'
+                    f', RMS={natural.get("metrics", {}).get("rms_px")})')
+        detail = '；'.join(diagnostics) if diagnostics else '详见 poster_vio/quality.json'
+        raise PosterVioQualityError(f'poster_vio 联合图质量拒绝：{solved.quality.status}；{detail}')
     coordinate = dict(solved.coordinate_record, scope='task_poster', axes='board_layout', units='metres',
                        reconstruction_backend='poster_vio', quality=asdict(solved.quality))
     if fallback:

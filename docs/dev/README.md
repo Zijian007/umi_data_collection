@@ -44,6 +44,9 @@
 ./test.sh --unit test_config.ConfigTests.test_c_isolates_task_poster_and_dual_mode_but_keeps_solver_parameters
 ```
 
+无指定测试目标时，`test.sh` 会按测试模块并行启动 8 个 Python worker。可用
+`UMI_TEST_JOBS=1 ./test.sh --unit` 恢复串行，或设置更适合本机资源的 worker 数量。指定模块或单个用例时仍只执行指定目标。
+
 也可分项执行各环境原生命令：
 
 ```bash

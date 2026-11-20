@@ -77,7 +77,9 @@ class AutomaticBackendChainTests(unittest.TestCase):
             class Inputs:
                 directory: Path
                 episode: object
-            inputs = Inputs(root, SimpleNamespace(scene=SimpleNamespace(reconstruction_mode='auto')))
+                console: object
+            console = SimpleNamespace(messages=[], write=lambda message, **_: console.messages.append(message))
+            inputs = Inputs(root, SimpleNamespace(scene=SimpleNamespace(reconstruction_mode='auto')), console)
             expected = SimpleNamespace(coordinate_record={})
 
             def scene(inputs, selection):
@@ -106,6 +108,9 @@ class AutomaticBackendChainTests(unittest.TestCase):
             self.assertEqual(attempts['selected_backend'], 'poster_independent')
             self.assertEqual([item['status'] for item in attempts['attempts']],
                              ['failed', 'failed', 'succeeded'])
+            self.assertIn('自动后端路由', console.messages[0])
+            self.assertIn('后端切换：scene_map → poster_vio', console.messages[2])
+            self.assertIn('后端选定：poster_independent', console.messages[-1])
 
 
 class PosterIndependentWorkflowTests(unittest.TestCase):

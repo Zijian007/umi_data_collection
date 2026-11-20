@@ -19,6 +19,7 @@ RUN_UNIT=1
 RUN_JS=1
 RUN_QUICK=0
 TEST_TARGETS=()
+TEST_JOBS="${UMI_TEST_JOBS:-8}"
 
 # The quick profile contains pure numerical, schema, timing and cache-contract
 # tests.  End-to-end calibration, mapping, scene and viewer workflows remain
@@ -46,6 +47,7 @@ usage() {
     echo "  --js         仅运行查看器前端测试 (node --test)"
     echo "  --checks     仅运行 CLI 运行时健康检查 (umi-calib check, umi-scene check, KB4 C++ 回归)"
     echo "  --all        运行全部（单元测试 + 前端测试 + CLI 检查 + KB4 C++ 回归）"
+    echo "  UMI_TEST_JOBS=N  无指定目标时并行运行 Python 测试模块，默认 8；设为 1 恢复串行"
     echo "  -h, --help   显示帮助信息"
     echo ""
     echo "示例: $0 --unit test_rear_assets test_calibration_inventory"
@@ -94,14 +96,16 @@ if [ "$RUN_UNIT" -eq 1 ]; then
             QUICK_TARGETS+=("tests/${module}.py")
         done
         PYTHONPATH="$ROOT_DIR/tests${PYTHONPATH:+:$PYTHONPATH}" \
-            "$TEST_PY" -m unittest -q "${QUICK_TARGETS[@]}"
+            "$TEST_PY" tests/run_parallel.py --jobs "$TEST_JOBS" "${QUICK_TARGETS[@]}"
     elif [ ${#TEST_TARGETS[@]} -gt 0 ]; then
         echo "[单元] 运行指定测试..."
         PYTHONPATH="$ROOT_DIR/tests${PYTHONPATH:+:$PYTHONPATH}" \
             "$TEST_PY" -m unittest -q "${TEST_TARGETS[@]}"
     else
-        echo "[单元] 运行主单元测试套件 (tests/)..."
-        "$TEST_PY" -m unittest discover -s tests -q
+        echo "[单元] 运行主单元测试套件 (tests/)，并行 worker=$TEST_JOBS..."
+        MODULES=(tests/test_*.py)
+        PYTHONPATH="$ROOT_DIR/tests${PYTHONPATH:+:$PYTHONPATH}" \
+            "$TEST_PY" tests/run_parallel.py --jobs "$TEST_JOBS" "${MODULES[@]}"
     fi
     echo "✓ 主单元测试通过"
 fi

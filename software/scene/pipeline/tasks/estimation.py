@@ -124,12 +124,22 @@ def execute(inputs: TaskInputs, selection: MapSelection) -> ArmExecutionResult:
     # represented by SceneFusionQualityError and falls through the same chain.
     candidates = (AUTO_CANDIDATES_WITH_MAP if selection.manifest is not None
                   else AUTO_CANDIDATES_WITHOUT_MAP)
+    console = getattr(inputs, 'console', None)
+    recording = getattr(getattr(inputs, 'episode', None), 'root', None)
+    recording = getattr(recording, 'name', None)
+
+    def route_message(message):
+        if console is not None:
+            console.write(message, recording=recording)
+
+    route_message('自动后端路由：' + ' → '.join(candidates) +
+                  ('；场景地图可用' if selection.manifest is not None else '；无可用场景地图'))
     attempts_root = inputs.directory / 'reconstruction_attempts'
     attempts_root.mkdir(exist_ok=True)
     attempts = []
     failure = dict(selection.failure) if selection.failure else None
 
-    def record_failure(backend, error, *, category):
+    def record_failure(backend, error, *, category, next_backend=None):
         nonlocal failure
         details = fallback_record(error, category=category)
         attempts.append(dict(backend=backend, status='failed', **details))
@@ -139,8 +149,13 @@ def execute(inputs: TaskInputs, selection: MapSelection) -> ArmExecutionResult:
         failure['attempts'] = list(attempts)
         write_json(attempts_root / 'attempts.json', dict(
             requested_mode='auto', selected_backend=None, attempts=attempts))
+        if next_backend is None:
+            route_message(f'后端失败：{backend}；类别={category}；原因={details["reason"]}')
+        else:
+            route_message(f'后端切换：{backend} → {next_backend}；类别={category}；原因={details["reason"]}')
 
     for index, backend in enumerate(candidates):
+        route_message(f'后端尝试 {index + 1}/{len(candidates)}：{backend}')
         attempt_dir = attempts_root / f'{index:02d}_{backend}'
         attempt_dir.mkdir()
         candidate_selection = (selection if backend == 'scene_map' else
@@ -149,10 +164,12 @@ def execute(inputs: TaskInputs, selection: MapSelection) -> ArmExecutionResult:
             result = ESTIMATORS[backend](replace(inputs, directory=attempt_dir), candidate_selection)
         except SceneFusionQualityError as error:
             # The map was present, but its usable visual support was too weak.
-            record_failure(backend, error, category='scene_quality')
+            record_failure(backend, error, category='scene_quality',
+                           next_backend=candidates[index + 1] if index + 1 < len(candidates) else None)
             continue
         except PosterVioQualityError as error:
-            record_failure(backend, error, category='poster_vio_quality')
+            record_failure(backend, error, category='poster_vio_quality',
+                           next_backend=candidates[index + 1] if index + 1 < len(candidates) else None)
             continue
         except InvalidDataError as error:
             # A candidate can be unavailable because the prepared recording
@@ -160,7 +177,8 @@ def execute(inputs: TaskInputs, selection: MapSelection) -> ArmExecutionResult:
             # poster backend may still have a valid engine path.
             if backend != 'poster_vio':
                 raise
-            record_failure(backend, error, category='poster_vio_unavailable')
+            record_failure(backend, error, category='poster_vio_unavailable',
+                           next_backend=candidates[index + 1] if index + 1 < len(candidates) else None)
             continue
         except Exception as error:
             # Input, calibration, engine and programming errors are not
@@ -170,6 +188,7 @@ def execute(inputs: TaskInputs, selection: MapSelection) -> ArmExecutionResult:
                                  reason=str(error), error_type=type(error).__name__))
             write_json(attempts_root / 'attempts.json', dict(
                 requested_mode='auto', selected_backend=None, attempts=attempts))
+            route_message(f'后端终止：{backend}；类别=fatal；原因={error}')
             raise
 
         attempts.append(dict(backend=backend, status='succeeded'))
@@ -187,6 +206,7 @@ def execute(inputs: TaskInputs, selection: MapSelection) -> ArmExecutionResult:
         result.coordinate_record['attempts'] = attempts
         if failure:
             result.coordinate_record['fallback'] = dict(failure, attempts=attempts)
+        route_message(f'后端选定：{backend}；尝试次数={len(attempts)}')
         return result
 
     # The final candidate is expected to raise its own actionable error.  This
