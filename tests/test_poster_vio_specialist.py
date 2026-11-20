@@ -9,7 +9,7 @@ from scipy.spatial.transform import Rotation
 from software.camera.x3.factory import Kb4Model
 from software.trajectory.poster_vio import solve_joint_poster_imu
 from software.trajectory.poster_vio.feature_geometry import bearing_inliers, triangulate_batch, match_revisits
-from software.trajectory.poster_vio.frontend import triangulate_track
+from software.trajectory.poster_vio.frontend import subsample_observations, triangulate_track
 from software.scene.pipeline.tasks.backends import poster_vio_inputs
 from software.vision.poster.geometry import project_observations
 
@@ -202,6 +202,30 @@ class SpecialistTaskTests(unittest.TestCase):
         self.assertEqual(bad.arm_evidence['left']['natural_holdout']['status'], 'rejected')
         for arm in request.arms:
             np.testing.assert_allclose(good.trajectories[arm], bad.trajectories[arm], atol=1e-8)
+
+    def test_track_observation_cap_is_numerically_equivalent_on_synthetic_scene(self):
+        with patch.object(poster_vio_inputs, 'track_cameras', side_effect=self.helper.feature_tracks):
+            request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
+        capped_arms, capped_observations = [], []
+        for arm, observation in zip(arms, request.observations):
+            tracks = []
+            for track in arm.natural_tracks:
+                nodes, pixels = subsample_observations(track['node_indices'], track['pixels'], 8)
+                tracks.append(dict(track, node_indices=nodes, pixels=pixels))
+            capped_arms.append(replace(arm, natural_tracks=tuple(tracks)))
+            capped_observations.append(replace(observation, natural_tracks=tuple(tracks)))
+        capped_request = replace(request, observations=tuple(capped_observations))
+        full = solve_joint_poster_imu(request, arms, seed)
+        capped = solve_joint_poster_imu(capped_request, tuple(capped_arms), seed)
+        self.assertEqual(full.quality.status, 'solved')
+        self.assertEqual(capped.quality.status, 'solved')
+        self.assertLess(
+            sum(capped.arm_evidence[arm]['natural_observations'] for arm in request.arms),
+            sum(full.arm_evidence[arm]['natural_observations'] for arm in request.arms))
+        self.assertAlmostEqual(full.quality.reprojection_rms_px,
+                               capped.quality.reprojection_rms_px, delta=1e-5)
+        for arm in request.arms:
+            np.testing.assert_allclose(capped.trajectories[arm], full.trajectories[arm], atol=1e-6)
 
     def test_keyframes_and_conditional_recovery_match_dense_accelerated_motion(self):
         request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
