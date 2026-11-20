@@ -38,6 +38,7 @@ def prepare_task_inputs(inputs: TaskInputs):
     observations, solve_inputs = [], []
     camera_assets, imu_assets, diagnostics = {}, {}, {}
     base_tag_specs = {}
+    prepared_arms = []
     for arm in arms:
         spec = getattr(inputs.recordings[arm].camera, 'base_tag', None)
         if spec is not None:
@@ -165,35 +166,57 @@ def prepare_task_inputs(inputs: TaskInputs):
                 detections.video_times_s[rear_samples], rear_nodes[rear_selection],
                 seed, ext, model, excluded_polygons=frame_polygons),
         )
+        prepared_arms.append(dict(
+            arm=arm, recording=recording, streams=streams, node_times=node_times,
+            tag_indices=tag_indices, ids=ids, pixels=pixels, base_target_arms=base_target_arms,
+            base_times=base_times, base_ids=base_ids, base_pixels=base_pixels,
+            seed=seed, ext=ext, model=model, points=points, holdout=holdout,
+            initialization_mask=initialization_mask, gravity=gravity,
+            acc_bias=acc_bias, node_velocities=node_velocities,
+            initial_gyro_bias=np.asarray(inertial['initial_gyro_bias_rad_s']),
+            natural_cameras=natural_cameras, inertial=inertial,
+            pnp_rms=pnp_rms, tag_times=tag_times, initialization=initialization,
+            camera=camera, base_tag_observations=len(base_times),
+            training_times=training_times, raw_times=raw_times))
+
+    def track_arm(item):
         frontend_diagnostics = {}
-        tracks_by_camera = track_cameras(episode.recordings[arm], streams,
+        tracks_by_camera = track_cameras(
+            episode.recordings[item['arm']], item['streams'],
             max_features=scene.parameters.poster_vio_maximum_features,
             maximum_tracks=scene.parameters.poster_vio_maximum_tracks,
             minimum_track_length=scene.parameters.poster_vio_minimum_track_length,
             maximum_track_length=scene.parameters.poster_vio_maximum_track_length,
             parameters=scene.parameters, diagnostics=frontend_diagnostics)
+        return tracks_by_camera, frontend_diagnostics
+
+    if len(prepared_arms) > 1:
+        inputs.console.write('双手自然特征跟踪并行', recording=episode.root.name, step=(2, 3))
+        tracked = daemon_map(track_arm, prepared_arms)
+    else:
+        tracked = [track_arm(prepared_arms[0])]
+    for item, (tracks_by_camera, frontend_diagnostics) in zip(prepared_arms, tracked):
         natural_tracks = tuple(track for lens in ('front', 'rear') for track in tracks_by_camera[lens])
         observations.append(PosterVioObservation(
-            arm, node_times[tag_indices], ids, pixels, natural_tracks,
-            base_target_arms, base_times, base_ids, base_pixels))
+            item['arm'], item['node_times'][item['tag_indices']], item['ids'], item['pixels'], natural_tracks,
+            item['base_target_arms'], item['base_times'], item['base_ids'], item['base_pixels']))
         solve_inputs.append(ArmSolveInput(
-            arm, node_times, recording.imu, seed, ext, model, points, pixels, tag_indices,
-            scene.trajectory.values, scene.parameters, natural_tracks,
-            gravity_m_s2=gravity, initial_acc_bias=acc_bias, seed_velocities=node_velocities,
-            initial_gyro_bias=np.asarray(inertial['initial_gyro_bias_rad_s']), natural_cameras=natural_cameras,
-            tag_holdout_mask=holdout, tag_initialization_mask=initialization_mask))
-        camera_assets[arm] = dict(asset_hashes=camera.asset_hashes)
-        imu_assets[arm] = dict(sample_count=len(recording.imu), time_start=float(recording.imu[0, 0]),
-                               time_end=float(recording.imu[-1, 0]))
-        diagnostics[arm] = dict(inertial, pnp_frame_rms_px=pnp_rms.tolist(),
-                                initialization=initialization,
-                                frontend=frontend_diagnostics,
-                                feature_tracks=len(natural_tracks), tag_frames=len(tag_times),
-                                base_tag_observations=len(base_times),
-                                base_tag_self_evidence=None,
-                                initialization_tag_frames=len(training_times),
-                                holdout_tag_frames=len(np.unique(raw_times[holdout])),
-                                feature_tracks_by_camera={lens: len(tracks) for lens, tracks in tracks_by_camera.items()})
+            item['arm'], item['node_times'], item['recording'].imu, item['seed'], item['ext'], item['model'],
+            item['points'], item['pixels'], item['tag_indices'], scene.trajectory.values, scene.parameters,
+            natural_tracks, gravity_m_s2=item['gravity'], initial_acc_bias=item['acc_bias'],
+            seed_velocities=item['node_velocities'], initial_gyro_bias=item['initial_gyro_bias'],
+            natural_cameras=item['natural_cameras'], tag_holdout_mask=item['holdout'],
+            tag_initialization_mask=item['initialization_mask']))
+        camera_assets[item['arm']] = dict(asset_hashes=item['camera'].asset_hashes)
+        imu = item['recording'].imu
+        imu_assets[item['arm']] = dict(sample_count=len(imu), time_start=float(imu[0, 0]), time_end=float(imu[-1, 0]))
+        diagnostics[item['arm']] = dict(item['inertial'], pnp_frame_rms_px=item['pnp_rms'].tolist(),
+            initialization=item['initialization'], frontend=frontend_diagnostics,
+            feature_tracks=len(natural_tracks), tag_frames=len(item['tag_times']),
+            base_tag_observations=item['base_tag_observations'], base_tag_self_evidence=None,
+            initialization_tag_frames=len(item['training_times']),
+            holdout_tag_frames=len(np.unique(item['raw_times'][item['holdout']])),
+            feature_tracks_by_camera={lens: len(tracks) for lens, tracks in tracks_by_camera.items()})
     gravity_vectors = np.array([item.gravity_m_s2 for item in solve_inputs])
     directions = gravity_vectors / np.linalg.norm(gravity_vectors, axis=1)[:, None]
     difference = float(np.degrees(np.arccos(np.clip(np.min(directions @ directions.T), -1, 1))))
