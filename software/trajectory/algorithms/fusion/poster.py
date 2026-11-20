@@ -116,13 +116,18 @@ class PosterContext:
                            checks=checks, initial_error=float(initial_error), final_error=float(final_error))
         if not checks['finite'] or not checks['optimized_error_decreased']:
             raise PosterGeometryError('独立海报融合未通过有限性或优化下降检查', metrics=diagnostics)
-        mask = np.sqrt(np.mean(np.linalg.norm(pixels-self.pixels, axis=2)**2, axis=1)) > cull_threshold(self.parameters)
+        reprojection_mask = np.sqrt(
+            np.mean(np.linalg.norm(pixels-self.pixels, axis=2)**2, axis=1)
+        ) > cull_threshold(self.parameters)
+        depth_mask = np.any(depths <= 0, axis=1)
+        mask = reprojection_mask | depth_mask
         if np.any(mask):
             if (not self.evidence.get('culled_observations') and isolated_cull(mask, self.frame_ids,
                     self.parameters.tag_minimum_frames, times=self.times, parameters=self.parameters)):
                 audit = dict(**culling_record(mask, self.selected, self.frame_ids, self.tag_ids,
                     self.times, self.parameters, stage='optimization'),
                     pre_cull_reprojection_rms_px=rms, pre_cull_reprojection_metrics=metrics)
+                audit['pre_cull_invalid_depth_sightings'] = int(np.count_nonzero(depth_mask))
                 raise PosterCullRequest(self.selected[mask], audit)
             raise PosterGeometryError('独立海报优化后异常观测无法在单轮预算内剔除', metrics=dict(metrics,
                 culling=cull_decision(mask, self.frame_ids, self.times, self.parameters)))
