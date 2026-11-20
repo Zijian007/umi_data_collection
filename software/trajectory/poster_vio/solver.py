@@ -258,9 +258,6 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
     for key in list(values.keys()):
         if chr(gtsam.Symbol(key).chr()) == 'p':
             ordering.push_back(key)
-    for key in list(values.keys()):
-        if chr(gtsam.Symbol(key).chr()) == 'l':
-            ordering.push_back(key)
     # Preserve temporal locality after landmark elimination. Sorting all B then
     # all V then all X can create a dense state clique through the IMU chain.
     for item in arms:
@@ -268,6 +265,11 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
         for index in range(len(item.times_s)):
             for key in (keys.pose(index), keys.velocity(index), keys.bias(index)):
                 ordering.push_back(key)
+    # The shared board pose touches every observed trajectory state.  It must
+    # stay in the separator until the moving states have been eliminated.  If
+    # eliminated before them, sparse elimination creates a global clique over
+    # both arms and makes each LM iteration needlessly dense.
+    ordering.push_back(board_key)
     for key in base_tag_keys.values():
         ordering.push_back(key)
     solver.setOrdering(ordering)
