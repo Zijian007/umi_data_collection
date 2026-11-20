@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import shutil
+import time
 
 import numpy as np
 
@@ -58,9 +59,12 @@ def prepare_task_inputs(inputs: TaskInputs):
             episode, arm, inputs.recordings[arm], cache_audit=inputs.cache_audit)
 
     if len(arms) > 1:
+        detection_started = time.monotonic()
         inputs.console.write('双手环境标签与夹爪检测并行', recording=episode.root.name,
                              step=(2, 3))
         daemon_map(prepare_arm_detections, arms)
+        inputs.console.write(f'双手环境标签与夹爪检测完成；耗时 {time.monotonic() - detection_started:.1f} 秒',
+                             recording=episode.root.name, state='完成')
     else:
         prepare_arm_detections(arms[0])
 
@@ -191,8 +195,13 @@ def prepare_task_inputs(inputs: TaskInputs):
         return tracks_by_camera, frontend_diagnostics
 
     if len(prepared_arms) > 1:
+        tracking_started = time.monotonic()
         inputs.console.write('双手自然特征跟踪并行', recording=episode.root.name, step=(2, 3))
         tracked = daemon_map(track_arm, prepared_arms)
+        track_count = sum(sum(len(value) for value in result[0].values()) for result in tracked)
+        inputs.console.write(
+            f'双手自然特征跟踪完成；耗时 {time.monotonic() - tracking_started:.1f} 秒；'
+            f'保留轨迹 {track_count} 条', recording=episode.root.name, state='完成')
     else:
         tracked = [track_arm(prepared_arms[0])]
     for item, (tracks_by_camera, frontend_diagnostics) in zip(prepared_arms, tracked):

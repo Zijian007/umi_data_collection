@@ -46,7 +46,7 @@ console = Console('场景')
 
 
 def record_failure(episode: Episode, directory: Path, reason: str, *, identity: dict,
-                   status='failed', error: Exception | None = None) -> Path | None:
+                   status='failed', error: BaseException | None = None) -> Path:
     """同一输入和原因只保留一份失败现场；成功运行不参与去重。"""
     key = artifact_identity.canonical_hash(dict(inputs=identity, reason=reason, status=status))[:24]
     target = directory.parent / ('failed-' + key)
@@ -60,7 +60,7 @@ def record_failure(episode: Episode, directory: Path, reason: str, *, identity: 
         directory.rename(target)
     episodes.record_attempt(episode, status, target)
     cleanup.after_task(episode.root)
-    return target if retained else None
+    return target
 
 
 def _resolve_episode_synchronization(episode, *, force: bool, dry_run: bool):
@@ -180,9 +180,8 @@ def _reject_preflight(episode: Episode, check_report, *, dry_run: bool):
             audit.event('preflight', status='rejected', reasons=check_report.reasons)
             retained = record_failure(episode, run_dir, message, status='rejected_preflight',
                 identity=identity)
-            if retained is not None:
-                audit.finish('rejected_preflight', error=recording_checks.RecordingCheckError(message),
-                             directory=retained)
+            audit.finish('rejected_preflight', error=recording_checks.RecordingCheckError(message),
+                         directory=retained)
     raise recording_checks.RecordingCheckError(message)
 
 
@@ -407,10 +406,14 @@ def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recor
                 f'共同时间={common_interval_s[0]:.3f}–{common_interval_s[1]:.3f}s')
             run_console.write(completion_message, recording=name, state='完成')
             audit.finish('ok', output=output)
+        except KeyboardInterrupt as error:
+            retained = record_failure(episode, run_dir, '处理被用户中断',
+                                      identity=input_identity, status='interrupted', error=error)
+            audit.finish('interrupted', error=error, directory=retained)
+            raise
         except Exception as error:
             retained = record_failure(episode, run_dir, str(error), identity=input_identity, error=error)
-            if retained is not None:
-                audit.finish('failed', error=error, directory=retained)
+            audit.finish('failed', error=error, directory=retained)
             raise
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
