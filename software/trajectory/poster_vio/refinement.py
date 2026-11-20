@@ -56,6 +56,9 @@ def subset(item, observation, selection):
             else np.asarray(item.tag_holdout_mask, dtype=bool))
     holdout_nodes = np.unique(item.tag_indices[held]) if np.any(held) else None
     holdout_poses = item.seed_poses[holdout_nodes].copy() if holdout_nodes is not None else None
+    barrier_mask = tags | held
+    barrier_points = item.board_points_m[barrier_mask]
+    barrier_indices = item.tag_indices[barrier_mask]
     tracks = []
     for track in item.natural_tracks:
         keep = selection['tracks'][track_key(track)]
@@ -66,7 +69,8 @@ def subset(item, observation, selection):
     return (replace(item, board_points_m=item.board_points_m[tags], pixels=item.pixels[tags],
                     tag_indices=item.tag_indices[tags], natural_tracks=tuple(tracks), tag_holdout_mask=None,
                     tag_initialization_mask=None, holdout_prior_nodes=holdout_nodes,
-                    holdout_prior_poses=holdout_poses),
+                    holdout_prior_poses=holdout_poses, depth_barrier_points_m=barrier_points,
+                    depth_barrier_indices=barrier_indices),
             replace(observation, times_s=observation.times_s[tags], tag_ids=observation.tag_ids[tags],
                     tag_corners_px=observation.tag_corners_px[tags], natural_tracks=tuple(tracks),
                     base_tag_target_arms=tuple(target for target, keep in zip(
