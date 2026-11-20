@@ -7,6 +7,9 @@ from software.vision.poster.geometry import (
 from software.vision.poster.quality import corner_sigma_px
 
 
+_MIN_NATURAL_DEPTH_M = 1e-3
+
+
 def skew(point):
     x, y, z = point
     return np.array([[0., -z, y], [z, 0., -x], [-y, x, 0.]])
@@ -25,6 +28,14 @@ def natural_track_error(state, pose_key, point_key, T_camera_imu, model, observe
     point = np.asarray(state.atPoint3(point_key), dtype=float)
     in_body = body[:3, :3].T @ (point - body[:3, 3])
     in_camera = T_camera_imu[:3, :3] @ in_body + T_camera_imu[:3, 3]
+    if (not np.isfinite(in_camera).all() or in_camera[2] <= _MIN_NATURAL_DEPTH_M):
+        # Keep native LM finite while refinement removes the invalid landmark
+        # observation from the graph.  This follows Specialist's cheirality
+        # handling and avoids aborting an otherwise recoverable solve.
+        zero_residual = np.zeros(2, dtype=float)
+        zero_pose = np.zeros((2, 6), dtype=float)
+        zero_point = np.zeros((2, 3), dtype=float)
+        return zero_residual, zero_pose, zero_point
     projection = model.project_jacobian(in_camera[None, ...])[0]
     residual = model.project(in_camera[None, ...])[0] - np.asarray(observed, dtype=float)
     body_twist = np.concatenate((skew(in_body), -np.eye(3)), axis=1)

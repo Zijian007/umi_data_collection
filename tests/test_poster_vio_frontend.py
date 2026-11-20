@@ -266,6 +266,20 @@ class PosterVioFrontendTests(unittest.TestCase):
         np.testing.assert_allclose(pose_jacobian, numerical_pose, atol=1e-5)
         np.testing.assert_allclose(point_jacobian, numerical_point, atol=1e-5)
 
+    def test_natural_factor_keeps_negative_depth_finite_for_refinement(self):
+        import gtsam
+        from software.vision.poster.factors import natural_track_error
+
+        pose_key, point_key = gtsam.symbol('x', 0), gtsam.symbol('p', 1)
+        values = gtsam.Values()
+        values.insert(pose_key, gtsam.Pose3())
+        values.insert(point_key, np.array([0., 0., -1.]))
+        residual, pose_jacobian, point_jacobian = natural_track_error(
+            values, pose_key, point_key, np.eye(4), self.model, np.array([720., 720.]))
+        np.testing.assert_array_equal(residual, np.zeros(2))
+        np.testing.assert_array_equal(pose_jacobian, np.zeros((2, 6)))
+        np.testing.assert_array_equal(point_jacobian, np.zeros((2, 3)))
+
 
 if __name__ == '__main__':
     unittest.main()

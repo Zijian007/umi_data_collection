@@ -25,6 +25,9 @@ from .models import PosterVioQuality, PosterVioRequest, PosterVioResult
 from . import refinement, keyframes, base_tags
 
 
+_MIN_NATURAL_DEPTH_M = 1e-3
+
+
 @dataclass(frozen=True)
 class NaturalCamera:
     """Fixed calibration used by one camera's natural pixel factors."""
@@ -333,7 +336,8 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
             poses[item.tag_indices], board_pose, item.T_cam_imu, item.board_points_m,
             item.pixels, item.camera_model, item.times_s[item.tag_indices], item.scene_parameters)
         natural_errors = []
-        per_camera = {name: dict(errors=[], nodes=[], tracks=0) for name in ('front', 'rear')}
+        per_camera = {name: dict(errors=[], nodes=[], tracks=0, invalid_depth_observations=0)
+                      for name in ('front', 'rear')}
         natural_residuals = []
         for track in item.natural_tracks:
             camera_name = track.get('camera', 'rear')
@@ -346,9 +350,11 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
                 body = poses[int(node)]
                 in_body = body[:3, :3].T @ (point - body[:3, 3])
                 in_camera = camera.T_cam_imu[:3, :3] @ in_body + camera.T_cam_imu[:3, 3]
-                if not np.isfinite(in_camera).all() or in_camera[2] <= 0:
-                    raise ValueError(f'{item.arm}/{camera_name} poster_vio 自然特征出现非正深度或非有限值')
-                error = float(np.linalg.norm(camera.model.project(in_camera[None])[0] - observed))
+                if not np.isfinite(in_camera).all() or in_camera[2] <= _MIN_NATURAL_DEPTH_M:
+                    camera_evidence['invalid_depth_observations'] += 1
+                    error = float('inf')
+                else:
+                    error = float(np.linalg.norm(camera.model.project(in_camera[None])[0] - observed))
                 natural_errors.append(error)
                 track_errors.append(error)
                 camera_evidence['errors'].append(error)
@@ -368,6 +374,7 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
             nodes = unique[node_counts >= 3].astype(int)
             supported_nodes.extend(nodes.tolist())
             by_camera[camera_name] = dict(tracks=camera_evidence['tracks'], observations=len(errors),
+                invalid_depth_observations=camera_evidence['invalid_depth_observations'],
                 reprojection_rms_px=rms, support_imu_times_s=item.times_s[nodes].tolist())
         max_acc_bias = max(float(np.linalg.norm(bias.accelerometer())) for bias in biases)
         rejected |= max_acc_bias > item.trajectory_parameters.fusion.maximum_acc_bias_m_s2
@@ -498,6 +505,7 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
             rms_values.append(metrics['rms_px'])
         evidence['holdout'] = holdout
         natural_holdout, skipped = [], []
+        invalid_natural_holdout = 0
         arm_index = request.arms.index(item.arm)
         for track in item.natural_tracks:
             held = ~refinement.natural_training(track)
@@ -514,11 +522,14 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
                 pose = solved.trajectories[item.arm][node]
                 in_body = pose[:3, :3].T @ (point[:3] - pose[:3, 3])
                 in_camera = calibration.T_cam_imu[:3, :3] @ in_body + calibration.T_cam_imu[:3, 3]
-                if not np.isfinite(in_camera).all() or in_camera[2] <= 0:
-                    raise ValueError(f'{item.arm} 自然点留出投影非有限或非正深度')
-                error = float(np.linalg.norm(calibration.model.project(in_camera[None])[0] - pixel))
-                if not np.isfinite(error):
-                    raise ValueError(f'{item.arm} 自然点留出像素残差非有限')
+                if not np.isfinite(in_camera).all() or in_camera[2] <= _MIN_NATURAL_DEPTH_M:
+                    invalid_natural_holdout += 1
+                    error = float('inf')
+                else:
+                    error = float(np.linalg.norm(calibration.model.project(in_camera[None])[0] - pixel))
+                    if not np.isfinite(error):
+                        invalid_natural_holdout += 1
+                        error = float('inf')
                 natural_holdout.append(dict(camera=camera_name, track_id=track['track_id'], node=int(node), error_px=error))
         metrics = refinement.residual_summary([row['error_px'] for row in natural_holdout])
         by_camera = {camera: refinement.residual_summary([row['error_px'] for row in natural_holdout
@@ -537,7 +548,8 @@ def solve_joint_poster_imu(request: PosterVioRequest, arms: tuple[ArmSolveInput,
             rms_values.append(metrics['rms_px'])
         evidence['natural_holdout'] = dict(status=status, metrics=metrics, observations=natural_holdout,
             independent_frames=natural_frames, by_camera=by_camera,
-            removed_tracks=skipped, triangulation_and_graph_excluded=True, independent_physical_accuracy=False)
+            invalid_depth_observations=invalid_natural_holdout, removed_tracks=skipped,
+            triangulation_and_graph_excluded=True, independent_physical_accuracy=False)
     result = replace(solved, quality=replace(solved.quality, status='rejected' if rejected else 'solved',
                                             reprojection_rms_px=float(max(rms_values))))
     validate_result(result, request.arms)
