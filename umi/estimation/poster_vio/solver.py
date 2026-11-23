@@ -573,10 +573,35 @@ def solve_joint_poster_imu(request: PosterVioProblem, arms: tuple[ArmSolveInput,
     """Refine with fixed cumulative budgets, then assess untouched tag frames."""
     arms = _resolve_inputs(request, arms)
     observations = {item.arm: item for item in request.observations}
+    max_rounds = min(item.parameters.poster_vio_maximum_cull_rounds for item in arms)
+    solved, warm, selections, records, budget_rejected = _refine(
+        request, arms, observations, board_seed, max_rounds=max_rounds, progress=progress)
+    rejected = budget_rejected or solved.quality.status != 'solved'
+    rms_values = [solved.quality.reprojection_rms_px]
+    for item in arms:
+        evidence = solved.arm_evidence[item.arm]
+        evidence['refinement'] = _refinement_summary(item, observations[item.arm], selections[item.arm],
+                                                     records[item.arm], max_rounds)
+        evidence['holdout'], failed, rms = _tag_holdout(item, solved, observations[item.arm])
+        rejected |= failed
+        if rms is not None:
+            rms_values.append(rms)
+        evidence['natural_holdout'], failed, rms = _natural_holdout(
+            item, request.arms.index(item.arm), solved, warm, board_seed)
+        rejected |= failed
+        if rms is not None:
+            rms_values.append(rms)
+    result = replace(solved, quality=replace(solved.quality, status='rejected' if rejected else 'solved',
+                                            reprojection_rms_px=float(max(rms_values))))
+    validate_result(result, request.arms)
+    return result
+
+
+def _refine(request, arms, observations, board_seed, *, max_rounds: int, progress):
+    """按累计预算逐轮剔除训练观测并重求解；首轮可先短求解，必要时再完整求解。"""
     selections = {item.arm: dict(refinement.initial_selection(item), base_tags=np.ones(
         len(observations[item.arm].base_tag_times_s), dtype=bool)) for item in arms}
     records = {item.arm: [] for item in arms}
-    max_rounds = min(item.parameters.poster_vio_maximum_cull_rounds for item in arms)
     budget_rejected = False
     graph_nodes = {item.arm: graph_indices(item) for item in arms}
     warm, damping = None, None
@@ -635,116 +660,120 @@ def solve_joint_poster_imu(request: PosterVioProblem, arms: tuple[ArmSolveInput,
         if budget_rejected or not changed:
             break
         selections = proposals
-    rejected = budget_rejected or solved.quality.status != 'solved'
-    rms_values = [solved.quality.reprojection_rms_px]
-    for item in arms:
-        evidence = solved.arm_evidence[item.arm]
-        evidence['refinement'] = dict(maximum_rounds=max_rounds, solves=len(records[item.arm]),
-            rounds=records[item.arm], cumulative_tag_removed=int(np.count_nonzero(
-                refinement.training_tags(item) & ~selections[item.arm]['tags'])),
-            initialization_removed=(0 if item.tag_initialization_mask is None else
-                int(np.count_nonzero(refinement.training_tags(item) & ~item.tag_initialization_mask))),
-            single_tag_factors_retained=(0 if item.single_tag_factor_mask is None else
-                int(np.count_nonzero(item.single_tag_factor_mask & selections[item.arm]['tags']))),
-            original_training_tag_observations=int(np.count_nonzero(refinement.training_tags(item))),
-            original_base_tag_observations=len(observations[item.arm].base_tag_times_s),
-            cumulative_base_tag_removed=int(np.count_nonzero(~selections[item.arm]['base_tags'])))
-        held = (np.zeros(len(item.pixels), dtype=bool) if item.tag_holdout_mask is None else item.tag_holdout_mask)
-        frames = len(np.unique(item.tag_indices[held]))
-        holdout = dict(status=('not_prepared' if item.tag_holdout_mask is None else
-                              'disabled' if not item.parameters.poster_vio_holdout_stride else 'insufficient_evidence'),
-            independent_frames=frames, observations=int(np.count_nonzero(held)),
-            invalid_depth_observations=0,
-            invalid_depth_details=[],
-            depth_summary=None,
-            depth_barrier=dict(z_min_m=1e-3, transition_m=2e-4, sigma_m=1e-4,
-                               uses_pixels=False),
-            initialization_and_graph_excluded=item.tag_holdout_mask is not None,
-            independent_physical_accuracy=False,
-            maximum_rms_px=item.parameters.poster_vio_maximum_holdout_rms_px)
-        if np.any(held):
-            prediction, points = project_observations(np.eye(4),
-                solved.trajectories[item.arm][item.tag_indices[held]] @ np.linalg.inv(item.T_cam_imu),
-                item.board_points_m[held], item.camera_model)
-            if not np.isfinite(prediction).all() or not np.isfinite(points).all():
-                raise ValueError(f'{item.arm} poster_vio 留出投影出现非有限值')
-            metrics = residual_metrics(prediction, item.pixels[held])
-            depths = points[:, :, 2]
-            invalid_mask = depths <= 0
-            invalid_depth_observations = int(np.count_nonzero(invalid_mask))
-            holdout['depth_summary'] = dict(min_m=float(np.min(depths)),
-                p01_m=float(np.percentile(depths, 1)), median_m=float(np.median(depths)),
-                max_m=float(np.max(depths)), positive_fraction=float(np.mean(depths > 0)))
-            held_rows = np.flatnonzero(held)
-            tag_ids = np.asarray(observations[item.arm].tag_ids)
-            holdout['invalid_depth_details'] = [dict(
-                observation=int(row), node=int(item.tag_indices[row]),
-                imu_time_s=float(item.times_s[item.tag_indices[row]]),
-                tag_id=int(tag_ids[row]),
-                invalid_corner_indices=np.flatnonzero(invalid_mask[index]).astype(int).tolist(),
-                depths_m=np.asarray(depths[index], dtype=float).tolist())
-                for index, row in enumerate(held_rows) if np.any(invalid_mask[index])]
-            holdout['invalid_depth_observations'] = invalid_depth_observations
-            failed = bool(invalid_depth_observations
-                          or metrics['rms_px'] > item.parameters.poster_vio_maximum_holdout_rms_px)
-            holdout.update(metrics=metrics, imu_times_s=np.unique(item.times_s[item.tag_indices[held]]).tolist(),
-                           status='rejected' if failed else 'passed' if frames >= 2 else 'insufficient_evidence')
-            rejected |= failed
-            if np.isfinite(metrics['rms_px']):
-                rms_values.append(metrics['rms_px'])
-        evidence['holdout'] = holdout
-        natural_holdout, skipped = [], []
-        invalid_natural_holdout = 0
-        arm_index = request.arms.index(item.arm)
-        for track in item.natural_tracks:
-            held = ~refinement.natural_training(track)
-            if not np.any(held):
-                continue
-            camera_name = track.get('camera', 'rear')
-            point_key = _point_key(arm_index, camera_name, track['track_id'])
-            if not warm.exists(point_key):
-                skipped.append(list(refinement.track_key(track)))
-                continue
-            point = np.linalg.inv(board_seed) @ np.r_[warm.atPoint3(point_key), 1.]
-            calibration = natural_camera(item, camera_name)
-            for node, pixel in zip(np.asarray(track['node_indices'])[held], np.asarray(track['pixels'])[held]):
-                pose = solved.trajectories[item.arm][node]
-                in_body = pose[:3, :3].T @ (point[:3] - pose[:3, 3])
-                in_camera = calibration.T_cam_imu[:3, :3] @ in_body + calibration.T_cam_imu[:3, 3]
-                if not np.isfinite(in_camera).all() or in_camera[2] <= _MIN_NATURAL_DEPTH_M:
+    return solved, warm, selections, records, budget_rejected
+
+
+def _refinement_summary(item, observation, selection, records, max_rounds) -> dict:
+    return dict(maximum_rounds=max_rounds, solves=len(records),
+        rounds=records, cumulative_tag_removed=int(np.count_nonzero(
+            refinement.training_tags(item) & ~selection['tags'])),
+        initialization_removed=(0 if item.tag_initialization_mask is None else
+            int(np.count_nonzero(refinement.training_tags(item) & ~item.tag_initialization_mask))),
+        single_tag_factors_retained=(0 if item.single_tag_factor_mask is None else
+            int(np.count_nonzero(item.single_tag_factor_mask & selection['tags']))),
+        original_training_tag_observations=int(np.count_nonzero(refinement.training_tags(item))),
+        original_base_tag_observations=len(observation.base_tag_times_s),
+        cumulative_base_tag_removed=int(np.count_nonzero(~selection['base_tags'])))
+
+
+def _tag_holdout(item, solved, observation):
+    """留出的标签帧（未参与初始化和求解）的重投影与深度验收；返回 (证据, 是否拒绝, RMS 或 None)。"""
+    failed, rms = False, None
+    held = (np.zeros(len(item.pixels), dtype=bool) if item.tag_holdout_mask is None else item.tag_holdout_mask)
+    frames = len(np.unique(item.tag_indices[held]))
+    holdout = dict(status=('not_prepared' if item.tag_holdout_mask is None else
+                          'disabled' if not item.parameters.poster_vio_holdout_stride else 'insufficient_evidence'),
+        independent_frames=frames, observations=int(np.count_nonzero(held)),
+        invalid_depth_observations=0,
+        invalid_depth_details=[],
+        depth_summary=None,
+        depth_barrier=dict(z_min_m=1e-3, transition_m=2e-4, sigma_m=1e-4,
+                           uses_pixels=False),
+        initialization_and_graph_excluded=item.tag_holdout_mask is not None,
+        independent_physical_accuracy=False,
+        maximum_rms_px=item.parameters.poster_vio_maximum_holdout_rms_px)
+    if np.any(held):
+        prediction, points = project_observations(np.eye(4),
+            solved.trajectories[item.arm][item.tag_indices[held]] @ np.linalg.inv(item.T_cam_imu),
+            item.board_points_m[held], item.camera_model)
+        if not np.isfinite(prediction).all() or not np.isfinite(points).all():
+            raise ValueError(f'{item.arm} poster_vio 留出投影出现非有限值')
+        metrics = residual_metrics(prediction, item.pixels[held])
+        depths = points[:, :, 2]
+        invalid_mask = depths <= 0
+        invalid_depth_observations = int(np.count_nonzero(invalid_mask))
+        holdout['depth_summary'] = dict(min_m=float(np.min(depths)),
+            p01_m=float(np.percentile(depths, 1)), median_m=float(np.median(depths)),
+            max_m=float(np.max(depths)), positive_fraction=float(np.mean(depths > 0)))
+        held_rows = np.flatnonzero(held)
+        tag_ids = np.asarray(observation.tag_ids)
+        holdout['invalid_depth_details'] = [dict(
+            observation=int(row), node=int(item.tag_indices[row]),
+            imu_time_s=float(item.times_s[item.tag_indices[row]]),
+            tag_id=int(tag_ids[row]),
+            invalid_corner_indices=np.flatnonzero(invalid_mask[index]).astype(int).tolist(),
+            depths_m=np.asarray(depths[index], dtype=float).tolist())
+            for index, row in enumerate(held_rows) if np.any(invalid_mask[index])]
+        holdout['invalid_depth_observations'] = invalid_depth_observations
+        failed = bool(invalid_depth_observations
+                      or metrics['rms_px'] > item.parameters.poster_vio_maximum_holdout_rms_px)
+        holdout.update(metrics=metrics, imu_times_s=np.unique(item.times_s[item.tag_indices[held]]).tolist(),
+                       status='rejected' if failed else 'passed' if frames >= 2 else 'insufficient_evidence')
+        if np.isfinite(metrics['rms_px']):
+            rms = metrics['rms_px']
+    return holdout, failed, rms
+
+
+def _natural_holdout(item, arm_index: int, solved, warm, board_seed):
+    """留出的自然点像素按冻结地标重投影验收；返回 (证据, 是否拒绝, RMS 或 None)。"""
+    failed, rms = False, None
+    natural_holdout, skipped = [], []
+    invalid_natural_holdout = 0
+    for track in item.natural_tracks:
+        held = ~refinement.natural_training(track)
+        if not np.any(held):
+            continue
+        camera_name = track.get('camera', 'rear')
+        point_key = _point_key(arm_index, camera_name, track['track_id'])
+        if not warm.exists(point_key):
+            skipped.append(list(refinement.track_key(track)))
+            continue
+        point = np.linalg.inv(board_seed) @ np.r_[warm.atPoint3(point_key), 1.]
+        calibration = natural_camera(item, camera_name)
+        for node, pixel in zip(np.asarray(track['node_indices'])[held], np.asarray(track['pixels'])[held]):
+            pose = solved.trajectories[item.arm][node]
+            in_body = pose[:3, :3].T @ (point[:3] - pose[:3, 3])
+            in_camera = calibration.T_cam_imu[:3, :3] @ in_body + calibration.T_cam_imu[:3, 3]
+            if not np.isfinite(in_camera).all() or in_camera[2] <= _MIN_NATURAL_DEPTH_M:
+                invalid_natural_holdout += 1
+                error = _INVALID_NATURAL_RESIDUAL_PX
+            else:
+                error = float(np.linalg.norm(calibration.model.project(in_camera[None])[0] - pixel))
+                if not np.isfinite(error):
                     invalid_natural_holdout += 1
                     error = _INVALID_NATURAL_RESIDUAL_PX
-                else:
-                    error = float(np.linalg.norm(calibration.model.project(in_camera[None])[0] - pixel))
-                    if not np.isfinite(error):
-                        invalid_natural_holdout += 1
-                        error = _INVALID_NATURAL_RESIDUAL_PX
-                natural_holdout.append(dict(camera=camera_name, track_id=track['track_id'], node=int(node), error_px=error))
-        metrics = refinement.residual_summary([row['error_px'] for row in natural_holdout])
-        by_camera = {camera: refinement.residual_summary([row['error_px'] for row in natural_holdout
-                                                        if row['camera'] == camera]) for camera in ('front', 'rear')}
-        natural_frames = len({row['node'] for row in natural_holdout})
-        prepared = any('holdout_mask' in track for track in item.natural_tracks)
-        status = ('disabled' if not item.parameters.poster_vio_natural_holdout_stride else
-                  'not_prepared' if item.natural_tracks and not prepared else 'insufficient_evidence')
-        if len(natural_holdout) >= 3 and natural_frames >= 2:
-            status = 'passed'
-        if metrics['rms_px'] is not None:
-            failed = bool(invalid_natural_holdout or any(
-                record['rms_px'] is not None and record['rms_px'] > item.parameters.poster_vio_maximum_holdout_rms_px
-                for record in by_camera.values()))
-            status = 'rejected' if failed else status
-            rejected |= failed
-            if invalid_natural_holdout == 0 and np.isfinite(metrics['rms_px']):
-                rms_values.append(metrics['rms_px'])
-        evidence['natural_holdout'] = dict(status=status, metrics=metrics, observations=natural_holdout,
-            independent_frames=natural_frames, by_camera=by_camera,
-            invalid_depth_observations=invalid_natural_holdout, removed_tracks=skipped,
-            triangulation_and_graph_excluded=True, independent_physical_accuracy=False)
-    result = replace(solved, quality=replace(solved.quality, status='rejected' if rejected else 'solved',
-                                            reprojection_rms_px=float(max(rms_values))))
-    validate_result(result, request.arms)
-    return result
+            natural_holdout.append(dict(camera=camera_name, track_id=track['track_id'], node=int(node), error_px=error))
+    metrics = refinement.residual_summary([row['error_px'] for row in natural_holdout])
+    by_camera = {camera: refinement.residual_summary([row['error_px'] for row in natural_holdout
+                                                    if row['camera'] == camera]) for camera in ('front', 'rear')}
+    natural_frames = len({row['node'] for row in natural_holdout})
+    prepared = any('holdout_mask' in track for track in item.natural_tracks)
+    status = ('disabled' if not item.parameters.poster_vio_natural_holdout_stride else
+              'not_prepared' if item.natural_tracks and not prepared else 'insufficient_evidence')
+    if len(natural_holdout) >= 3 and natural_frames >= 2:
+        status = 'passed'
+    if metrics['rms_px'] is not None:
+        failed = bool(invalid_natural_holdout or any(
+            record['rms_px'] is not None and record['rms_px'] > item.parameters.poster_vio_maximum_holdout_rms_px
+            for record in by_camera.values()))
+        status = 'rejected' if failed else status
+        if invalid_natural_holdout == 0 and np.isfinite(metrics['rms_px']):
+            rms = metrics['rms_px']
+    natural_holdout_evidence = dict(status=status, metrics=metrics, observations=natural_holdout,
+        independent_frames=natural_frames, by_camera=by_camera,
+        invalid_depth_observations=invalid_natural_holdout, removed_tracks=skipped,
+        triangulation_and_graph_excluded=True, independent_physical_accuracy=False)
+    return natural_holdout_evidence, failed, rms
 
 
 def graph_indices(item):
