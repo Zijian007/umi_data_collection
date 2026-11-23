@@ -119,16 +119,7 @@ def _run_recording(video: Path, output_root: Path, request: TrajectoryRequest) -
         return dict(summary, status='planned')
     if previous is not None and previous.summary is not None:
         if previous.summary['run_fingerprint'].get('evaluation_hash') != fingerprint['evaluation_hash']:
-            old = previous.summary
-            old['notes'] = [note for note in old.get('notes', []) if note not in old['quality_notes']]
-            old['quality_notes'] = evaluate_notes(old, request.configuration.values.notes)
-            old['notes'] += old['quality_notes']
-            old['run_fingerprint'] = fingerprint
-            old['parameters'] = provenance
-            settings_path = results.result_path(paths.output, 'run_settings.json')
-            settings_record = json.loads(settings_path.read_text())
-            settings_record['parameters'] = provenance
-            settings_path.write_text(json.dumps(settings_record, indent=1, ensure_ascii=False), encoding='utf-8')
+            _reevaluate_notes(previous.summary, paths, fingerprint, provenance, request)
         results.finalize_result(paths.output, previous.summary)
         summary["status"] = "skipped"
         reports.show_recording(summary)
@@ -161,23 +152,7 @@ def _run_recording(video: Path, output_root: Path, request: TrajectoryRequest) -
         # 2. 原片只裁切一次，所有建图与定位尝试复用相同镜头视频。
         stage = "准备镜头视频"
         reconstruction.console.write("准备镜头视频，供所有重建尝试共用", recording=recording_name, step=(2, 4))
-        rear_manifest = (calibration_assets.freeze_rear_calibration(environment_assets.rear, paths.output/'devices/rear')
-                         if environment_assets.rear else None)
-        rear_measured = calibration_assets.load_frozen_rear(rear_manifest) if rear_manifest else None
-        settings = reconstruction.reconstruction_settings(dict(os.environ), camera_json=selected.assets.camera_json,
-                                                    front_mask=selected.assets.front_mask,
-                                                    output=paths.debug / "settings", parameters=request.configuration.values,
-                                                    **(dict(rear_measurement=rear_measured) if rear_measured is not None else {}))
-        settings = replace(settings, rear_manifest=rear_manifest)
-        if environment_assets.poster is not None:
-            expected_poster_hashes = calibration_assets.PosterAssetHashes(
-                layout_sha256=environment_assets.poster.board.asset_hash,
-                rear_sha256=environment_assets.rear.identity.sha256)
-            poster_manifest = calibration_assets.prepare_poster(
-                video, paths.output/'environment_poster', environment_assets.poster.path,
-                rear_manifest.parent/'calibration.json', request.configuration.values.environment_tags,
-                expected=expected_poster_hashes, progress=reconstruction.console.write)
-            settings = replace(settings, poster_manifest=poster_manifest)
+        settings = _reconstruction_settings(video, paths, selected, environment_assets, request)
         context = ReconstructionContext(paths, settings, request.configuration.values, frames['n_frames_used'], request.cores)
         videos = visual_recordings.prepare_lens_videos(video, context, lenses=('front', 'rear') if request.mode == 'dual' else ('front',))
 
@@ -194,30 +169,8 @@ def _run_recording(video: Path, output_root: Path, request: TrajectoryRequest) -
         # 4. 用本次选中的相机与夹爪几何，将融合结果转换为相机/TCP 轨迹。
         stage = "生成轨迹产物"
         reconstruction.console.write("生成轨迹、地图、视频与报告", recording=recording_name, step=(4, 4))
-        calibration_record = selected.postprocess_record(fingerprint["calibration"]["assets"])
-        calibration_record.update(yaml=str(settings.front_settings), rear_yaml=str(settings.rear_settings),
-                                  mask=str(settings.front_mask), source_mask=str(selected.assets.front_mask))
-        if rear_manifest is not None:
-            calibration_record['rear_calibration_manifest'] = str(rear_manifest)
-        if settings.poster_manifest is not None:
-            calibration_record['environment_poster_manifest'] = str(settings.poster_manifest)
-        metrics = postprocess.export_trajectories(attempt.directory, run_inputs.manifest, paths.output, request.mode, video.name,
-                                         calibration_record, parameters=context.parameters, command={
-            "parameters": provenance, "max_tries": request.max_tries, "chosen_try": attempt.chosen, "tries": attempt.attempts,
-            "allow_irregular": request.allow_irregular, "keep_work": request.keep_work, "force": request.force, "cores": request.cores or None,
-            "UMI_TRAJ_CALIB": os.environ.get("UMI_TRAJ_CALIB") or None,
-            "device": request.device or None, "tcp": str(request.tcp) if request.tcp else None, "serial": selected.camera_serial,
-        })
-        summary.update(metrics)
-        # 轻量展示地图独立于 .osa；清理中间数据后仍可在查看器中显示。
-        # 地图展示失败只记录提醒，不把已成功的轨迹抽取判为失败。
-        try:
-            display_map = map_data.export_attempt(attempt.directory, paths.output)
-            (paths.output / 'map.json').write_text(json.dumps(display_map, ensure_ascii=False, allow_nan=False), encoding='utf-8')
-            summary['map_visualization'] = 'details/map.json'
-        except (OSError, ValueError) as error:
-            summary.setdefault('notes', []).append(f'地图展示数据未生成：{error}')
-            write_error_log(paths.logs / 'map_export_error.log', error)
+        _export_products(summary, attempt, run_inputs, context, settings, selected, fingerprint, provenance,
+                         request, paths, video)
         summary["status"] = "ok"
     except Exception as error:
         summary.update(reason=str(error), failed_stage=error.stage if isinstance(error, ProcessingError) else stage)
@@ -242,6 +195,70 @@ def _run_recording(video: Path, output_root: Path, request: TrajectoryRequest) -
             results.finalize_result(paths.output, summary)
     reports.show_recording(summary)
     return summary
+
+
+def _reevaluate_notes(old: dict, paths, fingerprint: dict, provenance: dict, request) -> None:
+    """复用旧结果但提醒规则变了：只重新评估质量提醒，并更新记录的参数快照。"""
+    old['notes'] = [note for note in old.get('notes', []) if note not in old['quality_notes']]
+    old['quality_notes'] = evaluate_notes(old, request.configuration.values.notes)
+    old['notes'] += old['quality_notes']
+    old['run_fingerprint'] = fingerprint
+    old['parameters'] = provenance
+    settings_path = results.result_path(paths.output, 'run_settings.json')
+    settings_record = json.loads(settings_path.read_text())
+    settings_record['parameters'] = provenance
+    settings_path.write_text(json.dumps(settings_record, indent=1, ensure_ascii=False), encoding='utf-8')
+
+
+def _reconstruction_settings(video: Path, paths, selected, environment_assets, request):
+    """冻结环境镜头标定、按需冻结海报观测，生成本次重建设置。"""
+    rear_manifest = (calibration_assets.freeze_rear_calibration(environment_assets.rear, paths.output/'devices/rear')
+                     if environment_assets.rear else None)
+    rear_measured = calibration_assets.load_frozen_rear(rear_manifest) if rear_manifest else None
+    settings = reconstruction.reconstruction_settings(dict(os.environ), camera_json=selected.assets.camera_json,
+                                                front_mask=selected.assets.front_mask,
+                                                output=paths.debug / "settings", parameters=request.configuration.values,
+                                                **(dict(rear_measurement=rear_measured) if rear_measured is not None else {}))
+    settings = replace(settings, rear_manifest=rear_manifest)
+    if environment_assets.poster is not None:
+        expected_poster_hashes = calibration_assets.PosterAssetHashes(
+            layout_sha256=environment_assets.poster.board.asset_hash,
+            rear_sha256=environment_assets.rear.identity.sha256)
+        poster_manifest = calibration_assets.prepare_poster(
+            video, paths.output/'environment_poster', environment_assets.poster.path,
+            rear_manifest.parent/'calibration.json', request.configuration.values.environment_tags,
+            expected=expected_poster_hashes, progress=reconstruction.console.write)
+        settings = replace(settings, poster_manifest=poster_manifest)
+    return settings
+
+
+def _export_products(summary: dict, attempt, run_inputs, context, settings, selected, fingerprint: dict,
+                     provenance: dict, request, paths, video: Path) -> None:
+    """用本次选中的相机与夹爪几何把融合结果转换为相机/TCP 轨迹，并导出展示地图。"""
+    calibration_record = selected.postprocess_record(fingerprint["calibration"]["assets"])
+    calibration_record.update(yaml=str(settings.front_settings), rear_yaml=str(settings.rear_settings),
+                              mask=str(settings.front_mask), source_mask=str(selected.assets.front_mask))
+    if settings.rear_manifest is not None:
+        calibration_record['rear_calibration_manifest'] = str(settings.rear_manifest)
+    if settings.poster_manifest is not None:
+        calibration_record['environment_poster_manifest'] = str(settings.poster_manifest)
+    metrics = postprocess.export_trajectories(attempt.directory, run_inputs.manifest, paths.output, request.mode, video.name,
+                                     calibration_record, parameters=context.parameters, command={
+        "parameters": provenance, "max_tries": request.max_tries, "chosen_try": attempt.chosen, "tries": attempt.attempts,
+        "allow_irregular": request.allow_irregular, "keep_work": request.keep_work, "force": request.force, "cores": request.cores or None,
+        "UMI_TRAJ_CALIB": os.environ.get("UMI_TRAJ_CALIB") or None,
+        "device": request.device or None, "tcp": str(request.tcp) if request.tcp else None, "serial": selected.camera_serial,
+    })
+    summary.update(metrics)
+    # 轻量展示地图独立于 .osa；清理中间数据后仍可在查看器中显示。
+    # 地图展示失败只记录提醒，不把已成功的轨迹抽取判为失败。
+    try:
+        display_map = map_data.export_attempt(attempt.directory, paths.output)
+        (paths.output / 'map.json').write_text(json.dumps(display_map, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+        summary['map_visualization'] = 'details/map.json'
+    except (OSError, ValueError) as error:
+        summary.setdefault('notes', []).append(f'地图展示数据未生成：{error}')
+        write_error_log(paths.logs / 'map_export_error.log', error)
 
 
 REQUIRED_OUTPUTS = ('traj_tcp.txt', 'traj_camera.txt', 'traj_imu.txt', 'frames.csv', 'run_settings.json')
