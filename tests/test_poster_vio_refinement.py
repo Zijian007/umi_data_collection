@@ -7,7 +7,7 @@ import numpy as np
 
 from umi.estimation.poster_vio import solve_joint_poster_imu
 from umi.estimation.poster_vio import refinement
-from umi.workflows.scene.tasks import poster_vio as poster_vio_inputs, poster_vio
+from umi.workflows.scene.tasks import poster_vio_inputs, poster_vio
 
 
 class PosterVioRefinementTests(unittest.TestCase):

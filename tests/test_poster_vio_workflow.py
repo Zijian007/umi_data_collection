@@ -14,7 +14,7 @@ from scipy.spatial.transform import Rotation
 
 from umi.store import layout
 from umi.store.models import TaskInputs
-from umi.workflows.scene.tasks import poster_vio, poster_vio as poster_vio_inputs
+from umi.workflows.scene.tasks import poster_vio, poster_vio_inputs
 from umi.estimation.poster_vio import solve_joint_poster_imu
 from umi.perception.poster import geometry, layout as tag_board
 

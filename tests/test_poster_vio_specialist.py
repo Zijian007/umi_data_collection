@@ -10,7 +10,7 @@ from umi.devices.x3.factory_geometry import Kb4Model
 from umi.estimation.poster_vio import solve_joint_poster_imu
 from umi.estimation.poster_vio.frontend import bearing_inliers, triangulate_batch, match_revisits
 from umi.estimation.poster_vio.frontend import subsample_observations, triangulate_track
-from umi.workflows.scene.tasks import poster_vio as poster_vio_inputs
+from umi.workflows.scene.tasks import poster_vio_inputs
 from umi.perception.poster.geometry import project_observations
 
 

@@ -48,7 +48,7 @@ parameters:
 
 ## 调用链
 
-`scene.pipeline.tasks.backend_routing` → `poster_vio.execute_task()` → `poster_vio.prepare_task_inputs()` → `solve_joint_poster_imu()` → 公共 TCP、测量和原子发布。
+`scene.pipeline.tasks.backend_routing` → `poster_vio.execute_task()` → `poster_vio_inputs.prepare_task_inputs()` → `solve_joint_poster_imu()` → 公共 TCP、测量和原子发布。
 
 - `models.py` 定义输入输出、任务坐标及观测质量校验。
 - `initialization.py`：逐帧整板/多标签子集的 KB4 PnP 假设、完整标签多数一致性、平面多解、跨帧/IMU 旋转连续性和累计剔除预算；单个标签不能作为位姿种子。先按保留标签旋转与陀螺仪积分拟合零偏，再估计速度、加速度零偏、海报坐标重力。种子只作初值。

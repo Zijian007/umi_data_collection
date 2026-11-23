@@ -225,7 +225,7 @@ class TagTrimmingTests(unittest.TestCase):
 
     def test_cropped_vio_features_keep_original_insv_indices(self):
         from test_poster_vio_workflow import PosterVioWorkflowTests
-        from umi.workflows.scene.tasks import poster_vio as poster_vio_inputs
+        from umi.workflows.scene.tasks import poster_vio_inputs
         fixture = PosterVioWorkflowTests()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
