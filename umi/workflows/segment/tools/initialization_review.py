@@ -92,7 +92,7 @@ def main(argv=None):
         times_csv=times if times.is_file() else None)
     result = review(inputs, parameters)
     result['inputs'] = {key: dict(path=str(path.resolve()), sha256=provenance.file_hash(path)) for key, path in paths.items()}
-    result['code'] = provenance.code_identity('trajectory')
+    result['code_revision'] = provenance.git_revision()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False), encoding='utf-8')
     print(f'原初始化：{result["baseline"]["status"]}；实验细化：{result["refined"]["status"]}；报告：{args.output}')

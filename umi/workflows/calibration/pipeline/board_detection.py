@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 from pathlib import Path
-import inspect
 import threading
 import zipfile
 
@@ -84,12 +83,8 @@ def detect_all(euroc: Path, make_detector=GridDetector, step: int = 1, workers: 
 def detect_cached(euroc: Path | Callable[[], Path], make_detector=GridDetector, *, cache: Path, source_identity: str,
                   step: int, workers: int, up: float, cancelled=None) -> dict:
     """Reuse raw corners independently of calibration; a dataset callable runs only on a cache miss."""
-    source_file = Path(__file__)
-    code = artifact_identity.source_hash(source_file)
-    detector_file = Path(inspect.getfile(make_detector))
-    detector_code = code if detector_file == source_file else artifact_identity.source_hash(detector_file)
     key = artifact_identity.canonical_hash(dict(source=source_identity, step=step, upscale=up,
-        opencv=cv2.__version__, code=code, detector=detector_code))
+        detector=make_detector.__qualname__))
     try:
         with np.load(cache, allow_pickle=False) as saved:
             if str(saved['identity'].item()) == key:

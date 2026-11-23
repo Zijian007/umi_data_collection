@@ -12,6 +12,51 @@ import tempfile
 from ruamel.yaml import YAML
 
 
+# --force：本次运行开始之前生成的缓存一律视为失效；本次运行中新生成的仍可复用（例如建图时
+# 解码的录像随后被任务复用）。进程级开关，由命令入口在开始处理前设置。
+_reuse_since: float | None = None
+
+
+@contextmanager
+def recompute(enabled: bool = True):
+    """在此范围内只复用范围开始之后完成的缓存；嵌套时沿用最外层的起点。"""
+    global _reuse_since
+    previous = _reuse_since
+    if enabled and previous is None:
+        _reuse_since = _filesystem_now()
+    try:
+        yield
+    finally:
+        _reuse_since = previous
+
+
+def recompute_when_forced(function):
+    """命令入口装饰器：``force=True``（且非 ``dry_run``）时整个调用处于 recompute 范围。"""
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(*args, force: bool = False, dry_run: bool = False, **kwargs):
+        with recompute(force and not dry_run):
+            return function(*args, force=force, dry_run=dry_run, **kwargs)
+    return wrapper
+
+
+def _filesystem_now() -> float:
+    """用文件系统时钟取当前时刻：内核写文件时间戳的粒度比 time.time() 粗，直接比较会把
+    紧接着写出的缓存误判为旧缓存。"""
+    with tempfile.NamedTemporaryFile() as stamp:
+        return os.fstat(stamp.fileno()).st_mtime
+
+
+def is_current(marker: Path) -> bool:
+    """缓存完成标记是否可用：不存在为否；处于 recompute 范围时需晚于范围起点。"""
+    try:
+        modified = marker.stat().st_mtime
+    except FileNotFoundError:
+        return False
+    return _reuse_since is None or modified >= _reuse_since
+
+
 def read_yaml(path: Path) -> dict:
     """读取一个 YAML 1.2 映射；拒绝重复键、可执行标签和其他版本指令。"""
     parser = YAML(typ='safe', pure=True)
@@ -31,7 +76,7 @@ def write_json(path: Path, document: dict) -> None:
 
 def read_npz_cache(path: Path, marker: Path, inputs: dict, *, mismatch: str) -> tuple[dict, str] | None:
     """读取已发布的数组缓存，并核对输入身份与文件内容。"""
-    if not marker.is_file():
+    if not is_current(marker):
         return None
     import numpy as np
     from umi.infra.provenance import file_hash

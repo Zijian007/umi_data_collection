@@ -52,8 +52,6 @@ print('lightweight')
             for node in ast.walk(ast.parse(path.read_text())):
                 if isinstance(node, ast.ImportFrom) and node.module:
                     self.assertFalse(node.module.startswith(('umi.workflows', 'umi.apps', 'umi.perception.gripper')), str(path))
-        for domain in ('scene', 'trajectory'):
-            self.assertIn('umi/perception/slam.py', artifact_identity.code_identity(domain))
 
     def test_camera_assets_and_models_do_not_import_calibration_or_trajectory_applications(self):
         forbidden = ('umi.workflows', 'umi.apps', 'umi.store', 'umi.estimation')

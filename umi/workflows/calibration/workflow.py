@@ -31,9 +31,7 @@ from umi.perception.runtime import write_error_log
 
 
 def parameter_record(configuration, trajectory_configuration):
-    return dict(configuration=configuration.snapshot(), trajectory_validation=trajectory_configuration.snapshot(),
-        code=artifact_identity.code_identity('calibration'), engines=artifact_identity.engine_identity('calibration'),
-        trajectory_code=artifact_identity.code_identity('trajectory'), trajectory_engines=artifact_identity.engine_identity('trajectory'))
+    return dict(configuration=configuration.snapshot(), trajectory_validation=trajectory_configuration.snapshot())
 
 
 def _document(paths, subject, sources, provenance, *, operation, previous):
@@ -45,7 +43,8 @@ def _document(paths, subject, sources, provenance, *, operation, previous):
     doc = previous or dict(measurements={}, execution=dict(steps={}), evaluation=None, evaluation_history=[])
     if previous and any(doc[k] != value for k, value in (('inputs', sources), ('computation', provenance), ('subject', subject))):
         result_io.archive_evaluation(doc)
-    doc.update(operation=operation, subject=subject, inputs=sources, computation=provenance, output=str(paths.output))
+    doc.update(operation=operation, subject=subject, inputs=sources, computation=provenance, output=str(paths.output),
+               code_revision=artifact_identity.git_revision())
     doc['execution'].update(status='running', error=None, details={})
     result_io.write(paths.output, doc)
     return doc
@@ -243,7 +242,7 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
                 background = replace(execution, workers=min(workers, available // 4, 8), timings={})
                 detection = pool.submit(_detect_board, recording_preparers['C'], background, configuration.values.board,
                     'C', identities['C'], cancelled=cancelled, background=True)
-            common = dict(code=provenance['code'], engines=provenance['engines'], grid=source.grid,
+            common = dict(grid=source.grid,
                           lens=request.lens, intrinsics_source=request.intrinsics_source)
             board = asdict(configuration.values.board)
             def board_identity(selected):
@@ -314,7 +313,6 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
                 lambda: asdict(gravity.validate_gravity(recording_preparers['D'](), paths.calibration, configuration.values.gravity, execution)))
             c_identity = dict(common, source=identities['C'], calibration=digest, board=board_identity('validation_step'),
                 trajectory=trajectory_configuration.computation_hash, backend=provenance['backend'],
-                trajectory_code=provenance['trajectory_code'], trajectory_engines=provenance['trajectory_engines'],
                 assets=trajectory.trajectory_assets() if request.lens == 'front' else backend_identity)
             _validate(source.recordings.c, recording_preparers['C'], execution, runner, c_identity, paths.calibration, str(paths.output), grid=source.grid, board=configuration.values.board,
                 trajectory_configuration=trajectory_configuration, generator=trajectory_generator, detection=detection)
@@ -368,8 +366,7 @@ def verify(request: VerificationRequest) -> int:
             dataset = _prepare('C', source.video, execution, runner, identity, 'front')
             _validate(source.video, dataset, execution, runner, dict(source=identity, calibration=subject['parameter_sha256'],
                 board=asdict(configuration.values.board), grid=source.grid, trajectory=trajectory_configuration.computation_hash,
-                code=provenance['code'], trajectory_code=provenance['trajectory_code'],
-                engines=provenance['trajectory_engines'], assets=trajectory.trajectory_assets()), parameter_file, str(source.calibration['dir']), grid=source.grid, board=configuration.values.board,
+                assets=trajectory.trajectory_assets()), parameter_file, str(source.calibration['dir']), grid=source.grid, board=configuration.values.board,
                 trajectory_configuration=trajectory_configuration)
         return _finish(paths, doc, configuration, keep_work=request.keep_work)
     finally:

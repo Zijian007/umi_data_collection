@@ -14,7 +14,7 @@ import numpy as np
 from umi.infra import provenance
 from umi.core.timing import video_to_imu_seconds
 from umi.core.frame import CROP, FPS_SRC, FPS_TOLERANCE, SRC_H, SRC_W
-from umi.infra.file_store import atomic_file, mark_used, write_json
+from umi.infra.file_store import atomic_file, is_current, mark_used, write_json
 from umi.perception.decoding import ScanProgress, VideoDecode
 
 if TYPE_CHECKING:
@@ -303,7 +303,6 @@ def cached(video: Path, output: Path, settings: DetectionSettings, *, force: boo
            on_ready: Callable[[TagObservations, dict], None] | None = None,
            on_progress: Callable[[ScanProgress], None] | None = None) -> dict | None:
     """角点缓存独立绑定检测身份；decoder 将缺失检测推迟到共享解码。"""
-    import av
 
     video, output = video.expanduser().resolve(), output.expanduser().resolve()
     if not video.is_file():
@@ -313,16 +312,11 @@ def cached(video: Path, output: Path, settings: DetectionSettings, *, force: boo
     if layout is not None and (settings.dictionary != layout.dictionary or settings.border_bits != layout.border_bits
                                or not set(settings.ids).issubset(layout.ids) or settings.lens != 'rear'):
         raise ValueError('检测字典、黑边或 ID 与海报布局不一致')
-    source_files = (Path(__file__), Path(__file__).parent.parent / 'decoding.py',
-                    provenance.ROOT / 'umi/core/frame.py',
-                    provenance.ROOT / 'umi/core/timing.py')
-    identity = dict(schema_version=1, recording_sha256=provenance.file_hash(video), settings=asdict(settings),
-        implementation={str(p.relative_to(provenance.ROOT)): provenance.source_hash(p) for p in source_files},
-        dependencies=dict(opencv=cv2.__version__, av=av.__version__, numpy=np.__version__))
+    identity = dict(schema_version=1, recording_sha256=provenance.file_hash(video), settings=asdict(settings))
     key = provenance.canonical_hash(identity)
     cache_file, manifest_file = output / 'observations.npz', output / 'detection.json'
     observations = None
-    if not force and cache_file.is_file() and manifest_file.is_file():
+    if not force and cache_file.is_file() and is_current(manifest_file):
         try:
             saved = json.loads(manifest_file.read_text())
             if saved['identity_hash'] == key and saved['observations_sha256'] == provenance.file_hash(cache_file):

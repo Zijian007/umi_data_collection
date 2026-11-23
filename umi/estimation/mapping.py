@@ -269,7 +269,7 @@ def read_visual_observations(path: Path, video_times: np.ndarray, offset_ns: int
 def build(recording: PreparedRecording, lens: str, directory: Path, *,
           cache: StageCache | None = None, refresh: bool = False) -> MapAtlas:
     video = recording.lens_video(lens)
-    identity = dict(visual_inputs(recording, lens, engines=cache.engines),
+    identity = dict(visual_inputs(recording, lens),
                     mask=artifact_identity.file_hash(video.mask) if video.mask else None) if cache else {}
     with (cache.stage('build', f'{lens} 视觉建图', identity, directory,
                       roots=(f'{lens}/map', 'logs'), refresh=refresh) if cache else nullcontext(False)) as reused:
@@ -283,7 +283,7 @@ def build(recording: PreparedRecording, lens: str, directory: Path, *,
 def localize(recording: PreparedRecording, lens: str, archive: Path, index: int, directory: Path,
              *, reverse: bool = False, frame_range: tuple[int, int] | None = None,
              cache: StageCache | None = None, refresh: bool = False) -> VisualObservations:
-    identity = dict(visual_inputs(recording, lens, engines=cache.engines), archive=artifact_identity.file_hash(archive),
+    identity = dict(visual_inputs(recording, lens), archive=artifact_identity.file_hash(archive),
                     index=index, reverse=reverse, frame_range=list(frame_range) if frame_range else None) if cache else {}
     with (cache.stage('localize', f'{lens} 地图 {index} 定位', identity, directory,
                       roots=('localization', 'logs'), refresh=refresh) if cache else nullcontext(False)) as reused:

@@ -165,17 +165,6 @@ class SampledTagTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '哈希'):
             self.process()
 
-    def test_frame_clock_implementation_change_invalidates_sampled_corner_cache(self):
-        self.process()
-        original_hash = sampled_detection.artifact_identity.source_hash
-
-        def changed_hash(path):
-            return 'new-frame-clock' if str(path).endswith('core/frame.py') else original_hash(path)
-
-        with patch.object(sampled_detection.artifact_identity, 'source_hash', side_effect=changed_hash):
-            self.process()
-        self.assertEqual(len(self.quick_calls), 8)
-
     def test_threshold_uses_ceiling_for_odd_output_count(self):
         self.request = replace(self.request, video_times_s=np.arange(5) / 30)
         result = self.process()

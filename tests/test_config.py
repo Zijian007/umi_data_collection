@@ -373,16 +373,6 @@ class SafetyTests(trajectory_tests.RecordingFixture):
             self.assertEqual(calibration_workflow.run(request), 2)
         prepare.assert_not_called()
 
-    def test_algorithm_and_engine_changes_invalidate_cache(self):
-        self.successful_result()
-        path = self.root / 'new.yaml'
-        path.write_text("fusion:\n  node_stride: 2")
-        fp = self.fingerprint(TrajectoryRequest(config=path))
-        self.assertIn('算法参数已变化', reuse.reuse_decision(self.output, fp, notes=config.load('trajectory').values.notes).reason)
-        engine = self.engines.orb / 'lib/libORB_SLAM3.so'
-        engine.write_text('changed binary')
-        self.assertIn('引擎', reuse.reuse_decision(self.output, self.fingerprint(), notes=config.load('trajectory').values.notes).reason)
-
     def test_video_size_change_invalidates_cached_trajectory(self):
         self.successful_result()
         path = self.root / 'resolution.yaml'

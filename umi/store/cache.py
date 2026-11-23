@@ -15,97 +15,23 @@ import shutil
 import stat
 import time
 import uuid
-from umi.infra.file_store import mark_used, write_json
+from umi.infra.file_store import is_current, mark_used, write_json
 from umi.infra.terminal import Console
 from umi.store.result_io import artifact_hashes, validate_assets
 
 
-# 显式列出各阶段的实现依赖。CLI、查看器和任务编排不改变地图。
-# 新增算法依赖时应加入对应组；不以 Git 提交或文件时间代替内容哈希。
-COMMON_SOURCES = (
-    'umi/config/loader.py', 'umi/config/operational_settings.py',
-    'umi/config/parameter_models.py', 'umi/infra/provenance.py',
-    'umi/infra/paths.py',
-    'umi/infra/file_store.py', 'umi/store/models.py',
-    'umi/store/cache.py',
-    'umi/store/result_io.py', 'umi/perception/models.py',
-)
-# 录像准备只把 INSV 解码为 EuRoC 数据集和镜头视频；标定、ORB 和对齐参数
-# 在之后才使用，不能让它们的代码改动使同一原片重新解码。
-DECODE_SOURCES = (
-    'umi/config/loader.py', 'umi/config/parameter_models.py', 'umi/perception/models.py',
-    'umi/devices/x3/extraction.py', 'umi/core/frame.py',
-    'umi/devices/x3/imu_reader.py', 'umi/devices/x3/insv_reader.py',
-    'umi/perception/recordings.py', 'umi/perception/tools/make_lens_video.py',
-)
-PREPARATION_SOURCES = (
-    'umi/devices/registry.py', 'umi/devices/*.py', 'umi/devices/x3/*.py',
-    'umi/workflows/scene/recordings.py', 'umi/workflows/scene/camera_assets.py',
-    'umi/devices/selection.py',
-    'umi/perception/assets/orb/*.yaml',
-    'umi/perception/recordings.py', 'umi/perception/runtime.py', 'umi/infra/orb_install.py',
-    'umi/perception/tools/make_lens_video.py',
-)
-VISUAL_SOURCES = (
-    'umi/perception/slam.py', 'umi/perception/runtime.py', 'umi/infra/orb_install.py',
-    'umi/estimation/mapping.py',
-)
-PLACEMENT_SOURCES = (
-    'umi/workflows/scene/maps/build.py',
-    'umi/workflows/scene/maps/repository.py',
-    'umi/workflows/scene/inputs/scene.py',
-    'umi/workflows/scene/inputs/batch.py',
-    'umi/store/layout.py', 'umi/estimation/mapping.py',
-    'umi/estimation/fixed_map/geometry.py', 'umi/estimation/fixed_map/fusion.py',
-    'umi/estimation/fixed_map/parameters.py',
-    'umi/estimation/fixed_map/poster.py', 'umi/perception/poster/geometry.py',
-    'umi/perception/poster/quality.py',
-    'umi/perception/poster/layout.py', 'umi/perception/poster/detection.py', 'umi/perception/decoding.py',
-    'umi/estimation/fusion/alignment.py',
-    'umi/estimation/inertial.py',
-    'umi/estimation/constraint_quality.py',
-    'umi/estimation/fusion/data.py', 'umi/core/tum.py',
-    'umi/perception/atlas.py',
-)
-
-
-def source_identity(stage: str) -> dict[str, str]:
-    dependencies = {
-        'prepare': DECODE_SOURCES,
-        'visual': (*COMMON_SOURCES, *VISUAL_SOURCES),
-        'localize': (*COMMON_SOURCES, *DECODE_SOURCES, *PREPARATION_SOURCES, *VISUAL_SOURCES,
-                     'umi/estimation/fixed_map/geometry.py',
-                     'umi/estimation/fixed_map/parameters.py',
-                     'umi/workflows/scene/tasks/scene_map.py'),
-        'map': (*COMMON_SOURCES, *DECODE_SOURCES, *PREPARATION_SOURCES, *VISUAL_SOURCES, *PLACEMENT_SOURCES),
-    }
-    paths = set()
-    for pattern in dependencies[stage]:
-        matched_paths = tuple(artifact_identity.ROOT.glob(pattern))
-        if not matched_paths:
-            raise ValueError(f'建图代码依赖不存在：{pattern}')
-        paths.update(matched_paths)
-    return {str(path.relative_to(artifact_identity.ROOT)): artifact_identity.source_hash(path)
-            for path in sorted(paths)}
-
-
-def preparation_inputs(video: Path, camera: CalibratedCamera, scene: Scene, *, engines: dict) -> dict:
+def preparation_inputs(video: Path, camera: CalibratedCamera, scene: Scene) -> dict:
     """建图和任务共用；原片内容已确定设备，标定只决定生成哪些镜头。"""
     return dict(recording_sha256=artifact_identity.file_hash(video),
-                lenses=sorted(camera.measurements), video=asdict(scene.trajectory.values.video),
-                code=source_identity('prepare'),
-                engines={name: digest for name, digest in engines.items()
-                         if name in ('ffmpeg', 'ffprobe') or '/numpy-' in name})
+                lenses=sorted(camera.measurements), video=asdict(scene.trajectory.values.video))
 
 
-def visual_inputs(recording: PreparedRecording, lens: str, *, engines: dict) -> dict:
+def visual_inputs(recording: PreparedRecording, lens: str) -> dict:
     video = recording.lens_video(lens)
     return dict(video=artifact_identity.file_hash(video.path),
                 settings=artifact_identity.file_hash(video.settings),
                 frames=recording.context.frame_count, lens=lens,
-                orb=asdict(recording.context.parameters.orb), code=source_identity('visual'),
-                engines={name: digest for name, digest in engines.items()
-                         if name.startswith(('orb_', 'Thirdparty/'))})
+                orb=asdict(recording.context.parameters.orb))
 
 
 # 地图只依赖镜头标定和遮手图；TCP、夹爪宽度和标签测距不参与建图，也不冻结进地图版本。
@@ -129,7 +55,7 @@ def map_reuse_key(input_identity: dict) -> str:
     return artifact_identity.canonical_hash(dict(
         schema_version=1, definition=definition,
         recordings={arm: recording['sha256'] for arm, recording in input_identity['recordings'].items()},
-        cameras=input_identity['cameras'], code=input_identity['code'], engines=input_identity['engines']))
+        cameras=input_identity['cameras']))
 
 
 def matches_map_inputs(previous: dict, current: dict) -> bool:
@@ -140,9 +66,8 @@ console = Console('场景')
 
 
 class StageCache:
-    def __init__(self, root: Path, engines: dict, *, force: bool = False, audit=None):
+    def __init__(self, root: Path, *, force: bool = False, audit=None):
         self.root = root
-        self.engines = engines
         self.force = force
         self.audit = audit
         self.timings: list[dict] = []
@@ -177,7 +102,7 @@ class StageCache:
         with self.measure(stage, label) as timing:
             timing['cache_key'] = key
             assets = None
-            if not self.force and not refresh and (cache_dir / 'ready.json').is_file():
+            if not self.force and not refresh and is_current(cache_dir / 'ready.json'):
                 try:
                     manifest = json.loads((cache_dir / 'ready.json').read_text())
                     if manifest['inputs'] != identity:

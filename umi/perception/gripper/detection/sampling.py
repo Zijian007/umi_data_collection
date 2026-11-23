@@ -177,7 +177,6 @@ class SampledDetectionCache:
                  query_times_s: np.ndarray, progress: ProgressCallback | None, *,
                  roi_px: tuple[int, int, int, int] = DEFAULT_TAG_ROI,
                  on_progress: Callable[[ScanProgress], None] | None = None):
-        import av
 
         self.video, self.progress, self.on_progress = video, progress, on_progress
         self.roi_px = validate_roi(roi_px)
@@ -187,9 +186,6 @@ class SampledDetectionCache:
             raise ValueError('标签检测输出时间轴必须非空、有限且严格递增')
         self.inputs = dict(recording_sha256=recording_sha256, detector=identity(),
                            roi_px=list(self.roi_px),
-                           decoder=av.__version__, frame_sha256=artifact_identity.source_hash(
-                               artifact_identity.ROOT / 'umi/core/frame.py'),
-                           sampling_sha256=artifact_identity.source_hash(Path(__file__)),
                            query_times_s=self.query_times_s.tolist())
         self.directory = cache / 'sampled_tags' / artifact_identity.canonical_hash(self.inputs)[:20]
         mark_used(self.directory)

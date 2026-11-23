@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import time
+from umi.infra.file_store import recompute
 from umi.config import loader as config, parameter_models
 from umi.devices import registry
 from umi.workflows.segment import trajectory_export as postprocess, environment_assets as calibration_assets, reconstruction
@@ -82,6 +83,12 @@ def run_batch(input_paths: list[str], output: Path | None, request: TrajectoryRe
 
 
 def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) -> dict:
+    """--force 时同时重算本录像的检测等中间缓存。"""
+    with recompute(request.force and not request.dry_run):
+        return _run_recording(video, output_root, request)
+
+
+def _run_recording(video: Path, output_root: Path, request: TrajectoryRequest) -> dict:
     """处理一段录像；失败保留 debug，成功发布视频和报告后按配置清理中间数据。"""
     recording_name = video.stem
     paths = RecordingPaths(output_root / recording_name)
@@ -103,8 +110,8 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
         reports.show_recording(summary)
         return summary
     reports.show_calibration(selected, recording=recording_name)
-    provenance = dict(configuration=request.configuration.snapshot(), code=fingerprint['code'],
-                      engines=fingerprint['engines'], computation_hash=fingerprint['computation_hash'])
+    provenance = dict(configuration=request.configuration.snapshot(), code_revision=artifact_identity.git_revision(),
+                      computation_hash=fingerprint['computation_hash'])
     if request.dry_run:
         print(json.dumps(dict(video=str(video), output=str(paths.output), calibration=selected.summary(),
                               rear_calibration=asdict(environment_assets.rear.identity) if environment_assets.rear else None,
@@ -246,15 +253,13 @@ def run_fingerprint(video: Path, selected: SelectedCalibration, request: Traject
     assets = selected.assets.hashes()
     assets.update(environment_assets.fingerprint_assets())
     fingerprint = {
-        'version': 2,
+        'version': 3,
         'recording': dict(path=str(video.resolve()), bytes=stat.st_size, mtime_ns=stat.st_mtime_ns),
         'calibration': dict(serial=selected.camera_serial, assets=assets,
                             version=selected.calibration_id, intrinsics_source=selected.intrinsics_source),
         'options': dict(mode=request.mode, allow_irregular=request.allow_irregular,
                         max_tries=request.max_tries),
         'algorithm_parameters': request.configuration.computation_hash,
-        'code': artifact_identity.code_identity('trajectory'),
-        'engines': artifact_identity.engine_identity('trajectory'),
     }
     fingerprint['computation_hash'] = artifact_identity.canonical_hash(fingerprint)
     fingerprint['evaluation_hash'] = request.configuration.evaluation_hash
@@ -275,15 +280,13 @@ def reuse_decision(output: Path, fingerprint: dict, *, notes: parameter_models.N
     if not isinstance(summary, dict) or summary.get('status') != 'ok':
         return ReuseDecision(None, '上次处理未成功')
     previous = summary.get('run_fingerprint')
-    if not isinstance(previous, dict) or previous.get('version') != 2 or fingerprint.get('version') != 2:
+    if not isinstance(previous, dict) or previous.get('version') != 3 or fingerprint.get('version') != 3:
         return ReuseDecision(None, '结果缺少当前输入指纹')
     for key, reason in (
         ('recording', '录像信息已变化'),
         ('calibration', '标定或夹爪配置已变化'),
         ('options', '处理选项已变化'),
         ('algorithm_parameters', '算法参数已变化'),
-        ('code', '算法代码已变化'),
-        ('engines', '外部引擎或依赖已变化'),
     ):
         if previous.get(key) != fingerprint[key]:
             return ReuseDecision(None, reason)

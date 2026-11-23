@@ -14,15 +14,14 @@ from umi.workflows.scene.maps import repository as map_repository
 class MapManifestValidationTests(unittest.TestCase):
     def setUp(self):
         self.manifest = dict(name='lab', mode='shared_front', version='test-v1', frame_id='lab/test-v1',
-            inputs=dict(definition={}, engines={}), assets={'maps/front.osa': 'a'*64},
+            inputs=dict(definition={}), assets={'maps/front.osa': 'a'*64},
             maps=dict(shared_front=dict(archive='maps/front.osa', index=0,
                 placement=dict(scale=1., T_scene_metric_map=[
                     [1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]]))))
 
     def test_validation_needs_no_files_or_engine_and_does_not_modify_input(self):
         original = deepcopy(self.manifest)
-        with patch.object(repository.artifact_identity, 'engine_identity', side_effect=AssertionError('engine accessed')), \
-                patch.object(repository, 'validate_assets', side_effect=AssertionError('files accessed')):
+        with patch.object(repository, 'validate_assets', side_effect=AssertionError('files accessed')):
             repository.validate_manifest(self.manifest, version='test-v1')
         self.assertEqual(self.manifest, original)
 
@@ -70,12 +69,6 @@ class MapReadErrorTests(unittest.TestCase):
                 with self.assertRaises(MapUnavailableError):
                     self.load()
 
-    def test_engine_incompatibility_has_a_distinct_category(self):
-        with patch.object(repository.artifact_identity, 'engine_identity', return_value={'orb_library': 'changed'}):
-            with self.assertRaises(MapCompatibilityError) as caught:
-                self.load()
-        self.assertEqual(fallback_record(caught.exception)['category'], 'map_incompatible')
-
     def test_corrupt_nested_map_entries_are_data_errors_rather_than_program_key_errors(self):
         role = next(iter(self.manifest['maps']))
         original = self.manifest['maps'][role]
@@ -87,8 +80,3 @@ class MapReadErrorTests(unittest.TestCase):
             with self.subTest(item=item), self.assertRaises(MapUnavailableError):
                 self.load()
 
-    def test_unexpected_validation_errors_propagate(self):
-        for error in (KeyError('bug'), RuntimeError('bug'), OSError('engine unavailable')):
-            with self.subTest(error=error), patch.object(repository.artifact_identity, 'engine_identity', side_effect=error):
-                with self.assertRaises(type(error)):
-                    self.load()

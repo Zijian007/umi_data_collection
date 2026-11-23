@@ -90,11 +90,8 @@ class DetectionSeries:
 
 
 def identity() -> dict:
-    import cv2
-
-    return dict(settings=dict(settings.values('gripper_tag_detection')), opencv=cv2.__version__, detector_sha256=artifact_identity.source_hash(Path(__file__).with_name('markers.py')),
-                frame_processing_sha256=artifact_identity.source_hash(Path(__file__)),
-                decoding_sha256=artifact_identity.source_hash(artifact_identity.ROOT / 'umi/perception/decoding.py'),
+    """检测缓存的数据输入：检测设置与源画面几何；不含代码或依赖版本。"""
+    return dict(settings=dict(settings.values('gripper_tag_detection')),
                 source_size=[SRC_W, SRC_H], lens_half='right', default_roi_px=list(DEFAULT_TAG_ROI))
 
 

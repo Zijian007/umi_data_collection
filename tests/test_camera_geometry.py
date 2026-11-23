@@ -149,6 +149,3 @@ class CameraGeometryTests(unittest.TestCase):
             reports.write_result_report(directory, summary)
             self.assertIn('相机', (directory / 'report.txt').read_text())
 
-    def test_shared_geometry_is_fingerprinted_for_both_workflows(self):
-        for domain in ('scene', 'trajectory'):
-            self.assertIn('umi/core/geometry.py', artifact_identity.code_identity(domain))

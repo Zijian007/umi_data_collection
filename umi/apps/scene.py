@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     pipeline.add_argument('batch', type=Path, help='包含 collection.yaml 和 mapping/、take_*/ 的采集批次目录')
     pipeline.add_argument('--expert-config', dest='config', type=Path, help='本次专家算法 YAML 覆盖；只含 trajectory / parameters')
     pipeline.add_argument('--show-config', action='store_true', help='只输出生效配置和来源 JSON，不执行处理')
-    pipeline.add_argument('--force', action='store_true', help='强制生成新的地图版本和任务结果；已有 epoch 计划不会自动覆盖')
+    pipeline.add_argument('--force', action='store_true', help='全部重算：生成新的地图版本和任务结果，中间缓存不复用；已有 epoch 计划不会自动覆盖')
     pipeline.add_argument('--cores', default='', help='限制算法子进程可用 CPU，例如 0-7 或 0-3,8')
     pipeline.add_argument('--jobs', '-j', type=int, default=None, help='同时处理的任务数，省略时读取 config/user.yaml')
     pipeline.add_argument('--keep-work', action='store_true', help='成功后保留建图中间文件')
@@ -67,8 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
         configuration.add_argument('--expert-config', dest='config', type=Path, help='本次专家算法 YAML 覆盖；只含 trajectory / parameters')
         configuration.add_argument('--show-config', action='store_true', help='只输出生效配置和来源 JSON，不检查原片、不执行处理；优先于 --dry-run')
         execution.add_argument('--force', action='store_true', help=(
-            '强制构建新的地图版本，保留已有版本' if command is build else
-            '忽略已完成任务的结果复用并生成新结果；中间准备/定位缓存仍可复用'))
+            '强制构建新的地图版本（解码、建图、定位缓存全部重算），保留已有版本' if command is build else
+            '全部重算：解码、定位、检测缓存与任务结果都不复用（改了算法或重编引擎后使用）；'
+            '已绑定的地图不变，重建地图用 umi-scene build --force 或 pipeline --force'))
         execution.add_argument('--cores', default='', help='限制算法子进程可用 CPU，例如 0-7 或 0-3,8；默认不额外限制')
         execution.add_argument('--dry-run', action='store_true', help='只检查输入并显示计划，不创建清单、锁、地图、缓存或结果')
         if command is build:

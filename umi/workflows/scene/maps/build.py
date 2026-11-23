@@ -15,7 +15,7 @@ from umi.infra import provenance as artifact_identity
 from umi.infra.file_store import locked as storage_lock, write_json
 from umi.infra.terminal import Console
 from umi.store.result_io import artifact_hashes, recording_identity
-from umi.store.cache import MAP_CAMERA_ASSETS, map_camera_identity, map_reuse_key, source_identity
+from umi.store.cache import MAP_CAMERA_ASSETS, map_camera_identity, map_reuse_key
 from umi.store.cache import CacheAudit, StageCache
 from umi.workflows.scene import camera_assets
 from umi.workflows.scene import cleanup
@@ -24,7 +24,6 @@ from umi.workflows.scene import recordings
 from umi.estimation import mapping
 from umi.perception import runtime
 from umi.perception.models import ProcessingError
-from umi.infra.orb_install import exporter_paths
 
 from umi.workflows.scene.maps import repository
 
@@ -103,11 +102,7 @@ def mapping_inputs(scene: Scene, cameras: dict) -> dict:
         definition=mapping.definition(scene),
         recordings=_recording_hashes(scene),
         cameras={arm: map_camera_identity(camera) for arm, camera in cameras.items()},
-        code=source_identity('map'),
-        engines=artifact_identity.engine_identity('trajectory'),
     )
-    exporter, _ = exporter_paths()
-    identity['engines']['map_exporter'] = artifact_identity.file_hash(exporter) if exporter.is_file() else 'unavailable'
     identity['reuse_key'] = map_reuse_key(identity)
     return identity
 
@@ -180,6 +175,7 @@ def _freeze_and_publish_map(scene: Scene, maps, map_dir: Path, version: str,
     manifest = dict(
         kind='umi_scene',
         schema_version=1,
+        code_revision=artifact_identity.git_revision(),
         name=scene.name,
         mode=scene.mode,
         version=version,
@@ -269,7 +265,7 @@ def build_version(scene: Scene, *, force=False, keep_work=False, cores='', dry_r
         work_dir = map_dir / 'work'
         started, started_at = time.monotonic(), time.time()
         map_cache_audit = CacheAudit()
-        cache = StageCache(scene.map_root / 'cache', input_identity['engines'], force=force,
+        cache = StageCache(scene.map_root / 'cache', force=force,
                               audit=map_cache_audit)
         retry_report = dict(maximum_attempts=scene.trajectory.values.retry.max_tries,
                             stop_reason='not_started', attempts=[])

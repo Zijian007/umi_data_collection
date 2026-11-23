@@ -97,7 +97,7 @@ class CompactResultTests(unittest.TestCase):
             np.testing.assert_allclose(Rotation.from_quat(loaded['tracks'][name]['quaternion']).as_matrix(),
                                        Rotation.from_quat(expected[:, 4:]).as_matrix(), atol=1e-8)
 
-    def test_metadata_has_one_identity_and_source_hash_list(self):
+    def test_metadata_has_one_identity_and_records_code_revision(self):
         fixture = self.fixture
         fixture.build_scene()
         workflow.run_episode(fixture.episode_path)
@@ -109,8 +109,8 @@ class CompactResultTests(unittest.TestCase):
         self.assertNotIn('tag_distance', metadata)
         for duplicate in ('frame_id', 'scene_version', 'session', 'synchronization', 'trajectory_code'):
             self.assertNotIn(duplicate, metadata['inputs'])
-        required_sources = {**episode_inputs.algorithm_identity(), **provenance.code_identity('trajectory')}
-        self.assertEqual(metadata['inputs']['code'], required_sources)
+        self.assertFalse({'code', 'engines'} & metadata['inputs'].keys())
+        self.assertEqual(set(metadata['code_revision']), {'commit', 'dirty'})
         with (output / 'left/trajectory.csv').open() as stream:
             self.assertEqual(csv.DictReader(stream).fieldnames,
                              ['row', 't_video_s', 't_episode_s', 'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw'])

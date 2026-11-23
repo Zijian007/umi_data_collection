@@ -202,18 +202,6 @@ def read_episode(path: Path, *, verify: bool = True, overrides: SceneOverrides |
                    resolved.instruction, resolved.synchronization, resolved.map_version, resolved.map_selection)
 
 
-def algorithm_identity() -> dict:
-    identity = artifact_identity.code_identity('scene')
-    orchestration = {
-        'umi/apps/scene.py',
-        'umi/workflows/scene/batch_snapshot.py',
-        'umi/workflows/scene/ingest.py', 'umi/workflows/scene/episodes.py',
-        'umi/workflows/scene/batch_processing.py', 'umi/workflows/scene/recordings.py',
-        'umi/workflows/scene/tasks/recording_intervals.py',
-    }
-    return {name: digest for name, digest in identity.items() if name not in orchestration}
-
-
 def configuration_identity(batch_root: Path, *, collection: dict | None = None) -> str | None:
     legacy = batch_root / 'batch.yaml'
     if legacy.is_file():
@@ -228,8 +216,6 @@ def configuration_identity(batch_root: Path, *, collection: dict | None = None) 
 
 
 def episode_inputs(episode, cameras, map_manifest) -> dict:
-    from umi.perception.gripper import width_estimation
-    from umi.perception.gripper.distance import measurement as tag_distance
     from umi.perception.poster.layout import load as load_tag_board
 
     width_assets = {arm: dict(sha256=camera.asset_hashes['width'])
@@ -240,11 +226,6 @@ def episode_inputs(episode, cameras, map_manifest) -> dict:
     collection = normalize_collection(document)
     current_configuration = configuration_identity(episode.session.root, collection=collection)
     epoch_plan = layout.metadata(episode.session.root, 'map_epochs.yaml')
-    source_hashes = algorithm_identity()
-    trajectory_hashes = artifact_identity.code_identity('trajectory')
-    if any(source_hashes[name] != trajectory_hashes[name] for name in source_hashes.keys() & trajectory_hashes.keys()):
-        raise ValueError('记录任务身份时源代码发生变化，请重新运行')
-    source_hashes.update(trajectory_hashes)
     return dict(configuration=current_configuration, map_mode=map_manifest['mode'] if map_manifest else 'shared_front',
         scene_map_sha256=scene_map_identity(map_manifest) if map_manifest else None,
         scene_assets=map_manifest['assets'] if map_manifest else {},
@@ -264,9 +245,7 @@ def episode_inputs(episode, cameras, map_manifest) -> dict:
         recordings={arm: recording_identity(video) for arm, video in episode.recordings.items()},
         cameras={arm: camera_assets.camera_identity(camera) for arm, camera in cameras.items()},
         synchronization_sha256=artifact_identity.canonical_hash(episode.synchronization),
-        gripper_width=width_assets, gripper_width_code=width_estimation.identity() if width_assets else {},
-        tag_distance=tag_distance_assets, tag_distance_code=tag_distance.identity() if tag_distance_assets else {},
+        gripper_width=width_assets, tag_distance=tag_distance_assets,
         environment_tags=load_tag_board(episode.scene.tag_layout).record() if episode.scene.tag_layout else None,
         parameters={key: value for key, value in asdict(episode.scene.parameters).items()
-                    if not key.startswith(('recording_', 'pairing_'))}, trajectory_parameters=episode.scene.trajectory.snapshot()['values'],
-        code=source_hashes, engines=artifact_identity.engine_identity('trajectory'))
+                    if not key.startswith(('recording_', 'pairing_'))}, trajectory_parameters=episode.scene.trajectory.snapshot()['values'])

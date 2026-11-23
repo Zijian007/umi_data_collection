@@ -288,7 +288,7 @@ class TagTrimmingTests(unittest.TestCase):
                                      selected=SimpleNamespace(assets=SimpleNamespace(front_mask=None)))
             scene = SimpleNamespace(trajectory=SimpleNamespace(values=parameters), reconstruction_mode='poster_vio')
             settings = SimpleNamespace(front_settings=None, rear_settings=None, front_mask=None)
-            cache = StageCache(root / 'cache', {})
+            cache = StageCache(root / 'cache')
             with patch.object(recordings.recording_data, 'prepare', return_value=RecordingData(manifest, imu_file)), \
                  patch.object(recordings.runtime, 'visual_settings', return_value=settings), \
                  patch.object(recordings.calibration_assets, 'slam_settings_text', return_value=''), \

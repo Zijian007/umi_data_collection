@@ -25,7 +25,7 @@ from dataclasses import asdict, dataclass, replace
 import shutil
 import uuid
 from umi.infra import provenance as artifact_identity
-from umi.infra.file_store import write_json
+from umi.infra.file_store import recompute_when_forced, write_json
 from umi.store.result_io import validate_assets, is_local_scene, is_poster_scene
 from umi.store.cache import CacheAudit
 from umi.workflows.scene import recordings, synchronization
@@ -36,6 +36,7 @@ from umi.perception.audio.specialist_audio import DEFAULT_AUDIO_SYNC_ALGORITHM
 console = Console('场景')
 
 
+@recompute_when_forced
 def run_episode(path: Path, *, force=False, cores='', dry_run=False, check_recordings=True,
                 map_version: str | None = None, overrides: SceneOverrides | None = None,
                 parallel_arms: bool = True, batch_map: map_repository.BatchMap | None = None,
@@ -82,6 +83,7 @@ def _run_episode(episode: Episode, requested_map: str | None, batch_map: map_rep
                                          parallel_arms=parallel_arms, task_started=task_started)
 
 
+@recompute_when_forced
 def run_episodes(paths: list[Path], *, jobs: int = 1, force=False, cores='', dry_run=False, check_recordings=True,
                  map_version: str | None = None, map_epoch: str | None = None,
                  overrides: SceneOverrides | None = None) -> list[dict]:

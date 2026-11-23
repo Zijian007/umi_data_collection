@@ -93,7 +93,7 @@ def import_video(video: Path, directory: Path, *, metadata: dict, link: bool = F
 
 def prepare_recording(recording_path: Path, camera: CalibratedCamera, scene: Scene, cache_dir: Path, *, cores: str = '',
                       cache: StageCache | None = None, defer_lens_videos: bool = False) -> PreparedRecording:
-    identity = preparation_inputs(recording_path, camera, scene, engines=cache.engines) if cache else {}
+    identity = preparation_inputs(recording_path, camera, scene) if cache else {}
     roots = ('debug/dataset',) if defer_lens_videos else ('debug/dataset', 'debug/lens_videos')
     preparation_identity = dict(identity, products='timestamps_and_imu') if defer_lens_videos else identity
 
@@ -170,9 +170,9 @@ def shared_interval(recordings: dict[str, PreparedRecording], offsets_s: dict[st
     return start, end
 
 
-def prepare_with_cache(episode, arm, camera, scene, cores, *, work_dir: Path, cache_audit=None):
+def prepare_with_cache(episode, arm, camera, scene, cores, *, work_dir: Path, cache_audit=None, force: bool = False):
     """与建图共用阶段缓存；本次设置和日志写在运行工作目录，缓存只存解码产物。"""
-    cache = StageCache(layout.metadata(episode.root, 'cache'), artifact_identity.engine_identity('trajectory'), audit=cache_audit)
+    cache = StageCache(layout.metadata(episode.root, 'cache'), force=force, audit=cache_audit)
     return prepare_recording(episode.recordings[arm], camera, scene, work_dir / arm, cores=cores,
                              cache=cache, defer_lens_videos=True)
 

@@ -8,7 +8,6 @@ import csv
 
 import numpy as np
 
-from umi.infra import provenance as artifact_identity
 from umi.perception.gripper.detection import frames as detection
 from umi.perception.gripper import series
 from umi.perception.gripper.calibration import pixel_distances_to_widths
@@ -22,11 +21,8 @@ class WidthResult:
 
 
 def identity() -> dict:
-    import cv2
-
-    directory = Path(__file__).parent
-    return dict(detector=detection.identity(), opencv=cv2.__version__, files={name: artifact_identity.source_hash(directory/name)
-        for name in ('__init__.py', 'calibration.py', 'detection/markers.py', 'detection/frames.py', 'series.py', 'width_estimation.py')})
+    """宽度结果的检测设置；不含代码或依赖版本。"""
+    return dict(detector=detection.identity())
 
 
 def align(times: np.ndarray, widths: np.ndarray, above: np.ndarray,

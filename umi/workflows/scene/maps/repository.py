@@ -26,7 +26,7 @@ from umi.workflows.scene.inputs.batch import configuration_identity
 from umi.store.models import BuildSceneResult, Scene
 from umi.workflows.scene.parameters import SceneOverrides
 from umi.estimation import mapping
-from umi.infra.file_store import read_yaml, write_yaml
+from umi.infra.file_store import is_current, read_yaml, write_yaml
 from umi.infra.terminal import Console
 from umi.workflows.scene.errors import MapUnavailableError, MapCompatibilityError
 from umi.core.geometry import validate_transform
@@ -43,10 +43,6 @@ def load_published(scene: Scene, *, version: str | None = None, manifest_sha256:
                                           check_definition=check_definition, allow_import=allow_import)
     except (OSError, json.JSONDecodeError, YAMLError) as error:
         raise MapUnavailableError(f'场景地图不可用：{error}') from error
-    # 引擎查询属于运行环境，程序错误和执行失败不能伪装成地图资产缺失。
-    engine_identity = artifact_identity.engine_identity('trajectory')
-    if manifest['inputs']['engines'].get('orb_library') != engine_identity.get('orb_library'):
-        raise MapCompatibilityError('ORB 地图库版本已变化，请重新建立场景地图')
     return map_dir, manifest
 
 
@@ -102,12 +98,11 @@ def _load_published(scene, *, version, manifest_sha256, check_definition, allow_
 
 
 def validate_manifest(map_manifest: dict, *, version: str) -> None:
-    """只校验已读入的地图声明；文件哈希、场景兼容和引擎检查由读取流程负责。"""
+    """只校验已读入的地图声明；文件哈希与场景兼容由读取流程负责。"""
     if (not isinstance(map_manifest, dict)
             or not {'name', 'inputs', 'assets', 'mode', 'version', 'frame_id', 'maps'} <= map_manifest.keys()
             or not isinstance(map_manifest['inputs'], dict)
-            or not {'definition', 'engines'} <= map_manifest['inputs'].keys()
-            or not isinstance(map_manifest['inputs']['engines'], dict)
+            or 'definition' not in map_manifest['inputs']
             or not isinstance(map_manifest['maps'], dict)):
         raise MapUnavailableError('场景地图清单结构无效')
     if map_manifest['mode'] not in ('shared_front', 'dual'):
@@ -194,6 +189,8 @@ def validate_map_bindings(kit: dict, manifest: dict) -> None:
 def find_reusable_version(scene: Scene, input_identity: dict) -> dict | None:
     """从新到旧查找输入完全相同、资产仍完整的已发布版本。"""
     for path in sorted((scene.map_root / 'versions').glob('*/manifest.json'), reverse=True):
+        if not is_current(path):
+            continue
         try:
             previous = json.loads(path.read_text())
             if matches_map_inputs(previous.get('inputs', {}), input_identity):
@@ -273,10 +270,6 @@ class BatchMap:
                 continue
             if self._stamp(path) != expected:
                 raise ValueError(f'批次配置、建图原片或固定地图在运行期间发生变化，请重新运行：{path}')
-        if self._binding is not None:
-            manifest = self._binding[2]
-            if manifest['inputs']['engines'].get('orb_library') != artifact_identity.engine_identity('trajectory').get('orb_library'):
-                raise ValueError('ORB 地图库版本在运行期间发生变化，请重新运行')
 
     def _watch_binding(self, session, directory: Path, manifest: dict) -> None:
         """Record every input and published asset that must stay immutable."""

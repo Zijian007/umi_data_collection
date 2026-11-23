@@ -42,59 +42,12 @@ class FileHashTests(unittest.TestCase):
             self.assertEqual(digest.call_count, 2)
 
 
-class CodeIdentityScopeTests(unittest.TestCase):
-    def test_source_hash_ignores_comments_formatting_and_docstrings(self):
-        first = b'"""module"""\nclass A:\n    """class"""\n    def f(self, x=2):\n        """function"""\n        return x + 1\n'
-        second = b'# comment\nclass A:\n\n    def f(self,x = 2):\n        return (x+1) # comment\n'
-        self.assertEqual(provenance._python_hash(first), provenance._python_hash(second))
-        self.assertEqual(provenance._python_hash(b'def f():\n "doc"\n'),
-                         provenance._python_hash(b'def f():\n pass\n'))
-        self.assertNotEqual(provenance._python_hash(first), provenance._python_hash(second.replace(b'x+1', b'x+2')))
-        self.assertNotEqual(provenance._python_hash(b'x="one"'), provenance._python_hash(b'x="two"'))
-
-    def test_source_hash_reads_current_bytes_and_keeps_asset_hashes_exact(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'algorithm.py'
-            path.write_text('value = 1\n')
-            original = provenance.source_hash(path)
-            path.write_text('# comment\nvalue=1\n')
-            self.assertEqual(provenance.source_hash(path), original)
-            path.write_text('value=2\n')
-            self.assertNotEqual(provenance.source_hash(path), original)
-            asset = path.with_suffix('.yaml')
-            asset.write_text('value: 1\n')
-            self.assertEqual(provenance.source_hash(asset), provenance.file_hash(asset))
-            self.assertNotEqual(provenance.file_hash(path), provenance.source_hash(path))
-
-    def test_presentation_and_orchestration_files_do_not_invalidate_results(self):
-        from umi.infra.file_store import read_yaml
-        from umi.workflows.scene.inputs import batch as episode_inputs
-        trajectory = provenance.code_identity('trajectory')
-        self.assertFalse(provenance.PRESENTATION_SOURCES & trajectory.keys())
-        self.assertNotIn('umi/workflows/segment/reporting/reports.py', trajectory)
-        self.assertIn('umi/workflows/segment/reporting/artifacts.py', trajectory)
-        self.assertIn('umi/estimation/fusion/graph.py', trajectory)
-        scene = episode_inputs.algorithm_identity()
-        for name in ('batch_processing.py', 'visual_gap_diagnostics.py', 'cli.py'):
-            self.assertFalse([path for path in scene if path.endswith('/' + name) and '/scene/' in path], name)
-        self.assertIn('umi/estimation/fixed_map/fusion.py', scene)
-        self.assertNotIn('umi/workflows/scene/batch_snapshot.py', scene)
-        self.assertIn('umi/workflows/scene/inputs/scene.py', scene)
-        self.assertIn('umi/workflows/scene/inputs/batch.py', scene)
-
-    def test_task_caches_follow_their_stage_sources(self):
-        from umi.store.cache import source_identity
-        prepare, localize = source_identity('prepare'), source_identity('localize')
-        self.assertNotIn('umi/estimation/fusion/graph.py', localize)
-        self.assertLessEqual(prepare.keys(), localize.keys())
-        self.assertIn('umi/estimation/fixed_map/geometry.py', localize)
-        orb_environment = 'umi/infra/orb_install.py'
-        self.assertNotIn(orb_environment, prepare)
-        for stage in ('visual', 'localize', 'map'):
-            self.assertIn(orb_environment, source_identity(stage))
-        visual_runtime = 'umi/perception/runtime.py'
-        self.assertNotIn(visual_runtime, prepare)
-        self.assertIn(visual_runtime, localize)
+class CodeRevisionTests(unittest.TestCase):
+    def test_git_revision_is_recorded_without_affecting_caches(self):
+        revision = provenance.git_revision()
+        self.assertEqual(set(revision), {'commit', 'dirty'})
+        self.assertFalse(hasattr(provenance, 'code_identity'))
+        self.assertFalse(hasattr(provenance, 'engine_identity'))
 
 
 if __name__ == '__main__':

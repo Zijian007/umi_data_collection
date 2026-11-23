@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict, replace
 from pathlib import Path
 from umi.infra.concurrency import daemon_map
-from umi.infra.file_store import write_json, mark_used
+from umi.infra.file_store import is_current, write_json, mark_used
 from umi.workflows.scene.tasks import poster_independent as independent_reconstruction, measurements, trajectory_writers, recording_intervals as diagnostics
 from umi.estimation.fixed_map.fusion import SceneFusionQualityError
 from umi.store.result_io import is_local_scene, validate_assets
@@ -22,7 +22,6 @@ from umi.core.timing import video_to_imu_seconds
 from umi.store import layout
 from umi.estimation import mapping as slam
 from umi.workflows.scene import camera_assets
-from umi.store.cache import source_identity
 from umi.estimation.fixed_map import fusion
 from umi.estimation.fixed_map.geometry import VisualObservations
 from umi.estimation.fixed_map.parameters import FixedMapParameters, MapInertialParameters, MappedPosterParameters, RelocalizationParameters
@@ -122,7 +121,7 @@ def execute_task(inputs: TaskInputs, *, map_dir: Path, map_manifest: dict,
 
 def _restore_localization(cache_dir: Path, key: str, cache_audit) -> VisualObservations | None:
     manifest_path = cache_dir / 'ready.json'
-    if not manifest_path.exists():
+    if not is_current(manifest_path):
         return None
     try:
         validate_assets(cache_dir, json.loads(manifest_path.read_text())['assets'])
@@ -169,8 +168,7 @@ def localize_with_cache(episode, arm, recording, lens, map_archive, map_index, m
     identity = dict(recording=episode.recording_refs[arm]['sha256'], lens=lens,
         camera=camera_assets.camera_identity(recording.camera), map_version=map_manifest['version'], index=map_index,
         video=asdict(episode.scene.trajectory.values.video), orb=asdict(episode.scene.trajectory.values.orb),
-        code=source_identity('localize'), policy=relocalization.policy(localization_parameters),
-        metric_scale=metric_scale, engines=artifact_identity.engine_identity('trajectory'))
+        policy=relocalization.policy(localization_parameters), metric_scale=metric_scale)
     if recording.full_video_times_s is not None:
         identity['frame_window'] = [recording.source_frame_start, len(recording.video_times_s)]
     key = artifact_identity.canonical_hash(identity)[:20]

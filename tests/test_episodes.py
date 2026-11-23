@@ -13,6 +13,7 @@ from umi.workflows.scene import episodes
 from umi.apps import scene as cli
 from umi.store import layout
 from umi.workflows.scene import workflow
+from umi.workflows.scene.tasks import publication
 from umi.infra.file_store import write_yaml
 from registry_fakes import write_task_configuration
 from umi.apps.viewer.results.catalog import RecordingCatalog
@@ -109,8 +110,19 @@ class EpisodeLifecycleTests(unittest.TestCase):
         report = self.f.task_root / state['attempt']['preflight_report']
         self.assertTrue(report.is_file())
         self.assertTrue(json.loads(report.read_text())['passed'])
-        with patch('umi.estimation.mapping.localize',side_effect=AssertionError('cached localization must be reused')):
-            workflow.run_episode(self.f.episode_path,force=True)
+        with patch('umi.estimation.mapping.localize',side_effect=AssertionError('cached localization must be reused')), \
+                patch.object(publication, 'reuse_episode', return_value=None):
+            workflow.run_episode(self.f.episode_path)
+
+    def test_force_recomputes_cached_stages_and_result(self):
+        workflow.run_episode(self.f.episode_path)
+        with patch.object(scene_reconstruction.slam, 'localize_with_recovery',
+                          wraps=scene_reconstruction.slam.localize_with_recovery) as compute:
+            result = workflow.run_episode(self.f.episode_path)
+            self.assertEqual(compute.call_count, 0)
+            self.assertEqual(result['status'], 'skipped')
+            workflow.run_episode(self.f.episode_path, force=True)
+        self.assertGreater(compute.call_count, 0)
 
     def test_damaged_localization_cache_recomputes_only_that_entry(self):
         workflow.run_episode(self.f.episode_path)
@@ -122,8 +134,9 @@ class EpisodeLifecycleTests(unittest.TestCase):
             with self.subTest(filename=filename):
                 next(cache_root.glob('*/' + filename)).write_bytes(b'broken')
                 with patch.object(scene_reconstruction.slam, 'localize_with_recovery',
-                                  wraps=scene_reconstruction.slam.localize_with_recovery) as compute:
-                    workflow.run_episode(self.f.episode_path, force=True)
+                                  wraps=scene_reconstruction.slam.localize_with_recovery) as compute, \
+                        patch.object(publication, 'reuse_episode', return_value=None):
+                    workflow.run_episode(self.f.episode_path)
                 self.assertEqual(compute.call_count, 1)
                 self.assertEqual({name: (output / name).read_bytes() for name in before}, before)
                 audit = json.loads((output / 'run_report.json').read_text())['cache']['task']

@@ -8,7 +8,7 @@ from pathlib import Path
 import os
 
 from umi.infra import provenance as artifact_identity
-from umi.infra.file_store import read_yaml, write_yaml
+from umi.infra.file_store import recompute_when_forced, read_yaml, write_yaml
 from umi.store import layout
 from umi.workflows.scene import workflow
 from umi.workflows.scene.errors import ITEM_FAILURES
@@ -70,6 +70,7 @@ def clean(paths: list[Path], *, dry_run: bool = False, cache: bool = False) -> d
     return removal.summary(common)
 
 
+@recompute_when_forced
 def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '', dry_run: bool = False,
         check_recordings: bool = True, map_version: str | None = None,
         map_epoch: str | None = None,
@@ -206,6 +207,7 @@ def _prepare_batch(batch: Path, *, dry_run: bool, overrides: SceneOverrides | No
     return snapshot, ingest.register_recordings(snapshot, dry_run=dry_run)
 
 
+@recompute_when_forced
 def build(batch: Path, *, force: bool = False, keep_work: bool = False,
           cores: str = '', dry_run: bool = False, intrinsics_source: str | None = None,
           overrides: SceneOverrides | None = None, epochs: bool = False) -> dict:
@@ -384,6 +386,7 @@ def plan_epoch_draft(batch: Path, *, write: bool = False, force: bool = False,
     return result
 
 
+@recompute_when_forced
 def run_epoch_pipeline(batch: Path, *, jobs: int = 1, force: bool = False,
                        keep_work: bool = False, cores: str = '', dry_run: bool = False,
                        check_recordings: bool = True,

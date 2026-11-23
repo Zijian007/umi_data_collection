@@ -9,7 +9,7 @@
 ```text
 cli.main() → workflow.run_batch() → workflow.run_recording()
     selection.select_calibration()       选择相机标定及显式指定的 TCP 几何
-    reuse.run_fingerprint()              输入、资产、算法与引擎身份
+    reuse.run_fingerprint()              输入、资产与算法参数
     reuse.reuse_decision()               完整成功结果复用
     vision.recordings.prepare()          时间戳、IMU、丢帧策略
     runtime.reconstruction_settings()    视觉设置及独立融合配置
@@ -43,7 +43,7 @@ cli.main() → workflow.run_batch() → workflow.run_recording()
   --output umi_traj_out/initialization_review/VID_20261111_183645_00_026/refinement_review.json
 ```
 
-此入口仅支持 handheld，默认读取第 1 轮，`--attempt N` 选择其他轮次；须使用本轮实际相机标定。报告同时保存视觉旋转与 IMU 的局部差异、两种初始化结论、输入与源代码哈希。返回码 0 表示报告成功生成，报告内 `rejected` 仍表示初始化未通过。
+此入口仅支持 handheld，默认读取第 1 轮，`--attempt N` 选择其他轮次；须使用本轮实际相机标定。报告同时保存视觉旋转与 IMU 的局部差异、两种初始化结论、输入哈希与 git 提交号。返回码 0 表示报告成功生成，报告内 `rejected` 仍表示初始化未通过。
 
 ## 文件职责
 
@@ -208,7 +208,7 @@ umi_traj_out/VID_20261003_182246_00_067/
 
 ### 参数与复用记录
 
-`details/run_settings.json` 的 `parameters` 保存完整有效配置、覆盖来源、代码和引擎身份；TXT 显示配置 ID 和覆盖项。重建参数与提醒规则分别计算指纹，详见 [参数管理](../../../config/README.md)。新运行的融合脚本来自项目，标定包仅提供测量；双镜头模式的环境镜头仍为样例几何。
+`details/run_settings.json` 的 `parameters` 保存完整有效配置、覆盖来源与 git 提交号；TXT 显示配置 ID 和覆盖项。重建参数与提醒规则分别计算指纹，详见 [参数管理](../../../config/README.md)。新运行的融合脚本来自项目，标定包仅提供测量；双镜头模式的环境镜头仍为样例几何。
 
 场景任务的结果布局与人工验收见[结果指南](../../../docs/结果查看与验收.md)。
 

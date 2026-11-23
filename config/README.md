@@ -239,7 +239,7 @@ C 固定覆盖 `input.mode: handheld` 和 `environment_tags.tag_fusion_enabled: 
 
 ## 场景和单段轨迹的参数边界
 
-固定地图任务的双向定位由 `scene_parameters.yaml` 控制：`localization.bidirectional` 默认 true，仅在正向有缺帧时反向处理；`localization.minimum_overlap_frames` 默认 3，要求每个反向连续段有足够的共同观测；`localization.max_position_difference_m` 默认 0.03，`localization.max_rotation_difference_deg` 默认 3.0，约束全部共同观测的最大差异。位置差使用冻结的地图尺度转换成米，不拟合新的坐标变换。参数、地图尺度和引擎身份参与任务定位缓存校验。设置 `localization.bidirectional: false` 可恢复仅正向定位，原有覆盖率和最长视觉中断门限均保留。
+固定地图任务的双向定位由 `scene_parameters.yaml` 控制：`localization.bidirectional` 默认 true，仅在正向有缺帧时反向处理；`localization.minimum_overlap_frames` 默认 3，要求每个反向连续段有足够的共同观测；`localization.max_position_difference_m` 默认 0.03，`localization.max_rotation_difference_deg` 默认 3.0，约束全部共同观测的最大差异。位置差使用冻结的地图尺度转换成米，不拟合新的坐标变换。参数和地图尺度参与任务定位缓存校验。设置 `localization.bidirectional: false` 可恢复仅正向定位，原有覆盖率和最长视觉中断门限均保留。
 
 `localization.reverse_context_s` 默认 1.0，必须为正数：优先处理覆盖全部缺口及两侧上下文的反向范围。范围达到全片的 75% 时直接执行全片；短范围未完全补齐时自动回退全片，仍以原始正向观测核验，不能用短范围恢复帧充当新的独立锚点。
 
@@ -343,7 +343,7 @@ ORB 引擎要求 `Camera.fps` 为整数，因此自动使用四舍五入且至�
 - 内部逐段轨迹：`details/run_settings.json` 的 `parameters`、`frame_geometry`，以及摘要中的运行指纹。
 - TXT 报告：算法配置 ID、验收/提醒 ID、相对默认值的覆盖项和完整记录路径。
 
-记录包含完整有效值、默认/覆盖文件来源、显式 CLI 覆盖、配置版本、实际相机和夹爪资产、算法源文件内容哈希、引擎/依赖身份。未提交的代码修改也会进入代码哈希。轨迹使用的 ORB YAML 和融合 JSON 在运行时生成；完整中间输入用 `--keep-work` 保留。
+记录包含完整有效值、默认/覆盖文件来源、显式 CLI 覆盖、配置版本、实际相机和夹爪资产，以及 git 提交号（`code_revision`）。缓存复用不看代码和引擎版本；改了算法或重编引擎后用 `--force` 重算。轨迹使用的 ORB YAML 和融合 JSON 在运行时生成；完整中间输入用 `--keep-work` 保留。
 
 `configuration.computation_hash` 仅表示算法配置；外层 `computation_hash` 还包括输入、测量资产、代码及引擎。`evaluation_hash` 仅表示验收或提醒规则。配置注释、键顺序、覆盖文件的位置不改变配置数值指纹。
 
@@ -365,7 +365,7 @@ ORB 引擎要求 `Camera.fps` 为整数，因此自动使用四舍五入且至�
 
 共享场景在 kit 的 `intrinsics.front/rear` 分别选择 measured / factory，默认 front measured、rear factory。每个镜头、每种来源使用一份当前参数，安装后自动更新；已开始运行和历史结果使用自己的冻结参数。rear measured 需要已登记的独立标定；rear factory 优先使用已登记的工厂来源整包，缺少时以 X3 原片工厂 rear 内参/双镜头外参 + 本设备 front B 推导并沿用 front 时差，标记 `NOT_EVALUATED`。当前选择损坏或身份/来源错误时拒绝，不静默推导。两个镜头允许不同来源；完整参数包内的内参与 B 仍必须配套。配置位置见[套件说明](../kits/README.md#前后镜头独立选择来源)，不写入算法参数 YAML。
 
-Basalt/ORB/OpenCV/GTSAM 内部尚未暴露的参数，通过当前引擎内容/依赖身份管理。浮点稳定性保护、矩阵维度、Jacobian 自检容差、格式/数学约定、PNG 无损压缩和执行超时策略保留在代码中。录像契约还包含 0.05 fps 的模式识别容差、1 ms 规则帧网格判据、1.5 倍中位帧间隔的丢帧判据，以及 50 ms 的 IMU 覆盖容差；这些集中在 `camera/x3/frame.py`，写入提取清单和轨迹设置，修改会改变代码指纹。当前 ORB 包装器使用纯单目模式，IMU 噪声由融合配置控制；已移除容易造成误解的 ORB YAML IMU 噪声默认项。
+Basalt/ORB/OpenCV/GTSAM 内部尚未暴露的参数随引擎版本固定；引擎变化不会自动让缓存失效。浮点稳定性保护、矩阵维度、Jacobian 自检容差、格式/数学约定、PNG 无损压缩和执行超时策略保留在代码中。录像契约还包含 0.05 fps 的模式识别容差、1 ms 规则帧网格判据、1.5 倍中位帧间隔的丢帧判据，以及 50 ms 的 IMU 覆盖容差；这些集中在 `umi/core/frame.py`，写入提取清单和轨迹设置；修改后需用 `--force` 重算已有缓存。当前 ORB 包装器使用纯单目模式，IMU 噪声由融合配置控制；已移除容易造成误解的 ORB YAML IMU 噪声默认项。
 
 
 ## 运行解释器
@@ -376,7 +376,7 @@ Basalt/ORB/OpenCV/GTSAM 内部尚未暴露的参数，通过当前引擎内容/�
 
 标定配置的 `factory` 负责工厂来源的转换和独立 A 验证：转换 RMS/P99 与原片射线一致性属于候选生成约束；`minimum_holdout_frames`、`holdout_warn_rms_px` 属于可通过 `umi-calib recheck` 重新判定的 A 证据/提醒规则。后两项不会改变已生成的参数，缺 A 证据不能安装。
 
-算法参数类型位于 [`umi/config/parameter_models.py`](../umi/config/parameter_models.py)；覆盖合并、校验和快照由 [`umi/config/loader.py`](../umi/config/loader.py) 管理。规范 JSON、文件、源代码及引擎身份统一由 [`umi/infra/provenance.py`](../umi/infra/provenance.py) 计算，修改结构时保留序列化字段和单位。
+算法参数类型位于 [`umi/config/parameter_models.py`](../umi/config/parameter_models.py)；覆盖合并、校验和快照由 [`umi/config/loader.py`](../umi/config/loader.py) 管理。规范 JSON、文件内容哈希与 git 提交号统一由 [`umi/infra/provenance.py`](../umi/infra/provenance.py) 计算，修改结构时保留序列化字段和单位。
 
 ## 维护布局的约定
 

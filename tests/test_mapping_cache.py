@@ -15,7 +15,6 @@ from umi.config import loader as config
 from umi.infra import provenance
 from umi.store.cache import StageCache
 from umi.store.cache import preparation_inputs
-from umi.store.cache import source_identity
 from umi.workflows.scene.maps import build as map_build
 from umi.workflows.scene.maps import repository as map_repository
 from umi.estimation import mapping as slam
@@ -28,7 +27,7 @@ class CacheStorageTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.cache = StageCache(self.root / 'cache', {})
+        self.cache = StageCache(self.root / 'cache')
 
     def run_stage(self, name, *, identity=None, fail=False, cache=None, refresh=False):
         output = self.root / name
@@ -92,7 +91,7 @@ class CacheStorageTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'interrupted'):
             self.run_stage('failed', fail=True, refresh=True)
         self.assertTrue(self.run_stage('after_failure')[1])
-        forced = StageCache(self.root / 'cache', {}, force=True)
+        forced = StageCache(self.root / 'cache', force=True)
         self.assertFalse(self.run_stage('forced', cache=forced)[1])
         self.assertFalse(self.run_stage('retry', refresh=True)[1])
 
@@ -136,26 +135,6 @@ class MapReuseTests(unittest.TestCase):
         second = map_build.build_version(self.fixture.scene)
         self.assertNotEqual(first['version'], second['version'])
 
-    def test_map_identity_excludes_cli_and_task_only_changes_but_tracks_algorithm_sources(self):
-        sources = source_identity('map')
-        self.assertNotIn('umi/apps/scene.py', sources)
-        self.assertNotIn('umi/workflows/scene/tasks/scene_map.py', sources)
-        self.assertNotIn('umi/apps/viewer/server.py', sources)
-        for dependency in ('umi/perception/slam.py', 'umi/devices/x3/extraction.py',
-                           'umi/perception/atlas.py', 'umi/devices/calibration_assets.py',
-                           'umi/devices/x3/factory_kb4.py', 'umi/workflows/scene/maps/build.py',
-                           'umi/devices/selection.py',
-                           'umi/estimation/fusion/alignment.py',
-                           'umi/estimation/inertial.py', 'umi/perception/decoding.py'):
-            self.assertIn(dependency, sources)
-        original_hash = provenance.source_hash
-        for module in ('alignment.py', 'inertial.py', 'decoding.py', 'quality.py'):
-            with self.subTest(module=module):
-                def changed_hash(path):
-                    return 'changed' if path.name == module else original_hash(path)
-                with patch.object(provenance, 'source_hash', side_effect=changed_hash):
-                    self.assertNotEqual(source_identity('map'), sources)
-
     def test_tcp_change_keeps_map_but_calibration_and_threshold_changes_invalidate(self):
         first = self.fixture.build_scene()
         tcp = self.fixture.cameras[self.fixture.recording_paths['left']].files['tcp']
@@ -175,33 +154,23 @@ class MapReuseTests(unittest.TestCase):
         scene = self.fixture.scene
         source = self.fixture.recording_paths['left']
         camera = self.fixture.cameras[source]
-        cache = StageCache(self.fixture.root / 'cache', {})
-        original = preparation_inputs(source, camera, scene, engines=cache.engines)
+        cache = StageCache(self.fixture.root / 'cache')
+        original = preparation_inputs(source, camera, scene)
         tuned = replace(scene, parameters=replace(scene.parameters, maximum_scale_relative_std=.4),
                         trajectory=replace(scene.trajectory, values=replace(scene.trajectory.values,
                             orb=replace(scene.trajectory.values.orb, features=999))))
-        self.assertEqual(preparation_inputs(source, camera, tuned, engines=cache.engines), original)
+        self.assertEqual(preparation_inputs(source, camera, tuned), original)
         resized = replace(scene, trajectory=replace(scene.trajectory, values=replace(scene.trajectory.values,
                           video=replace(scene.trajectory.values.video, size_px=640))))
-        self.assertNotEqual(preparation_inputs(source, camera, resized, engines=cache.engines), original)
+        self.assertNotEqual(preparation_inputs(source, camera, resized), original)
 
-    def test_preparation_ignores_calibration_but_tracks_decoding(self):
+    def test_preparation_ignores_calibration_and_code(self):
         source = self.fixture.recording_paths['left']
         camera = self.fixture.cameras[source]
-        cache = StageCache(self.fixture.root / 'cache', {'ffmpeg': 'one', 'orb_library': 'x'})
-        original = preparation_inputs(source, camera, self.fixture.scene, engines=cache.engines)
+        original = preparation_inputs(source, camera, self.fixture.scene)
         recalibrated = replace(camera, selected=replace(camera.selected, calibration_id='new-calibration'))
-        self.assertEqual(preparation_inputs(source, recalibrated, self.fixture.scene, engines=cache.engines), original)
-        self.assertEqual(original['engines'], {'ffmpeg': 'one'})
-        sources = source_identity('prepare')
-        for unrelated in ('umi/registry.py', 'umi/devices/calibration_source.py',
-                          'umi/devices/selection.py', 'umi/store/cache.py',
-                          'umi/store/cache.py'):
-            self.assertNotIn(unrelated, sources)
-        for decoder in ('umi/devices/x3/extraction.py', 'umi/perception/tools/make_lens_video.py'):
-            self.assertIn(decoder, sources)
-        newer_ffmpeg = StageCache(self.fixture.root / 'cache', {'ffmpeg': 'two'})
-        self.assertNotEqual(preparation_inputs(source, camera, self.fixture.scene, engines=newer_ffmpeg.engines), original)
+        self.assertEqual(preparation_inputs(source, recalibrated, self.fixture.scene), original)
+        self.assertFalse({'code', 'engines'} & original.keys())
 
 
 class VisualStageCacheTests(unittest.TestCase):
@@ -216,7 +185,7 @@ class VisualStageCacheTests(unittest.TestCase):
             lens_video=lambda lens: self.video, video_times_s=np.array([0., 1.]),
             context=SimpleNamespace(frame_count=2, parameters=config.load('trajectory').values),
             camera=SimpleNamespace(measurements={'front': {'cam_time_offset_ns': 0}}))
-        self.cache = StageCache(self.root / 'cache', {'orb_library': 'engine-one'})
+        self.cache = StageCache(self.root / 'cache')
         self.build_patch = patch.object(slam.visual_slam, 'build_maps', side_effect=self.build_engine)
         self.localize_patch = patch.object(slam.visual_slam, 'localize_map', side_effect=self.localize_engine)
         self.build = self.build_patch.start()
@@ -259,16 +228,27 @@ class VisualStageCacheTests(unittest.TestCase):
         np.testing.assert_allclose(shifted[0][1].imu_times_s, original[0][1].imu_times_s + .001)
         self.assertEqual(self.localize.call_count, 2)
 
-    def test_camera_settings_engine_and_pixels_invalidate_visual_stages(self):
+    def test_camera_settings_and_pixels_invalidate_visual_stages(self):
         self.run_visual('first')
         self.video.settings.write_text('new intrinsics')
         self.run_visual('new_intrinsics')
         self.video.path.write_text('new pixels')
         self.run_visual('new_pixels')
-        changed_engine = StageCache(self.root / 'cache', {'orb_library': 'engine-two'})
-        self.run_visual('new_engine', cache=changed_engine)
-        self.assertEqual(self.build.call_count, 4)
-        self.assertEqual(self.localize.call_count, 8)
+        self.assertEqual(self.build.call_count, 3)
+        self.assertEqual(self.localize.call_count, 6)
+
+    def test_recompute_ignores_earlier_caches_but_reuses_ones_made_inside(self):
+        from umi.infra.file_store import recompute
+        self.run_visual('first')
+        self.run_visual('cached')
+        self.assertEqual(self.build.call_count, 1)
+        with recompute():
+            self.run_visual('forced')
+            self.assertEqual(self.build.call_count, 2)
+            self.run_visual('reused_inside')
+            self.assertEqual(self.build.call_count, 2)
+        self.run_visual('after')
+        self.assertEqual(self.build.call_count, 2)
 
     def test_mask_affects_build_and_force_recomputes_all_visual_stages(self):
         self.run_visual('first')
@@ -277,7 +257,7 @@ class VisualStageCacheTests(unittest.TestCase):
         self.assertEqual(self.build.call_count, 2)
         # 测试引擎产生完全相同的地图字节，因此定位可以复用；真实地图改变则哈希改变。
         self.assertEqual(self.localize.call_count, 2)
-        forced = StageCache(self.root / 'cache', self.cache.engines, force=True)
+        forced = StageCache(self.root / 'cache', force=True)
         self.run_visual('forced', cache=forced)
         self.assertEqual(self.build.call_count, 3)
         self.assertEqual(self.localize.call_count, 4)

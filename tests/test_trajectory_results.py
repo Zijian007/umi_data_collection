@@ -28,7 +28,7 @@ class ResultLayoutTests(unittest.TestCase):
         summary = dict(status='ok', video='VID.insv', run_settings='run_settings.json',
                        duration_s=34.7, rows=1041, tcp_path_length_m=2.96,
                        constraint_fraction={'full': 1.0},
-                       run_fingerprint=dict(version=2, recording={}, calibration=dict(assets=dict(tcp_geometry='fixture')), options={}, algorithm_parameters="test", code={}, engines={}, evaluation_hash="test"))
+                       run_fingerprint=dict(version=3, recording={}, calibration=dict(assets=dict(tcp_geometry="fixture")), options={}, algorithm_parameters="test", evaluation_hash="test"))
         details = self.root / 'details'
         details.mkdir()
         (details / 'summary.json').write_text(json.dumps(summary))

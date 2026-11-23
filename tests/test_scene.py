@@ -225,7 +225,6 @@ class SceneWorkflowTests(unittest.TestCase):
             patch('umi.workflows.scene.recordings.check_episode', return_value=recording_checks.EpisodeCheckReport(passed=True)),
             patch('umi.workflows.scene.camera_assets.select_camera', side_effect=self.select_camera),
             patch('umi.workflows.scene.workflow.runtime.validate_engines', return_value=(self.root, self.root)),
-            patch.object(artifact_identity, 'engine_identity', return_value=dict(orb_library='fixture')),
             patch('umi.workflows.scene.recordings.prepare_recording', side_effect=lambda video, camera, *args, **kwargs: replace(self.prepared_recordings[video], camera=camera)),
             patch('umi.estimation.mapping.build', side_effect=self.build),
             patch('umi.estimation.mapping.atlas_candidates', side_effect=lambda rec, lens, *args, **kwargs: iter([(0, self.observations(rec, lens))])),

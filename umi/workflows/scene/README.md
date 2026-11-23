@@ -131,11 +131,11 @@ run → workflow.run_episode()
 
 多个已通过验收的地图候选会在 `metric_alignment.json` 中记录 `selection_score`，按固定尺度复核、对齐 RMS、尺度不确定度、条件数和覆盖证据选择；硬性验收门槛保持不变。
 
-`cache.source_identity()` 显式列出准备、视觉与完整建图的代码依赖；新增算法依赖时必须更新对应集合。完整地图输入保留原片路径、时间和 SHA256 以便追溯，`reuse_key` 按内容、相关配置、相机资产和引擎比较，不把文件路径或夹爪资产作为地图身份。工作镜头遮手图仍属于地图输入。
+缓存只依据数据输入复用，不包含代码或引擎身份；`--force` 通过 `infra.file_store.recompute()` 让本次运行开始前的缓存全部失效，本次运行中新生成的仍可复用。完整地图输入保留原片路径、时间和 SHA256 以便追溯，`reuse_key` 按内容、相关配置和相机资产比较，不把文件路径或夹爪资产作为地图身份。工作镜头遮手图仍属于地图输入。
 
 建图和任务通过 `cache.StageCache` 共用缓存存储机制，纯输入身份由 `cache.preparation_inputs()` / `visual_inputs()` 构造；地图专属镜头资产筛选与复用键也由 `cache` 生成。`spatial` 的地图求解不导入地图流水线模块。
 
-场景写入锁内，`StageCache.stage()` 先验证缓存清单和资产哈希，再将产物复制到本次工作目录；读写不会共享可修改文件。准备缓存只保存数据集和镜头视频，当前相机设置、遮手图、时间偏移与算法上下文重新生成；视觉缓存使用实际镜头视频、相机设置、ORB 参数、遮手图（仅建图）及引擎身份；定位另包含地图内容和子地图索引。尺度与放置每次重新验收，不缓存最终数值解。
+场景写入锁内，`StageCache.stage()` 先验证缓存清单和资产哈希，再将产物复制到本次工作目录；读写不会共享可修改文件。准备缓存只保存数据集和镜头视频，当前相机设置、遮手图、时间偏移与算法上下文重新生成；视觉缓存使用实际镜头视频、相机设置、ORB 参数与遮手图（仅建图）；定位另包含地图内容和子地图索引。尺度与放置每次重新验收，不缓存最终数值解。
 
 阶段正常完成后才发布 `ready.json`；缓存损坏重算。`build --force` 全部重算，验收失败后的重试也刷新视觉建图和定位，避免重复读取同一失败候选。成功阶段缓存独立于版本 `work/`，后续阶段失败或清理工作目录不会丢失它。`manifest.json` / `error.json` 中的 `timings` 记录实际耗时与缓存状态。
 
@@ -163,7 +163,7 @@ run → workflow.run_episode()
 
 地图资产错误由 `scene.errors.MapUnavailableError` 表示，兼容失败由其子类 `MapCompatibilityError` 表示；`PosterVioQualityError` 只表示 poster_vio 的质量不足。`auto` 只接收这些结构化地图/质量失败，普通输入、引擎和程序异常继续抛出；每次候选写入 `reconstruction_attempts/attempts.json`，并在独立目录中运行，不混用失败轨迹。无地图的支持缺口和双手重力夹角使用 `parameters.poster_independent` 独立阈值，见[配置说明](../../../config/README.md)。
 
-`maps.repository.validate_manifest()` 只校验已读入清单的结构、版本、坐标、地图条目、尺度和放置变换，不访问文件或查询引擎。`load_published()` 负责指针解析、文件读取、哈希、当前场景兼容与引擎身份检查，各类错误仍在原边界转换。
+`maps.repository.validate_manifest()` 只校验已读入清单的结构、版本、坐标、地图条目、尺度和放置变换，不访问文件或查询引擎。`load_published()` 负责指针解析、文件读取、哈希与当前场景兼容检查，各类错误仍在原边界转换。
 
 ## 命名和时间
 
@@ -205,7 +205,7 @@ run → workflow.run_episode()
 
 任务锁、地图绑定、缓存复用、失败证据与发布顺序保留在 `run_episode()`；结果模块只写产物，不能更新成功指针或验收状态。第二只手求解或结果写入失败时，不发布部分成功结果。
 
-宽度模块复用 `gripper_width/detection/` 的检测器和现有毫米映射；原片像素检测只按原片和检测器缓存，换算、处理策略与固定时间偏移在缓存后应用。宽度资产不进入相机几何身份，另在 inputs.batch.episode_inputs 中记录内容哈希与检测代码身份；episode.json 统一保留规范化测量快照和报告，不重复写各手 JSON；宽度数值与 TCP 统一保存在 trajectory.csv，逐帧诊断由 `parameters.diagnostics.gripper_width` 控制。参考 [宽度模块](../../perception/gripper/README.md)。
+宽度模块复用 `gripper_width/detection/` 的检测器和现有毫米映射；原片像素检测只按原片和检测器缓存，换算、处理策略与固定时间偏移在缓存后应用。宽度资产不进入相机几何身份，另在 inputs.batch.episode_inputs 中记录内容哈希；episode.json 统一保留规范化测量快照和报告，不重复写各手 JSON；宽度数值与 TCP 统一保存在 trajectory.csv，逐帧诊断由 `parameters.diagnostics.gripper_width` 控制。参考 [宽度模块](../../perception/gripper/README.md)。
 
 `gripper.tag_distance` 启用独立的夹爪标签中心三维间距。与宽度共用基础检测器，但按输出时间点独立采样、缓存角点，KB4 内参和各夹爪标签实测边长用于位姿解算；结果写入同一 CSV 的 `tag_distance_*` 三列，报告汇入 `episode.json`。尺寸资产不进入地图/相机几何身份，单独进入任务输入指纹；修改边长或质量门限重用角点，重算三维值。该测量不依赖开口锚点，不生成归一化开合量，缺失不插值填充。环境标签另由 `collection.yaml.environment_poster` 和 `environment_tags` 管理。
 

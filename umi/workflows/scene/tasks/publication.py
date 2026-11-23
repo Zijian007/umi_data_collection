@@ -435,9 +435,8 @@ def write_run_report(directory: Path, *, episode, map_manifest: dict, input_iden
             scene_map_sha256=input_identity.get('scene_map_sha256'),
             map_epoch_plan_sha256=input_identity.get('map_epoch_plan_sha256'),
             synchronization_sha256=input_identity.get('synchronization_sha256'),
-            code=input_identity.get('code'),
-            engines=input_identity.get('engines'),
         ),
+        code_revision=artifact_identity.git_revision(),
         cache=dict(
             task=cache_audit.snapshot() if cache_audit is not None else [],
             map=dict(status='manifest_audit', version=map_manifest.get('version'),
@@ -553,6 +552,7 @@ def write_episode_result(episode: Episode, tracks: dict[str, ArmTrajectory], dir
         assets['fallback.json'] = artifact_identity.file_hash(directory/'fallback.json')
     primary_times = tracks.get('left', next(iter(tracks.values()))).episode_times_s
     metadata = dict(kind='umi_local_episode' if local else 'umi_poster_episode' if poster_frame else 'umi_scene_episode', schema_version=4,
+        code_revision=artifact_identity.git_revision(),
         status='local_ok' if local else 'ok', name=episode.root.name, session=episode.session.name,
         kit=dict(id=episode.session.kit['id'], arms={arm: episode.session.kit['arms'][arm] for arm in tracks}),
         scene={key: value for key, value in coordinate_record.items() if key != 'session'},

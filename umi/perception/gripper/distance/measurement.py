@@ -76,14 +76,8 @@ class TagDistanceResult:
 
 
 def identity() -> dict:
-    import cv2
-
-    package = artifact_identity.ROOT / 'umi/perception/gripper'
-    geometry_sources = {name: artifact_identity.source_hash(package / name)
-                        for name in ('distance/measurement.py', 'distance/pose_estimation.py', 'calibration.py')}
-    return dict(opencv=cv2.__version__, geometry_sha256=artifact_identity.canonical_hash(geometry_sources),
-                detector=frames.identity(), sampling_sha256=artifact_identity.source_hash(package / 'detection/sampling.py'),
-                frame_sha256=artifact_identity.source_hash(artifact_identity.ROOT / 'umi/core/frame.py'))
+    """测距缓存的检测设置；不含代码或依赖版本。"""
+    return dict(detector=frames.identity())
 
 
 class TagDistanceAcceptanceError(ValueError):

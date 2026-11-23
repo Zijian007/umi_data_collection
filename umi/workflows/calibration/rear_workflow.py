@@ -64,7 +64,6 @@ def run(request: CalibrationRequest) -> int:
     front = camera_assets.select_camera(source.recordings.c, scene)
     from functools import partial
     generator = partial(generate_trajectory, front=front, scene=scene)
-    identity = dict(kind='rear', code=artifact_identity.code_identity('scene'), engines=artifact_identity.engine_identity('trajectory'),
-        scene_parameters=asdict(scene.parameters), camera=scene.devices,
+    identity = dict(kind='rear', scene_parameters=asdict(scene.parameters), camera=scene.devices,
         files={key: artifact_identity.file_hash(path) for key, path in front.files.items() if path is not None})
     return workflow.run(request, trajectory_generator=generator, backend_identity=identity)

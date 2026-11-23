@@ -47,8 +47,7 @@ def n_workers(requested: int | None = None) -> int:
 
 def preparation_identity(insv: Path, with_images: bool, lens: str) -> str:
     return artifact_identity.canonical_hash(dict(path=str(insv.resolve()), sha256=artifact_identity.file_hash(insv),
-        images=with_images, lens=lens, code={str(path): artifact_identity.source_hash(path) for path in (
-            Path(__file__), *sorted(Path(extraction.__file__).parent.glob('*.py')))}))
+        images=with_images, lens=lens))
 
 
 def _reuse(out: Path, identity: str) -> bool:
