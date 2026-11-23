@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import os
 import re
 import shutil
 
@@ -101,9 +102,10 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
 
 
 def snapshot_cameras(cameras: dict[str, CalibratedCamera], directory: Path,
-                     *, only: tuple[str, ...] | None = None) -> dict[str, CalibratedCamera]:
+                     *, only: tuple[str, ...] | None = None, share_identical: bool = False) -> dict[str, CalibratedCamera]:
     """每次运行只复制一次小型资产，计算与结果均引用这份独立副本；only 限定需要冻结的资产。"""
     snapshots = {}
+    shared = {}
     for arm, camera in cameras.items():
         expected_tag_hash = camera.asset_hashes.get('tag_distance')
         files = {}
@@ -112,7 +114,19 @@ def snapshot_cameras(cameras: dict[str, CalibratedCamera], directory: Path,
                 continue
             target = directory / 'devices' / camera.serial / (name + source.suffix)
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
+            if share_identical and name in ('mask', 'tcp', 'tag_distance'):
+                key = (name, artifact_identity.file_hash(source))
+                frozen = shared.get(key)
+                if frozen is None:
+                    shutil.copyfile(source, target)
+                    shared[name, artifact_identity.file_hash(target)] = target
+                else:
+                    try:
+                        os.link(frozen, target)
+                    except OSError:
+                        shutil.copyfile(frozen, target)
+            else:
+                shutil.copyfile(source, target)
             files[name] = target
         if camera.factory_rear is not None:
             files['rear'] = directory / 'devices' / camera.serial / 'rear.json'

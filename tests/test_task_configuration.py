@@ -34,7 +34,7 @@ class TaskConfigurationTests(unittest.TestCase):
         document['tasks'] = dict(take_001=task or {})
         if poster:
             document['environment_poster'] = dict(layout_path=str(
-                Path(__file__).resolve().parents[1] / 'hardware/calibration_targets/environment_poster.json'))
+                Path(__file__).resolve().parents[1] / 'hardware/environment_poster/environment_poster.json'))
         write_yaml(self.collection, document)
         return document
 

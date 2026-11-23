@@ -54,15 +54,20 @@ class RecordingCheckTests(unittest.TestCase):
         try:
             f.build_scene();workflow.run_episode(f.episode_path)
             output=f.task_root/'results';previous=output.resolve()
+            log = f.task_root / 'run.log'
+            success_log = log.resolve()
             before={str(path):path.read_bytes() for path in f.root.rglob('*') if path.is_file() and not path.is_symlink()}
             failure=recording_checks.EpisodeCheckReport(False,['review rejection'])
             with patch.object(recording_checks,'check_episode',return_value=failure):
                 with self.assertRaises(recording_checks.RecordingCheckError):workflow.run_episode(f.episode_path,dry_run=True)
                 after={str(path):path.read_bytes() for path in f.root.rglob('*') if path.is_file() and not path.is_symlink()}
                 self.assertEqual(before,after)
+                self.assertEqual(log.resolve(), success_log)
                 with self.assertRaises(recording_checks.RecordingCheckError):workflow.run_episode(f.episode_path)
             self.assertEqual(output.resolve(),previous)
+            self.assertNotEqual(log.resolve(), success_log)
+            self.assertIn('review rejection', log.read_text())
             state=json.loads((layout.metadata(f.task_root, 'state.json')).read_text())
             self.assertEqual(state['attempt']['status'],'rejected_preflight')
-            self.assertEqual(json.loads((output/'episode.json').read_text())['status'],'ok')
+            self.assertEqual(json.loads((output / 'data/episode.json').read_text())['status'],'ok')
         finally:f.doCleanups()

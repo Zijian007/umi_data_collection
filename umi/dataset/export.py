@@ -15,7 +15,7 @@ from umi.dataset import sampling
 from umi.dataset.schema import EPISODE_FORMAT, FORMAT, SCHEMA_VERSION, reference_metadata, validate_quality_policy
 from umi.workflows.scene import episodes
 from umi.workflows.scene.inputs.batch import read_episode
-from umi.store.result_io import read_arm_settings, scene_reference
+from umi.store.result_io import result_paths, read_arm_settings, scene_reference
 from umi.infra.file_store import locked, write_json
 
 
@@ -35,10 +35,10 @@ def read_accepted_episode(path: Path) -> AcceptedEpisode:
     run, manifest, review = episodes.accepted_run(episode)
     if not episode.instruction.strip():
         raise ValueError(f'训练导出需要非空 instruction：{path}')
-    if not episode.synchronization['confirmed']:
+    if not manifest['synchronization']['confirmed']:
         raise ValueError(f'训练导出需要先核验双手 synchronization：{path}')
-    if manifest.get('instruction') != episode.instruction or manifest.get('synchronization') != episode.synchronization:
-        raise ValueError(f'结果尚未携带当前指令/同步配置，请重新 run 和验收：{path}')
+    if manifest.get('instruction') != episode.instruction:
+        raise ValueError(f'结果尚未携带当前指令，请重新 run 和验收：{path}')
     if set(manifest['tcp_frames']) != set(episode.expected_arms):
         raise ValueError('结果 TCP 定义与任务使用手不一致')
     for frame in manifest['tcp_frames'].values():
@@ -46,7 +46,7 @@ def read_accepted_episode(path: Path) -> AcceptedEpisode:
             raise ValueError('训练导出需要可识别的 TCP 定义')
     name = episode.session.relative_path / episode.root.name
     return AcceptedEpisode(episode.path, name, episode.scene.root, run, manifest, review,
-                           artifact_identity.file_hash(run / 'episode.json'))
+                           artifact_identity.file_hash(result_paths(run).manifest))
 
 
 def select_accepted_episodes(paths: list[Path]) -> list[AcceptedEpisode]:
@@ -78,14 +78,17 @@ def _write_episode(item: AcceptedEpisode, staging: Path, *, fps: float, max_gap_
         quality_policy=quality_policy, unknown_support=unknown_support,
         time_window_s=time_window_s)
     np.savez_compressed(target / 'samples.npz', **arrays)
+    paths = result_paths(item.run)
     tcp_geometry = {}
     for arm in arms:
-        settings = read_arm_settings(item.run / arm, item.manifest)
+        settings = read_arm_settings(paths.data / arm, item.manifest)
         tcp_geometry[arm] = dict(T_camera_tcp=settings['T_camera_tcp'], cad_status=settings['cad_status'])
         video = target / 'videos' / f'{arm}.mp4'
         video.parent.mkdir(exist_ok=True)
-        shutil.copy2(item.run / arm / 'front.mp4', video)
-        if artifact_identity.file_hash(video) != item.manifest['assets'][f'{arm}/front.mp4']:
+        source_video = paths.data / arm / 'front.mp4'
+        shutil.copy2(source_video, video)
+        asset = source_video.relative_to(paths.published).as_posix()
+        if artifact_identity.file_hash(video) != item.manifest['assets'][asset]:
             raise ValueError('导出期间源视频发生变化')
     metadata = dict(kind=EPISODE_FORMAT, schema_version=SCHEMA_VERSION,
         instruction=item.manifest['instruction'], synchronization=item.manifest['synchronization'],

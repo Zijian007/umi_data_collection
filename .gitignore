@@ -5,7 +5,9 @@ __pycache__/
 *.insv
 *.lrv
 umi_traj_out/
-# 标定运行结果与重复验证实验（正式登记的测量仍保存在 registry/）
+# 本地标定工作区，可为目录或软链接。已发布的标定包保存在 hardware/.registry/。
+/hardware/calibration_runs
+# 标定运行结果与重复验证实验
 umi_calib_out/
 calibration_result/
 *_calibration_verification/
@@ -13,14 +15,13 @@ umi_calib_rear_out/
 .*.calibration.lock
 .pytest_cache/
 config/*.local.yaml
-datasets/*
-!datasets/README.md
-exports/*
-!exports/README.md
+/datasets/
+/exports/
 scenes/**/maps/
 scenes/**/runs/
 scenes/**/results
 scenes/**/local_results
+scenes/**/run.log
 .scene.lock
 .registry.lock
 scenes/**/archive/

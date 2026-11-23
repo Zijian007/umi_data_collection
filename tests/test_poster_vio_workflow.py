@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from umi.store.result_io import result_paths
 from umi.store import layout
 from umi.store.models import TaskInputs
 from umi.workflows.scene.tasks import poster_vio, poster_vio_inputs
@@ -298,38 +299,42 @@ class PosterVioPublicationTests(unittest.TestCase):
             result = workflow.run_episode(helper.episode_path)
         self.assertEqual(result['status'], 'ok')
         output = helper.task_root / 'results'
-        manifest = json.loads((output / 'episode.json').read_text())
-        report = json.loads((output / 'run_report.json').read_text())
+        manifest = json.loads((output / 'data/episode.json').read_text())
+        run = result_paths(output).run
         self.assertEqual(manifest['kind'], 'umi_poster_episode')
         self.assertIsNone(manifest['map'])
         self.assertIsNone(manifest['inputs']['scene_map_sha256'])
         self.assertIsNone(manifest['inputs']['map_epoch_plan_sha256'])
-        self.assertEqual(report['reconstruction']['selected_backend'], 'poster_vio')
-        self.assertEqual(report['coordinate']['transform_chain'][0], 'joint_poster_visual_inertial_ba')
+        self.assertEqual(manifest['scene']['reconstruction_backend'], 'poster_vio')
+        self.assertFalse(manifest['arm_results']['left']['fusion']['scene_map_priors_used'])
         for arm in ('left', 'right'):
-            summary = read_arm_summary(output / arm)
+            summary = read_arm_summary(output / 'data' / arm)
             self.assertEqual(summary['mode'], 'poster')
-            self.assertEqual(maps.load(output / arm, summary)['maps'], [])
-            with (output / arm / 'details/frames.csv').open() as stream:
+            self.assertEqual(maps.load(output / 'data' / arm, summary)['maps'], [])
+            with (run / arm / 'details/frames.csv').open() as stream:
                 rows = list(csv.DictReader(stream))
             self.assertTrue(any(row['front_lens_tracked'] == '1' for row in rows))
             self.assertTrue(any(row['front_lens_tracked'] == '0' for row in rows))
             self.assertTrue(any('rear' in row['visual_lenses'].split('|') for row in rows))
             for row in rows:
                 self.assertEqual(row['front_lens_tracked'] == '1', 'front' in row['visual_lenses'].split('|'))
-            with np.load(output / 'poster_vio' / arm / 'numerical_inputs.npz') as arrays:
+            with np.load(run / 'poster_vio' / arm / 'numerical_inputs.npz') as arrays:
                 self.assertIn('track_front_0_pixels', arrays)
                 self.assertIn('track_rear_0_pixels', arrays)
-        self.assertTrue((output / 'poster_vio/left/numerical_inputs.npz').is_file())
-        self.assertIn('poster_vio/left/numerical_inputs.npz', manifest['assets'])
-        self.assertIn('poster_vio/quality.json', manifest['assets'])
+        self.assertTrue((run / 'poster_vio/left/numerical_inputs.npz').is_file())
+        self.assertIn('poster_vio/left/numerical_inputs.npz', manifest['evidence_assets'])
+        self.assertIn('poster_vio/quality.json', manifest['evidence_assets'])
+        diagnostics = json.loads((run / manifest['diagnostics']).read_text())
+        quality = json.loads((run / diagnostics['poster_vio_quality']).read_text())
+        self.assertTrue(quality['arms']['left']['tag_metrics'])
+        self.assertNotIn('poster_vio', diagnostics['arms']['left']['fusion'])
         self.assertEqual(workflow.run_episode(helper.episode_path)['status'], 'skipped')
         previous = output.resolve()
         with patch.object(poster_vio, 'prepare_task_inputs', side_effect=ValueError('invalid synthetic inputs')):
             with self.assertRaisesRegex(ValueError, 'invalid synthetic'):
                 workflow.run_episode(helper.episode_path, force=True)
         self.assertEqual(output.resolve(), previous)
-        (output / 'poster_vio/left/numerical_inputs.npz').write_bytes(b'changed numerical evidence')
+        (run / 'poster_vio/left/numerical_inputs.npz').write_bytes(b'changed numerical evidence')
         with self.assertRaisesRegex(ValueError, '资产'):
             workflow.run_episode(helper.episode_path)
 

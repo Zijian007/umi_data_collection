@@ -303,15 +303,15 @@ def _reject_preflight(episode: Episode, check_report, task_console: Console, *, 
             identity = dict(episode=artifact_identity.file_hash(episode.path),
                             session=artifact_identity.file_hash(episode.session.path),
                             preflight=asdict(check_report))
-            audit = RunAudit(layout.metadata(episode.root, 'logs') / run_dir.name,
-                             task=episode.root.name, session=episode.session.root.name,
+            audit = RunAudit(episode.root, session=episode.session.root.name,
                              input_identity=identity, run_directory=run_dir)
+            task_console.child(line_sink=audit.write_line).write(message, state='预检', visible=False)
             audit.event('preflight', status='rejected', reasons=check_report.reasons)
             retained = publication.record_failure(episode, run_dir, message, status='rejected_preflight',
                 identity=identity)
             audit.finish('rejected_preflight', error=recordings.RecordingCheckError(message),
                          directory=retained)
-            task_console.write(f'预检报告 {retained / "preflight_report.json"}', state='诊断')
+            task_console.write(f'日志 {audit.log_path} · 预检报告 {retained / "preflight_report.json"}', state='诊断')
     raise recordings.RecordingCheckError(message)
 
 
@@ -377,8 +377,7 @@ def execute_episode(resolved: ResolvedInputs, task_console: Console, *, cores: s
     work_dir = layout.metadata(episode.root, 'work') / run_dir.name
     started, started_at = time.monotonic(), time.time()
     cache_audit = _create_cache_audit(episode, cameras, sync_cache_status, sync_cache_reason)
-    audit = RunAudit(layout.metadata(episode.root, 'logs') / run_dir.name,
-                     task=episode.root.name, session=episode.session.root.name,
+    audit = RunAudit(episode.root, session=episode.session.root.name,
                      input_identity=input_identity, run_directory=run_dir)
     run_console = task_console.child(line_sink=audit.write_line, event_sink=audit.event)
     audit.event('stage_started', stage='isolated_run')
@@ -396,7 +395,7 @@ def execute_episode(resolved: ResolvedInputs, task_console: Console, *, cores: s
         if check_record is not None:
             write_json(run_dir / 'preflight_report.json', check_record)
 
-        cameras = camera_assets.snapshot_cameras(cameras, run_dir)
+        cameras = camera_assets.snapshot_cameras(cameras, run_dir, share_identical=True)
         episode = _freeze_tag_layout(episode, run_dir, input_identity)
         # Step 1: 准备录像与公共时间区间
         audit.event('stage_started', stage='prepare_recordings')
@@ -442,16 +441,16 @@ def execute_episode(resolved: ResolvedInputs, task_console: Console, *, cores: s
             f'{"局部轨迹已发布" if is_local else "轨迹已发布"} · 耗时 {time.monotonic() - task_started:.1f}s',
             step=(3, 3), state='完成')
         audit.finish('ok', output=output)
-        task_console.write(str(audit.directory / 'run.log'), state='日志')
+        task_console.write(str(audit.log_path), state='日志')
     except KeyboardInterrupt as error:
+        run_console.write(f'处理被用户中断 · 日志 {audit.log_path}', state='诊断')
         retained = publication.record_failure(episode, run_dir, '处理被用户中断',
                                               identity=input_identity, status='interrupted', error=error)
-        run_console.write(f'运行日志 {audit.directory / "run.log"}', state='诊断')
         audit.finish('interrupted', error=error, directory=retained)
         raise
     except Exception as error:
+        run_console.write(f'{error} · 日志 {audit.log_path}', state='诊断')
         retained = publication.record_failure(episode, run_dir, str(error), identity=input_identity, error=error)
-        run_console.write(f'运行日志 {audit.directory / "run.log"}', state='诊断')
         audit.finish('failed', error=error, directory=retained)
         raise
     finally:
@@ -491,7 +490,7 @@ def _backend_summary(arm_execution, mode: str) -> str:
     backend_text = ('独立局部重建' if is_local_scene(coordinate_record)
                     else ', '.join(backend_names) or selected)
     fallback_text = ' · 已回退' if coordinate_record.get('fallback') else ''
-    return f'{backend_text} · 坐标 {coordinate_record.get("frame_id", "unknown")}{fallback_text}'
+    return f'{backend_text}{fallback_text}'
 
 
 def _create_cache_audit(episode: Episode, cameras: dict, sync_status: str, sync_reason: str) -> CacheAudit:

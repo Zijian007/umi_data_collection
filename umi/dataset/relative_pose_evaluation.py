@@ -9,23 +9,24 @@ from umi.estimation.trajectory_metrics import relative_pose_errors
 from umi.core.geometry import relative_pose_series, resample_pose_series, validate_transform
 from umi.dataset.sampling import brackets, validate_times
 from umi.infra import provenance
-from umi.store.result_io import validate_assets
-from umi.store.result_io import pose_rows, scene_reference, trajectory_path
+from umi.store.result_io import (SCENE_RESULT_VERSIONS, pose_rows, read_result, result_paths,
+                                 scene_reference, trajectory_path, validate_result)
 
 
 def evaluate(path: Path, reference_path: Path) -> dict:
     run = path.expanduser().resolve()
-    if not (run / 'episode.json').is_file():
-        run = (run / 'results').resolve()
-    manifest_path = run / 'episode.json'
+    paths = result_paths(run)
+    if not paths.manifest.is_file():
+        paths = result_paths(run / 'results')
+    manifest_path = paths.manifest
     manifest_hash = provenance.file_hash(manifest_path)
-    manifest = json.loads(manifest_path.read_text())
+    manifest = read_result(paths)
     if (manifest.get('kind') not in ('umi_scene_episode', 'umi_poster_episode')
-            or manifest.get('schema_version') != 4 or manifest.get('status') != 'ok'
+            or manifest.get('schema_version') not in SCENE_RESULT_VERSIONS or manifest.get('status') != 'ok'
             or manifest.get('arms') != dict(left='left', right='right')):
         raise ValueError('固定夹具评估需要同一坐标系下的完整双手成功结果')
     coordinate_record = scene_reference(manifest)
-    validate_assets(run, manifest['assets'])
+    validate_result(paths, manifest)
     reference_path = reference_path.expanduser().resolve()
     reference_hash = provenance.file_hash(reference_path)
     reference = json.loads(reference_path.read_text())
@@ -44,8 +45,8 @@ def evaluate(path: Path, reference_path: Path) -> dict:
         raise ValueError('夹具区间和误差/插值上限必须为有效的有限数值')
     trajectories = {}
     for arm in ('left', 'right'):
-        path = trajectory_path(run / arm)
-        asset_name = str(path.relative_to(run))
+        path = trajectory_path(paths.data / arm)
+        asset_name = path.relative_to(paths.published).as_posix()
         if asset_name not in manifest['assets']:
             raise ValueError('被评估的 TCP 轨迹未登记在资产哈希中')
         values = np.asarray(list(pose_rows(path)), float)
@@ -91,7 +92,7 @@ def evaluate(path: Path, reference_path: Path) -> dict:
     return dict(kind='umi_relative_pose_evaluation', schema_version=1,
                 status='not_ready' if reasons else 'passed' if passed else 'failed',
                 not_ready_reasons=reasons, frame_id=coordinate_record['frame_id'],
-                run=str(run), result_sha256=manifest_hash,
+                run=str(paths.run), result_sha256=manifest_hash,
                 reference=dict(path=str(reference_path), sha256=reference_hash, definition=reference),
                 interval_s=interval.tolist(), sampled_interval_s=[float(query[0]), float(query[-1])],
                 samples=len(query), maximum_interpolation_gap_s=float(max(gaps)),

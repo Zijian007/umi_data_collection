@@ -274,7 +274,6 @@ class ArmTrajectory:
     frame_id: str
     tcp_frame: dict
     metadata: dict = field(default_factory=dict)
-    frame_rows: list[dict[str, str]] | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)

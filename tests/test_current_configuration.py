@@ -1,4 +1,5 @@
 from umi.workflows.scene.inputs import scene as kit_inputs
+from umi.store.result_io import result_paths
 from umi.infra import provenance as artifact_identity
 from umi.estimation import mapping
 """当前配置是运行输入；内部记录不覆盖配置，历史成果保持原内容。"""
@@ -86,7 +87,7 @@ class CurrentConfigurationTests(unittest.TestCase):
         previous = (self.batch / 'take_001/results').resolve()
         source = self.f.f.source / 'left/tcp.json'
         original_geometry = source.read_bytes()
-        original_trajectory = (previous / 'left/trajectory.csv').read_bytes()
+        original_trajectory = (previous / 'data/left/trajectory.csv').read_bytes()
         original = scene_reconstruction.reconstruct_arm_in_scene
         def solve(*args, **kwargs):
             self.update_calibration()
@@ -99,11 +100,11 @@ class CurrentConfigurationTests(unittest.TestCase):
         self.assertEqual(result[0]['status'], 'ok')
         current = (self.batch / 'take_001/results').resolve()
         self.assertNotEqual(current, previous)
-        record = json.loads((current / 'episode.json').read_text())
+        record = json.loads((current / 'data/episode.json').read_text())
         self.assertEqual(record['kit']['arms']['left']['calibration'], 'test')
-        self.assertEqual((current / 'devices/SERIAL_left/tcp.json').read_bytes(), original_geometry)
+        self.assertEqual((result_paths(current).run / 'devices/SERIAL_left/tcp.json').read_bytes(), original_geometry)
         self.assertNotEqual(source.read_bytes(), original_geometry)
-        self.assertEqual((current / 'left/trajectory.csv').read_bytes(), original_trajectory)
+        self.assertEqual((current / 'data/left/trajectory.csv').read_bytes(), original_trajectory)
         self.assertFalse(previous.exists())  # 被取代的运行由自动清理删除
 
     def test_width_policy_changes_do_not_rebuild_the_map(self):

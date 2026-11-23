@@ -16,6 +16,7 @@ import shutil
 
 from umi.infra.terminal import Console
 from umi.store import layout
+from umi.store.result_io import result_paths
 from umi.infra.file_store import locked as storage_lock, read_yaml
 
 
@@ -64,7 +65,7 @@ def _exclusive_bytes(path: Path) -> int:
 
 
 def kept_runs(task: Path) -> set[Path]:
-    keep = {link.resolve() for link in (task / 'results', task / 'local_results') if link.is_symlink()}
+    keep = {result_paths(link).run for link in (task / 'results', task / 'local_results') if link.is_symlink()}
     state_path = layout.metadata(task, 'state.json')
     state = json.loads(state_path.read_text()) if state_path.is_file() else {}
     for record in (state.get('attempt', {}), state.get('review', {})):
@@ -114,7 +115,7 @@ def kept_map_versions(batch: Path) -> set[str]:
             keep.add(version)
     for task in task_roots(batch):
         for run in kept_runs(task):
-            episode = run / 'episode.json'
+            episode = result_paths(run).manifest
             if not episode.is_file():
                 continue
             reference = json.loads(episode.read_text()).get('map') or {}

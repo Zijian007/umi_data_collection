@@ -148,13 +148,13 @@ def locked(directory: Path, name: str = '.scene.lock', *, blocking: bool = False
             fcntl.flock(stream, fcntl.LOCK_UN)
 
 
-def publish_link(source: Path, target: Path) -> None:
-    """同目录原子替换指针；不删除上一次成功结果。"""
+def publish_link(source: Path, target: Path, *, target_is_directory: bool = True) -> None:
+    """在目标目录原子更新指向源路径的相对符号链接。"""
     temporary = target.with_name('.'+target.name+'.link')
     temporary.unlink(missing_ok=True)
     if target.exists() and not target.is_symlink():
         raise ValueError(f'发布目标不是本工具的版本指针，请先移走：{target}')
-    temporary.symlink_to(os.path.relpath(source, target.parent), target_is_directory=True)
+    temporary.symlink_to(os.path.relpath(source, target.parent), target_is_directory=target_is_directory)
     temporary.replace(target)
 
 

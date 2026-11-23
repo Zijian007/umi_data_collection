@@ -240,11 +240,11 @@ class DistanceWorkflowTests(unittest.TestCase):
             self.assertEqual(process.call_count,2)
             self.assertEqual(workflow.run_episode(f.episode_path)['status'],'skipped')
         output=f.task_root/'results'
-        data=json.loads((output/'episode.json').read_text())
+        data=json.loads((output / 'data/episode.json').read_text())
         self.assertEqual(set(data['tag_distance']),{'left','right'})
         self.assertNotIn('gripper_width',data)
         for arm in ('left','right'):
-            path=output/arm/'trajectory.csv'
+            path=output / 'data' / arm/'trajectory.csv'
             with path.open() as stream:
                 rows=list(csv.DictReader(stream))
             self.assertEqual(rows[0]['tag_distance_mm'],'50.000000')

@@ -12,10 +12,15 @@ import cv2
 import numpy as np
 
 from umi.infra import provenance
-from umi.perception.poster.layout import DEFAULT_LAYOUT, load
+from umi.perception.poster.layout import DEFAULT_LAYOUT, load, resolve_layout_path
 
 
 class TagBoardTests(unittest.TestCase):
+    def test_existing_default_layout_path_resolves_to_moved_asset(self):
+        legacy = DEFAULT_LAYOUT.parents[1] / 'calibration_targets' / DEFAULT_LAYOUT.name
+        self.assertEqual(resolve_layout_path(legacy), DEFAULT_LAYOUT)
+        self.assertEqual(load(legacy).asset_hash, load().asset_hash)
+
     def test_pdf_asset_dimensions_corner_order_and_source(self):
         board = load()
         self.assertEqual(board.ids, tuple(range(12, 89)))

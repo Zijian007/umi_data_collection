@@ -1,13 +1,13 @@
-# kits/kit_001/kit.yaml
+# hardware/kits/kit_001/kit.yaml
 arms:  # 设备绑定表；只写 left / right / 两者；这不是采集使用手，采集手由 collection 声明。
   right:  # 右手设备与夹爪安装；可省略此整项表示套件没有右手。
     serial: IAQEB26097M4CP  # 必填完整相机序列号字符串（字母/数字/_/-），须已登记，左右手不能相同。
     intrinsics:  # 可选：每镜头选择当前完整参数来源；省略 front=measured、rear=factory。
       front: measured  # 工作镜头来源：measured=实测整包；factory=工厂内参及配套外参/时差；需已安装该来源。
       rear: measured  # 环境镜头来源：measured=已独立验收实测整包；factory=已装整包或原片工厂推导（NOT_EVALUATED）。
-    gripper:  # 必填：夹爪资产；文件路径相对本 kit.yaml，允许 ../ 共享 kits/ 资产，禁止越出 kits/ 根目录。
-      tcp: ../tcp_camera.json  # 必填 .json 相机–TCP 实测安装变换路径；米制，不可用标签尺寸替代。
-      tag_distance: ../tag_distance.json  # 可选 .json ID 0/1 标签实测黑框尺寸，用于中心距；省略不输出中心距，不等于夹爪开口。
+    gripper:  # 必填：夹爪资产；文件路径相对本 kit.yaml，允许 ../shared/ 共享资产，路径须在 hardware/kits/ 内。
+      tcp: ../shared/tcp_camera.json  # 必填 .json 相机–TCP 安装变换路径；米制，不可用标签尺寸替代。
+      tag_distance: ../shared/tag_distance.json  # 可选 .json ID 0/1 标签实测黑框尺寸，用于中心距；省略不输出中心距，不等于夹爪开口。
       # 未配置 width：当前没有右手实测的像素距离–开口 mm 关系。
       # 未配置 mask：使用硬件通用遮手图 hardware/grippers/masks/front_hand_mask.png。
       base_tag:  # 右手固定夹爪基座标签。
@@ -19,9 +19,9 @@ arms:  # 设备绑定表；只写 left / right / 两者；这不是采集使用�
     intrinsics:  # 可选：每镜头选择当前完整参数来源；省略 front=measured、rear=factory。
       front: measured  # 工作镜头来源：measured=实测整包；factory=工厂内参及配套外参/时差；需已安装该来源。
       rear: measured  # 环境镜头来源：measured=已独立验收实测整包；factory=已装整包或原片工厂推导（NOT_EVALUATED）。
-    gripper:  # 必填：夹爪资产；文件路径相对本 kit.yaml，允许 ../ 共享 kits/ 资产，禁止越出 kits/ 根目录。
-      tcp: ../tcp_camera.json  # 必填 .json 相机–TCP 实测安装变换路径；米制，不可用标签尺寸替代。
-      tag_distance: ../tag_distance.json  # 可选 .json ID 0/1 标签实测黑框尺寸，用于中心距；省略不输出中心距，不等于夹爪开口。
+    gripper:  # 必填：夹爪资产；文件路径相对本 kit.yaml，允许 ../shared/ 共享资产，路径须在 hardware/kits/ 内。
+      tcp: ../shared/tcp_camera.json  # 必填 .json 相机–TCP 安装变换路径；米制，不可用标签尺寸替代。
+      tag_distance: ../shared/tag_distance.json  # 可选 .json ID 0/1 标签实测黑框尺寸，用于中心距；省略不输出中心距，不等于夹爪开口。
       # 未配置 width：当前没有左手实测的像素距离–开口 mm 关系。
       # 未配置 mask：使用硬件通用遮手图 hardware/grippers/masks/front_hand_mask.png。
       base_tag:  # 左手固定夹爪基座标签。

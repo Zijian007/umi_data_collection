@@ -162,16 +162,16 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         with patch.object(map_lifecycle, 'bind_map', side_effect=AssertionError('must not bind map')):
             result = self.run_poster()
         self.assertEqual(result['status'], 'ok')
-        manifest = json.loads((h.task_root / 'results/episode.json').read_text())
+        manifest = json.loads((h.task_root / 'results/data/episode.json').read_text())
         self.assertEqual(manifest['kind'], 'umi_poster_episode')
         self.assertIsNone(manifest['map'])
         self.assertIsNone(manifest['inputs']['scene_map_sha256'])
         self.assertEqual(scene_reference(manifest)['scope'], 'task_poster')
-        self.assertTrue((h.task_root / 'results/bimanual.csv').is_file())
-        summary = read_arm_summary(h.task_root / 'results/left')
+        self.assertTrue((h.task_root / 'results/data/bimanual.csv').is_file())
+        summary = read_arm_summary(h.task_root / 'results/data/left')
         self.assertEqual(summary['mode'], 'poster')
         from umi.apps.viewer.resources import maps
-        self.assertEqual(maps.load(h.task_root / 'results/left', summary)['maps'], [])
+        self.assertEqual(maps.load(h.task_root / 'results/data/left', summary)['maps'], [])
         from umi.apps.viewer.results.catalog import RecordingCatalog
         catalog = RecordingCatalog(h.root)
         entries = catalog.scan()['recordings']
@@ -206,10 +206,10 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         with patch.object(map_lifecycle, 'build_scene', side_effect=AssertionError('must not build')):
             result = self.run_poster()
         self.assertEqual(result['status'], 'ok')
-        report = json.loads((self.helper.task_root / 'results/run_report.json').read_text())
-        self.assertEqual(report['reconstruction']['selected_backend'], 'poster_independent')
-        self.assertIn('地图不可用', report['reconstruction']['fallback']['reason'])
-        self.assertEqual(report['reconstruction']['fallback']['category'], 'map_unavailable')
+        scene = json.loads((self.helper.task_root / 'results/data/episode.json').read_text())['scene']
+        self.assertEqual(scene['reconstruction_backend'], 'poster_independent')
+        self.assertIn('地图不可用', scene['fallback']['reason'])
+        self.assertEqual(scene['fallback']['category'], 'map_unavailable')
 
     def test_unexpected_map_reader_errors_do_not_trigger_fallback(self):
         self.configure('auto')
@@ -238,7 +238,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=AssertionError('no scene poses')):
             result = self.run_poster()
         self.assertEqual(result['status'], 'ok')
-        manifest = json.loads((h.task_root / 'results/episode.json').read_text())
+        manifest = json.loads((h.task_root / 'results/data/episode.json').read_text())
         self.assertIsNone(manifest['inputs']['scene_map_sha256'])
         self.assertIsNone(manifest['map'])
 
@@ -283,7 +283,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
             result = workflow.run_episode(h.episode_path)
         self.assertEqual(result['status'], 'ok')
         self.assertEqual({call.args[1] for call in solve.call_args_list}, {'left', 'right'})
-        manifest = json.loads((h.task_root / 'results/episode.json').read_text())
+        manifest = json.loads((h.task_root / 'results/data/episode.json').read_text())
         self.assertIsNone(manifest['map'])
         self.assertIsNotNone(manifest['inputs']['scene_map_sha256'])
         self.assertEqual(manifest['scene']['fallback']['category'], 'scene_quality')
@@ -314,7 +314,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
             result = workflow.run_episode(h.episode_path)
         solve.assert_not_called()
         self.assertEqual(result['status'], 'ok')
-        manifest = json.loads((h.task_root / 'results/episode.json').read_text())
+        manifest = json.loads((h.task_root / 'results/data/episode.json').read_text())
         self.assertEqual(manifest['kind'], 'umi_scene_episode')
         self.assertIsNotNone(manifest['map'])
 

@@ -15,13 +15,12 @@ from umi.infra import provenance as artifact_identity
 from umi.store import layout
 from umi.workflows.scene.parameters import SceneOverrides, apply_overrides
 from umi.store.layout import locked
-from umi.workflows.scene import camera_assets
+from umi.workflows.scene import camera_assets, synchronization
 from umi.store.layout import INTERNAL_DIRECTORIES
 from umi.workflows.scene.inputs.scene import validate_name
 from umi.workflows.scene.inputs.batch import batch_task_directories
-from umi.store.result_io import validate_assets
 from umi.workflows.scene.inputs.batch import episode_inputs, read_episode
-from umi.store.result_io import scene_reference, trajectory_path
+from umi.store.result_io import read_result, result_paths, scene_reference, trajectory_path, validate_result
 from umi.infra.file_store import write_json
 
 
@@ -108,19 +107,29 @@ def successful_run(episode) -> tuple[Path, dict]:
     status = task_status(episode.path)
     if status['status'] not in ('ok', 'skipped'):
         raise ValueError(f'任务当前尚无可验收的成功结果：{status["status"]}')
-    run_dir = episode.output.resolve()
+    paths = result_paths(episode.output)
+    run_dir = paths.run
     state = layout.read_state(episode.root)
     if (episode.root / state['attempt']['run']).resolve() != run_dir:
         raise ValueError('最近成功尝试与 results 入口不一致')
-    run_manifest = json.loads((run_dir / 'episode.json').read_text())
+    run_manifest = read_result(paths)
     if run_manifest['status'] != 'ok':
         raise ValueError('任务结果未完成')
-    validate_assets(run_dir, run_manifest['assets'])
+    validate_result(paths, run_manifest)
     if 'runtime_overrides' in run_manifest:
         overrides = SceneOverrides.from_snapshot(run_manifest['runtime_overrides'])
         trajectory, parameters = apply_overrides(episode.scene.trajectory, episode.scene.parameters, overrides)
         scene = replace(episode.scene, trajectory=trajectory, parameters=parameters, overrides=overrides)
         episode = replace(episode, session=replace(episode.session, scene=scene))
+    if episode.synchronization['method'] == 'audio_auto':
+        resolved = synchronization.load_ready_audio_sync(
+            layout.metadata(episode.root, 'sync.json'), episode.recordings,
+            algorithm=episode.synchronization['algorithm'])
+        if resolved is None:
+            raise ValueError('音频同步记录暂不可复用，请重新处理后验收')
+        episode = replace(episode, synchronization=resolved)
+    if episode.synchronization != run_manifest['synchronization']:
+        raise ValueError('同步记录已变化，请重新处理后验收')
     cameras = camera_assets.select_cameras(episode.recordings, replace(episode.scene, mode=run_manifest['inputs']['map_mode'],
         devices=episode.session.devices, rear_calibrations=camera_assets.rear_files(episode.session.devices)), episode.serials)
     coordinate_record = scene_reference(run_manifest)
@@ -139,7 +148,7 @@ def review(path: Path, *, accept: bool, reviewer: str, reason='') -> dict:
         run_dir, _ = successful_run(episode)
         state = layout.read_state(episode.root)
         decision = dict(decision='accepted' if accept else 'rejected', reviewer=validate_name(reviewer), reason=reason,
-            run=layout.run_reference(episode.root, run_dir), result_sha256=artifact_identity.file_hash(run_dir / 'episode.json'),
+            run=layout.run_reference(episode.root, run_dir), result_sha256=artifact_identity.file_hash(result_paths(run_dir).manifest),
             checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
         state['review'] = decision
         # reason/preflight_report are derived from the run, never stored twice.
@@ -153,7 +162,7 @@ def accepted_run(episode) -> tuple[Path, dict, dict]:
     """成果打包和训练导出共用的只读入口，验证当前结果及其人工验收。"""
     run_dir, manifest = successful_run(episode)
     record = layout.read_state(episode.root).get('review', {})
-    if record.get('decision') != 'accepted' or record.get('result_sha256') != artifact_identity.file_hash(run_dir / 'episode.json'):
+    if record.get('decision') != 'accepted' or record.get('result_sha256') != artifact_identity.file_hash(result_paths(run_dir).manifest):
         raise ValueError(f'任务尚未人工接收或验收对应的结果已变化：{episode.path}')
     return run_dir, manifest, record
 
@@ -177,28 +186,36 @@ def export(paths: list[Path], export_dir: Path, *, with_video=False) -> dict:
             episode_relative_path = episode.session.relative_path / episode.root.name
             episode_dir = staging_dir / episode_relative_path
             episode_dir.mkdir(parents=True)
-            files = ['report.txt', 'episode.json']
+            paths = result_paths(run_dir)
+            files = [paths.published / 'report.txt', paths.manifest]
             if len(run_manifest['arms']) == 2:
-                files.append('bimanual.csv')
-            files += [str(trajectory_path(run_dir / arm).relative_to(run_dir)) for arm in run_manifest['arms']]
-            files += [f'{arm}/gripper_width.csv' for arm in run_manifest.get('gripper_width', {})
-                      if trajectory_path(run_dir / arm).suffix != '.csv']
-            files += [f'{arm}/details/gripper_width_frames.csv' for arm in run_manifest.get('gripper_width', {})
-                      if f'{arm}/details/gripper_width_frames.csv' in run_manifest['assets']]
-            if with_video:
-                files += [f'{arm}/front.mp4' for arm in run_manifest['arms']]
+                files.append(paths.data / 'bimanual.csv')
+            for arm in run_manifest['arms']:
+                arm_dir = paths.data / arm
+                trajectory = trajectory_path(arm_dir)
+                files.append(trajectory)
+                if arm in run_manifest.get('gripper_width', {}):
+                    if trajectory.suffix != '.csv':
+                        files.append(arm_dir / 'gripper_width.csv')
+                    diagnostic = arm_dir / 'details/gripper_width_frames.csv'
+                    if diagnostic.relative_to(paths.published).as_posix() in run_manifest['assets']:
+                        files.append(diagnostic)
+                if with_video:
+                    files.append(arm_dir / 'front.mp4')
             exported_file_hashes = {}
-            expected_hashes = dict(run_manifest['assets'], **{'episode.json': review_record['result_sha256']})
-            for name in files:
+            expected_hashes = dict(run_manifest['assets'])
+            expected_hashes[paths.manifest.relative_to(paths.published).as_posix()] = review_record['result_sha256']
+            for source in files:
+                name = source.relative_to(paths.published).as_posix()
                 export_path = episode_dir / name
                 export_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(run_dir / name, export_path)
+                shutil.copy2(source, export_path)
                 exported_file_hashes[name] = artifact_identity.file_hash(export_path)
                 if exported_file_hashes[name] != expected_hashes[name]:
                     raise ValueError('导出期间源结果发生变化')
             exported_episodes.append(dict(path=str(episode_relative_path), scene=run_manifest['scene'], frame_id=scene_reference(run_manifest)['frame_id'],
                 kit=episode.session.kit, arms=run_manifest['arms'], instruction=episode.instruction,
-                synchronization=episode.synchronization, review=review_record, files=exported_file_hashes))
+                synchronization=run_manifest['synchronization'], review=review_record, files=exported_file_hashes))
         manifest = dict(kind='umi_dataset', schema_version=1, episodes=exported_episodes,
             frames=sorted({entry['frame_id'] for entry in exported_episodes}))
         write_json(staging_dir / 'manifest.json', manifest)

@@ -1,5 +1,6 @@
 """共享场景的数值与流程回归：已知尺度、固定坐标、双手同步、资产和失败发布。"""
 from __future__ import annotations
+from umi.store.result_io import arm_evidence, result_paths, validate_result
 from umi.estimation.fixed_map.parameters import FixedMapParameters, MapPlacementParameters
 from umi.config.loader import load
 from umi.infra import provenance as artifact_identity
@@ -289,49 +290,51 @@ class SceneWorkflowTests(unittest.TestCase):
         report = recording_checks.EpisodeCheckReport(passed=True, videos=dict(
             left=recording_checks.RecordingCheckReport('left.insv', True, checks=[check])))
         with patch.object(recording_checks, 'check_episode', return_value=report), redirect_stderr(io.StringIO()) as terminal:
-            workflow.run_episode(self.episode_path)
+            result = workflow.run_episode(self.episode_path)
         self.assertIn('原片检查通过', terminal.getvalue())
         self.assertIn('左手 · 开头静止不足', terminal.getvalue())
         output = self.task_root / 'results'
+        paths = result_paths(output)
+        self.assertEqual({path.name for path in output.iterdir()}, {'report.txt', 'data'})
         names = {str(path.relative_to(output)) for path in output.rglob('*') if path.is_file()}
-        expected = {'report.txt', 'episode.json', 'run_report.json', 'bimanual.csv'} | {
-            f'{arm}/{name}' for arm in ('left', 'right') for name in (
-                'trajectory.csv', 'front.mp4', 'details/frames.csv')}
-        expected |= {f'devices/SERIAL_{arm}/{name}' for arm in ('left', 'right')
-                     for name in ('front.json', 'tcp.json', 'mask.png')}
+        expected = {'report.txt', 'data/episode.json', 'data/bimanual.csv'} | {
+            f'data/{arm}/{name}' for arm in ('left', 'right') for name in ('trajectory.csv', 'front.mp4')}
         self.assertEqual(names, expected)
-        metadata = json.loads((output / 'episode.json').read_text())
-        self.assertEqual(metadata['schema_version'], 4)
-        run_report = json.loads((output / 'run_report.json').read_text())
-        self.assertEqual(run_report['kind'], 'umi_scene_run_report')
-        self.assertTrue(run_report['map']['map_version'])
-        self.assertEqual(run_report['coordinate']['units'], 'metres')
-        self.assertFalse(run_report['coordinate']['cross_epoch_comparable'])
-        self.assertEqual(run_report['quality']['schema_version'], 1)
-        self.assertEqual(set(run_report['quality']['arms']), {'left', 'right'})
-        self.assertIn('visual_constraint_fraction', run_report['quality']['arms']['left'])
-        self.assertEqual(run_report['environment_tags']['cross_epoch_anchor']['status'], 'not_assumed')
-        self.assertEqual(set(run_report['arms']), {'left', 'right'})
-        self.assertIn('environment_tags', run_report)
-        self.assertTrue(run_report['cache']['task'])
-        self.assertIn(run_report['cache']['task'][0]['status'],
-                      {'reused', 'computed', 'not_applicable', 'invalidated', 'failed', 'skipped'})
-        self.assertEqual(run_report['cache']['map']['status'], 'manifest_audit')
+        metadata = json.loads(paths.manifest.read_text())
+        self.assertEqual(metadata['schema_version'], 5)
+        self.assertTrue(metadata['map']['map_version'])
+        self.assertEqual(result['quality']['schema_version'], 1)
+        self.assertEqual(set(result['quality']['arms']), {'left', 'right'})
+        self.assertIn('visual_constraint_fraction', result['quality']['arms']['left'])
         self.assertEqual(metadata['preflight']['videos']['left']['checks'][0]['status'], 'WARN')
+        diagnostics = json.loads((paths.run / metadata['diagnostics']).read_text())
+        self.assertTrue(diagnostics['cache']['task'])
+        self.assertIn(diagnostics['cache']['task'][0]['status'],
+                      {'reused', 'computed', 'not_applicable', 'invalidated', 'failed', 'skipped'})
+        self.assertTrue((paths.run / diagnostics['cache']['map_manifest']).is_file())
         for arm in ('left', 'right'):
-            self.assertEqual(metadata['arm_results'][arm]['localization']['front']['status'], 'forward_complete')
-            sources = run_report['arms'][arm]['frame_sources']
-            self.assertEqual(sources['source'], f'{arm}/details/frames.csv')
-            self.assertTrue(sources['rows'])
-            self.assertTrue(all(row['map_version'] for row in sources['rows']))
-            self.assertTrue(all(row['visual_lens'] == 'front' for row in sources['rows']))
+            arm_diagnostic = diagnostics['arms'][arm]
+            self.assertEqual(arm_diagnostic['localization']['front']['status'], 'forward_complete')
+            self.assertNotIn('frame_provenance', arm_diagnostic['fusion'])
+            self.assertNotIn('localization', metadata['arm_results'][arm])
+            with (paths.run / arm_diagnostic['frames']).open() as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertTrue(rows)
+            self.assertTrue(all(row['map_version'] and row['visual_lens'] == 'front' for row in rows))
+            self.assertIn(f'devices/SERIAL_{arm}/front.json', metadata['evidence_assets'])
+        self.assertTrue((paths.run / 'devices/SERIAL_left/mask.png').samefile(
+            paths.run / 'devices/SERIAL_right/mask.png'))
         text = (output / 'report.txt').read_text()
-        for value in ('left 场景轨迹', 'right 场景轨迹', '最长无视觉', '开头静止质量不足'):
+        for value in ('左手：', '右手：', '最长无视觉', '开头静止质量不足'):
             self.assertIn(value, text)
-        asset_identity.validate_assets(output, metadata['assets'])
-        self.assertEqual(set(metadata['assets']), names - {'episode.json'})
+        self.assertNotIn('TCP 自身坐标', text)
+        self.assertNotIn(metadata['scene']['frame_id'], text)
+        validate_result(paths, metadata)
+        self.assertEqual(set(metadata['assets']), names - {'data/episode.json'})
         before = {path: path.read_bytes() for path in output.rglob('*') if path.is_file()}
-        self.assertEqual(workflow.run_episode(self.episode_path)['status'], 'skipped')
+        reused = workflow.run_episode(self.episode_path)
+        self.assertEqual(reused['status'], 'skipped')
+        self.assertEqual(reused['quality'], result['quality'])
         self.assertEqual({path: path.read_bytes() for path in output.rglob('*') if path.is_file()}, before)
 
     def single_arm_episode(self):
@@ -360,14 +363,14 @@ class SceneWorkflowTests(unittest.TestCase):
             output = Path(result['output'])
             self.assertEqual(output.name, 'local_results')
             self.assertFalse((self.task_root / 'results').exists())
-            manifest = json.loads((output / 'episode.json').read_text())
+            manifest = json.loads((output / 'data/episode.json').read_text())
             self.assertEqual(manifest['kind'], 'umi_local_episode')
             self.assertEqual(manifest['scene']['scope'], 'local')
             self.assertTrue(result['frame_id'].startswith('local:'))
             self.assertIsNone(manifest['map'])
             self.assertIn('覆盖 0.0%', manifest['scene']['fallback']['shared_failure'])
             asset_identity.validate_assets(output.resolve(), manifest['assets'])
-            self.assertEqual(read_arm_summary(output / 'right')['mode'], 'local')
+            self.assertEqual(read_arm_summary(output / 'data/right')['mode'], 'local')
             catalog = RecordingCatalog(self.scene.root)
             entry, = catalog.scan()['recordings']
             self.assertEqual(entry['status'], 'local_ok')
@@ -435,7 +438,7 @@ class SceneWorkflowTests(unittest.TestCase):
             result = workflow.run_episode(self.episode_path)
             output = Path(result['output'])
             first = output.resolve()
-            with (output / 'right/trajectory.csv').open() as stream:
+            with (output / 'data/right/trajectory.csv').open() as stream:
                 row = next(csv.DictReader(stream))
             self.assertEqual(row['tag_distance_mm'], '50.000000')
             process.assert_called_once()
@@ -476,12 +479,12 @@ class SceneWorkflowTests(unittest.TestCase):
         self.build_scene()
         workflow.run_episode(self.episode_path)
         output = self.task_root / 'results'
-        expected = {arm: (read_arm_summary(output / arm), read_arm_settings(output / arm)) for arm in ('left', 'right')}
+        expected = {arm: (read_arm_summary(output / 'data' / arm), read_arm_settings(output / 'data' / arm)) for arm in ('left', 'right')}
         before = {path: path.read_bytes() for path in output.rglob('*') if path.is_file()}
         self.assertEqual(workflow.run_episode(self.episode_path)['status'], 'skipped')
         for arm, (summary, settings) in expected.items():
-            self.assertEqual(read_arm_summary(output / arm), summary)
-            self.assertEqual(read_arm_settings(output / arm), settings)
+            self.assertEqual(read_arm_summary(output / 'data' / arm), summary)
+            self.assertEqual(read_arm_settings(output / 'data' / arm), settings)
         catalog = RecordingCatalog(self.scene.root)
         key = catalog.scan()['recordings'][0]['id']
         self.assertIn('camera', catalog.load(key)['tracks'])
@@ -495,7 +498,7 @@ class SceneWorkflowTests(unittest.TestCase):
         self.build_scene()
         workflow.run_episode(self.episode_path, check_recordings=False)
         output = self.task_root / 'results'
-        self.assertIsNone(json.loads((output / 'episode.json').read_text())['preflight'])
+        self.assertIsNone(json.loads((output / 'data/episode.json').read_text())['preflight'])
         self.assertIn('原片检查：跳过', (output / 'report.txt').read_text())
 
     def test_dual_scene_builds_three_maps_and_keeps_both_hands_in_rear_frame(self):
@@ -529,7 +532,7 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertEqual(slam.build.call_count, 3)
         result = workflow.run_episode(self.episode_path)
         self.assertEqual(result['frame_id'], built['frame_id'])
-        with (self.task_root / 'results/bimanual.csv').open() as stream:
+        with (self.task_root / 'results/data/bimanual.csv').open() as stream:
             rows = list(csv.DictReader(stream))
         separation = [np.linalg.norm([float(row['right_'+axis])-float(row['left_'+axis]) for axis in 'xyz']) for row in rows]
         np.testing.assert_allclose(separation, .6, atol=.003)
@@ -609,8 +612,8 @@ class SceneWorkflowTests(unittest.TestCase):
             result = workflow.run_episode(self.episode_path)
         self.assertEqual(result['status'], 'ok')
         self.assertEqual([call.args[3] for call in localize.call_args_list], ['front', 'front'])
-        summary = read_arm_summary(self.task_root / 'results/left')
-        settings = read_arm_settings(self.task_root / 'results/left')
+        summary = read_arm_summary(self.task_root / 'results/data/left')
+        settings = read_arm_settings(self.task_root / 'results/data/left')
         self.assertFalse(settings['frame_geometry']['rear_lens']['used'])
         self.assertIn('rear', settings['measurements'])
         self.assertEqual(summary['fusion']['actual_error'], 'not_measured')
@@ -625,13 +628,13 @@ class SceneWorkflowTests(unittest.TestCase):
         self.build_scene()
         self.assertEqual(workflow.run_episode(self.episode_path, overrides=self.scene_overrides)['status'], 'ok')
         output = self.task_root / 'results'
-        metadata = json.loads((output / 'episode.json').read_text())
+        metadata = json.loads((output / 'data/episode.json').read_text())
         for arm in ('left', 'right'):
             tcp_frame = metadata['tcp_frames'][arm]
             self.assertEqual(tcp_frame['convention'], 'genie_omnipicker_axes_v1')
-            settings = read_arm_settings(output / arm)
+            settings = read_arm_settings(output / 'data' / arm)
             self.assertEqual(settings['tcp_frame'], tcp_frame)
-            tcp, camera = np.array(list(pose_rows(output / arm / 'trajectory.csv')), dtype=float), np.loadtxt(output / arm / 'details/traj_camera.txt')
+            tcp, camera = np.array(list(pose_rows(output / 'data' / arm / 'trajectory.csv')), dtype=float), np.loadtxt(arm_evidence(output / 'data' / arm, 'traj_camera.txt'))
             np.testing.assert_allclose(Rotation.from_quat(tcp[:, 4:]).as_matrix(),
                                        Rotation.from_quat(camera[:, 4:]).as_matrix()
                                        @ np.asarray(json.loads(source.read_text())['T_camera_tcp']['R_rows']), atol=1e-8)
@@ -642,22 +645,22 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertEqual(self.build_scene()['status'], 'skipped')
         first = workflow.run_episode(self.episode_path)
         output = self.task_root / 'results'
-        metadata = json.loads((output / 'episode.json').read_text())
+        metadata = json.loads((output / 'data/episode.json').read_text())
         self.assertEqual(metadata['scene']['frame_id'], built['frame_id'])
         self.assertEqual(workflow.run_episode(self.episode_path)['status'], 'skipped')
         shared_map = self.scene.map_root / 'versions' / built['version'] / 'map.json'
         for arm in ('left', 'right'):
-            self.assertFalse((output / arm / 'details/map.json').exists())
-            summary = read_arm_summary(output / arm)
+            self.assertFalse((output / 'data' / arm / 'details/map.json').exists())
+            summary = read_arm_summary(output / 'data' / arm)
             self.assertEqual(summary['tcp_frame']['convention'], 'asset_defined')
             self.assertEqual(metadata['tcp_frames'][arm], summary['tcp_frame'])
-            self.assertEqual((output / arm / summary['map']['path']).resolve(), shared_map)
+            self.assertEqual((output / 'data' / arm / summary['map']['path']).resolve(), shared_map)
             self.assertEqual(summary['map']['sha256'], artifact_identity.file_hash(shared_map))
-        with (output / 'bimanual.csv').open() as stream:
+        with (output / 'data/bimanual.csv').open() as stream:
             rows = list(csv.DictReader(stream))
         gaps = [np.linalg.norm([float(row['right_'+axis])-float(row['left_'+axis]) for axis in 'xyz']) for row in rows]
         np.testing.assert_allclose(gaps, .6, atol=.002)
-        left = np.array(list(pose_rows(output / 'left/trajectory.csv')), dtype=float)
+        left = np.array(list(pose_rows(output / 'data/left/trajectory.csv')), dtype=float)
         self.assertGreater(left[0, 1], 2.)
         self.assertGreater(left[0, 0], .09)
         # 同场景第二个任务沿用原地图，原始 .osa 哈希和版本始终不变。
@@ -759,7 +762,7 @@ class SceneWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'failed fusion'):
                 workflow.run_episode(self.episode_path, force=True)
         self.assertEqual(output.resolve(), previous)
-        self.assertEqual(json.loads((output / 'episode.json').read_text())['status'], 'ok')
+        self.assertEqual(json.loads((output / 'data/episode.json').read_text())['status'], 'ok')
         current_dir, _ = map_repository.load_published(self.scene)
         (current_dir / 'maps/shared_front/map.osa').write_bytes(b'tampered')
         with self.assertRaisesRegex(ValueError, '内容已变'):
@@ -774,7 +777,7 @@ class SceneWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, 'state write failed'):
                 workflow.run_episode(self.episode_path)
         self.assertTrue(output.is_symlink())
-        self.assertEqual(json.loads((output / 'episode.json').read_text())['status'], 'ok')
+        self.assertEqual(json.loads((output / 'data/episode.json').read_text())['status'], 'ok')
         self.assertFalse((output / 'error.json').exists())
         self.assertEqual(workflow.run_episode(self.episode_path)['status'], 'skipped')
 
@@ -847,16 +850,16 @@ class SceneWorkflowTests(unittest.TestCase):
         self.build_scene()
         workflow.run_episode(self.episode_path)
         output = self.task_root / 'results'
-        metadata = json.loads((output / 'episode.json').read_text())
+        metadata = json.loads((output / 'data/episode.json').read_text())
         metadata['scene']['frame_id'] = 'other-frame'
-        write_json(output / 'episode.json', metadata)
+        write_json(output / 'data/episode.json', metadata)
         catalog = RecordingCatalog(self.scene.root)
         key = catalog.scan()['recordings'][0]['id']
         with self.assertRaisesRegex(ViewerDataError, '场景坐标'):
             catalog.load(key)
-        metadata = json.loads((output / 'episode.json').read_text())
+        metadata = json.loads((output / 'data/episode.json').read_text())
         metadata['arms']['right'] = '../../../../'
-        write_json(output / 'episode.json', metadata)
+        write_json(output / 'data/episode.json', metadata)
         self.assertEqual(catalog.scan()['recordings'], [])
 
 

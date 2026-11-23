@@ -152,12 +152,12 @@ class NewLayoutTests(unittest.TestCase):
         episodes.review(path, accept=True, reviewer='test')
         names = [item['name'] for item in RecordingCatalog(self.f.scene.root).scan()['recordings']]
         self.assertIn('lab/rig/20261104_001/take_001', names)
-        output = self.f.root / 'export'
+        output = self.f.root / 'exports' / 'bundle'
         episodes.export([path], output, with_video=True)
         exported = json.loads((output / 'manifest.json').read_text())['episodes'][0]
         self.assertEqual(exported['path'], 'lab/20261104_001/take_001')
-        self.assertTrue((output / exported['path'] / 'left/front.mp4').is_file())
-        dataset = self.f.root / 'dataset'
+        self.assertTrue((output / exported['path'] / 'data/left/front.mp4').is_file())
+        dataset = self.f.root / 'datasets' / 'bundle'
         build([manifest], dataset, fps=20.)
         package = json.loads((dataset / 'manifest.json').read_text())['episodes'][0]
         self.assertEqual(package['path'], 'episodes/lab/20261104_001/take_001')

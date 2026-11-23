@@ -98,7 +98,7 @@ def select_environment_assets(
             raise ValueError('独立海报诊断/融合需要 --tag-layout')
         return EnvironmentAssets(rear=selected_rear)
 
-    layout_path = request.tag_layout.expanduser().resolve()
+    layout_path = tag_board.resolve_layout_path(request.tag_layout)
     return EnvironmentAssets(selected_rear, SelectedPosterLayout(layout_path, tag_board.load(layout_path)))
 
 
@@ -146,7 +146,7 @@ def prepare_poster(video: Path, directory: Path, layout: Path, rear: Path, param
             detection_snapshot: environment_tags.DetectionSnapshot | None = None) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     frozen_layout, frozen_rear = directory / 'layout.json', directory / 'rear.json'
-    shutil.copyfile(layout, frozen_layout)
+    shutil.copyfile(tag_board.resolve_layout_path(layout), frozen_layout)
     shutil.copyfile(rear, frozen_rear)
     board = tag_board.load(frozen_layout)
     if expected is not None and (board.asset_hash != expected.layout_sha256

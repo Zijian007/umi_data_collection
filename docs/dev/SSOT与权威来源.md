@@ -7,12 +7,12 @@
 | 数据 | 唯一权威来源 | 其他文件的角色 |
 |---|---|---|
 | 场景、批次和任务的用户声明 | 批次根目录 `collection.yaml` | `.pipeline/manifest.yaml` 是解析后的批次快照；`episode.yaml` 只登记原片身份 |
-| 相机、套件、TCP 和夹爪资产 | `kits/<kit>/kit.yaml` 选择资产，`registry/` 保存测量资产 | 运行目录中的 `devices/` 是本次运行冻结的副本 |
+| 相机、套件、TCP 和夹爪资产 | `hardware/kits/<kit>/kit.yaml` 选择资产，`hardware/.registry/` 保存测量资产 | 运行目录中的 `devices/` 是本次运行冻结的副本 |
 | 原始录像内容 | 批次目录中的 `.insv` 文件 | `episode.yaml`、`manifest.yaml` 只保存路径、设备身份和内容哈希 |
 | Organizer 原片交接 | 批次根目录 `import_manifest.json`（只追加的导入输入） | UMI 校验路径和 SHA256 后把新条目追加进 `.pipeline/map_epochs.yaml`，已登记条目不可改；它不是第二份用户配置 |
 | 本机通用设置 | `config/user.yaml` | 运行报告保存本次实际解析值 |
 | 默认算法参数 | `config/algorithms/*.yaml` | 后端数值可在批次和任务中覆盖，`--expert-config` 的显式值优先用于本次运行 |
-| 多地图采集顺序与 epoch 规划 | `.pipeline/map_epochs.yaml` | `run_report.json` 和 `episode.json` 记录最终选择及选择理由 |
+| 多地图采集顺序与 epoch 规划 | `.pipeline/map_epochs.yaml` | 结果 `data/episode.json` 记录最终选择及选择理由 |
 | 当前批次绑定的默认地图 | `.pipeline/manifest.yaml.map` | 地图目录中的 `manifest.json` 是该不可变版本的完整身份和资产清单 |
 | 任务最终使用的地图 | `episode_inputs.read_episode()` 解析出的 `map_selection` | 结果文件只保存解析后的不可变证据，不重新推断 |
 | 任务运行状态和人工验收 | `.pipeline/tasks/<task>/state.json` | `episode.json` 是一次运行的不可变结果；`runs/` 保存运行现场 |
@@ -37,16 +37,16 @@ kit 绑定恢复默认，不查询当前 kit。任务 `episode.yaml` 仍只登�
 
 | 名称 | 载体与镜头 | 字典和 ID | 权威配置 | 代码与产物 |
 |---|---|---|---|---|
-| 夹爪标签 | 夹爪上的两枚小标签，工作镜头 `front` 观察 | `DICT_4X4_50`，固定 ID `0/1` | `kits/<kit>/kit.yaml` 的 `gripper.tag_distance`；开口宽度另用 `gripper.width` | `umi/perception/gripper/`；`tag_distance_*`、`gripper_width` |
+| 夹爪标签 | 夹爪上的两枚小标签，工作镜头 `front` 观察 | `DICT_4X4_50`，固定 ID `0/1` | `hardware/kits/<kit>/kit.yaml` 的 `gripper.tag_distance`；开口宽度另用 `gripper.width` | `umi/perception/gripper/`；`tag_distance_*`、`gripper_width` |
 | 夹爪基座标签 | 刚性安装在夹爪基座，供双手 `poster_vio` 使用 | `DICT_4X4_100`，各手 ID 唯一，避开环境海报 ID。配置宽度或测距时避开 `0/1` | kit 的 `gripper.base_tag` 声明资产，`backend.poster_vio.base_tag.enabled` 控制使用 | `umi/estimation/poster_vio/` |
-| 环境标签 / 环境海报 | 场地中的刚性海报，环境镜头 `rear` 观察 | `DICT_4X4_100`，布局默认 ID `12–88` | `environment_poster` 声明布局和建图用途，`backend` 声明任务中的使用方式 | `umi/perception/poster/detection.py`、`poster/geometry.py` |
+| 环境标签 / 环境海报 | 场地中的刚性海报，环境镜头 `rear` 观察 | `DICT_4X4_100`，布局默认 ID `12–88` | `environment_poster` 声明布局和建图用途，`backend` 声明任务中的使用方式 | `umi/perception/poster/detection.py`、`umi/perception/poster/geometry.py` |
 | 标定板标签 | 相机标定用 AprilGrid，不属于夹爪或环境海报 | `tag36h11` 等由标定板资产声明 | `hardware/calibration_targets/aprilgrid.json` 与 `umi-calib --tag-size-mm` | `umi/workflows/calibration/`；只服务相机标定和轨迹初始化 |
 
 特别约束：`gripper.tag_distance` 的 ID 0/1 尺寸不能填环境海报的 100 mm，也不能填 AprilGrid 的 `--tag-size-mm`；环境海报布局不能作为夹爪测距资产；标定板尺寸不能参与任务标签融合。
 
-## 当前配置与历史快照
+## 当前配置与运行快照
 
-kit 声明设备序列号、逐镜头 `intrinsics` 来源和 `gripper` 资产。固定的 `calibration/calibrations` 字段属于历史资产快照。海报用途和融合方式由 `collection.yaml` 声明。海报后端自动开启所需检测与融合，`scene_map` 的海报约束由 `backend.scene_map.poster_constraint` 单独控制。旧结果按冻结的专家覆盖读取。
+kit 声明设备序列号、逐镜头 `intrinsics` 来源和 `gripper` 资产。海报用途和融合方式由 `collection.yaml` 声明。海报后端自动开启所需检测与融合，`scene_map` 的海报约束由 `backend.scene_map.poster_constraint` 单独控制。旧结果按冻结的专家覆盖读取。
 
 `--show-config` 指定 take 时展示该 take 的使用手、后端与同步配置；来源报告区分 user.yaml 和 CLI。
 
@@ -80,7 +80,7 @@ collection.yaml:
       synchronization: assumed_simultaneous
 ```
 
-`.pipeline/tasks/<task>/episode.yaml` 只记录自动发现的原片、序列号、路径和 SHA256，不保存另一份 `instruction`、`arms` 或 `synchronization`。读取任务时由 `layout.task_configuration()` 合并批次声明；旧的 `task.yaml` 会被明确拒绝。
+`.pipeline/tasks/<task>/episode.yaml` 只记录自动发现的原片、序列号、路径和 SHA256，不保存另一份 `instruction`、`arms` 或 `synchronization`。读取任务时由 `layout.task_configuration()` 合并批次声明。
 
 当前批次没有 `tasks.<take>` 时，任务会继承批次默认值。这是有意的默认规则；如果某个 take 有独立指令、同步方式或地图选择，应显式写入 `collection.yaml.tasks.<take>`。
 

@@ -1,4 +1,4 @@
 # 夹爪 TCP 几何测试输入
 
 这里的 001、002、003 只用于验证历史 TCP 坐标轴约定之间的转换关系，不是生产资产。
-生产运行读取 `kits/tcp_camera.json` 及各套件 `kit.yaml` 指向的当前文件。
+生产运行读取 `hardware/kits/shared/tcp_camera.json` 及各套件 `kit.yaml` 指向的当前文件。

@@ -47,7 +47,7 @@ class SceneSchedulingTests(unittest.TestCase):
         workflow.run_episode(self.f.episode_path, parallel_arms=False)
         output = self.f.task_root / 'results'
         before = {name: (output / name).read_bytes() for name in
-                  ('left/trajectory.csv', 'right/trajectory.csv', 'bimanual.csv')}
+                  ('data/left/trajectory.csv', 'data/right/trajectory.csv', 'data/bimanual.csv')}
         barrier = Barrier(2)
         original = scene_reconstruction.reconstruct_arm_in_scene
 
@@ -109,7 +109,7 @@ class SceneSchedulingTests(unittest.TestCase):
         collection = read_yaml(path)
         collection.pop('reconstruction')
         collection['environment_poster'] = dict(layout_path=str(
-            Path(__file__).resolve().parents[1] / 'hardware/calibration_targets/environment_poster.json'))
+            Path(__file__).resolve().parents[1] / 'hardware/environment_poster/environment_poster.json'))
         collection['backend'] = dict(mode='auto', poster_edge_trim=dict(enabled=True))
         collection['tasks'] = dict(
             take_001=dict(backend=dict(mode='scene_map', scene_map=dict(

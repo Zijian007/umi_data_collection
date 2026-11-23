@@ -14,7 +14,7 @@ from umi.core.geometry import resample_pose_series, relative_pose_series
 from umi.dataset.schema import validate_quality_policy
 from umi.perception.gripper import series
 from umi.core.tum import read_tum
-from umi.store.result_io import TCP_COLUMNS, trajectory_path
+from umi.store.result_io import TCP_COLUMNS, arm_evidence, result_paths, trajectory_path
 
 @dataclass(frozen=True)
 class ArmSamples:
@@ -66,7 +66,7 @@ def read_arm(directory: Path, offset_s: float) -> ArmSamples:
             or not np.isfinite(positions).all() or not np.isfinite(quaternions).all()
             or not np.allclose(np.linalg.norm(quaternions, axis=1), 1., atol=1e-5)):
         raise ValueError('TCP 位置或四元数无效')
-    with (directory / 'details/frames.csv').open(encoding='utf-8', newline='') as stream:
+    with arm_evidence(directory, 'frames.csv').open(encoding='utf-8', newline='') as stream:
         rows = list(csv.DictReader(stream))
     if len(rows) != len(times):
         raise ValueError('frames.csv 与 TCP 行数不一致')
@@ -284,6 +284,7 @@ def sample_episode(directory: Path, manifest: dict, fps: float, max_gap_s: float
                    quality_policy: str, unknown_support: str,
                    time_window_s: tuple[float, float] | None) -> tuple[dict[str, np.ndarray], dict, GripperReadiness]:
     """Sample the accepted episode's poses, frames, and gripper values on one timeline."""
+    directory = result_paths(directory).data
     offsets = manifest['synchronization']['offsets_s']
     arms = {arm: read_arm(directory / arm, offsets[arm]) for arm in manifest['arms']}
     arrays, quality = sample(arms, fps, max_gap_s, quality_policy=quality_policy,

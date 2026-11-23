@@ -30,7 +30,7 @@ arms:
         dictionary: DICT_4X4_100
 ```
 
-只保留实际使用的手。工作镜头参数必须已按相机序列号登记；kit 只选来源，不填写版本号。夹爪文件路径相对 `kit.yaml`，可引用当前套件目录或 `kits/` 根目录的共享资产：
+只保留实际使用的手。工作镜头参数须已按相机序列号登记，kit 只填写来源。夹爪文件路径相对 `kit.yaml`，可引用当前套件目录，也可用 `../shared/` 引用共享资产。
 
 | 字段 | 要求 |
 |---|---|
@@ -52,18 +52,19 @@ base tag 固定在不随开合运动的夹爪基座上，配置写在 kit 内，
 同一套件的 base tag ID 必须唯一，且不能与场景海报 ID 冲突；默认海报为 12–88，
 示例使用 2/3。已配置宽度或测距时也不能占用 0/1。尺寸为黑框实测边长，白边不计。
 安装变换会在任务图内带先验联合细化，修正量和自身/跨相机残差保存在质量证据中。
-参数与验收边界见 [poster_vio](../umi/estimation/poster_vio/README.md)。
+参数与验收边界见 [poster_vio](../../umi/estimation/poster_vio/README.md)。
 
-左右安装几何相同时，可以共同引用一个共享 `tcp_camera.json`；不同时分别填写。没有实测开口关系时省略 `width`，不要填写示例数值。TCP 格式与方向见[设备与坐标](../docs/设备与坐标.md#几何资产)，宽度格式与测量方法见[训练数据指南](../docs/训练数据.md#夹爪宽度标定与接入)。
+左右安装几何相同时，可以共同引用 `../shared/tcp_camera.json`；不同时分别填写。没有实测开口关系时省略 `width`。TCP 格式与方向见[设备与坐标](../../docs/设备与坐标.md#几何资产)，宽度格式与测量方法见[训练数据指南](../../docs/训练数据.md#夹爪宽度标定与接入)。
 
 只测两个标签中心的实际距离时，可单独配置 `gripper.tag_distance: tag_distance.json`，无需 `gripper.width`。JSON 格式为 `{"tag_sizes_mm": {"0": 6.0, "1": 6.0}}`；数值是每枚标签黑色外框实测边长，单位 mm，不包括外侧白边，两枚可以不同。`kit_001` 和 `kit_002` 当前按用户给定尺寸使用各 6 mm；其他套件须填写各自尺寸。这与 AprilGrid 标定板尺寸是不同资产，不修改 `hardware/calibration_targets/aprilgrid.json`。
 
 运行使用该相机已选定的工作镜头 KB4 内参，输出 `tag_distance_mm`。尺寸文件随运行快照保存并校验哈希，修改尺寸后重跑会重算三维值、复用原始角点缓存。标签中心间距与夹爪接触面开口分别输出；没有开口标定时不生成开合量或闭合状态。
 
 ```text
-kits/
-├── tcp_camera.json       # 可由多个 kit 共享
-├── tag_distance.json     # 可由多个 kit 共享
+hardware/kits/
+├── shared/
+│   ├── tcp_camera.json
+│   └── tag_distance.json
 └── kit_001/
     ├── kit.yaml
     ├── left_width.json   # 有实测数据时创建
@@ -72,7 +73,7 @@ kits/
 
 批次在 `collection.yaml` 中声明 `kit: kit_001`。每次 `run` 读取当前套件，在开始计算前解析测量并复制到运行目录 `devices/<序列号>/`，结果记录实际文件的哈希。修改文件后重跑即可，历史运行保留自己的副本。配置变更适用于下一次运行，无需编辑 `.pipeline/manifest.yaml`。
 
-`registry/` 管理相机档案及每个镜头、每种来源的当前参数，历史资产只供追溯。套件 ID 来自目录，不重复写入 YAML；套件与夹爪不再另设版本目录或默认指针。`.example.yaml` 不作为真实套件读取。
+`hardware/.registry/` 管理相机档案及每个镜头、每种来源的当前参数，套件 ID 来自目录。`.example.yaml` 可作填写参考，实际配置由 `kit.yaml` 读取。
 
 ## 前后镜头独立选择来源
 
@@ -87,7 +88,7 @@ kits/
 
 rear 工厂推导沿用 front 时差，标记 `NOT_EVALUATED`；它不等于通过 rear A/B/C/D。当前选择存在但损坏、身份或来源不符时直接报错，不会改用推导。只有实际需要环境镜头时才执行原片推导；`shared_front` 不因此增加环境镜头地图定位。
 
-前后镜头都能选来源，不代表可以单独替换完整参数包中的内参：正式 factory 标定仍须使用与其配套的 B。详见[标定指南](../docs/标定.md#选择实测或工厂内参)。
+前后镜头分别选来源。正式 factory 标定须使用与其配套的 B。详见[标定指南](../../docs/标定.md#选择实测或工厂内参)。
 
 ## 更新当前参数与历史结果
 
@@ -95,21 +96,21 @@ rear 工厂推导沿用 front 时差，标记 `NOT_EVALUATED`；它不等于通�
 
 每次从批次 `collection.yaml` 发起 run 都重新解析当前参数，计算开始后固定本次选择。参数变化时重新核对地图与结果复用条件；需要时自动重建。历史地图和运行结果保留自己的参数副本、哈希与内部身份，已有记录不会被新安装改写。registry 只保留每个镜头、每种来源的当前安装；被替代的固定版本目录不再作为日常配置项或历史读取入口。
 
-kit 使用 `intrinsics.front/rear` 选择来源和当前登记版本；不再接受旧的 `calibration`、`rear_calibration` 或 `calibrations` 写法。
+kit 使用 `intrinsics.front/rear` 选择参数来源，运行时读取各镜头当前登记的参数。
 
 ## 临时覆盖与检查
 
-通常只在 kit 中分别选择来源。临时把所有 kit 的两个镜头统一切到 factory 时，在 `config/user.yaml` 设置 `features.factory_intrinsics.enabled: true`；省略或 false 时沿用 kit。该开关会影响后续所有批次，缺失或不匹配的登记资产直接报错。需要 measured 时在 kit 中逐镜头选择，不使用已退役的 `calibration.intrinsics_source` 用户字段。
+通常只在 kit 中分别选择来源。临时把所有 kit 的两个镜头统一切到 factory 时，在 `config/user.yaml` 设置 `features.factory_intrinsics.enabled: true`；省略或 false 时沿用 kit。该开关会影响后续所有批次，缺失或不匹配的登记资产直接报错。需要 measured 时在 kit 中逐镜头选择，并关闭全局 factory 覆盖。
 
 ```bash
 ./umi-calib devices
 ./umi-calib devices --kit kit_002
 ./umi-calib devices --kit kit_002 --require-rear --json
-./umi-scene run scenes/test_shelf/20261109_002 --show-config
+./umi-scene run scenes/test_shelf/20261120_002 --show-config
 ```
 
 `devices` 默认展示每个镜头、每种来源的当前参数，不展开历史版本。`--require-rear` 要求已独立验收的 rear，工厂推导不会使该检查通过；普通查询会标明“需原片推导、未独立验收”。JSON 保留实际参数身份供排障。检查只覆盖相机参数和选择，不代表夹爪安装资产或双镜头组合实测已验收。
 
 ## 海报采集
 
-需要独立验收的环境镜头时，按[双镜头标定](../docs/标定.md#双镜头标定与海报接入)完成 rear 求解与登记，再将 `intrinsics.rear` 设为对应来源。布局填写在 `environment_poster.layout_path`，任务的海报开关写在批次的 `backend` 下。[场景后端配置](../docs/场景处理.md#选择轨迹估计后端)
+需要独立验收的环境镜头时，按[双镜头标定](../../docs/标定.md#双镜头标定与海报接入)完成 rear 求解与登记，再将 `intrinsics.rear` 设为对应来源。布局填写在 `environment_poster.layout_path`，任务的海报开关写在批次的 `backend` 下。[场景后端配置](../../docs/场景处理.md#选择轨迹估计后端)

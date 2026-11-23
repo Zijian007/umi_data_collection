@@ -136,7 +136,6 @@ def write_arm_trajectory(recording: PreparedRecording, result: FusedTrajectory,
                     'constraint', 'visual_lens', 'visual_lenses', 'map_role', 'map_index',
                     'map_epoch', 'map_version', 'map_frame_id', 'front_lens_tracked',
                     *support_fields, 'position_source')
-    frame_rows = []
     with (details / 'frames.csv').open('w') as stream:
         stream.write(','.join(frame_fields) + '\n')
         provenance = result.evidence.get('frame_provenance', [])
@@ -159,7 +158,6 @@ def write_arm_trajectory(recording: PreparedRecording, result: FusedTrajectory,
             columns = [str(k), str(k), str(source_frame), f'{recording.video_times_s[k]:.9f}',
                        f'{time:.9f}', *map(str, values), *map(str, flags), source]
             stream.write(','.join(columns) + '\n')
-            frame_rows.append(dict(zip(frame_fields, columns, strict=True)))
     front = recording.lens_video('front').path
     try:
         os.link(front, directory / 'front.mp4')
@@ -197,7 +195,7 @@ def write_arm_trajectory(recording: PreparedRecording, result: FusedTrajectory,
             diagnostic.unlink()
     if localization:
         metadata['localization'] = localization
-    return ArmTrajectory(times, poses['tcp'], coordinate_record['frame_id'], tcp_frame, metadata, frame_rows)
+    return ArmTrajectory(times, poses['tcp'], coordinate_record['frame_id'], tcp_frame, metadata)
 
 
 def write_bimanual_trajectory(tracks: dict[str, ArmTrajectory], directory: Path) -> list[float]:

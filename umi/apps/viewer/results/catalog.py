@@ -15,7 +15,8 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from umi.store import layout
-from umi.store.result_io import read_arm_settings, read_arm_summary, scene_reference, trajectory_path
+from umi.store.result_io import (arm_evidence, published_arm_run, read_arm_settings, read_arm_summary,
+                                 result_paths, scene_reference, trajectory_path)
 from umi.workflows.segment.reporting.artifacts import front_video_path, load_summary, result_path
 from umi.apps.viewer import ViewerDataError
 from umi.apps.viewer.resources.cache import file_identity
@@ -82,7 +83,8 @@ def capture_status(directory: Path) -> dict:
 
 
 def read_episode(directory: Path, contains) -> tuple[dict, dict[str, Path]]:
-    path = directory / 'episode.json'
+    paths = result_paths(directory)
+    path = paths.manifest
     if not contains(path):
         raise ViewerDataError('任务清单超出查看目录')
     episode_manifest = read_manifest(path)
@@ -98,9 +100,9 @@ def read_episode(directory: Path, contains) -> tuple[dict, dict[str, Path]]:
     for arm, relative in episode_manifest['arms'].items():
         if not isinstance(relative, str):
             raise ViewerDataError('共享场景手路径无效')
-        path = (directory / relative).resolve()
+        path = (paths.data / relative).resolve()
         tcp_path = trajectory_path(path)
-        if not path.is_relative_to(directory.resolve()) or not contains(tcp_path) or not tcp_path.is_file():
+        if not path.is_relative_to(paths.data) or not contains(tcp_path) or not tcp_path.is_file():
             raise ViewerDataError('共享场景手路径缺失或越界')
         arms[arm] = path
     return episode_manifest, arms
@@ -179,11 +181,12 @@ class RecordingCatalog:
         self.root = root.expanduser().resolve()
         if not self.root.is_dir():
             raise ViewerDataError(f'数据目录不存在：{self.root}')
+        self.run_root = result_paths(self.root).run
         self.directories: dict[str, Path] = {}
 
     def contains(self, path: Path) -> bool:
         resolved = path.resolve()
-        if resolved.is_relative_to(self.root):
+        if resolved.is_relative_to(self.run_root):
             return True
         # 单独打开任务时，允许读取该任务在批次内的集中产物。
         if layout.is_batch(self.root.parent):
@@ -231,7 +234,7 @@ class RecordingCatalog:
                 except (OSError, ValueError, TypeError, KeyError, IndexError):
                     capture = dict(status='pending')
                 result_name = 'local_results' if capture.get('status') in ('local_ok', 'local_skipped') else 'results'
-                if 'scene' in capture and not (directory / result_name / 'episode.json').is_file():
+                if 'scene' in capture and not result_paths(directory / result_name).manifest.is_file():
                     key = hashlib.sha256(str(directory.resolve()).encode()).hexdigest()[:20]
                     label = '/'.join(str(capture.get(name, directory.name)) for name in ('scene', 'kit', 'session', 'name'))
                     entries.append(dict(id=key, name=label, path=str(directory.relative_to(self.root)),
@@ -242,7 +245,7 @@ class RecordingCatalog:
                     continue
             # 任务的 results 是原子发布的版本指针；只展示当前版本，不遍历历史 runs。
             episode = directory / result_name if has_capture else directory
-            if (episode / 'episode.json').is_file():
+            if result_paths(episode).manifest.is_file():
                 children[:] = []
                 try:
                     metadata, arms = read_episode(episode, self.contains)
@@ -291,7 +294,7 @@ class RecordingCatalog:
 
     def _media_directory(self, key: str) -> Path:
         directory = self.directory(key)
-        if (directory / 'episode.json').is_file():
+        if result_paths(directory).manifest.is_file():
             _, arms = read_episode(directory, self.contains)
             return arms['left'] if 'left' in arms else arms['right']
         return directory
@@ -316,9 +319,9 @@ class RecordingCatalog:
                 return True
             # Opening take_001/results resolves to its published run directory.
             # In that mode only the matching task and arm may supply an INSV.
-            run = directory.parent
+            run = published_arm_run(directory)
             task = run.parent.parent
-            if (self.root != run or run.parent.name != 'runs' or task.parent.name != 'tasks'
+            if (self.run_root != run or run.parent.name != 'runs' or task.parent.name != 'tasks'
                     or task.parent.parent.name != layout.INTERNAL):
                 return False
             arm_inputs = task.parent.parent.parent / task.name / directory.name
@@ -333,7 +336,7 @@ class RecordingCatalog:
 
     def details(self, key: str) -> dict:
         directory = self.directory(key)
-        if (directory / 'episode.json').is_file():
+        if result_paths(directory).manifest.is_file():
             episode, _ = read_episode(directory, self.contains)
             return dict(directory=str(directory), episode=episode)
         return dict(directory=str(directory), summary=self.summary(directory))
@@ -365,7 +368,7 @@ class RecordingCatalog:
 
     def load(self, key: str) -> dict:
         directory = self.directory(key)
-        if (directory / 'episode.json').is_file():
+        if result_paths(directory).manifest.is_file():
             return load_episode(self, key, directory)
         summary = self.summary(directory)
         tcp_path = trajectory_path(directory)
@@ -375,12 +378,12 @@ class RecordingCatalog:
         times = tcp.pop('times')
         tag_distance = read_tag_distance(tcp_path, times)
         tracks = dict(tcp=tcp)
-        frames_path = result_path(directory, 'frames.csv')
+        frames_path = arm_evidence(directory, 'frames.csv')
         if not self.contains(frames_path):
             raise ViewerDataError('逐帧文件超出当前数据目录。')
         frames, notes = read_frames(frames_path, times)
         for name in ('camera', 'imu'):
-            path = result_path(directory, f'traj_{name}.txt')
+            path = arm_evidence(directory, f'traj_{name}.txt')
             if not path.is_file():
                 continue
             if not self.contains(path):

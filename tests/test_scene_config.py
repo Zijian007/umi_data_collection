@@ -3,6 +3,7 @@ from umi.workflows.scene.task_configuration import read_synchronization
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from umi.workflows.scene.inputs import scene as scene_inputs
 from umi.store import layout
@@ -47,6 +48,20 @@ def write_yaml(path, data):
 
 
 class SceneConfigurationTests(unittest.TestCase):
+    def test_frozen_gripper_paths_follow_hardware_migration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            kits = root / 'hardware/kits'
+            frozen = dict(tcp=str(root / 'kits/tcp_camera.json'),
+                          tag_distance=str(root / 'kits/kit_001/tag_distance.json'),
+                          mask=str(root / 'kits/rig/hand.png'),
+                          width=str(root / 'custom/width.json'))
+            with patch.object(scene_inputs, 'PROJECT_ROOT', root), patch.object(scene_inputs, 'KITS', kits):
+                current = scene_inputs.gripper_paths(frozen)
+            self.assertEqual(current, dict(tcp=str(kits / 'shared/tcp_camera.json'),
+                                           tag_distance=str(kits / 'shared/tag_distance.json'),
+                                           mask=str(kits / 'rig/hand.png'), width=frozen['width']))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -223,7 +238,7 @@ class SceneConfigurationTests(unittest.TestCase):
         self.assertEqual(batches._infer_mode(dual_batch, {}), 'dual')
 
     def test_retired_flat_and_layout_only_tag_forms_are_rejected(self):
-        board = scene_inputs.ROOT / 'hardware/calibration_targets/environment_poster.json'
+        board = scene_inputs.ROOT / 'hardware/environment_poster/environment_poster.json'
         if not board.is_file():
             self.skipTest('environment poster fixture unavailable')
         for index, poster in enumerate((dict(layout_path=str(board), detection=True),
@@ -249,7 +264,7 @@ class SceneConfigurationTests(unittest.TestCase):
                 SceneOverrides.load(expert)
 
     def test_environment_tag_policy_uses_canonical_enabled_fields(self):
-        board = scene_inputs.ROOT / 'hardware/calibration_targets/environment_poster.json'
+        board = scene_inputs.ROOT / 'hardware/environment_poster/environment_poster.json'
         if not board.is_file():
             self.skipTest('environment poster fixture unavailable')
         collection = self.root / '20261118' / 'collection.yaml'
@@ -268,7 +283,7 @@ class SceneConfigurationTests(unittest.TestCase):
                               fusion=dict(enabled=True, method='joint')))
 
     def test_environment_tag_enabled_fields_reject_inconsistent_combinations(self):
-        board = scene_inputs.ROOT / 'hardware/calibration_targets/environment_poster.json'
+        board = scene_inputs.ROOT / 'hardware/environment_poster/environment_poster.json'
         if not board.is_file():
             self.skipTest('environment poster fixture unavailable')
         cases = [
@@ -286,7 +301,7 @@ class SceneConfigurationTests(unittest.TestCase):
                     scene_inputs.read_scene(collection)
 
     def test_environment_tag_fusion_method_is_validated(self):
-        board = scene_inputs.ROOT / 'hardware/calibration_targets/environment_poster.json'
+        board = scene_inputs.ROOT / 'hardware/environment_poster/environment_poster.json'
         if not board.is_file():
             self.skipTest('environment poster fixture unavailable')
         collection = self.root / 'invalid_method' / 'collection.yaml'

@@ -121,7 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
                '  umi-calib install /path/to/front/calibration_result\n'
                '  umi-calib install /path/to/rear/calibration_result\n'
                '  umi-calib detect-width recording.insv --roi 600 980 1350 1250 --contrast 2\n'
-               '安装说明：install 自动识别 front/rear，更新对应镜头和来源的当前登记，并清理同类旧版本。\n'
+               '安装说明：install 自动识别 front/rear，更新对应镜头和来源的当前登记，并保留已登记的历史版本。\n'
                '  umi-calib check\n参数帮助：umi-calib <子命令> --help；完整参数参考：docs/命令行参数.md；录制与标定说明：docs/标定.md。')
     commands = parser.add_subparsers(dest="cmd")
     width_preview = commands.add_parser('preview-width', help='从 INSV 生成标签框、ID 和像素距离叠加 MP4')
@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     recheck_parser = commands.add_parser("recheck", help="仅按新验收规则重新评估已有完整报告")
     recheck_parser.add_argument("out", type=Path, help="已有完整标定结果目录")
     recheck_parser.add_argument("--expert-config", dest='config', type=Path, help="用于重新评估的标定专家 YAML 覆盖配置")
-    install_parser = commands.add_parser("install", help="安装 front/rear 标定；自动识别结果并清理同镜头、同来源旧版本")
+    install_parser = commands.add_parser("install", help="安装 front/rear 标定，更新同镜头、同来源的当前登记")
     install_parser.add_argument("asset", help="通过验收的完整标定结果目录；也可直接传 rear_calibration.json")
     install_parser.add_argument("--serial", help="核对测量所属序列号（不能改写）")
     install_parser.add_argument("--force", action="store_true", help="允许完整结果的质量拒绝；仍校验证据和身份，不能安装 INCOMPLETE")

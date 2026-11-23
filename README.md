@@ -13,12 +13,12 @@
 ## 已有批次
 
 ```bash
-./umi-scene run scenes/shelf/20261105_001 --show-config
-./umi-scene run scenes/shelf/20261105_001
-./umi-view scenes/shelf
+./umi-scene run scenes/test_shelf/20261120_002 --show-config
+./umi-scene run scenes/test_shelf/20261120_002
+./umi-view scenes/test_shelf/20261120_002
 ```
 
-用 `kits/<套件>/kit.yaml` 配置设备与夹爪，用批次的 `collection.yaml` 选择使用手、地图和轨迹后端。每次操作放在一个 `take_*` 目录中，结果从 `take_*/results/` 查看。后端选项见[场景处理](docs/场景处理.md#选择轨迹估计后端)，完整字段见[批次模板](scenes/example_scene/collection.example.yaml)。
+用 `hardware/kits/<套件>/kit.yaml` 配置设备与夹爪，用批次的 `collection.yaml` 选择使用手、地图和轨迹后端。每次操作放在一个 `take_*` 目录中，结果从 `take_*/results/` 查看。后端选项见[场景处理](docs/场景处理.md#选择轨迹估计后端)，完整字段见[批次模板](scenes/example_scene/collection.example.yaml)。
 
 查看结果后，使用 `umi-scene review` 记录人工验收，再导出[普通成果](docs/结果查看与验收.md#人工验收与导出)或[训练数据](docs/训练数据.md)。
 

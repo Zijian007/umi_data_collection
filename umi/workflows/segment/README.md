@@ -1,28 +1,37 @@
 # 独立轨迹代码指南
 
-每段录像由内部逐段轨迹引擎独立建图、定位并融合 IMU，轨迹使用本段局部坐标。场景和双手任务由 [scene](../scene/README.md) 编排，共用视觉能力位于 [vision](../../perception/README.md)。[算法实现约定](../../../docs/dev/算法实现约定.md)
+每段录像由内部逐段轨迹引擎独立建图、定位并融合 IMU，轨迹使用本段局部坐标。场景和双手任务由 [scene](../scene/README.md) 编排，共用视觉能力位于 [perception](../../perception/README.md)；融合数值实现位于 [umi/estimation/fusion](../../estimation/fusion)。[算法实现约定](../../../docs/dev/算法实现约定.md)
 
-各模块通过真实目录直接导入；包初始化不加载求解器、不注入旧模块别名。
+各模块通过真实目录直接导入；包初始化只说明职责。
 
 ## 执行顺序
 
 ```text
-cli.main() → workflow.run_batch() → workflow.run_recording()
-    selection.select_calibration()       选择相机标定及显式指定的 TCP 几何
-    reuse.run_fingerprint()              输入、资产与算法参数
-    reuse.reuse_decision()               完整成功结果复用
-    vision.recordings.prepare()          时间戳、IMU、丢帧策略
-    runtime.reconstruction_settings()    视觉设置及独立融合配置
-    vision.recordings.prepare_lens_videos()
+umi/apps/segment.py main() → workflow.run_batch() → workflow.run_recording()
+    selection.select_calibration()       选择相机标定及显式指定的 TCP 几何（umi/devices/selection.py）
+    workflow.run_fingerprint()           输入、资产与算法参数（不含代码版本）
+    workflow.reuse_decision()            完整成功结果复用；--force 时整段重算
+    perception.recordings.prepare()      时间戳、IMU、丢帧策略
+    workflow._reconstruction_settings()  冻结环境镜头标定与海报观测，生成视觉与融合设置
+    perception.recordings.prepare_lens_videos()
     reconstruction.run_attempts()
-        vision.slam.build_maps()         纯视觉建图
-        vision.slam.relocalize_all_maps() 固定图集逐图定位并合并
-        reconstruction.fuse_visual_imu() 调用独立融合 CLI
-    algorithms.postprocess.export_trajectories()
-    map_data.export_attempt()            仅用于展示的地图对齐
-    results.finalize_result()            发布视频、摘要与报告
-    results.cleanup_debug()              成功后按需清理中间产物
+        perception.slam.build_maps()     纯视觉建图
+        perception.slam.relocalize_all_maps() 固定图集逐图定位并合并
+        reconstruction.fuse_visual_imu() → fusion_runner.execute()  在 spawn 工作进程中调用 fuse()
+    workflow._export_products()          trajectory_export.export_trajectories() 与展示地图
+    reporting.artifacts.finalize_result() 发布视频、摘要与报告
+    reporting.artifacts.cleanup_debug()  成功后按需清理中间产物
 ```
+
+| 文件 | 职责 |
+|---|---|
+| `workflow.py` | 单段录像的阶段顺序、失败归因与复用判断 |
+| `reconstruction.py` | 多轮“建图 → 定位 → 融合”、每轮质量评估与选择 |
+| `fusion_runner.py` | 融合执行边界：`FusionRequest` → 工作进程中的 `fuse()`；保留双手并行、`--cores`、nice 与崩溃隔离 |
+| `environment_assets.py` | 环境镜头标定与海报输入的选择、冻结与加载（场景回退共用） |
+| `trajectory_export.py` | 融合结果 → 相机/TCP 轨迹、逐帧证据与运行设置记录 |
+| `reporting/` | 结果发布、报告、展示地图 |
+| `tools/initialization_review.py` | 用保留的视觉/IMU 数据对照初始化的开发诊断 |
 
 原片校验和设备选择发生在清理旧输出之前。每个镜头只裁切一次，所有重建尝试复用；可疑结果默认最多重建三轮。先检查每个有位置约束的分段相对自身初始化的尺度变化，双向倍率超过 `retry.maximum_scale_change_ratio`（默认 2）或证据无效时，该轮不能选中；全部轮次因此被拒绝则执行失败并保留现场。其余轮次优先选择独立地图放置更少、位置约束覆盖更高的结果。各轮拒绝原因保存在 `tries`，融合证据包含 `scale_consistency`。该保护不估计真实误差，也不保证视觉地图正确；2 倍上限仍需多录像验证。参数位于 `config/algorithms/trajectory.yaml`。
 
@@ -38,35 +47,14 @@ cli.main() → workflow.run_batch() → workflow.run_recording()
 
 ```bash
 .deps/env/bin/python -m umi.workflows.segment.tools.initialization_review \
-  --run-dir umi_traj_out/VID_20261111_183645_00_026 \
-  --calibration registry/cameras/IAQEB26097M4CP/calibrations/front/measured/bundle/calibration.json \
-  --output umi_traj_out/initialization_review/VID_20261111_183645_00_026/refinement_review.json
+  --run-dir /path/to/trajectory_result \
+  --calibration /path/to/calibration.json \
+  --output refinement_review.json
 ```
 
 此入口仅支持 handheld，默认读取第 1 轮，`--attempt N` 选择其他轮次；须使用本轮实际相机标定。报告同时保存视觉旋转与 IMU 的局部差异、两种初始化结论、输入哈希与 git 提交号。返回码 0 表示报告成功生成，报告内 `rejected` 仍表示初始化未通过。
 
-## 文件职责
-
-```text
-umi/workflows/segment/
-├── cli.py / workflow.py       单段与批量处理、结果复用
-├── models.py                  请求、视觉上下文和求解结果
-├── calibration.py             相机、TCP 和 ORB 设置
-├── environment_assets.py      环境镜头与海报输入
-├── reconstruction.py          引擎设置、重建重试与融合验收
-├── trajectory_export.py       轨迹导出、逐帧证据和来源记录
-├── tum.py                     共用 TUM 读写
-├── reporting/
-│   ├── map_data.py            展示地图
-│   ├── constraint_quality.py  约束、尺度和位置质量
-│   └── artifacts.py           发布、清理、报告和预览
-├── tools/                     初始化诊断
-└── algorithms/
-    ├── inertial.py            IMU 积分、预积分和共用惯性因子
-    ├── fixed_map/             固定地图几何、定位与融合
-    ├── poster_vio/            海报、自然特征与 IMU 联合求解
-    └── fusion/                独立融合求解器
-```
+## 依赖
 
 `ReconstructionContext` 直接持有视觉阶段共用的路径、参数和 CPU 设置。独立命令和场景回退都将已解析的输入交给重建阶段。视觉程序、错误与路径由 `umi/perception` 管理；外参和逐帧位姿右乘由 `umi/core/geometry.py` 管理；公共 TUM 读写位于 `umi/core/tum.py`。
 
@@ -75,8 +63,7 @@ umi/workflows/segment/
 库入口为 `from umi.estimation.fusion.solver import solve`。重建通过 `umi/workflows/segment/fusion_runner.py` 的 `execute()` 调用：每次融合在一个 spawn 工作进程里执行 `fuse()`，保留双手并行、`--cores`、nice 和崩溃隔离（GTSAM 优化期间持有 GIL，线程内执行会让双手串行）。包初始化不转发 `solve`，也不导入数值求解器。
 
 ```text
-algorithms/fusion/
-├── cli.py               参数解析 → 读取 → 求解 → 写结果
+umi/estimation/fusion/
 ├── data.py              FusionInputs、MapPlacements、FusionSolution 与文件读写
 ├── solver.py            顺序入口、地图段放置与全帧率恢复
 ├── alignment.py         运动段筛选、尺度与重力求解及初值细化
@@ -88,9 +75,9 @@ algorithms/fusion/
 
 算法内部使用视频秒。`FusionInputs.imu_video_clock` 已将 IMU 样本换到视频时钟，`FusionSolution.video_times_s` 与 `T_world_imu` 明确时间和位姿语义。`fusion.data` 在文件边界处理 EuRoC 人工 +1 秒，转换集中在 `umi/core/timing.py`；求解核心不处理文件时钟。
 
-`RefinedChains` 汇集细分后通过独立复核的区间、估计与诊断。`RecoveredState` 明确区分每帧位姿、速度和 IMU 零偏；全帧恢复与段尺度统计分别实现。外部融合程序返回的文件路径使用 `models.FusionArtifacts`，与算法内存中的 `FusionSolution` 分开。
+`RefinedChains` 汇集细分后通过独立复核的区间、估计与诊断。`RecoveredState` 明确区分每帧位姿、速度和 IMU 零偏；全帧恢复与段尺度统计分别实现。融合工作进程写出的文件路径使用 `umi.estimation.models.FusionArtifacts`，与算法内存中的 `FusionSolution` 分开。
 
-两套融合目标不同：独立模式估计跟踪段的尺度与放置，场景模式以已冻结的米制地图位姿为约束。两者分别维护，数值方法与历史验证见 [原理](../../../docs/算法原理.md)。
+两套融合目标不同：独立模式估计跟踪段的尺度与放置，场景模式以已冻结的米制地图位姿为约束。两者分别维护，数值方法见 [原理](../../../docs/算法原理.md)。
 
 自检：
 
@@ -102,7 +89,7 @@ algorithms/fusion/
 
 每轮 `logs/run.json` 记录运行身份、引擎哈希及完成状态；`logs/tracking.json` 记录各镜头各视觉阶段统计。结果读取只接受当前结构化布局；原始文本日志继续保留用于审计。
 
-项目构建的 `x3_mono_slam` 默认逐帧同步完成局部建图和闭环，并按稳定 ID 处理观测及共视权重平分，减少同一输入重复建图的差异。离线最小关键帧间隔默认 0.2 秒，按配置帧率向上取整为帧数，避免局部建图始终空闲时过密插帧。各阶段 `execution.json` 记录 `offline_sync`、`offline_keyframe_interval_s` 和实际最小帧数；旧引擎缺少标记时为 `null`。底层 `--async_mapping`、`--offline_keyframe_interval` 用于调度对照。同步处理可能增加耗时；同一录像的可复现性不等于轨迹精度。源码升级后需要通过 `setup/orbslam3/build_orbslam3.sh` 重编译，已安装的旧二进制不会仅因 Python 代码更新而改变。
+项目构建的 `x3_mono_slam` 默认逐帧同步完成局部建图和闭环，并按稳定 ID 处理观测及共视权重平分，减少同一输入重复建图的差异。离线最小关键帧间隔默认 0.2 秒，按配置帧率向上取整为帧数，避免局部建图始终空闲时过密插帧。各阶段 `execution.json` 记录 `offline_sync`、`offline_keyframe_interval_s` 和实际最小帧数。底层 `--async_mapping`、`--offline_keyframe_interval` 用于调度对照。同步处理可能增加耗时；同一录像的可复现性不等于轨迹精度。源码升级后需要通过 `setup/trajectory/orbslam3/build_orbslam3.sh` 重编译，已安装的旧二进制不会仅因 Python 代码更新而改变。
 
 ORB 金字塔各层的特征、方向和描述子并行计算，随后按原层级顺序合并；最多使用 4 个工作线程，`OMP_THREAD_LIMIT=1` 可用于串行对照。离线驱动关闭 OpenMP 动态缩减，避免运行库把请求的 4 个线程缩成 1 个。OpenMP 只编译到特征提取文件，BA 求解和关键帧策略保持原值。视觉启动器默认设置 `OMP_WAIT_POLICY=PASSIVE`，让特征线程在串行建图期间休眠。无原生窗口的纯单目模式在初始化完成后不再检测仅供初始化使用的标签，地图重置后恢复；原生窗口显示、IMU 单目路径和独立夹爪标签检测保持原行为。构建时自动检查串行/并行角点及描述子逐项相同，以及标签检测关闭与恢复。
 
@@ -112,7 +99,7 @@ ORB 金字塔各层的特征、方向和描述子并行计算，随后按原层�
 
 ## 输出
 
-标定 C 验证和开发测试使用内部逐段引擎。默认只输出相机/IMU 轨迹；需要 TCP 时显式提供 `--tcp kits/kit_001/tcp_camera.json`，可用 `--mask <PNG>` 覆盖硬件通用遮手图 `hardware/grippers/masks/front_hand_mask.png`。相机验收不依赖套件或夹爪。单段输出布局如下：
+标定 C 验证和开发测试使用内部逐段引擎。默认只输出相机/IMU 轨迹；需要 TCP 时显式提供 `--tcp hardware/kits/shared/tcp_camera.json`，可用 `--mask <PNG>` 覆盖硬件通用遮手图 `hardware/grippers/masks/front_hand_mask.png`。相机验收不依赖套件或夹爪。单段输出布局如下：
 
 ```text
 umi_traj_out/VID_20261003_182246_00_067/
@@ -140,7 +127,7 @@ umi_traj_out/VID_20261003_182246_00_067/
 
 `details/map.json` 保存选中轮次的工作镜头稀疏点云、关键帧和展示对齐信息。它独立于被清理的 `.osa`，可直接由 `umi-view` 查看；每图最多展示 50000 点。对齐只用于展示，不改动轨迹或地图，拟合残差不代表真实精度。导出失败只增加提醒，不改变轨迹抽取的成功状态，详细原因见 `debug/logs/map_export_error.log`。
 
-结果发布只接受上述当前布局。`details/` 保存发布结果，`debug/` 保存当前运行的日志与中间数据；旧的 `diagnostics/`、平铺结果和 `work/kiwi*` 不会被自动迁移或读取。
+`details/` 保存发布结果，`debug/` 保存运行日志与中间数据。
 
 ### details/summary.json
 
@@ -208,7 +195,7 @@ umi_traj_out/VID_20261003_182246_00_067/
 
 ### 参数与复用记录
 
-`details/run_settings.json` 的 `parameters` 保存完整有效配置、覆盖来源与 git 提交号；TXT 显示配置 ID 和覆盖项。重建参数与提醒规则分别计算指纹，详见 [参数管理](../../../config/README.md)。新运行的融合脚本来自项目，标定包仅提供测量；双镜头模式的环境镜头仍为样例几何。
+`details/run_settings.json` 的 `parameters` 保存完整有效配置、覆盖来源与 git 提交号；TXT 显示配置 ID 和覆盖项。重建参数与提醒规则分别计算指纹，详见 [参数管理](../../../config/README.md)。融合使用项目实现，标定包提供测量。双镜头模式的环境镜头使用本设备的登记参数或从 INSV 工厂参数推导。
 
 场景任务的结果布局与人工验收见[结果指南](../../../docs/结果查看与验收.md)。
 
@@ -216,7 +203,7 @@ umi_traj_out/VID_20261003_182246_00_067/
 
 独立工作镜头引擎可用 `--intrinsics-source measured|factory` 选择设备中对应的完整标定版本，已选目录（`UMI_TRAJ_CALIB`）也必须匹配来源。未指定时继续使用已启用版本。factory 是工厂 MEI 拟合 KB4 加重新实测的 B；历史样例选择值 `UMI_TRAJ_CALIB=factory` 含义保持独立。
 
-双镜头参数来源选择可用 `umi-scene` 套件，或独立入口的 `--mode dual --rear-calibration measured`；不要求提供海报。未绑定正式 rear 时，尝试当前 X3 INSV 工厂内参/双镜头外参 + 本设备 front B 兜底；沿用 front 时差，标记 `NOT_EVALUATED`，不使用历史 rear 样例。`--intrinsics-source` 选择 front 参数来源并核对显式正式 rear 的来源一致；兜底的 rear 来源独立记录为 factory。项目构建默认启用已验证的 ≤85° 前向 KB4，两种来源使用同一几何与 0.2 秒选帧策略；1920 全镜头与 >180° 仍不属于正式范围。
+双镜头参数来源选择可用 `umi-scene` 套件，或独立入口的 `--mode dual --rear-calibration measured`；不要求提供海报。未绑定正式 rear 时，尝试当前 X3 INSV 工厂内参/双镜头外参 + 本设备 front B 兜底；沿用 front 时差，标记 `NOT_EVALUATED`。`--intrinsics-source` 选择 front 参数来源并核对显式正式 rear 的来源一致；兜底的 rear 来源独立记录为 factory。项目构建默认启用已验证的 ≤85° 前向 KB4，两种来源使用同一几何与 0.2 秒选帧策略；1920 全镜头与 >180° 仍不属于正式范围。
 
 ```bash
 python -m umi.apps.segment /path/to/task.insv --mode dual --rear-calibration rear_ACTUAL_HASH
@@ -227,14 +214,14 @@ python -m umi.apps.segment /path/to/task.insv --mode dual --rear-calibration rea
 
 ## 环境海报
 
-独立 `handheld` / `dual` 支持 `--tag-layout FILE`，可加 `--rear-calibration measured` 选择本设备已登记的完整 rear 标定，要求序列号、参数来源和验收匹配。省略时按上述规则兜底，显式绑定损坏则拒绝。两种路径均冻结 rear 参数和来源到 `devices/rear/`；工厂转换不合格或元数据缺失时在预检失败，保留旧结果。指定资产默认只诊断；通过 YAML `environment_tags.tag_fusion_enabled: true` 显式启用。共享默认阈值在 `config/algorithms/environment_tags.yaml`，实验覆盖写在 `--expert-config` 的 `trajectory.environment_tags` 内。
+独立 `handheld` / `dual` 支持 `--tag-layout FILE`，可加 `--rear-calibration measured|factory` 选择本设备已登记的完整 rear 标定，要求序列号、参数来源和验收匹配。省略时按上述规则兜底，显式绑定损坏则拒绝。两种路径均冻结 rear 参数和来源到 `devices/rear/`；工厂转换不合格或元数据缺失时在预检失败，保留旧结果。指定资产默认只诊断；通过 YAML `environment_tags.tag_fusion_enabled: true` 显式启用。共享默认阈值在 `config/algorithms/environment_tags.yaml`，实验覆盖写在 `--config` 指定文件的 `environment_tags` 内。
 
-`environment_assets.py` 选择环境镜头标定，并冻结标定、海报布局和原始角点；`algorithms/fusion/poster.py` 在原生图中添加单板角点因子。原有地图分段尺度仍是变量，不把上一轮融合轨迹作为固定地图先验再平滑一次。真实 rear 观测时刻插入 IMU 节点；恢复全帧轨迹时使用这些实际时间节点。dual 地图定位也按镜头时差重采样，不跨丢帧/地图切换。没有海报观测时保持原图输出；仍需通过惯性初始化和原有质量验收。
+`environment_assets.py` 选择环境镜头标定，并冻结标定、海报布局和原始角点；`umi/estimation/fusion/poster.py` 在原生图中添加单板角点因子。原有地图分段尺度仍是变量，不把上一轮融合轨迹作为固定地图先验再平滑一次。真实 rear 观测时刻插入 IMU 节点；恢复全帧轨迹时使用这些实际时间节点。dual 地图定位也按镜头时差重采样，不跨丢帧/地图切换。没有海报观测时保持原图输出；仍需通过惯性初始化和原有质量验收。
 
-海报数量/时间剔除规则位于 `vision/poster/quality.py`；`vision/poster/factors.py` 从原场景实现提取旋转 seat、鲁棒角点因子及解析 Jacobian，场景与独立图共同使用。rear 修正可严格关闭，开启时检查修正角上限；单轮剔除可发生在种子或优化后，优化后重求解复用已有对齐、地图放置和基线，不重跑 SLAM。`reporting/quality.position_support_summary()` 将真实观测时刻的共同支持缺口传给重试；证据不全时保留原视觉覆盖规则，尺度硬保护继续生效。
+海报数量/时间剔除规则位于 `umi/perception/poster/quality.py`；`umi/estimation/factors/poster.py` 从原场景实现提取旋转 seat、鲁棒角点因子及解析 Jacobian，场景与独立图共同使用。rear 修正可严格关闭，开启时检查修正角上限；单轮剔除可发生在种子或优化后，优化后重求解复用已有对齐、地图放置和基线，不重跑 SLAM。`umi.estimation.constraint_quality.position_support_summary()` 将真实观测时刻的共同支持缺口传给重试；证据不全时保留原视觉覆盖规则，尺度硬保护继续生效。
 
 输出 `environment_poster/` 保存布局、rear 标定、角点和哈希清单，默认清理 debug 后仍保留。结果的 `fusion.environment_poster` 记录初始/最终像素残差、板位姿和状态，`actual_error` 仍为 `not_measured`。单手共享失败回退自动继承场景中的海报参数及冻结资产，结果仍使用独立局部坐标。
 
-实验性无预建地图的任务海报联合图见 [poster_vio 模块指南](../../estimation/poster_vio/README.md)，通过场景任务后端接入，不作为旧独立融合的初值方法。
+无预建地图的任务海报联合图通过场景任务的 `poster_vio` 后端接入，见 [poster_vio 模块指南](../../estimation/poster_vio/README.md)。
 
-固定地图的尺度对齐、定位合并与视觉惯性融合位于 `algorithms/fixed_map/`。单独调用时显式传入观测、标定和数值参数。地图文件的读写与业务状态由场景流水线处理。
+固定地图的尺度对齐、定位合并与视觉惯性融合位于 `umi/estimation/fixed_map`。单独调用时显式传入观测、标定和数值参数。地图文件的读写与业务状态由场景流水线处理。

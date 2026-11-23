@@ -2,7 +2,7 @@
 
 The numerical routines and defaults below are adapted from KIWI_software
 commit 22860a30dc1c2e9e5f9a2e55c4955a4fba84646e, kiwi/sync/audio.py.
-See ../scene/NOTICE.md and ../scene/LICENSE for attribution and license.
+See docs/dev/PROVENANCE.md and docs/dev/LICENSE.kiwi.
 """
 
 from __future__ import annotations

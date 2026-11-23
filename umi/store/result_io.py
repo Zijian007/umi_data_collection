@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 import csv
 import json
@@ -11,6 +12,67 @@ from umi.infra import provenance as artifact_identity, provenance
 
 
 TCP_COLUMNS = ('t_episode_s', 'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw')
+SCENE_RESULT_VERSIONS = (4, 5)
+
+
+@dataclass(frozen=True)
+class ResultPaths:
+    run: Path
+    published: Path
+    data: Path
+
+    @property
+    def manifest(self) -> Path:
+        return self.data / 'episode.json'
+
+
+def _internal_publication(directory: Path) -> bool:
+    run = directory.parent
+    return (directory.name == 'published' and run.parent.name == 'runs'
+            and run.parent.parent.parent.name == 'tasks'
+            and run.parent.parent.parent.parent.name == '.pipeline')
+
+
+def result_paths(directory: Path) -> ResultPaths:
+    """Resolve a legacy run, an internal run or its published result package."""
+    directory = directory.resolve()
+    if _internal_publication(directory):
+        return ResultPaths(directory.parent, directory, directory / 'data')
+    published = directory / 'published'
+    if (published / 'data/episode.json').is_file():
+        return ResultPaths(directory, published, published / 'data')
+    data = directory / 'data'
+    if (data / 'episode.json').is_file():
+        return ResultPaths(directory, directory, data)
+    if directory.name == 'data' and _internal_publication(directory.parent) and (directory / 'episode.json').is_file():
+        return ResultPaths(directory.parent.parent, directory.parent, directory)
+    return ResultPaths(directory, directory, directory)
+
+
+def published_arm_run(directory: Path) -> Path:
+    """Find the run containing an arm's published data or legacy files."""
+    data = directory.resolve().parent
+    if data.name == 'data' and (data / 'episode.json').is_file():
+        return result_paths(data.parent).run
+    return data
+
+
+def arm_evidence(directory: Path, name: str) -> Path:
+    """Read a per-arm diagnostic from its run, or beside a legacy arm."""
+    return published_arm_run(directory) / directory.name / 'details' / name
+
+
+def read_result(paths: ResultPaths) -> dict:
+    published = paths.published.resolve()
+    if not published.is_relative_to(paths.run) or not paths.manifest.resolve().is_relative_to(published):
+        raise ValueError('结果清单超出发布目录')
+    return json.loads(paths.manifest.read_text(encoding='utf-8'))
+
+
+def validate_result(paths: ResultPaths, manifest: dict) -> None:
+    validate_assets(paths.published, manifest['assets'])
+    if manifest.get('schema_version') == 5:
+        validate_assets(paths.run, manifest['evidence_assets'])
 
 
 def is_local_scene(coordinate_record: dict) -> bool:
@@ -32,7 +94,7 @@ def scene_reference(manifest: dict) -> dict:
     """读取唯一的场景坐标声明，并核对它与输入摘要中的地图身份一致。"""
     scene = manifest['scene']
     if manifest.get('kind') == 'umi_poster_episode':
-        if (manifest.get('schema_version') != 4 or not is_poster_scene(scene)
+        if (manifest.get('schema_version') not in SCENE_RESULT_VERSIONS or not is_poster_scene(scene)
                 or not scene.get('frame_id', '').startswith('poster:')
                 or scene.get('version') is not None or manifest.get('map') is not None):
             raise ValueError('任务海报坐标声明无效')
@@ -47,8 +109,8 @@ def scene_reference(manifest: dict) -> dict:
                 scene.get('version') is not None or len(manifest['arms']) != 1 or manifest.get('map') is not None):
             raise ValueError('独立局部结果的坐标声明无效')
         return scene
-    if manifest.get('schema_version') != 4:
-        raise ValueError('任务清单必须使用 schema_version: 4')
+    if manifest.get('schema_version') not in SCENE_RESULT_VERSIONS:
+        raise ValueError('任务清单需要受支持的结果版本')
     identity = scene_map_identity(dict(version=scene['version'], frame_id=scene['frame_id'],
         mode=manifest['inputs']['map_mode'], assets=manifest['inputs']['scene_assets']))
     if identity != manifest['inputs']['scene_map_sha256']:
@@ -62,8 +124,9 @@ def _manifest(directory: Path, manifest: dict | None) -> dict:
         if not path.is_file():
             raise ValueError(f'缺少当前格式任务清单：{path}')
         manifest = json.loads(path.read_text(encoding='utf-8'))
-    if manifest.get('kind') not in ('umi_scene_episode', 'umi_local_episode', 'umi_poster_episode') or manifest.get('schema_version') != 4:
-        raise ValueError('任务清单必须使用 schema_version: 4')
+    if (manifest.get('kind') not in ('umi_scene_episode', 'umi_local_episode', 'umi_poster_episode')
+            or manifest.get('schema_version') not in SCENE_RESULT_VERSIONS):
+        raise ValueError('任务清单需要受支持的场景结果版本')
     arm = directory.name
     if manifest['arms'].get(arm) != arm or arm not in manifest['arm_results']:
         raise ValueError('任务结果缺少对应的手或运行元数据')
@@ -91,7 +154,7 @@ def read_arm_summary(directory: Path, manifest: dict | None = None) -> dict:
     if not isinstance(reference.get('path'), str) or Path(reference['path']).is_absolute():
         raise ValueError('场景地图引用必须为相对路径')
     # 清单中的地图路径相对于任务运行目录。
-    summary.update(mode='scene', map=dict(path=os.path.relpath(directory.parent / reference['path'], directory),
+    summary.update(mode='scene', map=dict(path=os.path.relpath(published_arm_run(directory) / reference['path'], directory),
                                           sha256=reference['sha256']))
     return summary
 
@@ -125,6 +188,42 @@ def pose_rows(path: Path) -> Iterator[list[str]]:
             for line in stream:
                 if line.strip() and not line.lstrip().startswith('#'):
                     yield line.split()
+
+
+def quality_summary(arm_results: dict, coordinate_record: dict, common_interval_s: list[float]) -> dict:
+    """Return the compact, raw quality evidence used by terminal and JSON output.
+
+    These values describe what the pipeline verified; they are not an independent
+    accuracy score or a substitute for reviewing the trajectory against video.
+    """
+    arms = {}
+    for arm, metadata in arm_results.items():
+        constraints = metadata.get('constraint_fraction', {})
+        fusion = metadata.get('fusion', {})
+        poster = fusion.get('environment_poster')
+        arms[arm] = dict(
+            rows=metadata.get('rows'),
+            duration_s=metadata.get('duration_s'),
+            path_length_m=metadata.get('path_length_m'),
+            visual_constraint_fraction=constraints.get('full'),
+            imu_constraint_fraction=constraints.get('imu'),
+            longest_visual_gap_s=fusion.get('maximum_visual_gap_s'),
+            longest_position_support_gap_s=fusion.get('independent', {}).get('maximum_position_support_gap_s'),
+            position_support=metadata.get('position_support'),
+            poster_geometry_support=({key: value for key, value in poster.get('position_support', {}).items()
+                                      if key != 'frames'} if isinstance(poster, dict) else None),
+            visual_consistency_rms_m=fusion.get('visual_consistency_rms_m'),
+            environment_poster_status=(poster.get('status')
+                                        if isinstance(poster, dict) else None),
+        )
+    return dict(
+        schema_version=1,
+        scope='task_poster' if is_poster_scene(coordinate_record) else 'local' if is_local_scene(coordinate_record) else 'shared_scene',
+        frame_id=coordinate_record.get('frame_id'),
+        common_interval_s=list(common_interval_s),
+        arms=arms,
+        accuracy='not_measured',
+    )
 
 
 def recording_identity(path: Path) -> dict:

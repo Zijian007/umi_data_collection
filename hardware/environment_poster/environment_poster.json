@@ -13,7 +13,7 @@
   "corner_order": "opencv_marker_tl_tr_br_bl",
   "geometry_status": "pdf_design",
   "source_pdf": {
-    "path": "../UMI_ArU..an.pdf",
+    "path": "environment_poster.pdf",
     "sha256": "a3da873d895afa719bc0a3021ad1f422c6d67fa54e56d0ca162a80a4095ebaf9"
   },
   "markers": [

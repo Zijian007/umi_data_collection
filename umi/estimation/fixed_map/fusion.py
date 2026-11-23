@@ -1,6 +1,6 @@
 """在固定场景系中融合单只手；视觉观测锚定世界位姿，不再重新摆放地图。
 
-参考 KIWI 0.1.0 的按手 GTSAM 图，修改来源与许可见 NOTICES/kiwi/NOTICE.md。
+参考 KIWI 0.1.0 的按手 GTSAM 图，修改来源与许可见 docs/dev/PROVENANCE.md。
 """
 
 from __future__ import annotations

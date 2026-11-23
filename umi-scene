@@ -4,7 +4,7 @@
 #   ./umi-scene run scenes/test_shelf/20261109_002 --dry-run
 #   ./umi-scene run scenes/test_shelf/20261109_002 --show-config
 #   ./umi-scene run --help
-# 套件和标定来源写法见 kits/README.md；操作说明见 docs/场景处理.md。
+# 套件和标定来源写法见 hardware/kits/README.md；操作说明见 docs/场景处理.md。
 # 日常跨入口配置统一写入 config/user.yaml；专家算法覆盖使用 --expert-config，见 config/README.md。
 # 完整参数见 docs/命令行参数.md；参数由 umi/apps/scene.py 解析。
 # UMI_DEPS 覆盖依赖目录；UMI_PY 覆盖基础解释器。

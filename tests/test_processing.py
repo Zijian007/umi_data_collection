@@ -137,7 +137,7 @@ class ProcessingTests(unittest.TestCase):
         manifest = json.loads(map_path.read_text())
         self.assertEqual(manifest['parameters']['maximum_scale_relative_std'], .2)
         self.assertEqual(manifest['runtime_overrides']['path'], str(override_path))
-        result_path = self.batch/'take_001/results/episode.json'
+        result_path = self.batch/'take_001/results/data/episode.json'
         result = json.loads(result_path.read_text())
         self.assertEqual(result['inputs']['parameters']['gripper_width_max_gap_s'], .7)
         self.assertEqual(result['runtime_overrides']['values']['parameters']['mapping']['alignment']['maximum_scale_relative_std'], .2)
@@ -200,8 +200,8 @@ class ProcessingTests(unittest.TestCase):
         manifest = layout.metadata(self.batch, 'manifest.yaml')
         session = batch_inputs.read_batch(manifest)
         self.assertIsNotNone(session.map_version)
-        self.assertTrue((self.batch / 'take_001/results/left/trajectory.csv').is_file())
-        self.assertTrue((self.batch / 'take_001/results/right/trajectory.csv').is_file())
+        self.assertTrue((self.batch / 'take_001/results/data/left/trajectory.csv').is_file())
+        self.assertTrue((self.batch / 'take_001/results/data/right/trajectory.csv').is_file())
         snapshot = manifest.read_bytes()
         again = processing.run([self.batch])
         self.assertEqual([item['status'] for item in again], ['skipped'])

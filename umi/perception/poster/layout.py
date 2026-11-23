@@ -9,9 +9,19 @@ import json
 import numpy as np
 
 from umi.infra import provenance
+from umi.infra.paths import HARDWARE_ROOT
 
 
-DEFAULT_LAYOUT = provenance.ROOT / 'hardware/calibration_targets/environment_poster.json'
+DEFAULT_LAYOUT = HARDWARE_ROOT / 'environment_poster/environment_poster.json'
+_LEGACY_LAYOUT = HARDWARE_ROOT / 'calibration_targets' / DEFAULT_LAYOUT.name
+
+
+def resolve_layout_path(path: Path) -> Path:
+    """将已有批次引用的旧默认路径解析到海报资产目录。"""
+    path = path.expanduser().resolve()
+    if path == _LEGACY_LAYOUT and not path.exists():
+        return DEFAULT_LAYOUT
+    return path
 
 
 @dataclass(frozen=True)
@@ -47,7 +57,7 @@ def _unique_keys(pairs):
 
 def load(path: Path = DEFAULT_LAYOUT) -> TagBoardLayout:
     """读取显式角点，不按数字 ID 推断排列；验证平面正方形及检测器角点约定。"""
-    path = path.expanduser().resolve()
+    path = resolve_layout_path(path)
     raw = path.read_bytes()
     doc = json.loads(raw, object_pairs_hook=_unique_keys)
     if not isinstance(doc, dict) or doc.get('kind') != 'umi_tag_board' or type(doc.get('schema_version')) is not int or doc['schema_version'] != 1:

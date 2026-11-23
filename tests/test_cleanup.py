@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 
+from umi.store.result_io import result_paths
 from umi.store import layout
 from umi.workflows.scene import workflow
 from umi.workflows.scene import cleanup, batch_processing as processing
@@ -56,21 +57,28 @@ class TaskCleanupTests(unittest.TestCase):
 
     def test_new_success_replaces_previous_run_and_leaves_no_work_directory(self):
         workflow.run_episode(self.f.episode_path, parallel_arms=False)
-        first = (self.task / 'results').resolve()
+        first = result_paths(self.task / 'results').run
         workflow.run_episode(self.f.episode_path, force=True, parallel_arms=False)
-        current = (self.task / 'results').resolve()
+        current = result_paths(self.task / 'results').run
         self.assertNotEqual(current, first)
+        log = self.task / 'run.log'
+        self.assertEqual(log.resolve(), layout.metadata(self.task, 'logs') / current.name / 'run.log')
+        self.assertIn('轨迹已发布', log.read_text())
         self.assertEqual(run_names(self.task), {current.name})
         self.assertFalse(layout.metadata(self.task, 'work').exists())
 
     def test_latest_failure_is_kept_next_to_current_success_and_older_failures_go(self):
         workflow.run_episode(self.f.episode_path, parallel_arms=False)
-        success = (self.task / 'results').resolve().name
+        success = result_paths(self.task / 'results').run.name
         self.fail_once('first reason')
         first_failure = run_names(self.task) - {success}
         self.assertEqual(len(first_failure), 1)
         self.assertTrue(first_failure.pop().startswith('failed-'))
+        log = self.task / 'run.log'
+        first_log = log.resolve()
         self.fail_once('second reason')
+        self.assertNotEqual(log.resolve(), first_log)
+        self.assertIn('second reason', log.read_text())
         names = run_names(self.task)
         self.assertEqual(len(names), 2)
         self.assertIn(success, names)
@@ -103,12 +111,29 @@ class TaskCleanupTests(unittest.TestCase):
 
     def test_reused_result_does_not_touch_caches(self):
         workflow.run_episode(self.f.episode_path, parallel_arms=False)
+        log = self.task / 'run.log'
+        original_log = log.readlink()
+        log.unlink()
         stale = layout.metadata(self.task, 'cache/localization/stale')
         stale.mkdir(parents=True)
         old = time.time() - 3600
         os.utime(stale, (old, old))
         self.assertEqual(workflow.run_episode(self.f.episode_path, parallel_arms=False)['status'], 'skipped')
         self.assertTrue(stale.exists())
+        self.assertEqual(log.readlink(), original_log)
+
+    def test_task_log_entry_preserves_an_existing_user_file(self):
+        log = self.task / 'run.log'
+        log.write_text('user note')
+
+        result = workflow.run_episode(self.f.episode_path, parallel_arms=False)
+
+        self.assertEqual(result['status'], 'ok')
+        self.assertFalse(log.is_symlink())
+        self.assertEqual(log.read_text(), 'user note')
+        run = result_paths(self.task / 'results').run
+        audit_log = layout.metadata(self.task, 'logs') / run.name / 'run.log'
+        self.assertIn('轨迹已发布', audit_log.read_text())
 
 
 class MapCleanupTests(unittest.TestCase):

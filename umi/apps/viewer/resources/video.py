@@ -19,7 +19,7 @@ from umi.config import operational_settings as settings
 from umi.apps.viewer.resources import cache
 from umi.apps.viewer import ViewerDataError
 from umi.infra.paths import PROJECT_ROOT, deps_root
-from umi.workflows.segment.reporting.artifacts import result_path
+from umi.store.result_io import SCENE_RESULT_VERSIONS, arm_evidence
 
 
 REPO = PROJECT_ROOT
@@ -222,7 +222,7 @@ def preview_file(video: Path, version: str | None, clip: RearClip | None = None)
 @lru_cache(maxsize=64)
 def _clip_inputs(arm: str, manifest_identity: tuple, frames_identity: tuple):
     manifest = json.loads(Path(manifest_identity[0]).read_bytes())
-    if manifest.get('schema_version') != 4:
+    if manifest.get('schema_version') not in SCENE_RESULT_VERSIONS:
         return None
     metadata = manifest['arm_results'][arm]
     identity = manifest['inputs']['recordings'][arm]
@@ -262,7 +262,7 @@ def rear_source(directory: Path, contains, *, contains_raw=None) -> tuple[Path, 
     if directory.name not in ('left', 'right'):
         return None
     manifest = directory.parent / 'episode.json'
-    frames = result_path(directory, 'frames.csv')
+    frames = arm_evidence(directory, 'frames.csv')
     if not all(contains(path) and path.is_file() for path in (manifest, frames)):
         return None
     contains_raw = contains_raw or contains

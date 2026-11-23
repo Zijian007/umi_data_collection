@@ -111,25 +111,33 @@ class EpisodeAnnotationTests(unittest.TestCase):
             run_result = workflow.run_episode(self.f.episode_path)
         estimate.assert_called_once()
         self.assertEqual(run_result['synchronization']['offsets_s']['right'], -.42)
-        result = json.loads((self.f.task_root / 'results/episode.json').read_text())
+        result = json.loads((self.f.task_root / 'results/data/episode.json').read_text())
         self.assertEqual(result['synchronization']['offsets_s']['right'], -.42)
+        self.assertEqual(result['synchronization']['raw_audio_offset_s']['right'], .42)
+        self.assertEqual(result['synchronization']['peak_ratio'], 2.4)
+        self.assertEqual(result['synchronization']['video_offset_status'], 'specialist_assumed_video_clock')
         report = (self.f.task_root / 'results/report.txt').read_text()
-        self.assertIn('同步原始音频偏移：left=+0.000000s, right=+0.420000s', report)
-        self.assertIn('同步音频峰值比：2.40', report)
-        self.assertIn('同步视频时间轴：specialist_assumed_video_clock', report)
+        self.assertIn('同步：自动音频（specialist） · 已确认 · 左手 +0.000 s，右手 -0.420 s', report)
+        self.assertNotIn('同步原始音频偏移', report)
+        self.assertNotIn('specialist_assumed_video_clock', report)
+        episodes.review(self.f.episode_path, accept=True, reviewer='test')
+        bundle = self.f.root / 'audio_bundle'
+        episodes.export([self.f.episode_path], bundle)
+        exported = json.loads((bundle / 'manifest.json').read_text())['episodes'][0]
+        self.assertEqual(exported['synchronization'], result['synchronization'])
 
     def test_offsets_change_only_output_time_and_propagate_instruction(self):
         self.f.build_scene()
         workflow.run_episode(self.f.episode_path)
         output = self.f.task_root / 'results'
-        before = {arm: np.array(list(pose_rows(output / arm / 'trajectory.csv')), dtype=float) for arm in ('left', 'right')}
+        before = {arm: np.array(list(pose_rows(output / 'data' / arm / 'trajectory.csv')), dtype=float) for arm in ('left', 'right')}
         data = self.configure()
         workflow.run_episode(self.f.episode_path)
         for arm in ('left', 'right'):
-            current = np.array(list(pose_rows(output / arm / 'trajectory.csv')), dtype=float)
+            current = np.array(list(pose_rows(output / 'data' / arm / 'trajectory.csv')), dtype=float)
             np.testing.assert_allclose(current[:, 1:], before[arm][:, 1:], atol=1e-9)
             np.testing.assert_allclose(current[:, 0], before[arm][:, 0]+(0. if arm=='left' else -.12), atol=1e-6)
-        result = json.loads((output / 'episode.json').read_text())
+        result = json.loads((output / 'data/episode.json').read_text())
         self.assertEqual(result['instruction'], data['instruction'])
         self.assertTrue(result['synchronization']['confirmed'])
         self.assertEqual(result['synchronization']['offsets_s']['right'], -.12)
@@ -152,7 +160,7 @@ class EpisodeAnnotationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '成功结果'):
             episodes.accepted_run(episode_inputs.read_episode(self.f.episode_path))
         workflow.run_episode(self.f.episode_path)
-        result = json.loads((self.f.task_root / 'results/episode.json').read_text())
+        result = json.loads((self.f.task_root / 'results/data/episode.json').read_text())
         self.assertEqual(result['instruction'], '拿起盒子')
         self.assertEqual(result['synchronization']['offsets_s'], original['synchronization']['offsets_s'])
 

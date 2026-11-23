@@ -2,6 +2,7 @@
 
 import csv
 import json
+import shutil
 import subprocess
 import sys
 import unittest
@@ -10,11 +11,11 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from umi.infra import provenance
-from umi.workflows.scene import workflow
+from umi.workflows.scene import episodes, workflow
 from umi.workflows.scene.parameters import SceneOverrides
 from umi.workflows.scene.inputs import batch as episode_inputs
-from umi.store.result_io import scene_reference
-from umi.infra.file_store import write_yaml
+from umi.store.result_io import arm_evidence, result_paths, scene_reference
+from umi.infra.file_store import publish_link, write_json, write_yaml
 from umi.apps.viewer.results.catalog import RecordingCatalog
 from umi.apps.viewer.results.trajectory_reader import derive_body_tracks
 
@@ -73,21 +74,21 @@ class CompactResultTests(unittest.TestCase):
         workflow.run_episode(fixture.episode_path, overrides=fixture.scene_overrides)
         output = fixture.task_root / 'results'
         original = output.resolve()
-        trajectory = (output / 'left/trajectory.csv').read_bytes()
-        expected_camera = np.loadtxt(output / 'left/details/traj_camera.txt')
-        expected_imu = np.loadtxt(output / 'left/details/traj_imu.txt')
+        trajectory = (output / 'data/left/trajectory.csv').read_bytes()
+        expected_camera = np.loadtxt(arm_evidence(output / 'data/left', 'traj_camera.txt'))
+        expected_imu = np.loadtxt(arm_evidence(output / 'data/left', 'traj_imu.txt'))
 
         write_yaml(expert, dict(parameters=dict(diagnostics=dict(export_auxiliary_trajectories=False))))
         fixture.scene_overrides = SceneOverrides.load(expert)
         self.assertEqual(fixture.build_scene()['status'], 'skipped')
         workflow.run_episode(fixture.episode_path, overrides=fixture.scene_overrides)
-        metadata = json.loads((output / 'episode.json').read_text())
-        self.assertEqual(metadata['schema_version'], 4)
+        metadata = json.loads((output / 'data/episode.json').read_text())
+        self.assertEqual(metadata['schema_version'], 5)
         self.assertNotEqual(output.resolve(), original)
         self.assertEqual(scene_reference(metadata)['frame_id'], built['frame_id'])
-        self.assertEqual((output / 'left/trajectory.csv').read_bytes(), trajectory)
+        self.assertEqual((output / 'data/left/trajectory.csv').read_bytes(), trajectory)
         for filename in ('traj_camera.txt', 'traj_imu.txt'):
-            self.assertFalse((output / 'left/details' / filename).exists())
+            self.assertFalse(arm_evidence(output / 'data/left', filename).exists())
         self.assertFalse(original.exists())  # 被取代的运行由自动清理删除
         asset_identity.validate_assets(output, metadata['assets'])
         catalog = RecordingCatalog(output)
@@ -102,7 +103,7 @@ class CompactResultTests(unittest.TestCase):
         fixture.build_scene()
         workflow.run_episode(fixture.episode_path)
         output = fixture.task_root / 'results'
-        metadata = json.loads((output / 'episode.json').read_text())
+        metadata = json.loads((output / 'data/episode.json').read_text())
         self.assertNotIn('frame_id', metadata)
         self.assertNotIn('session', metadata['scene'])
         self.assertNotIn('gripper_width', metadata)
@@ -111,11 +112,43 @@ class CompactResultTests(unittest.TestCase):
             self.assertNotIn(duplicate, metadata['inputs'])
         self.assertFalse({'code', 'engines'} & metadata['inputs'].keys())
         self.assertEqual(set(metadata['code_revision']), {'commit', 'dirty'})
-        with (output / 'left/trajectory.csv').open() as stream:
+        with (output / 'data/left/trajectory.csv').open() as stream:
             self.assertEqual(csv.DictReader(stream).fieldnames,
                              ['row', 't_video_s', 't_episode_s', 'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw'])
 
     def test_retired_schema_three_results_are_rejected(self):
         legacy = dict(schema_version=3, frame_id='scene/old', scene=dict(frame_id='scene/old', version='old'))
-        with self.assertRaisesRegex(ValueError, 'schema_version: 4'):
+        with self.assertRaisesRegex(ValueError, '受支持的结果版本'):
             scene_reference(legacy)
+
+    def test_v4_result_can_still_be_reused_viewed_and_exported(self):
+        fixture = self.fixture
+        fixture.build_scene()
+        workflow.run_episode(fixture.episode_path)
+        output = fixture.task_root / 'results'
+        paths = result_paths(output)
+        manifest = json.loads(paths.manifest.read_text())
+        for arm in manifest['arms']:
+            shutil.copytree(paths.data / arm, paths.run / arm, dirs_exist_ok=True)
+        shutil.copy2(paths.data / 'bimanual.csv', paths.run)
+        shutil.copy2(paths.published / 'report.txt', paths.run)
+        manifest['schema_version'] = 4
+        manifest.pop('evidence_assets')
+        manifest.pop('diagnostics')
+        manifest['assets'] = asset_identity.artifact_hashes(
+            paths.run, ('report.txt', 'bimanual.csv', 'devices', *manifest['arms']))
+        legacy = paths.run / 'episode.json'
+        write_json(legacy, manifest)
+        shutil.rmtree(paths.published)
+        publish_link(paths.run, output)
+
+        self.assertEqual(workflow.run_episode(fixture.episode_path)['status'], 'skipped')
+        catalog = RecordingCatalog(output)
+        entry, = catalog.scan()['recordings']
+        self.assertIn('camera', catalog.load(entry['id'])['tracks'])
+        self.assertEqual(catalog.map_data(entry['id'])['kind'], 'umi_map_view')
+        episodes.review(fixture.episode_path, accept=True, reviewer='test')
+        export = fixture.root / 'legacy_export'
+        episodes.export([fixture.episode_path], export)
+        copied, = export.rglob('episode.json')
+        self.assertEqual(copied.read_bytes(), legacy.read_bytes())

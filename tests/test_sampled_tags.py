@@ -351,7 +351,7 @@ class TagDistanceAcceptanceTests(unittest.TestCase):
         workflow.run_episode(fixture.episode_path)
         output = fixture.task_root / 'results'
         previous = output.resolve()
-        original = (previous / 'episode.json').read_bytes()
+        original = (previous / 'data/episode.json').read_bytes()
         for video, camera in list(fixture.cameras.items()):
             path = camera.files['front'].parent / 'tags.json'
             write_json(path, SIZES)
@@ -376,7 +376,7 @@ class TagDistanceAcceptanceTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, 'right.*40.0%.*50.0%'):
             workflow.run_episode(fixture.episode_path)
         self.assertEqual(output.resolve(), previous)
-        self.assertEqual((previous / 'episode.json').read_bytes(), original)
+        self.assertEqual((previous / 'data/episode.json').read_bytes(), original)
         self.assertEqual(len(calls), 2)
         diagnostics = list((layout.metadata(output.parent, 'runs')).glob('failed-*/right/tag_distance.json'))
         self.assertEqual(len(diagnostics), 1)

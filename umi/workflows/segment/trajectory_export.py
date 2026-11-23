@@ -280,7 +280,7 @@ def collect_run_settings(reconstruction_dir: Path, extract_manifest: dict, mode:
         "command": command_payload,
         "calibration_selection": {
             "order": ["$UMI_TRAJ_CALIB (engineer override: bundle dir or the word factory)",
-                      "registry/index.json keyed by camera serial from the .insv trailer"],
+                      "hardware/.registry/index.json keyed by camera serial from the .insv trailer"],
             "active": source,
             "selection": calib_info.get("selection"),
             "serial": calib_info.get("serial"),

@@ -12,7 +12,7 @@ from umi.config.scene_parameters import FIELD_PATHS, SCENE_PARAMETER_FIELDS, fla
 from umi.workflows.scene.parameters import SceneOverrides, apply_overrides
 from umi.store.models import Scene, SceneParameters
 from umi.infra.file_store import read_yaml
-from umi.infra.paths import PROJECT_ROOT
+from umi.infra.paths import KITS_ROOT as KITS, PROJECT_ROOT
 from umi.config.collection_schema import normalize_collection
 from umi.devices import registry, calibration_source
 from umi.core.arms import ARMS, read_arms
@@ -179,7 +179,7 @@ def scene_definition(scene_document: dict, name: str, *, default_mode: str = 'sh
 
 def _read_tags(tags, base: Path, parameters: SceneParameters) -> tuple[SceneParameters, Path, bool]:
     """解析 scene.tags：布局、检测总开关、建图/尺度/融合开关和融合方法。"""
-    from umi.perception.poster.layout import load
+    from umi.perception.poster.layout import load, resolve_layout_path
     if not isinstance(tags, dict):
         raise ValueError('scene.tags 必须是配置表')
     require_keys(tags, {'enabled', 'layout', 'mapping', 'fusion'}, {'enabled', 'layout'}, 'scene.tags')
@@ -212,7 +212,7 @@ def _read_tags(tags, base: Path, parameters: SceneParameters) -> tuple[ScenePara
         tag_mapping_scale_enabled=values['scale'],
         tag_fusion_enabled=values['fusion'],
         tag_fusion_method=method)
-    tag_layout = resolve_path(base, tags['layout'])
+    tag_layout = resolve_layout_path(resolve_path(base, tags['layout']))
     load(tag_layout)  # 在创建运行目录或清理旧结果之前验证几何资产。
     return parameters, tag_layout, values['enabled']
 
@@ -256,9 +256,6 @@ def read_scene(path: Path, *, overrides: SceneOverrides | None = None, collectio
     return apply_backend_options(scene, collection['reconstruction'])
 
 
-KITS = PROJECT_ROOT / 'kits'
-
-
 def gripper_paths(declaration: dict, directory: Path | None = None) -> dict:
     """解析夹爪文件路径及内联 base tag 声明；路径可引用上一级共享 kits 资产。"""
     require_keys(declaration, {'tcp', 'width', 'mask', 'tag_distance', 'base_tag'}, {'tcp'}, 'gripper')
@@ -285,8 +282,17 @@ def gripper_paths(declaration: dict, directory: Path | None = None) -> dict:
             shared_root = directory.resolve().parent
             if not path.is_relative_to(shared_root):
                 raise ValueError(f'gripper.{asset} 必须位于套件目录或共享 kits 目录内')
-        elif not path.is_absolute():
-            raise ValueError('资产快照需要已解析的绝对路径')
+        else:
+            if not path.is_absolute():
+                raise ValueError('资产快照需要已解析的绝对路径')
+            # 已有批次快照保存了迁移前的绝对路径。
+            old_root = PROJECT_ROOT / 'kits'
+            if path.is_relative_to(old_root) and not path.exists():
+                relative = path.relative_to(old_root)
+                if (relative.parent in (Path('.'), Path('kit_001'))
+                        and relative.name in ('tcp_camera.json', 'tag_distance.json')):
+                    relative = Path('shared') / relative.name
+                path = KITS / relative
         suffix = '.png' if asset == 'mask' else '.json'
         if path.suffix.lower() != suffix:
             raise ValueError(f'gripper.{asset} 需要 {suffix} 文件')

@@ -14,7 +14,9 @@ import os
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_ROOT = PROJECT_ROOT / 'config'
-REGISTRY_ROOT = PROJECT_ROOT / 'registry'
+HARDWARE_ROOT = PROJECT_ROOT / 'hardware'
+KITS_ROOT = HARDWARE_ROOT / 'kits'
+REGISTRY_ROOT = HARDWARE_ROOT / '.registry'
 SCENES_ROOT = PROJECT_ROOT / 'scenes'
 PACKAGE_ROOT = PROJECT_ROOT / 'umi'
 SETUP_ROOT = PROJECT_ROOT / 'setup'

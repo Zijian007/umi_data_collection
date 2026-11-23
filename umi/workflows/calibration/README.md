@@ -1,10 +1,10 @@
 # 标定代码阅读指南
 
-`umi-calib` 启动脚本只定位项目、载入基础环境并转交参数。`__main__.py` 调用 `cli.main(prepare_environment=True)`，先完成 argparse 和输入方式/执行选项校验，再按命令调用 `runtime.use_calibration_environment()`：正式 run 可补装缺失组件；check 只使用已存在的标定解释器并报告缺失。帮助、无子命令、错误参数、verify 和 dry-run 不触发安装。程序内直接调用 `cli.main()` 可使用调用方准备的环境。
+`umi-calib` 启动脚本只定位项目、载入基础环境并执行 `python -m umi.apps.calib`。[`umi/apps/calib.py`](../../apps/calib.py) 以 `main(prepare_environment=True)` 启动，先完成 argparse 和输入方式/执行选项校验，再按命令调用 `runtime.use_calibration_environment()`：正式 run 可补装缺失组件；check 只使用已存在的标定解释器并报告缺失。帮助、无子命令、错误参数、verify 和 dry-run 不触发安装。程序内直接调用 `umi.apps.calib.main()` 可使用调用方准备的环境。
 
 求解环境使用 `sys.prefix` 判断，避免两个 venv 的 python 指向同一个二进制时反复重启；切换通过 exec 保留参数边界、信号和退出码。参数定义集中在 Python CLI，用户参考见[命令行参数](../../../docs/命令行参数.md#umi-calib)；标定板 `--tag-size-mm` 和套件的夹爪标签尺寸分别说明。
 
-从 [`cli.py`](../../apps/calib.py) → [`workflow.py`](workflow.py) 阅读。工作镜头、环境镜头共用 A/B/D/C 的生命周期；环境镜头只替换 C 的轨迹生成器。标定测量描述相机机身，不描述工作区地图、夹爪 TCP 或任务精度。
+从 [`umi/apps/calib.py`](../../apps/calib.py) → [`workflow.py`](workflow.py) 阅读。工作镜头、环境镜头共用 A/B/D/C 的生命周期；环境镜头只替换 C 的轨迹生成器。标定测量描述相机机身，不描述工作区地图、夹爪 TCP 或任务精度。
 
 ## 数据流与责任
 
@@ -28,7 +28,7 @@ flowchart LR
 - D：原始 IMU 选择静止窗口，校准后加速度计算重力残差；仅诊断，不修改参数。
 - C：候选标定生成独立轨迹，板 PnP 提供相机位置参考。两组位置先按视频时间匹配，再比较 SE(3) ATE 和 Sim(3) 尺度。
 
-工作镜头 `run` 在 B 后自动执行 `validation/factory_comparison.py` 的工厂 MEI 对照：`camera/x3/factory_geometry.py` 解析两组 v3 镜头参数并提供 MEI/KB4 投影和反投影。对照复用 C 板角点，另按同一捕获时刻读取完整 Y 平面；1440 标定视野与 1920 外推诊断分别统计，留出标签按所有模型共同成功帧计分。保留原始编号：lens1 为工作镜头，lens0 为环境镜头。`camera/x3/factory_kb4.py` 分别拟合两镜头的 1440 光学 KB4，再用独立密集网格和边界探针验证，不读取实拍角点求内参。
+工作镜头 `run` 在 B 后自动执行 `validation/factory_comparison.py` 的工厂 MEI 对照：`umi/devices/x3/factory_geometry.py` 解析两组 v3 镜头参数并提供 MEI/KB4 投影和反投影。对照复用 C 板角点，另按同一捕获时刻读取完整 Y 平面；1440 标定视野与 1920 外推诊断分别统计，留出标签按所有模型共同成功帧计分。保留原始编号：lens1 为工作镜头，lens0 为环境镜头。`umi/devices/x3/factory_kb4.py` 分别拟合两镜头的 1440 光学 KB4，再用独立密集网格和边界探针验证，不读取实拍角点求内参。
 
 实拍对照使用本次所选镜头的当前 KB4、原始 MEI、诊断拟合 KB4；当前参数明确标记 measured/factory。工作镜头两种模式都自动对照；环境镜头 factory 模式对自身镜头做实拍对照，另一镜头只做数值诊断。方法版本 4 不复用旧诊断，成功后清除旧版错误镜头的射线图。`factory/kb4_fit.json` 是不可单独安装的光学诊断，不改本次参数；正式工厂候选由 `solve/factory_intrinsics.py` 生成并另行验收。自动对照失败转为诊断状态，中断仍传播。
 
@@ -42,22 +42,22 @@ A/B 只求解和返回测量；验收策略决定是否可用；安装是独立�
 | [`pipeline/inputs.py`](pipeline/inputs.py) | 录像发现、同机身份、板几何、CLI 请求转换 |
 | [`pipeline/recordings.py`](pipeline/recordings.py) | INSV → 时间戳、IMU、镜头图像；准备缓存 |
 | [`pipeline/board_detection.py`](pipeline/board_detection.py) | 单帧检测、上采样还原、并行调度与原始角点缓存 |
-| [`pipeline/steps.py`](pipeline/steps.py) | 步骤指纹、依赖失效、产物校验、计时、中断 |
+| [`pipeline/steps.py`](pipeline/steps.py) | 步骤输入身份、依赖失效、产物校验、计时、中断 |
 | [`pipeline/runtime.py`](pipeline/runtime.py) | 子进程、锁、输出目录、依赖预检、CPU |
 | [`solve/basalt.py`](solve/basalt.py) | A/B 适配：bag、板文件、B 初始化、命令、缓存、日志解析 |
 | [`solve/factory_intrinsics.py`](solve/factory_intrinsics.py) | 工厂固定内参生成、转换与原片一致性约束、独立 A 留出验证 |
 | [`validation/factory_comparison.py`](validation/factory_comparison.py) | C 工厂光学与留出标签自动对照；结果仅供诊断 |
-| [`camera/x3/factory_kb4.py`](../../devices/x3/factory_kb4.py) | MEI 射线拟合 KB4、独立数值与边界诊断 |
+| [`umi/devices/x3/factory_kb4.py`](../../devices/x3/factory_kb4.py) | MEI 射线拟合 KB4、独立数值与边界诊断 |
 | [`validation/gravity.py`](validation/gravity.py) | D 的独立工作目录、退出码/来源/参数校验、原始证据 |
 | [`validation/trajectory.py`](validation/trajectory.py) | 工作镜头轨迹子进程、两镜头共用的板参考比较、每轮重建的初始化与融合诊断 |
 | [`algorithms/board_pnp.py`](algorithms/board_pnp.py) | KB4 PnP、覆盖度、带视频时间的板参考 |
-| [`algorithms/trajectory_metrics.py`](../../estimation/trajectory_metrics.py) | 一对一时间匹配、非有限位置过滤、退化检查、ATE/尺度 |
+| [`umi/estimation/trajectory_metrics.py`](../../estimation/trajectory_metrics.py) | 一对一时间匹配、非有限位置过滤、退化检查、ATE/尺度 |
 | [`acceptance.py`](acceptance.py) | 纯策略：测量 → 检查项 → 验收结论 |
 | [`result_io.py`](result_io.py) | schema 3 记录、显式 JSON、来源校验、原子保存、候选发布 |
 | [`reports.py`](reports.py) | 只展示，不读取 registry、不实例化执行器、不恢复工作目录 |
 | [`devices.py`](devices.py) | 安装与设备命令；启用状态快照；调用现有 registry |
 | [`inventory.py`](inventory.py) | 只读检查 front/rear 版本与套件固定绑定，返回带类型的报告结构；显示由 reports 负责，不代替实拍组合验收 |
-| [`rear_workflow.py`](rear_workflow.py) | 环境镜头 scene 数值后端，调用共享 workflow |
+| [`rear_workflow.py`](rear_workflow.py) | 环境镜头 C 的轨迹生成器：复用场景录像准备、`umi/estimation/mapping.py` 建图与固定地图融合，调用共享 workflow |
 
 函数显式接收所需的板、IMU、重力或轨迹参数组。A/B 的两个公开入口共用一个内部执行函数，执行器统一记录异常所属步骤。
 
@@ -65,7 +65,7 @@ A/B 只求解和返回测量；验收策略决定是否可用；安装是独立�
 
 C 的轨迹配置在板几何解析后通过 `Configuration.load_trajectory_validation(tag_size_m=...)` 生成，将实测尺寸派生到 `orb.initial_tag_size_m`；run、verify、环境镜头 Scene 与 recheck 使用同一规则，配置快照和检查点均记录派生后的值。板参考通过球面 KB4 反投影保留超 90° 的射线方向，再由 `minimum_bearing_z` 筛选可用于前向 PnP 的角点；不再调用会截断半径的 `cv2.fisheye.undistortPoints`。拟合诊断仍单独记录 OpenCV 和自带 ORB-SLAM3 反投影限制，不把它们当成全视野真值。时间匹配/退化的数值保护在 `trajectory_metrics.py`，覆盖归一化半径由相机规格推导，不再作为 YAML 调参项。
 
-C 同时显式覆盖 `input.mode: handheld`、`environment_tags.tag_fusion_enabled: false`；环境镜头 C 的场景后端另关闭海报建图/尺度修正/任务融合，避免任务默认开关改变独立验证的输入要求。对应配置隔离已有回归。registry、状态查询、场景和独立流程共用 `camera/calibration_source.py` 的 rear 身份、来源与验收检查，原片来源核验只在有录像时执行。
+C 同时显式覆盖 `input.mode: handheld`、`environment_tags.tag_fusion_enabled: false`；环境镜头 C 的场景后端另关闭海报建图/尺度修正/任务融合，避免任务默认开关改变独立验证的输入要求。对应配置隔离已有回归。registry、状态查询、场景和独立流程共用 `umi/devices/calibration_source.py` 的 rear 身份、来源与验收检查，原片来源核验只在有录像时执行。
 
 `workflow` 串联流程，`pipeline/steps` 管步骤执行与恢复，`pipeline/runtime` 管运行资源。`validation` 产生验证测量，`acceptance` 根据测量与门限给出验收结论；运行记录中的 `execution`、`evaluation` 字段名保持稳定。
 
@@ -108,7 +108,7 @@ calibration_result/
 
 `record.json` 分为 `subject`、`inputs`、`computation`、`measurements`、`execution`、`evaluation`、`evaluation_history`。测量存一次，检查点引用测量哈希和输入指纹，不重复保存 dataclass。A 的原始 JSON 保存为快照；B 参数只在最终文件；D 保存完整工具证据；C 保存未舍入的指标。读取接口是 `result_io.load_result()`，不会写文件或查询设备。
 
-`--resume` 在输出锁内验证记录格式、输入内容、计算参数、代码/引擎和步骤产物。输入变化沿显式依赖失效；只改 C 抽帧参数不重算 A/B，只改 D 窗口不重算 A/B/C。工作目录被清理后，复用完整测量不需要重新解码；只有待重算步骤重新准备所需数据。损坏记录与不支持的 schema 明确拒绝。
+`--resume` 在输出锁内验证记录格式、输入内容、计算参数和阶段产物。改动算法或重编引擎后用 `--force` 重算。输入变化沿显式依赖失效；只改 C 抽帧参数不重算 A/B，只改 D 窗口不重算 A/B/C。工作目录被清理后，复用完整测量不需要重新解码；只有待重算步骤重新准备所需数据。损坏记录与不支持的 schema 明确拒绝。
 
 `recheck` 校验现有证据与参数绑定，只允许改变验收门限，保留完整先前验收记录。不调用算法、不安装、不依赖当前 registry 默认参数。安装重新校验操作类型、设备/镜头、参数与清单、证据指纹和完成状态。run/recheck/install 共用输出旁的锁；安装在持有结果锁时再进入 registry 锁。
 
@@ -126,18 +126,18 @@ A 需要重算且至少有 16 个可用核心、线程预算至少为 4 时，�
 
 ## 数值与验证约定
 
-标定图像准备按 `camera/x3/frame.py` 的固定约定，每 2 个原始帧取 1 帧（约 30 Hz）；工作镜头取右半、环境镜头取左半，1440×1440 灰度直接取 Y 平面。`board.intrinsics_step` / `validation_step` 在准备后的序列上控制独立检测，`trajectory.video` 配置用于轨迹引擎，不改变 A/B 标定图像。准备时间含 1 秒平移，板参考转回视频时钟时减去该平移；不修改 IMU 提取或相机–IMU 时间差符号。
+标定图像准备按 `umi/core/frame.py` 的固定约定，每 2 个原始帧取 1 帧（约 30 Hz）；工作镜头取右半、环境镜头取左半，1440×1440 灰度直接取 Y 平面。`board.intrinsics_step` / `validation_step` 在准备后的序列上控制独立检测，`trajectory.video` 配置用于轨迹引擎，不改变 A/B 标定图像。准备时间含 1 秒平移，板参考转回视频时钟时减去该平移；不修改 IMU 提取或相机–IMU 时间差符号。
 
 Basalt 保留 bag 输入、KB4、噪声先验和 `--fixed-scale-opt-offset`。转 bag 时最多使用 4 个 PNG 解码线程，并受 `--workers` 限制；预读队列最多保留线程数两倍的图像任务，主线程按时间顺序序列化与压缩写入。每次求解只清理自身工作目录；B 显式写入所选内参初始化，不使用 A 角点缓存。Basalt 的 mean 重投影用于质量提醒，RMS 仅作参考；factory A 的独立留出 RMS 另有提醒规则。B 的额外板可见比例、距离检测已移除，保留求解器拟合与运动激励检查；`board.camera_imu_step` 随之移除，自定义配置也应删除此项。A 的视野覆盖检查和 C 的独立板参考保持执行。
 
 ```bash
 ./test.sh --all
-./umi-calib run recordings/calibration/IAQEB2609JPAR3/20261102/front --dry-run
+./umi-calib run hardware/calibration_runs/CAMERA_SERIAL/YYYYMMDD/front --dry-run
 ```
 
 测试覆盖真实 D 工具、时间匹配、灰度像素、数值环境镜头后端、恢复/中断、安装边界和只读报告。真实回归状态见 [架构与验证](../../../docs/dev/标定架构与验证.md)，不能用模拟替代工作镜头与环境镜头整套实测。操作见 [标定指南](../../../docs/标定.md)，配置见 [参数说明](../../../config/README.md)。
 
-宽度测量辅助入口由 [gripper_width/video_tools.py](../../perception/gripper/video_tools.py) 共用原片读取与标签叠加编码。`preview-width` 输出逐帧标签视频。`detect-width` 在固定 ROI 内采样，输出 CSV 并默认保存带标签和 ROI 框的 MP4。两者均使用基础环境。
+宽度测量辅助入口由 [umi/perception/gripper/video_tools.py](../../perception/gripper/video_tools.py) 共用原片读取与标签叠加编码。`preview-width` 输出逐帧标签视频。`detect-width` 在固定 ROI 内采样，输出 CSV 并默认保存带标签和 ROI 框的 MP4。两者均使用基础环境。
 
 ## 内参来源选择
 
@@ -147,6 +147,6 @@ Basalt 保留 bag 输入、KB4、噪声先验和 `--fixed-scale-opt-offset`。�
 
 factory 的硬条件包括：有效单调前向模型、1440 分辨率下转换 RMS ≤1 px/P99 ≤2 px、各原片相对 B 的最大射线差 ≤0.1°。这些是 `config/algorithms/calibration.yaml` 中可配置的初始工程门槛，不是外部真值精度承诺。A 至少 6 个有效留出帧；缺证据不可安装，留出 RMS 超过 2 px 给 WARN，和实测 A 重投影提醒采用相同语义。C 的 30 mm/10% 失败门槛保持原值。只有完整、可验收的结果才能正常安装。
 
-`factory` 新开关与历史 `UMI_TRAJ_CALIB=factory` 不同：后者仍指实验室样例。内部使用独立的 `intrinsics_source` 字段区分新来源。工厂参数包要求引擎 `--capabilities` 报告 `forward_v1/85°`；项目构建默认启用此实现，两种来源共用同一引擎。1920 全镜头仍仅诊断。
+运行结果通过 `intrinsics_source` 记录实际参数来源。工厂参数包要求引擎 `--capabilities` 报告 `forward_v1/85°`；项目构建默认启用此实现，两种来源共用同一引擎。1920 全镜头仍仅诊断。
 
 运行预算统一在 `config/operations/runtime.yaml`，机器覆盖用 `config/operations/runtime.local.yaml`；夹爪标签检测预算在 `config/operations/gripper_tag_detection.yaml`。`--show-config` 同时展示配置来源与实际 CPU/线程预算，启动终端输出精简摘要。覆盖顺序与缓存规则见 [配置说明](../../../config/README.md#运行与查看器默认值)。

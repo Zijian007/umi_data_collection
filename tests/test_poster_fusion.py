@@ -8,6 +8,7 @@ import gtsam
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from umi.store.result_io import result_paths
 from umi.estimation.fixed_map.parameters import FixedMapParameters, MapInertialParameters, MappedPosterParameters
 from umi.config import loader as config
 from umi.core.geometry import resample_pose_series
@@ -559,14 +560,14 @@ class PosterWorkflowTests(unittest.TestCase):
         with patch.object(tags, 'cached', side_effect=cached):
             workflow.run_episode(helper.episode_path)
         output = helper.task_root/'results'
-        frozen = output/'devices/environment_poster.json'
+        frozen = result_paths(output).run / 'devices/environment_poster.json'
         self.assertEqual(tag_board.load(frozen).asset_hash, tag_board.load().asset_hash)
         self.assertEqual(identities, [tag_board.load().asset_hash]*2)
         for arm in ('left', 'right'):
-            summary = read_arm_summary(output/arm)
+            summary = read_arm_summary(output / 'data' / arm)
             self.assertEqual(summary['fusion']['environment_poster']['status'], 'missing_rear_calibration')
-        metadata = json.loads((output/'episode.json').read_text())
-        self.assertIn('devices/environment_poster.json', metadata['assets'])
+        metadata = json.loads((output / 'data/episode.json').read_text())
+        self.assertIn('devices/environment_poster.json', metadata['evidence_assets'])
         asset_identity.validate_assets(output.resolve(), metadata['assets'])
 
     def test_nanosecond_equivalent_times_merge_but_real_lens_offsets_do_not(self):

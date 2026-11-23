@@ -139,7 +139,7 @@ class InternalLayoutTests(unittest.TestCase):
         self.assertEqual(capture_status(take)['status'], 'pending')
         self.assertEqual(processing.run([take])[0]['status'], 'ok')
         self.assertEqual(batch_inputs.read_batch(fixture.batch).map_version, map_version)
-        self.assertEqual(json.loads((take / 'results/episode.json').read_text())['instruction'], '拿起盒子')
+        self.assertEqual(json.loads((take / 'results/data/episode.json').read_text())['instruction'], '拿起盒子')
         configuration.write_text('# 注释不改变任务\n' + configuration.read_text())
         self.assertEqual(processing.run([take])[0]['status'], 'skipped')
         self.assertEqual(capture_status(take)['status'], 'skipped')

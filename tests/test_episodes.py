@@ -1,5 +1,6 @@
 """套件单/双手、批次配置、离线处理、验收和导出的完整业务回归。"""
 from dataclasses import replace
+from umi.store.result_io import result_paths
 from umi.workflows.scene.tasks import scene_map as scene_reconstruction
 import io
 import json
@@ -58,9 +59,9 @@ class EpisodeLifecycleTests(unittest.TestCase):
         write_yaml(self.f.episode_path,data)
         workflow.run_episode(self.f.episode_path)
         output=self.f.task_root/'results'
-        self.assertTrue((output/'right/trajectory.csv').is_file())
-        self.assertFalse((output/'left').exists())
-        self.assertFalse((output/'bimanual.csv').exists())
+        self.assertTrue((output / 'data/right/trajectory.csv').is_file())
+        self.assertFalse((output/'data/left').exists())
+        self.assertFalse((output / 'data/bimanual.csv').exists())
         episodes.review(self.f.episode_path,accept=True,reviewer='reviewer')
         exported=episodes.export([self.f.episode_path],self.f.root/'export')
         self.assertEqual(exported['episodes'],1)
@@ -128,7 +129,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
         workflow.run_episode(self.f.episode_path)
         output = self.f.task_root / 'results'
         before = {name: (output / name).read_bytes() for name in
-                  ('left/trajectory.csv', 'right/trajectory.csv', 'bimanual.csv')}
+                  ('data/left/trajectory.csv', 'data/right/trajectory.csv', 'data/bimanual.csv')}
         cache_root = layout.metadata(self.f.task_root, 'cache/localization')
         for filename in ('observations.npz', 'recovery.json'):
             with self.subTest(filename=filename):
@@ -139,7 +140,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
                     workflow.run_episode(self.f.episode_path)
                 self.assertEqual(compute.call_count, 1)
                 self.assertEqual({name: (output / name).read_bytes() for name in before}, before)
-                audit = json.loads((output / 'run_report.json').read_text())['cache']['task']
+                audit = json.loads((result_paths(output).run / 'diagnostics.json').read_text())['cache']['task']
                 statuses = [item['status'] for item in audit if item['stage'] == 'localize']
                 self.assertEqual(statuses.count('invalidated'), 1)
                 self.assertEqual(statuses.count('computed'), 1)
@@ -212,12 +213,12 @@ class EpisodeLifecycleTests(unittest.TestCase):
     def test_result_writer_failure_does_not_publish_partial_bimanual_result(self):
         workflow.run_episode(self.f.episode_path)
         output = (self.f.task_root/'results').resolve()
-        before = (output/'episode.json').read_bytes()
+        before = (output / 'data/episode.json').read_bytes()
         with patch('umi.workflows.scene.tasks.publication.write_episode_result', side_effect=OSError('report write failed')):
             with self.assertRaisesRegex(OSError, 'report write failed'):
                 workflow.run_episode(self.f.episode_path, force=True)
         self.assertEqual((self.f.task_root/'results').resolve(), output)
-        self.assertEqual((output/'episode.json').read_bytes(), before)
+        self.assertEqual((output / 'data/episode.json').read_bytes(), before)
         state = layout.read_state(self.f.task_root)
         self.assertEqual(state['attempt']['status'], 'failed')
         failure = self.f.task_root/state['attempt']['run']/'error.json'
@@ -266,7 +267,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
         self.assertNotIn('recording_checks', state['attempt'])
         self.assertEqual(set(state['attempt']), {'status', 'run', 'reason', 'manifest_sha256', 'session_sha256', 'task_configuration_sha256'})
         run = self.f.task_root / state['attempt']['run']
-        self.assertTrue(json.loads((run / 'episode.json').read_text())['preflight']['passed'])
+        self.assertTrue(json.loads(result_paths(run).manifest.read_text())['preflight']['passed'])
         self.assertFalse((run / 'preflight_report.json').exists())
         self.assertEqual(episodes.task_status(self.f.episode_path)['review'], 'accepted')
 

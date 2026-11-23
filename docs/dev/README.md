@@ -1,134 +1,75 @@
 # 代码维护
 
-[文档导航](../README.md) · [当前待办](#当前待办) · [历史归档](#历史归档)
+[文档导航](../README.md) · [分层结构](#分层结构) · [缓存与复用](#缓存与复用) · [验证](#验证) · [当前待办](#当前待办)
 
 配置和资产的职责见[权威来源](SSOT与权威来源.md)，变换方向、时钟与优化变量见[算法实现约定](算法实现约定.md)。
 
 ## 从入口沿流程阅读
 
+三个命令入口都是薄壳脚本，执行 `python -m umi.apps.<名称>`；`apps/` 只解析参数并调用 `workflows/`。
+
 | 流程 | 阅读入口 |
 |---|---|
-| 标定 | [标定代码指南](../../umi/workflows/calibration/README.md)：`cli.main()` → `workflow.run()` / `verify()` |
-| 共享场景 | [场景代码指南](../../umi/workflows/scene/README.md)：`cli.main()` → `management.batch_processing.run()` / `build()` → `pipeline.maps.repository.build_scene()` / `workflow.run_episode()` |
-| 轨迹抽取 | [轨迹代码指南](../../umi/workflows/segment/README.md)：`cli.main()` → `workflow.run_batch()` → `run_recording()` |
-| 无场景地图的 VIO | [poster_vio 代码指南](../../umi/estimation/poster_vio/README.md) |
-| 三维查看 | [查看器代码指南](../../umi/apps/viewer/README.md)：`server.main()` → `RecordingCatalog` → 浏览器播放状态 |
-| 共用视觉 | [视觉代码指南](../../umi/perception/README.md)：录像准备、ORB 建图/定位、视觉上下文与执行验收 |
+| 标定 | [标定代码指南](../../umi/workflows/calibration/README.md)：`umi/apps/calib.py` → `workflows/calibration/workflow.run()` / `verify()` |
+| 共享场景 | [场景代码指南](../../umi/workflows/scene/README.md)：`umi/apps/scene.py` 的 `COMMANDS` → `scene/batch_processing.run()` / `build()` → `scene/maps/repository.build_scene()` / `scene/workflow.run_episode()` |
+| 任务后端 | `scene/workflow.execute_episode()` → `scene/tasks/backend_routing.execute()` → `scene_map` / `poster_independent` / `poster_vio`（`auto` 由 `_AutoRoute` 按顺序尝试） |
+| 内部逐段引擎 | [逐段引擎指南](../../umi/workflows/segment/README.md)：`umi/apps/segment.py` → `segment/workflow.run_batch()` → `run_recording()` → `reconstruction.run_attempts()` |
+| 无场景地图的 VIO | [poster_vio 代码指南](../../umi/estimation/poster_vio/README.md)：`scene/tasks/poster_vio_inputs.prepare_task_inputs()` → `estimation/poster_vio/solver.solve_joint_poster_imu()` |
+| 三维查看 | [查看器代码指南](../../umi/apps/viewer/README.md)：`apps/viewer/server.main()` → `RecordingCatalog` → 浏览器播放状态 |
+| 共用视觉 | [视觉代码指南](../../umi/perception/README.md)：录像准备、ORB 建图/定位、海报检测 |
 | 相机数据 | [extraction.py](../../umi/devices/x3/extraction.py) 提取时间戳和 IMU；[frame.py](../../umi/core/frame.py) 定义录制几何、裁剪、帧率和时钟约定 |
 | 设备选择 | [registry.py](../../umi/devices/registry.py) 读取内部序列号、选择标定与夹爪并核对哈希 |
 | 训练导出 | [数据集代码指南](../../umi/dataset/README.md) |
 
-`workflow.py` 展示顺序、阶段衔接与失败收尾；阶段函数返回具名结果。标定的 `acceptance.py` 决定验收，`result_io.py` 保存和校验记录，`reports.py` 只负责展示。标定第三方进程、依赖与日志放在 `pipeline/runtime.py`，Basalt 适配在 `solve/basalt.py`，数值计算在 `algorithms/`，独立命令在 `tools/`，安装资源在 `setup/`。
+`workflow.py` 展示顺序、阶段衔接与失败收尾；阶段函数返回具名结果。标定的 `acceptance.py` 决定验收，`result_io.py` 保存和校验记录，`reports.py` 只负责展示；第三方进程、依赖与日志在 `pipeline/runtime.py`，Basalt 适配在 `solve/basalt.py`。场景发布、报告和审计在 `scene/tasks/publication.py`，阶段缓存在 `umi/store/cache.py`；`umi/perception/decoding.py` 一次解码向多个检测器分发帧。标定的完整数据流、状态、恢复与登记契约见[标定架构与验证](标定架构与验证.md)。
 
-场景的任务读取、预检、调度和运行在 `scene/workflow.py`。发布、报告和审计在 `scene/pipeline/tasks/publication.py`，阶段指纹与缓存读写在 `scene/cache.py`。`vision/decoding.py` 分发帧并复用转换结果，由检测器提供自己的裁剪规则。`infrastructure/paths.py` 提供项目路径和运行解释器，`dataset/schema.py` 定义训练数组和采样策略。
+## 分层结构
 
-相机测量的 Basalt 解析和版本化文件校验由 `camera/calibration_assets.py` 负责。X3 工厂内参拟合位于 `camera/x3/factory_kb4.py`。`scene/pipeline/maps/build.py` 负责建图，`repository.py` 负责版本读取、校验和批次绑定，场景建图和查看器共用 `vision/atlas.py` 的图集转换。
+`umi/` 按依赖方向分层，上层可以依赖下层，下层不得依赖上层。[`.importlinter`](../../.importlinter) 声明这些层，CI 用 `lint-imports` 检查；类型标注专用导入（`if TYPE_CHECKING:`）不计入。
 
-标定的完整数据流、状态、恢复与登记契约，以及实测缺口见[标定架构与验证](标定架构与验证.md)。
-
-## Python 目录与命名检查
-
-2026-11-23 核对了 umi 下的 Python 源码和 tests 下的 105 个 Python 文件。按功能合并后，软件源码有 186 个 Python 文件、35 个目录。检查内容包括模块说明、公开函数、调用方、命令入口、动态导入和代码指纹引用。以下数量包含包初始化文件。
-
-三套轨迹数值实现统一位于 trajectory/algorithms 下。固定地图应用适配仍由 scene/pipeline/tasks/scene_map.py 连接，环境镜头标定由 calibration/rear_workflow.py 调用共用地图和融合能力，轨迹格式转换由 trajectory/trajectory_export.py 完成。
-
-| 目录 | Python 文件数 | 职责和本轮整理结果 |
+| 层（上 → 下） | 目录 | 职责 |
 |---|---|---|
-| [umi](../../umi) | 1 | 包入口保持轻量，业务入口位于各应用包。 |
-| [umi/workflows/calibration](../../umi/workflows/calibration) | 11 | 请求解析和配置预览集中到 pipeline/inputs.py，环境镜头编排在 rear_workflow.py。 |
-| [umi/workflows/calibration/algorithms](../../umi/workflows/calibration/algorithms) | 3 | board_pnp 和 trajectory_metrics 分别对应位姿和误差计算。 |
-| [umi/workflows/calibration/pipeline](../../umi/workflows/calibration/pipeline) | 6 | inputs 统一请求与配置预览，recordings、board_detection、steps、runtime 对应明确阶段。 |
-| [umi/workflows/calibration/solve](../../umi/workflows/calibration/solve) | 3 | factory_intrinsics.py 表达工厂内参生成，与 basalt.py 的外部求解适配并列。 |
-| [umi/workflows/calibration/tools](../../umi/workflows/calibration/tools) | 3 | euroc_to_bag.py 和 imu_physical_check.py 分别表达转换格式与诊断对象。 |
-| [umi/workflows/calibration/validation](../../umi/workflows/calibration/validation) | 4 | factory_comparison.py 与 trajectory.py、gravity.py 按验证对象区分。 |
-| [umi/devices](../../umi/devices) | 7 | 登记表、测量资产、来源、位姿几何和时钟各有独立公共入口。 |
-| [umi/devices/x3](../../umi/devices/x3) | 7 | factory_geometry.py 表达工厂镜头模型，factory_kb4.py 专注光学拟合。 |
-| [umi/config](../../umi/config) | 6 | loader、参数模型、操作设置、用户设置与音频参数按配置职责组织。 |
-| [umi/dataset](../../umi/dataset) | 5 | export.py 负责已验收来源与发布，schema.py 统一数组、时间轴和坐标契约。 |
-| [umi/perception/gripper](../../umi/perception/gripper) | 5 | width_estimation.py、calibration.py、series.py、video_tools.py 分别对应换算、测量资产、序列与调试。 |
-| [umi/perception/gripper/detection](../../umi/perception/gripper/detection) | 4 | markers、frames、sampling 对应灰度标签、原片输入和时间采样。 |
-| [umi/perception/gripper/distance](../../umi/perception/gripper/distance) | 3 | measurement 与 pose_estimation 区分测量编排和单标签位姿计算。 |
-| [umi/infra](../../umi/infra) | 6 | paths、provenance、file_store、terminal、concurrency 是共用基础设施。 |
-| [umi/workflows/scene](../../umi/workflows/scene) | 12 | workflow.py 负责预检与任务执行，cache.py 负责阶段复用，spatial.py 负责场景地图几何。 |
-| [umi/workflows/scene](../../umi/workflows/scene) | 11 | batch_processing 编排批次，batch_snapshot 负责配置预览和冻结。登记、验收和清理单独处理。 |
-| [umi/workflows/scene/inputs](../../umi/workflows/scene/inputs) | 3 | scene.py 读取场景和套件，batch.py 读取批次和任务。 |
-| [umi/workflows/scene](../../umi/workflows/scene) | 3 | recordings 准备和预检录像，synchronization 计算双手偏移。 |
-| [umi/workflows/scene/maps](../../umi/workflows/scene/maps) | 4 | build 构建地图，repository 负责读取、校验和批次绑定，epoch_selection 负责分批规划和选择。 |
-| [umi/workflows/scene/tasks](../../umi/workflows/scene/tasks) | 10 | 三个后端与路由、轨迹写入、发布、测量和录像区间操作同层。 |
-| [umi/perception/audio](../../umi/perception/audio) | 3 | specialist_audio.py、kiwi_audio.py 与两套音频同步算法名称对应。 |
-| [umi/workflows/segment](../../umi/workflows/segment) | 10 | workflow 负责调度和复用，reconstruction 负责重建，environment_assets 负责环境输入，trajectory_export 负责产物与来源记录。 |
-| [umi/estimation](../../umi/estimation) | 2 | inertial 共用预积分和惯性图，三套算法位于独立子包。 |
-| [umi/estimation/fixed_map](../../umi/estimation/fixed_map) | 5 | geometry 同时负责固定地图对齐和重定位合并，fusion 和 poster 分别负责轨迹与海报融合。 |
-| [umi/estimation/fusion](../../umi/estimation/fusion) | 7 | 六个实现模块负责 CLI、数据、对齐、求解、因子图和海报。solver 负责地图段放置和全帧率恢复。 |
-| [umi/estimation/poster_vio](../../umi/estimation/poster_vio) | 7 | 六个实现模块负责模型与校验、初值、跟踪前端、基座标签、观测筛选和求解。 |
-| [umi/workflows/segment/reporting](../../umi/workflows/segment/reporting) | 5 | artifacts 负责输出发布，reports 负责报告展示，constraint_quality 管质量证据，map_data 管展示地图。 |
-| [umi/workflows/segment/tools](../../umi/workflows/segment/tools) | 2 | initialization_review.py 是基于保留数据的开发诊断入口。 |
-| [umi/apps/viewer](../../umi/apps/viewer) | 3 | server 提供 HTTP 服务，ViewerDataError 直接定义在轻量包入口。 |
-| [umi/apps/viewer/resources](../../umi/apps/viewer/resources) | 4 | video.py 集中视频来源、环境镜头裁切和预览，maps 与 cache 管地图及媒体缓存。 |
-| [umi/apps/viewer/results](../../umi/apps/viewer/results) | 3 | trajectory_reader 解析轨迹，catalog 组织单手、双手结果及播放。 |
-| [umi/perception](../../umi/perception) | 8 | decoding、recordings、slam、atlas、orb_environment 按共用视觉能力命名。 |
-| [umi/perception/poster](../../umi/perception/poster) | 7 | layout、detection、pnp、geometry、factors、quality 对应布局、角点、初值、投影、因子和观测质量。 |
-| [umi/perception/tools](../../umi/perception/tools) | 3 | make_lens_video.py 和 merge_frames.py 对应可独立运行的图像与定位数据工具。 |
-| [tests](../../tests) | 105 | 保留 test_功能.py 与现有统一测试入口，夹具和并行运行器集中在本目录。 |
+| apps | [umi/apps](../../umi/apps) | 命令入口 `calib.py`、`scene.py`、`segment.py`、环境检查 `health.py` 和查看器 `viewer/`；只解析参数、调用流程、格式化输出 |
+| dataset | [umi/dataset](../../umi/dataset) | 已验收结果 → 训练中间包；固定夹具相对位姿评估 |
+| workflows | [umi/workflows](../../umi/workflows) | 流程编排：`calibration/`、`scene/`（批次、地图、任务后端适配与发布）、`segment/`（内部逐段引擎与融合工作进程） |
+| estimation | [umi/estimation](../../umi/estimation) | 数值算法：`fusion/`（独立视觉惯性融合）、`fixed_map/`（固定地图融合与海报尺度）、`poster_vio/`（任务内联合图）、`factors/`（共用海报因子）、`inertial.py`、地图米制化 `mapping.py` |
+| store | [umi/store](../../umi/store) | 批次磁盘布局、阶段缓存 `StageCache`、结果读取，以及场景数据模型 `models.py` |
+| perception | [umi/perception](../../umi/perception) | 解码、录像准备、ORB 建图/定位、海报检测与 PnP、音频同步 `audio/`、夹爪标签 `gripper/` |
+| devices | [umi/devices](../../umi/devices) | X3 原片读取 `x3/`、相机登记表、标定资产与来源、轨迹用标定选择 `selection.py` |
+| config | [umi/config](../../umi/config) | 配置加载、参数模型、`collection.yaml` 与场景参数 schema、运行与用户设置 |
+| infra | [umi/infra](../../umi/infra) | 路径、终端、文件存储与缓存标记、内容哈希、ORB 安装布局、并发工具 |
+| core | [umi/core](../../umi/core) | 纯几何、时间轴、录制帧约定、TUM 读写、使用手校验；不读取文件或配置 |
 
-上一轮合并九组相邻职责，源码文件由 242 个减为 232 个，Python 目录由 43 个减为 41 个。后续继续合并批次、地图和算法模块。本轮将 scene 从 64 个文件收拢到 43 个，trajectory 从 44 个收拢到 38 个。
+流程之间也有方向：标定 → 场景 → 内部逐段引擎。环境镜头标定复用场景的录像准备与地图能力，场景的 `poster_independent` 复用逐段引擎的重建；反方向的依赖不允许。
 
-| 合并前 | 当前入口 |
-|---|---|
-| trajectory/calibration/assets.py、selection.py 与包入口 | [trajectory/calibration.py](../../umi/devices/selection.py) |
-| trajectory/io/tum.py 与包入口 | [trajectory/tum.py](../../umi/core/tum.py) |
-| dataset/coordinates.py 与 schema.py | [dataset/schema.py](../../umi/dataset/schema.py) |
-| calibration/configuration.py 与请求解析 | [calibration/pipeline/inputs.py](../../umi/workflows/calibration/pipeline/inputs.py) |
-| poster_vio_request.py 与准备过程 | [scene/pipeline/tasks/poster_vio.py](../../umi/workflows/scene/tasks/poster_vio.py) |
-| viewer/errors.py 与包入口 | [viewer/__init__.py](../../umi/apps/viewer/__init__.py) |
-| fusion/scale_checks.py 与轨迹质量指标 | [constraint_quality.py](../../umi/estimation/constraint_quality.py) |
-| batch/discovery.py 与场景磁盘布局 | [scene/layout.py](../../umi/store/layout.py) |
-| viewer/results/rear_video.py 与视频资源 | [viewer/resources/video.py](../../umi/apps/viewer/resources/video.py) |
+安装资源（conda 环境锁、ORB-SLAM3 补丁与构建脚本、Basalt 预编译包）在顶层 [setup/](../../setup)，不属于 Python 包；KIWI 许可与改编说明在 [第三方来源](PROVENANCE.md#kiwi)。
 
-本轮具体路径调整如下，目录移动包含其中的模型、初值、前端、求解器和来源声明。
+### 新增代码放哪里
 
-| 原路径 | 当前路径 |
-|---|---|
-| `trajectory/poster_vio/` | [trajectory/algorithms/poster_vio/](../../umi/estimation/poster_vio/) |
-| `camera/x3/factory.py` | [camera/x3/factory_geometry.py](../../umi/devices/x3/factory_geometry.py) |
-| `calibration/solve/factory.py` | [calibration/solve/factory_intrinsics.py](../../umi/workflows/calibration/solve/factory_intrinsics.py) |
-| `calibration/validation/factory.py` | [calibration/validation/factory_comparison.py](../../umi/workflows/calibration/validation/factory_comparison.py) |
-| `calibration/tools/calib_folder_to_bag.py` | [calibration/tools/euroc_to_bag.py](../../umi/workflows/calibration/tools/euroc_to_bag.py) |
-| `calibration/tools/imu_calib_physical_check.py` | [calibration/tools/imu_physical_check.py](../../umi/workflows/calibration/tools/imu_physical_check.py) |
-| `scene/spatial/rear_calibration.py` | [calibration/rear_workflow.py](../../umi/workflows/calibration/rear_workflow.py) |
-| `dataset/source.py` | [dataset/export.py](../../umi/dataset/export.py) |
-| `scene/management/processing.py` | [scene/management/batch_processing.py](../../umi/workflows/scene/batch_processing.py) |
-| `scene/management/batch/execution.py` | [scene/management/batch_processing.py](../../umi/workflows/scene/batch_processing.py) |
-| `scene/pipeline/maps/lifecycle.py` | [scene/pipeline/maps/repository.py](../../umi/workflows/scene/maps/repository.py) |
-| `scene/pipeline/tasks/estimation.py` | [scene/pipeline/tasks/backend_routing.py](../../umi/workflows/scene/tasks/backend_routing.py) |
-| `scene/pipeline/tasks/policy.py` | [scene/management/collection_schema.py](../../umi/config/collection_schema.py) |
-| `scene/pipeline/tasks/diagnostics.py` | [scene/pipeline/tasks/recording_intervals.py](../../umi/workflows/scene/tasks/recording_intervals.py) |
-| `scene/pipeline/tasks/results/result_writer.py` | [scene/pipeline/tasks/publication.py](../../umi/workflows/scene/tasks/publication.py) |
-| `scene/pipeline/tasks/results/reporting.py` | [scene/pipeline/tasks/publication.py](../../umi/workflows/scene/tasks/publication.py) |
-| `scene/pipeline/tasks/backends/scene_reconstruction.py` | [scene/pipeline/tasks/scene_map.py](../../umi/workflows/scene/tasks/scene_map.py) |
-| `scene/pipeline/tasks/backends/poster_vio_inputs.py` | [scene/pipeline/tasks/poster_vio.py](../../umi/workflows/scene/tasks/poster_vio.py) |
-| `trajectory/pipeline/calibration_assets.py` | [trajectory/pipeline/environment_assets.py](../../umi/workflows/segment/environment_assets.py) |
-| `trajectory/reporting/postprocess.py` | [trajectory/trajectory_export.py](../../umi/workflows/segment/trajectory_export.py) |
-| `trajectory/reporting/metadata.py` | [trajectory/trajectory_export.py](../../umi/workflows/segment/trajectory_export.py) |
-| `trajectory/reporting/quality.py` | [trajectory/reporting/constraint_quality.py](../../umi/estimation/constraint_quality.py) |
-| `trajectory/reporting/results.py` | [trajectory/reporting/artifacts.py](../../umi/workflows/segment/reporting/artifacts.py) |
-| `trajectory/algorithms/fusion/quality.py` | [trajectory/reporting/constraint_quality.py](../../umi/estimation/constraint_quality.py) |
-| `viewer/results/rear.py` | [viewer/resources/video.py](../../umi/apps/viewer/resources/video.py) |
-| `viewer/results/readers.py` | [viewer/results/trajectory_reader.py](../../umi/apps/viewer/results/trajectory_reader.py) |
-| `sync/audio.py` | [sync/specialist_audio.py](../../umi/perception/audio/specialist_audio.py) |
-| `sync/landmark_audio.py` | [sync/kiwi_audio.py](../../umi/perception/audio/kiwi_audio.py) |
+- 纯数学、无 IO：`core/`；读写某种设备或标定文件：`devices/`；从图像/音频里提取观测：`perception/`；求解与验收数值：`estimation/`。
+- 一个算法需要的参数，在算法旁定义窄参数类（如 `PosterVioParameters`），由 `SceneParameters.for_algorithm()` 投影，算法不直接依赖配置文件结构。
+- 编排顺序、失败收尾、发布与报告放 `workflows/`；命令行参数与输出格式放 `apps/`。
+- 跨层引用前先看 `lint-imports` 是否通过；需要反向依赖时，通常说明该代码应下移一层。
 
-名称使用所在目录的领域上下文。workflow.py 表达应用顺序，backend_routing.py 表达候选后端选择，measurement.py 表达三维中心距测量，pose_estimation.py 表达单标签位姿求解。models.py、cli.py、__init__.py 和 __main__.py 沿用 Python 项目的常见名称。
+### 融合工作进程
 
-缓存不含代码指纹，源文件移动不影响已有缓存。参数、资产与结果的字段名继续由各自 schema 定义，文件读取的兼容性通过现有结果及训练包测试检查。
+独立融合由 [`segment/fusion_runner.py`](../../umi/workflows/segment/fusion_runner.py) 执行：重建阶段调用 `execute(FusionRequest, ...)`，它在一次性的 spawn 工作进程里调用 `fuse()`。不用线程是因为 GTSAM 的 Python 绑定在优化期间持有 GIL，线程会让左右手融合串行；工作进程保留双手并行、`--cores` 的 CPU 绑定、nice、崩溃隔离，并把 stdout/stderr 写入 `logs/fuse.log`。输入、输出与失败诊断（`alignment_failure.json`、`poster_failure.json`）仍通过文件交换。
+
+## 缓存与复用
+
+缓存和结果复用**只依据数据输入**：原片内容、所选标定与资产、参数与配置。代码和外部引擎的版本不参与判断，也不需要维护任何源文件清单。
+
+- 改了算法、重编 ORB-SLAM3/Basalt 或升级依赖后，用 `--force` 重算。`umi-scene run --force` 让本次运行开始前完成的缓存全部失效（解码、定位、检测、任务结果），本次运行中新生成的仍可复用；已绑定的地图不变，连地图一起重建用 `build --force` 或 `pipeline --force`。实现见 `umi/infra/file_store.py` 的 `recompute()` / `is_current()`。
+- 结果、地图清单、逐段引擎设置和标定记录写入 `code_revision`（git 提交号及 `umi/` 是否有未提交改动），只用于追溯。
+- 原片、设备资产、配置及结果文件的完整性用 `file_hash()` 的原始字节 SHA256 校验。数组缓存统一用 `file_store.read_npz_cache()` / `write_npz_cache()`：完成标记记录输入身份（按 JSON 规范形式比较）和数组文件哈希。
 
 ## 参数管理
 
-见 [统一参数配置](../../config/README.md)。数值默认值写在 `config/*.yaml`，不可变模型位于 `umi/config/parameter_models.py`，加载、校验、覆盖和快照位于 `umi/config/loader.py`。源代码、引擎、文件内容及规范 JSON 的身份计算集中在 `umi/infra/provenance.py`；设备登记、场景和标定共用同一实现。workflow 加载一次，向阶段传递不可变参数。修改参数后同时核对复用、报告与默认数值回归。
+见 [统一参数配置](../../config/README.md)。数值默认值写在 `config/*.yaml`，不可变模型位于 `umi/config/parameter_models.py`，加载、校验、覆盖和快照位于 `umi/config/loader.py`。文件内容哈希、规范 JSON 哈希与 git 提交号集中在 `umi/infra/provenance.py`；设备登记、场景和标定共用同一实现。workflow 加载一次，向阶段传递不可变参数。修改参数后同时核对复用、报告与默认数值回归。
 
 ## 命名和终端约定
 
-外围代码使用 `request`、`camera_serial`、`keep_work`、`return_code`、`reason`、`error`。数学符号使用对应领域的惯例。场景日常流程统一为手写 kit.yaml/collection.yaml、放置视频，再执行 run；内部自动登记逻辑位于 ingest.py，无独立登记 CLI。历史 JSON 与第三方接口继续按各自协议读取，例如 `serial` / `why`、`subprocess.returncode`；内部 Session/Episode 类型和 episode.json 文件名不表示还支持旧 CLI。
+外围代码使用 `request`、`camera_serial`、`keep_work`、`return_code`、`reason`、`error`。数学符号使用对应领域的惯例。场景日常流程统一为手写 kit.yaml/collection.yaml、放置视频，再执行 run；内部自动登记逻辑位于 ingest.py，无独立登记 CLI。历史 JSON 与第三方接口继续按各自协议读取，例如 `serial` / `why`、`subprocess.returncode`。
 
 [terminal.py](../../umi/infra/terminal.py) 统一输出格式，调用为 `runtime.console.write(...)`。阶段负责进度，报告负责结果；标签依次表示工具、录像、步骤、重建次数和执行状态。标定验收 `PASS` / `FAIL` 与执行“完成 / 失败”分别展示。引擎原始日志保留原文。
 
@@ -160,13 +101,22 @@ Node 只用于查看器前端测试，运行查看器不需要 Node。Python 测
 
 `--quick` 用于日常内循环，跳过建图、任务、场景和查看器等端到端工作流；`--unit` 不带模块时仍运行全部 Python 测试。`--unit` 带模块时接受 `test_模块` 或 `test_模块.测试类.方法`，从 `tests/` 解析。定位和迭代时运行快速档或相关模块，涉及公共配置、登记表或融合接口的改动收尾再跑全量。选跑不会自动推断依赖，也不会替代最后的跨模块回归。
 
-仓库的轻量 CI 位于 `.github/workflows/quality.yml`：它只安装 NumPy 和 Ruff，检查全仓 Python 语法、可移植训练读取器边界及本轮核心模块的静态错误，不依赖 GTSAM、OpenCV、SLAM 或真实录像。完整算法回归仍使用本机 `.deps` 环境执行 `./test.sh --quick`、`./test.sh --unit` 和必要的 `./test.sh --all`。
+仓库的轻量 CI 位于 `.github/workflows/quality.yml`：只安装 NumPy、Ruff 和 import-linter，检查全仓 Python 语法、可移植训练读取器边界、`ruff check umi` 与 `lint-imports` 分层合约，不依赖 GTSAM、OpenCV、SLAM 或真实录像。完整算法回归仍使用本机 `.deps` 环境执行 `./test.sh --quick`、`./test.sh --unit` 和必要的 `./test.sh --all`。
+
+### 黄金回归
+
+单元测试使用替代引擎，不能证明真实录像上的数值不变。改动求解、融合、检测或流程编排时，用 [tests/golden/golden.py](../../tests/golden/golden.py) 在保留批次 `scenes/test_shelf/20261120_002` 上对三个后端做端到端比对：
+
+```bash
+.deps/env/bin/python tests/golden/golden.py prepare            # 用硬链接生成 scenes/golden_<后端>/ 三个变体
+.deps/env/bin/python tests/golden/golden.py run                # 依次 --force 运行，三个后端约 10 分钟
+.deps/env/bin/python tests/golden/golden.py snapshot ~/umi_golden/new
+.deps/env/bin/python tests/golden/golden.py compare ~/umi_golden/base ~/umi_golden/new
+```
+
+流水线是确定性的：同一代码从零运行两次，三个后端的轨迹逐位一致（ORB-SLAM3 使用离线同步模式）。因此默认容差为 0.1 mm / 0.01°，纯重构应得到 0.0；算法改动若有意改变结果，先确认差异再更新基线快照。`scenes/golden_*/` 已被 git 忽略。
 
 复用测试夹具时导入模块或独立 fixture，避免把其他文件的 `TestCase` 类直接导入测试模块顶层：unittest 会再次收集该类。查重应比较源码文件、类和方法；仅按测试 ID 检查会漏掉 `tests.test_x` 与 `test_x` 的别名重复。
-
-## 代码与资产身份
-
-`provenance.source_hash()` 对 Python 的 AST 计算版本化摘要，忽略注释、位置、排版和模块/类/函数文档字符串；常量、控制流、函数参数等语法变化仍使缓存失效。算法不得把文档字符串或源码行号用作数值输入。地图阶段、检测阶段和完整结果共用该规则。配置、原片、设备资产及结果文件继续使用 `file_hash()` 的原始字节 SHA256，完整性校验不经过语法归一化。切换指纹规则后旧计算缓存首次会重建；旧地图和结果文件仍保留。
 
 ## 文档怎么维护
 
@@ -182,27 +132,17 @@ Node 只用于查看器前端测试，运行查看器不需要 Node。Python 测
 | 资产目录、版本、坐标约定 | 设备与坐标.md |
 | 算法过程与当前验证边界 | 算法原理.md |
 | 内部模块职责和引擎输出 | 对应 umi 模块 README |
-| 变更过程、验证证据、阶段性方案和审计 | PROVENANCE.md 与 archive/ |
+| 第三方代码、预编译程序与改编来源 | PROVENANCE.md |
+| 改动过程与验证证据 | git 提交说明（不另存文档） |
 
 配置样例只在主流程保留必要示例，完整字段定义链接到对应参考。移动章节时同步本地链接与锚点；检查 shell 示例与当前 CLI 的参数一致。源码或功能变更后更新说明，避免在多个操作页面分别追加同一条兼容提示。
 
 ## 当前待办
 
-- 建立可复现的真实录像端到端回归，记录输入、标定 ID、引擎版本、耗时、误差及重复运行波动。
+- 扩展真实录像回归的录像覆盖，并记录标定 ID、引擎版本、耗时及重复运行波动。
 - 独立测量相机到 TCP 的几何，验证目前使用的 CAD 名义值。
 - 为需要训练开合通道的夹爪补做像素到毫米的宽度标定。仅有标签中心距的套件保持 `training_ready: false`。
 - 对 `poster_vio` 做实拍精度和资源基准验证，再评估动态物体筛除、滑窗边缘化和 GPU 加速。
 - 明确仓库许可证及对外分发说明。
 
 实时预览、任务卡、上传、LeRobot 适配、模型训练和机械臂部署属于后续范围。软件回归结果和现场精度证据分别记录。
-
-## 历史归档
-
-[PROVENANCE](PROVENANCE.md) 记录来源和变更证据。归档保留当时的命令、配置和结果，现行流程以[用户指南](../README.md)为准。
-
-| 主题 | 历史材料 |
-|---|---|
-| 场景实现 | [环境标签与自适应融合](archive/环境标签与自适应融合重构计划.md) · [无场景地图的双手轨迹重建](archive/无场景地图的双手轨迹重建方案.md) · [场景流水线重构会话](archive/本次重构会话总结.md) |
-| 架构与清理 | [架构扫描](archive/架构扫描与重构.md) · [深度架构审计](archive/深度架构审计.md) · [清理记录](archive/清理遗留事项.md) |
-| 环境与引擎 | [依赖目录调查](archive/依赖目录结构与清理方案.md) · [轨迹引擎验证](archive/轨迹引擎验证记录.md) |
-| 初始范围 | [建仓计划](archive/建仓计划.md) · [实时预览方案](archive/QUICKSTART_X3_STREAM.md) |

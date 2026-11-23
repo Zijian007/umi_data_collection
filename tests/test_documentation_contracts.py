@@ -8,13 +8,15 @@ import tempfile
 import unittest
 
 from umi.infra.file_store import write_yaml
+from umi.infra.paths import KITS_ROOT
 from umi.apps.scene import build_parser
 from umi.workflows.scene.parameters import SceneOverrides, apply_overrides
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CURRENT_DOCS = (
-    'README.md', 'config/README.md', 'exports/README.md', 'kits/README.md', 'scenes/README.md',
+    'README.md', 'config/README.md', 'hardware/kits/README.md', 'scenes/README.md',
+    'hardware/calibration_targets/README.md', 'hardware/environment_poster/README.md',
     *(str(path.relative_to(ROOT)) for path in sorted((ROOT / 'docs').glob('*.md'))),
     'docs/dev/README.md', 'docs/dev/SSOT与权威来源.md', 'docs/dev/算法实现约定.md',
     'docs/dev/标定架构与验证.md',
@@ -75,7 +77,7 @@ class DocumentationContractsTests(unittest.TestCase):
         # must state its unit, candidate values, default or special-value rule.
         import re
         paths = [* (ROOT / 'config').rglob('*.yaml'),
-                 * (ROOT / 'kits').glob('*/kit.yaml'),
+                 * KITS_ROOT.glob('*/kit.yaml'),
                  * (ROOT / 'scenes').rglob('collection.yaml'),
                  ROOT / 'scenes/example_scene/collection.example.yaml']
         for path in paths:

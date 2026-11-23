@@ -96,7 +96,7 @@ class EffectiveConfigurationTests(unittest.TestCase):
         write_yaml(batch / 'collection.yaml', dict(kit='rig', recording=dict(arms=['left', 'right']),
             scene=dict(description=''), map=dict(layout='per_arm'), reconstruction=dict(backend='scene_map'),
             environment_poster=dict(layout_path=str(Path(__file__).resolve().parents[1] /
-                'hardware/calibration_targets/environment_poster.json')),
+                'hardware/environment_poster/environment_poster.json')),
             tasks=dict(take_001=dict(arms=['right'], reconstruction=dict(backend='poster_vio')))))
         episode = batch / '.pipeline/tasks/take_001/episode.yaml'
         write_yaml(episode, dict(schema_version=5, recordings={}))

@@ -38,10 +38,10 @@ def variant(backend: str) -> Path:
 
 def _collection_for(backend: str) -> str:
     text = (SOURCE / 'collection.yaml').read_text(encoding='utf-8')
-    marker = '  backend: poster_vio'
+    marker = '  mode: poster_vio'
     if marker not in text:
         raise SystemExit(f'{SOURCE}/collection.yaml 中找不到 "{marker}"，无法生成后端变体')
-    return text.replace(marker, f'  backend: {backend}', 1)
+    return text.replace(marker, f'  mode: {backend}', 1)
 
 
 def prepare(backends: list[str]) -> None:
@@ -69,31 +69,36 @@ def run(backends: list[str], extra: list[str]) -> int:
     return failures
 
 
-def _published_run(batch: Path) -> Path:
+def _published_paths(batch: Path):
     results = batch / 'take_001/results'
     if not results.exists():
         raise SystemExit(f'{results} 不存在；先运行 run')
-    return results.resolve()
+    if str(PROJECT) not in sys.path:
+        sys.path.insert(0, str(PROJECT))
+    from umi.store.result_io import result_paths
+
+    return result_paths(results)
 
 
 def snapshot(out: Path, backends: list[str], source: Path | None) -> None:
     for backend in backends:
         batch = source if source is not None else variant(backend)
-        run_dir = _published_run(batch)
+        paths = _published_paths(batch)
         target = out / backend
         if target.exists():
             shutil.rmtree(target)
-        for name in SNAPSHOT_FILES:
-            if (run_dir / name).exists():
-                (target / name).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(run_dir / name, target / name)
+        sources = {name: paths.run / name for name in SNAPSHOT_FILES}
+        sources.update({'episode.json': paths.manifest, 'bimanual.csv': paths.data / 'bimanual.csv'})
         for arm in ARMS:
-            for name in ('trajectory.csv', 'details/frames.csv'):
-                if (run_dir / arm / name).exists():
-                    (target / arm / name).parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(run_dir / arm / name, target / arm / name)
-        (target / 'SOURCE').write_text(f'{run_dir}\n', encoding='utf-8')
-        print(f'snapshot {backend} <- {run_dir}')
+            sources[f'{arm}/trajectory.csv'] = paths.data / arm / 'trajectory.csv'
+            sources[f'{arm}/details/frames.csv'] = paths.run / arm / 'details/frames.csv'
+        for name, source_file in sources.items():
+            if source_file.is_file():
+                output_file = target / name
+                output_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_file, output_file)
+        (target / 'SOURCE').write_text(f'{paths.run}\n', encoding='utf-8')
+        print(f'snapshot {backend} <- {paths.run}')
 
 
 def _rows(path: Path) -> list[dict[str, str]]:
@@ -131,7 +136,9 @@ def _compare_trajectory(base: Path, new: Path) -> dict:
 def _summary(episode: dict) -> dict:
     scene = episode.get('scene') or {}
     quality = scene.get('quality') or {}
-    return dict(status=episode.get('status'), backend=scene.get('reconstruction_backend'),
+    default_backend = {'umi_poster_episode': 'poster_independent', 'umi_local_episode': 'independent',
+                       'umi_scene_episode': 'scene_map'}.get(episode.get('kind'))
+    return dict(status=episode.get('status'), backend=scene.get('reconstruction_backend', default_backend),
                 scope=scene.get('scope'), rows=episode.get('rows'),
                 common_interval_s=episode.get('common_interval_s'),
                 quality_status=quality.get('status'),
