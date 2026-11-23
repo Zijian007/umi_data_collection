@@ -17,7 +17,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install portable reader dependencies
-        run: python -m pip install --disable-pip-version-check numpy==1.26.* ruff==0.15.0
+        run: python -m pip install --disable-pip-version-check numpy==1.26.* ruff==0.15.0 import-linter==2.15
 
       - name: Compile Python sources
         run: python -m compileall -q umi tests
@@ -25,28 +25,8 @@ jobs:
       - name: Check portable training reader boundary
         run: PYTHONPATH=. python -m unittest -q tests.test_dataset_reader_boundary
 
-      - name: Run changed-source lint rules
-        run: >-
-          ruff check
-          umi/dataset/reader.py
-          umi/dataset/schema.py
-          umi/dataset/sampling.py
-          umi/dataset/export.py
-          umi/apps/scene.py
-          umi/core/arms.py
-          umi/config/user_settings.py
-          umi/config/operational_settings.py
-          umi/workflows/scene/batch_snapshot.py
-          umi/workflows/scene/task_configuration.py
-          umi/workflows/scene/inputs/scene.py
-          umi/workflows/scene/parameters.py
-          umi/apps/viewer/server.py
-          umi/estimation/mapping.py
-          umi/estimation/fusion/graph.py
-          umi/estimation/poster_vio/models.py
-          umi/estimation/poster_vio/initialization.py
-          umi/estimation/poster_vio/frontend.py
-          umi/estimation/poster_vio/solver.py
-          umi/estimation/poster_vio/base_tags.py
-          umi/estimation/poster_vio/refinement.py
-          umi/workflows/scene/tasks/poster_vio.py
+      - name: Lint the umi package
+        run: ruff check umi
+
+      - name: Check package layering
+        run: PYTHONPATH=. lint-imports --config .importlinter

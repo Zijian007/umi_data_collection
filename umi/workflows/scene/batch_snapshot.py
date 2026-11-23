@@ -9,7 +9,8 @@ from umi.infra import provenance as artifact_identity
 from umi.devices import registry
 from umi.config import user_settings as user_config, audio_sync as sync_config
 from umi.store import layout
-from umi.workflows.scene.parameters import SceneOverrides, nested_snapshot
+from umi.config.scene_parameters import nested_snapshot
+from umi.workflows.scene.parameters import SceneOverrides
 from umi.store.models import ARMS, Scene
 from umi.workflows.scene.maps import repository as map_repository
 from umi.workflows.scene import recordings

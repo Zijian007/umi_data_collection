@@ -12,7 +12,7 @@ from umi.config import loader as config
 from umi.apps import calib as calibration_cli
 from umi.apps import scene as scene_cli
 from umi.workflows.scene.parameters import SceneOverrides, apply_overrides
-from umi.workflows.scene.parameters import nested_snapshot
+from umi.config.scene_parameters import nested_snapshot
 from umi.workflows.scene.inputs import batch as episode_inputs, scene as scene_inputs
 from umi.infra.file_store import write_yaml
 from umi.apps.viewer import server

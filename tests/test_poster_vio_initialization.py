@@ -203,7 +203,7 @@ class PosterVioInitializationTests(unittest.TestCase):
     def test_vio_frontend_refinement_and_holdout_settings_validate_and_snapshot(self):
         from dataclasses import asdict
         from umi.workflows.scene.inputs.scene import load_scene_parameters
-        from umi.workflows.scene.parameters import nested_snapshot
+        from umi.config.scene_parameters import nested_snapshot
 
         values = load_scene_parameters(overrides=dict(poster_vio=dict(
             frontend=dict(maximum_tracks=120, maximum_track_length=20),
@@ -223,7 +223,7 @@ class PosterVioInitializationTests(unittest.TestCase):
     def test_specialist_inspired_options_validate_in_expert_namespace(self):
         from dataclasses import asdict
         from umi.workflows.scene.inputs.scene import load_scene_parameters
-        from umi.workflows.scene.parameters import nested_snapshot
+        from umi.config.scene_parameters import nested_snapshot
 
         values = load_scene_parameters(overrides=dict(poster_vio=dict(keyframes=dict(maximum_dt_s=0.),
             frontend=dict(revisit=dict(enabled=False)), holdout=dict(natural_stride=0))))

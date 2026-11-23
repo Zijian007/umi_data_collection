@@ -344,7 +344,7 @@ def apply_backend_options(scene, record):
         return scene
     parameters = record.get('parameter_overrides', {})
     if parameters and scene.overrides is not None:
-        from umi.workflows.scene.parameters import flatten
+        from umi.config.scene_parameters import flatten
         expert = flatten(scene.overrides.values.get('parameters', {}), label='parameters')
         parameters = {key: value for key, value in parameters.items() if key not in expert}
     constraint = record.get('scene_map_poster_constraint', {})

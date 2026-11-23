@@ -213,7 +213,7 @@ class ReconstructionTests(unittest.TestCase):
                 path.write_text(path.read_text().replace('0.000000', f'{number}.000000'))
             return result
 
-        with patch.object(runtime.subprocess, 'run', side_effect=execute), \
+        with patch("subprocess.run", side_effect=execute), \
                 patch.object(fusion_runner, 'execute', side_effect=self.failing_alignment):
             result = self.run_stages()
         self.assertEqual(len(result.attempts), 3)
@@ -263,7 +263,7 @@ class ReconstructionTests(unittest.TestCase):
                 options['stdout'].write('offline_sync=1\noffline_keyframe_interval_s=0.2 minimum_frames=6\n')
             return self.engines(command, **options)
 
-        with patch.object(runtime.subprocess, 'run', side_effect=execute):
+        with patch("subprocess.run", side_effect=execute):
             result = self.run_stages()
         for stage in ('map', 'loc_m0'):
             record = json.loads((result.directory / 'front' / stage / 'execution.json').read_text())
@@ -290,7 +290,7 @@ class ReconstructionTests(unittest.TestCase):
                 options['stderr'].write('Optional parameter does not exist...\n' + cause + '\n\n')
             return self.engines(command, **options)
 
-        with patch.object(runtime.subprocess, 'run', side_effect=execute):
+        with patch("subprocess.run", side_effect=execute):
             result = self.run_stages(replace(self.context,
                 parameters=config.load('trajectory', overrides={'retry': {'max_tries': 1}}).values))
         self.assertIsNone(result.chosen)

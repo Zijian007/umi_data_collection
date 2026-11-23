@@ -40,7 +40,7 @@ _CAMERA_VISION = ('umi/devices', 'umi/core/geometry.py', 'umi/core/timing.py',
                   'umi/perception/recordings.py', 'umi/perception/runtime.py', 'umi/perception/slam.py',
                   'umi/perception/poster', 'umi/perception/tools', 'umi/estimation/factors')
 _DOMAIN_SOURCES = {
-    'scene': ('umi/workflows/scene', 'umi/store', 'umi/core/arms.py', 'umi/estimation/mapping.py',
+    'scene': ('umi/workflows/scene', 'umi/store', 'umi/config/scene_parameters.py', 'umi/config/collection_schema.py', 'umi/core/arms.py', 'umi/estimation/mapping.py',
               'umi/dataset/relative_pose_evaluation.py', 'umi/apps/scene.py',
               'umi/estimation/fixed_map', 'umi/estimation/inertial.py',
               'umi/estimation/models.py', 'umi/estimation/constraint_quality.py'),

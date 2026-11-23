@@ -183,7 +183,7 @@ class WorkflowTests(RecordingFixture):
             self.engines.write_dataset(output)
             return manifest
 
-        with patch.object(selection, 'select_calibration', return_value=self.selected), patch.object(extraction, 'extract', side_effect=extraction_error or extract), patch.object(runtime.subprocess, 'run', side_effect=self.fake_runner), patch.object(fusion_runner, 'execute', side_effect=self.fake_fusion), patch.object(postprocess, 'export_trajectories', side_effect=self.fake_postprocess), patch.object(runtime.console, 'write'):
+        with patch.object(selection, 'select_calibration', return_value=self.selected), patch.object(extraction, 'extract', side_effect=extraction_error or extract), patch("subprocess.run", side_effect=self.fake_runner), patch.object(fusion_runner, 'execute', side_effect=self.fake_fusion), patch.object(postprocess, 'export_trajectories', side_effect=self.fake_postprocess), patch.object(runtime.console, 'write'):
             return workflow.run_recording(self.video, self.output.parent, request)
 
     def test_success_skip_and_reprocess_after_calibration_change(self):
@@ -335,7 +335,7 @@ class WorkflowTests(RecordingFixture):
         self.engines.write_dataset(paths.dataset)
         times = paths.debug / 'times.csv'
         times.write_text('t_canonical_s\n1.0\n')
-        with patch.object(runtime.subprocess, 'run', side_effect=self.fake_runner), patch.object(fusion_runner, 'execute', side_effect=self.fake_fusion), patch.object(reconstruction, 'assess_try', side_effect=qualities), patch.object(runtime.console, 'write'):
+        with patch("subprocess.run", side_effect=self.fake_runner), patch.object(fusion_runner, 'execute', side_effect=self.fake_fusion), patch.object(reconstruction, 'assess_try', side_effect=qualities), patch.object(runtime.console, 'write'):
             videos = visual_recordings.prepare_lens_videos(self.video, context, lenses=('front', 'rear') if context.parameters.input.mode == 'dual' else ('front',))
             result = reconstruction.run_attempts(videos, RecordingData({}, paths.dataset / 'mav0/imu0/data.csv', times), context, recording_name=self.video.name)
         self.assertEqual(result.chosen, 2)

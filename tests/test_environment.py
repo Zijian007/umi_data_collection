@@ -12,7 +12,7 @@ from umi.infra.paths import python_executable
 class TrajectoryHealthTests(unittest.TestCase):
     def test_health_check_uses_current_inventory_and_reports_broken_assets(self):
         from umi.workflows.calibration import inventory
-        from umi.workflows.segment import reconstruction as runtime
+        from umi.apps import health as runtime
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             trajectory = root/'trajectory'

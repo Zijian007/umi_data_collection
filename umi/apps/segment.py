@@ -17,13 +17,13 @@ import sys
 
 from umi.workflows.segment import workflow
 from umi.estimation.models import TrajectoryRequest
-from umi.workflows.segment import reconstruction as runtime
 
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "check":
-        return runtime.check()
+        from umi.apps.health import check
+        return check()
     if argv and argv[0] == "run":
         argv = argv[1:]
     parser = argparse.ArgumentParser(prog="python -m umi.apps.segment", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

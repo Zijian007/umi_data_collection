@@ -143,7 +143,7 @@ class SceneConfigurationTests(unittest.TestCase):
 
     def test_poster_backend_quality_parameters_are_independent_and_round_trip(self):
         from dataclasses import asdict
-        from umi.workflows.scene.parameters import nested_snapshot, flatten
+        from umi.config.scene_parameters import nested_snapshot, flatten
         parameters = scene_inputs.load_scene_parameters(overrides=dict(
             placement=dict(maximum_rotation_deg=1.), localization=dict(maximum_visual_gap_s=.1)))
         self.assertEqual(parameters.poster_maximum_gravity_difference_deg, 5.)

@@ -233,7 +233,7 @@ class IndependentPosterPipelineTests(unittest.TestCase):
             evidence=request.output/'fuse_info.json'
             document=json.loads(evidence.read_text());document['environment_poster']=dict(status='fused',actual_error='not_measured')
             evidence.write_text(json.dumps(document))
-        with patch.object(tags,'detect',return_value=inputs.poster.observations),patch.object(runtime.subprocess,'run',side_effect=engine),patch.object(fusion_runner,'execute',side_effect=fuse):
+        with patch.object(tags,'detect',return_value=inputs.poster.observations),patch("subprocess.run",side_effect=engine),patch.object(fusion_runner,'execute',side_effect=fuse):
             result=helper.run_fallback()
         self.assertEqual(result.evidence['environment_poster']['status'],'fused')
         self.assertEqual(result.evidence['mode'],'independent')

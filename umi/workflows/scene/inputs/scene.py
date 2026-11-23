@@ -8,7 +8,8 @@ import math
 import re
 from umi.config import loader as config
 from umi.store import layout
-from umi.workflows.scene.parameters import SceneOverrides, apply_overrides, FIELD_PATHS, SCENE_PARAMETER_FIELDS, flatten as flatten_scene_parameters
+from umi.config.scene_parameters import FIELD_PATHS, SCENE_PARAMETER_FIELDS, flatten as flatten_scene_parameters
+from umi.workflows.scene.parameters import SceneOverrides, apply_overrides
 from umi.store.models import Scene, SceneParameters
 from umi.infra.file_store import read_yaml
 from umi.infra.paths import PROJECT_ROOT

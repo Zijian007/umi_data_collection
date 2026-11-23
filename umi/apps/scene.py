@@ -193,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         if handled:
             return 0
         if args.command == 'check':
-            from umi.workflows.segment.reconstruction import check
+            from umi.apps.health import check
             return check()
         elif args.command == 'build':
             result = processing.build(args.batch, force=args.force, keep_work=args.keep_work,
