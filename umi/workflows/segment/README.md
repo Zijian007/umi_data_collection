@@ -56,7 +56,7 @@ umi/apps/segment.py main() → workflow.run_batch() → workflow.run_recording()
 
 ## 依赖
 
-`ReconstructionContext` 直接持有视觉阶段共用的路径、参数和 CPU 设置。独立命令和场景回退都将已解析的输入交给重建阶段。视觉程序、错误与路径由 `umi/perception` 管理；外参和逐帧位姿右乘由 `umi/core/geometry.py` 管理；公共 TUM 读写位于 `umi/core/tum.py`。
+`ReconstructionContext` 直接持有视觉阶段共用的路径、参数和 CPU 设置。独立命令和场景回退都将已解析的输入交给重建阶段。视觉程序、错误与路径由 `umi/perception` 管理。外参和逐帧位姿右乘由 `umi/core/geometry.py` 提供。TUM 轨迹读写位于 `umi/infra/file_store.py`。
 
 ## 融合模块
 

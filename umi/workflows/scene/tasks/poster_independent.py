@@ -7,7 +7,7 @@ raw-feature visual BA backend and it never receives a scene map as input.
 from dataclasses import replace
 import numpy as np
 from umi.infra.concurrency import daemon_map
-from umi.infra.file_store import write_json
+from umi.infra.file_store import read_tum, write_json
 from umi.workflows.scene.tasks import measurements, trajectory_writers
 from umi.config.collection_schema import require_poster
 from umi.store.models import TaskInputs, ArmExecutionResult, Episode, PreparedRecording
@@ -19,7 +19,6 @@ from scipy.spatial.transform import Rotation
 from umi.core.timing import canonical_to_video_seconds
 from umi.core.geometry import validate_transform
 from umi.config.parameter_models import EnvironmentTagParameters
-from umi.core.tum import read_tum
 from umi.estimation.models import FusedTrajectory, RecordingPaths, ReconstructionContext
 from umi.workflows.segment import reconstruction
 from umi.estimation.constraint_quality import longest_gap, maximum_support_gap

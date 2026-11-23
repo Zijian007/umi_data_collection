@@ -1,15 +1,19 @@
-"""场景和设备档案共用的原子文件、写入锁与结果版本指针。"""
+"""公共文件读写、缓存与原子发布。"""
 
 from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 import fcntl
 import json
 import os
 import tempfile
 
 from ruamel.yaml import YAML
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 # --force：本次运行开始之前生成的缓存一律视为失效；本次运行中新生成的仍可复用（例如建图时
@@ -72,6 +76,27 @@ def read_yaml(path: Path) -> dict:
 def write_json(path: Path, document: dict) -> None:
     with atomic_file(path) as temporary:
         temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False)+'\n', encoding='utf-8')
+
+
+def read_tum(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """读取 TUM 轨迹的秒时间戳、位置和 xyzw 四元数。"""
+    import numpy as np
+
+    rows = [list(map(float, line.split())) for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.startswith("#")]
+    trajectory = np.array(rows)
+    return trajectory[:, 0], trajectory[:, 1:4], trajectory[:, 4:8]
+
+
+def write_tum(path: Path, times_s: np.ndarray, positions: np.ndarray,
+              quaternions_xyzw: np.ndarray, header: str) -> None:
+    """按项目既有精度写入 TUM 轨迹。"""
+    with path.open("w", encoding="utf-8", newline="\n") as stream:
+        for header_line in header.strip().splitlines():
+            stream.write("# " + header_line + "\n")
+        for frame_index in range(len(times_s)):
+            stream.write("%.6f %.6f %.6f %.6f %.9f %.9f %.9f %.9f\n" %
+                         (times_s[frame_index], *positions[frame_index], *quaternions_xyzw[frame_index]))
 
 
 def read_npz_cache(path: Path, marker: Path, inputs: dict, *, mismatch: str | None = None) -> tuple[dict, str] | None:

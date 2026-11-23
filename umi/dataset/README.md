@@ -10,7 +10,7 @@
 | `relative_pose_evaluation.py` | 对冻结结果做固定夹具相对位姿评估（`umi-scene evaluate-relative`），复用训练采样的时间对齐 |
 | `export.py` | `build()` 管理整包校验、事务与发布；`_write_episode()` 写入一集样本、视频、元数据及哈希 |
 
-`umi.workflows.scene.episodes.episode_paths()` 和 `accepted_run()` 是共用读取边界；本模块不导入场景 CLI、workflow、融合算法或 wholebody。几何插值复用 `umi.core.geometry`，历史 TUM 读取复用 `umi.core.tum`；新结果只读取一次 trajectory.csv，由 ArmSamples 携带宽度序列供 sample_gripper() 对齐到训练时间轴。
+`umi.workflows.scene.episodes.episode_paths()` 和 `accepted_run()` 是共用读取边界。本模块不导入场景 CLI、workflow、融合算法或 wholebody。几何插值使用 `umi.core.geometry`，历史 TUM 轨迹使用 `umi.infra.file_store.read_tum()`。新结果只读取一次 `trajectory.csv`，由 `ArmSamples` 携带宽度序列供 `sample_gripper()` 对齐到训练时间轴。
 
 样本保留实际 TCP 定义和本集参考系中的位姿（固定场景或任务海报坐标），不提前绑定模型的动作预测长度。宽度标定未配置或导出时间轴上仍有无效样本时标记为未就绪；读取时可用 `require_training_ready=True` 检查。测试使用实际编码、解码的小视频检查索引、时间、可移动读取及失败不发布。
 

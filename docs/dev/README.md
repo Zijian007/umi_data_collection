@@ -37,8 +37,8 @@
 | perception | [umi/perception](../../umi/perception) | 解码、录像准备、ORB 建图/定位、海报检测与 PnP、音频同步 `audio/`、夹爪标签 `gripper/` |
 | devices | [umi/devices](../../umi/devices) | X3 原片读取 `x3/`、相机登记表、标定资产与来源、轨迹用标定选择 `selection.py` |
 | config | [umi/config](../../umi/config) | 配置加载、参数模型、`collection.yaml` 与场景参数 schema、运行与用户设置 |
-| infra | [umi/infra](../../umi/infra) | 路径、终端、文件存储与缓存标记、内容哈希、ORB 安装布局、并发工具 |
-| core | [umi/core](../../umi/core) | 纯几何、时间轴、录制帧约定、TUM 读写、使用手校验；不读取文件或配置 |
+| infra | [umi/infra](../../umi/infra) | 路径、终端、文件读写（含 TUM 轨迹）、缓存标记、内容哈希、ORB 安装布局、并发工具 |
+| core | [umi/core](../../umi/core) | 位姿几何、时间轴、录制帧约定和使用手校验 |
 
 流程之间也有方向：标定 → 场景 → 内部逐段引擎。环境镜头标定复用场景的录像准备与地图能力，场景的 `poster_independent` 复用逐段引擎的重建；反方向的依赖不允许。
 
@@ -46,7 +46,8 @@
 
 ### 新增代码放哪里
 
-- 纯数学、无 IO：`core/`；读写某种设备或标定文件：`devices/`；从图像/音频里提取观测：`perception/`；求解与验收数值：`estimation/`。
+- 位姿几何、时钟换算和录制规格等公共约定放 `core/`。通用文件读写放 `infra/`，TUM 轨迹读写入口见 [file_store.py](../../umi/infra/file_store.py)。
+- 设备或标定文件的读写放 `devices/`。提取图像和音频观测放 `perception/`，求解与验收数值放 `estimation/`。
 - 一个算法需要的参数，在算法旁定义窄参数类（如 `PosterVioParameters`），由 `SceneParameters.for_algorithm()` 投影，算法不直接依赖配置文件结构。
 - 编排顺序、失败收尾、发布与报告放 `workflows/`；命令行参数与输出格式放 `apps/`。
 - 跨层引用前先看 `lint-imports` 是否通过；需要反向依赖时，通常说明该代码应下移一层。

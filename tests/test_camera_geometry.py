@@ -10,6 +10,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from umi.core.geometry import imu_from_camera, camera_from_tcp, compose_pose_series, tcp_frame_definition, describe_tcp_frame
+from umi.infra.file_store import read_tum, write_tum
 
 
 class CameraGeometryTests(unittest.TestCase):
@@ -79,7 +80,6 @@ class CameraGeometryTests(unittest.TestCase):
 
     def test_independent_export_records_the_selected_tcp_convention(self):
         from umi.devices import calibration_assets
-        from umi.core.tum import write_tum
         from umi.workflows.segment import trajectory_export as postprocess
 
         root = Path(__file__).resolve().parents[1]
@@ -121,7 +121,6 @@ class CameraGeometryTests(unittest.TestCase):
         from umi.workflows.segment import trajectory_export as postprocess
         from umi.workflows.segment.trajectory_export import load_extrinsics
         from umi.workflows.segment.reporting import reports
-        from umi.core.tum import write_tum, read_tum
 
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

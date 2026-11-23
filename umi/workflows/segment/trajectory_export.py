@@ -14,7 +14,7 @@ from umi.config.parameter_models import TrajectoryParameters
 from umi.core.geometry import compose_pose_series, imu_from_camera, camera_from_tcp, tcp_frame_definition
 from umi.core.timing import canonical_to_video_seconds
 from umi.core.frame import output_frame_rate, geometry_record
-from umi.core.tum import read_tum, write_tum
+from umi.infra.file_store import read_tum, write_tum
 from umi.workflows.segment.reporting.reports import plot
 from umi.estimation.constraint_quality import frame_constraints, front_tracked, tracked_counts, runs, evaluate_notes
 import hashlib

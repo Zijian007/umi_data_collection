@@ -16,9 +16,9 @@ from umi.core.geometry import imu_from_camera, camera_from_tcp, tcp_frame_defini
 from umi.core.frame import geometry_record
 from umi.perception.gripper.width_estimation import WidthResult
 from umi.perception.gripper.series import SOURCE_NAMES
-from umi.core.tum import write_tum
 from umi.estimation.constraint_quality import position_support
 from umi.infra.concurrency import daemon_map
+from umi.infra.file_store import write_tum
 from umi.store.models import ArmExecutionResult, ArmTrajectory, PreparedRecording, TaskInputs
 from umi.estimation.models import FusedTrajectory
 from umi.store.result_io import is_local_scene, is_poster_scene

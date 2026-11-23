@@ -179,7 +179,7 @@ run → workflow.run_episode()
 - `models.FusedTrajectory.T_reference_imu` 是调用方声明参考系中的 IMU 位姿；固定场景融合使用场景系，独立回退使用本次局部系。
 - 新地图版本格式为 `YYYYMMDD_HHMMSS-随机8位`，前缀取本机建图开始时间，使用本地时区；复用地图时版本保持不变。
 
-相机–IMU 和相机–TCP 外参、SE(3) 校验和位姿插值由 `umi/core/geometry.py` 提供；场景模块保留地图尺度与场景放置。通用 TUM 读写直接使用 `umi/core/tum.py`，不依赖独立轨迹后处理模块。
+相机–IMU 和相机–TCP 外参、SE(3) 校验和位姿插值由 `umi/core/geometry.py` 提供。场景模块负责地图尺度与场景放置。TUM 轨迹读写使用 `umi/infra/file_store.py`。
 
 地图尺度复用 `trajectory.algorithms.fusion.alignment.align_lenses()` 的运动段筛选，并由 `fusion.alignment.estimate_lens_alignment(shared_map=True)` 共用一个尺度、重力和零偏重新求解。场景层仅适配观测、检查可靠段一致性与可观测性、保存验收诊断，不复制另一套尺度求解器。分段端点速度隔离，地图变换始终只有一个。建图与任务融合共用 `inertial.estimate_gyro_bias()` 的初始陀螺仪零偏规则。
 

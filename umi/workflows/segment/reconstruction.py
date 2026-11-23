@@ -11,12 +11,11 @@ import hashlib
 import json
 import time
 import numpy as np
-from umi.infra.file_store import write_json
+from umi.infra.file_store import read_tum, write_json
 from umi.infra.provenance import canonical_hash
 from umi.estimation.constraint_quality import scale_failure, frame_constraints, position_support_summary
 from umi.estimation.models import AttemptResult, FusionArtifacts, ReconstructionContext, ReconstructionSettings
 from umi.core.timing import canonical_to_video_seconds
-from umi.core.tum import read_tum
 from umi.perception import runtime as visual_runtime, slam
 from umi.perception.models import LensLocalization, LensVideo, RecordingData, ProcessingError
 from umi.perception.runtime import write_error_log

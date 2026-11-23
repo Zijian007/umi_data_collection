@@ -13,12 +13,12 @@ from umi.estimation.fixed_map.parameters import FixedMapParameters
 from umi.config import loader as config
 from umi.devices import registry
 from umi.infra import provenance as artifact_identity
+from umi.infra.file_store import write_tum
 from umi.workflows.calibration import workflow
 from umi.workflows.calibration.models import CalibrationRequest
 from umi.workflows.calibration.pipeline import inputs as calibration_inputs
 from umi.core.geometry import imu_from_camera
 from umi.core.timing import video_to_imu_seconds
-from umi.core.tum import write_tum
 from umi.workflows.scene import camera_assets
 from umi.store.models import Scene
 from umi.workflows.scene import recordings

@@ -13,7 +13,7 @@ import numpy as np
 from umi.core.geometry import resample_pose_series, relative_pose_series
 from umi.dataset.schema import validate_quality_policy
 from umi.perception.gripper import series
-from umi.core.tum import read_tum
+from umi.infra.file_store import read_tum
 from umi.store.result_io import TCP_COLUMNS, arm_evidence, result_paths, trajectory_path
 
 @dataclass(frozen=True)
