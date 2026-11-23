@@ -260,7 +260,7 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
                               parameters: parameter_models.TrajectoryParameters, *, log=print, poster=None) -> TrajectoryOptimizationResult:
     """按照固定插入顺序构图和优化，保留原求解器的数值行为。"""
     fusion_parameters, zupt_parameters = parameters.fusion, parameters.zupt
-    gravity_m_s2, frame_rate_hz = fusion_parameters.gravity_m_s2, float(output_frame_rate(parameters.video.frame_step))
+    frame_rate_hz = float(output_frame_rate(parameters.video.frame_step))
     lenses, alignment_estimates, initial_lens = aligned.lenses, aligned.estimates, aligned.initial_lens
     frame_count = len(aligned.video_times_s)
     video_times_s, imu_video_times_s = aligned.video_times_s, aligned.imu_video_times_s
@@ -273,25 +273,14 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
     continuity_position_sigma_m = fusion_parameters.continuity_position_sigma_m
     use_zero_velocity, optimize_front_lever = zupt_parameters.enabled, fusion_parameters.optimize_front_lever
     # ---------------- graph ----------------
-    preintegration_parameters = gtsam.PreintegrationCombinedParams.MakeSharedU(gravity_m_s2)
+    preintegration_parameters = _preintegration_parameters(fusion_parameters)
     acc_noise, gyro_noise, acc_bias_rw = fusion_parameters.acc_noise, fusion_parameters.gyro_noise, fusion_parameters.acc_bias_rw
-    preintegration_parameters.setAccelerometerCovariance(np.eye(3) * acc_noise ** 2)
-    preintegration_parameters.setGyroscopeCovariance(np.eye(3) * gyro_noise ** 2)
-    preintegration_parameters.setIntegrationCovariance(np.eye(3) * fusion_parameters.integration_covariance)
-    preintegration_parameters.setBiasAccCovariance(np.eye(3) * acc_bias_rw ** 2)
-    preintegration_parameters.setBiasOmegaCovariance(np.eye(3) * fusion_parameters.gyro_bias_rw ** 2)
     graph = gtsam.NonlinearFactorGraph()
     init = gtsam.Values()
     bias0 = gtsam.imuBias.ConstantBias(alignment_estimates[initial_lens]["ba"], initial_gyro_bias)
     hub = gtsam.noiseModel.mEstimator.Huber.Create(fusion_parameters.huber)
     adaptive_sigma = fusion_parameters.adaptive_sigma
-    full_lenses = [lens_name for lens_name in lenses if any(placement["kind"] == "full" for placement in chain_placements[lens_name].values()) and alignment_estimates[lens_name] is not None]
-    rms_min = min(alignment_estimates[lens_name]["pos_rms"] for lens_name in full_lenses) if full_lenses else 1.0
-    lens_position_sigmas = {
-        lens: (position_sigma_m * max(1.0, alignment_estimates[lens]["pos_rms"] / rms_min)
-               if adaptive_sigma and lens in full_lenses else position_sigma_m)
-        for lens in lenses
-    }
+    lens_position_sigmas = _lens_position_sigmas(lenses, chain_placements, alignment_estimates, fusion_parameters)
     visual_rotation_sigma_rad = np.radians(fusion_parameters.visual_rotation_sigma_deg)
     noise6m = {
         lens: gtsam.noiseModel.Robust.Create(
@@ -320,14 +309,7 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
         gauge,
         noise7,
     )
-    use_rear_lever = any(segments["rear"])
-    use_front_lever = optimize_front_lever and any(segments["front"])
-    if use_front_lever:
-        init.insert(FRONT_LEVER_KEY, lenses["front"]["lever"].astype(float))
-        graph.add(gtsam.PriorFactorVector(FRONT_LEVER_KEY, lenses["front"]["lever"].astype(float), gtsam.noiseModel.Isotropic.Sigma(3, lever_sigma_m)))
-    if use_rear_lever:
-        init.insert(REAR_LEVER_KEY, lenses["rear"]["lever"].astype(float))
-        graph.add(gtsam.PriorFactorVector(REAR_LEVER_KEY, lenses["rear"]["lever"].astype(float), gtsam.noiseModel.Isotropic.Sigma(3, lever_sigma_m)))
+    use_front_lever, use_rear_lever = _add_lever_priors(graph, init, lenses, segments, optimize_front_lever, lever_sigma_m)
     graph.add(gtsam.PriorFactorConstantBias(
         B(0), bias0, gtsam.noiseModel.Diagonal.Sigmas(np.array(
             [fusion_parameters.acc_bias_prior_sigma] * 3 + [fusion_parameters.gyro_bias_prior_sigma] * 3))))
@@ -358,11 +340,10 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
                     gtsam.noiseModel.Isotropic.Sigma(3, zupt_parameters.velocity_sigma_m_s),
                 ))
         initial_velocities[zupt] = 0.0
-    chain_for_frame = {lens_name: {} for lens_name in lenses}
-    for lens_name in lenses:
-        for chain_index, (k0, k1) in enumerate(lenses[lens_name]["chains"]):
-            for frame_index in range(k0, k1 + 1):
-                chain_for_frame[lens_name][frame_index] = chain_index
+    chain_for_frame = {lens_name: {frame_index: chain_index
+                                   for chain_index, (k0, k1) in enumerate(lenses[lens_name]["chains"])
+                                   for frame_index in range(k0, k1 + 1)}
+                       for lens_name in lenses}
     def preint_between(start_time_s, end_time_s, bias):
         return _preintegrate_between(
             imu_video_times_s, acc, gyro, preintegration_parameters, start_time_s, end_time_s, bias)
@@ -370,15 +351,7 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
 
     node_times = None
     if poster is not None:
-        from umi.core.geometry import resample_pose_series
-        nodes, node_times = poster.augment_nodes(nodes, video_times_s)
-        query = np.array([node_times[frame_index] for frame_index in nodes])
-        poses = resample_pose_series(poster.baseline.video_times_s, poster.baseline.T_world_imu, query)
-        velocities = np.column_stack([np.interp(query, poster.baseline.video_times_s,
-                                                 poster.baseline.velocities[:, axis_index])
-                                       for axis_index in range(3)])
-        seeds = {frame_index: (gtsam.Pose3(pose), velocity)
-                 for frame_index, pose, velocity in zip(nodes, poses, velocities)}
+        nodes, node_times, seeds = _poster_seeds(poster, nodes, video_times_s)
     def add_nodes_and_factors():
         """Insert visual factors, IMU edges, and initial node values in order."""
         observation_counts = {lens_name: 0 for lens_name in lenses}
@@ -469,6 +442,54 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
         optimization['finished_s'],
         node_times,
     )
+
+
+def _preintegration_parameters(fusion_parameters):
+    """GTSAM 组合预积分参数：重力向下，噪声与零偏随机游走按配置取平方作协方差。"""
+    parameters = gtsam.PreintegrationCombinedParams.MakeSharedU(fusion_parameters.gravity_m_s2)
+    parameters.setAccelerometerCovariance(np.eye(3) * fusion_parameters.acc_noise ** 2)
+    parameters.setGyroscopeCovariance(np.eye(3) * fusion_parameters.gyro_noise ** 2)
+    parameters.setIntegrationCovariance(np.eye(3) * fusion_parameters.integration_covariance)
+    parameters.setBiasAccCovariance(np.eye(3) * fusion_parameters.acc_bias_rw ** 2)
+    parameters.setBiasOmegaCovariance(np.eye(3) * fusion_parameters.gyro_bias_rw ** 2)
+    return parameters
+
+
+def _lens_position_sigmas(lenses, chain_placements, alignment_estimates, fusion_parameters) -> dict:
+    """自适应时按各镜头对齐 RMS 相对最小者放大位置标准差；否则统一使用配置值。"""
+    position_sigma_m = fusion_parameters.position_sigma_m
+    full_lenses = [lens_name for lens_name in lenses if any(placement["kind"] == "full" for placement in chain_placements[lens_name].values()) and alignment_estimates[lens_name] is not None]
+    rms_min = min(alignment_estimates[lens_name]["pos_rms"] for lens_name in full_lenses) if full_lenses else 1.0
+    return {
+        lens: (position_sigma_m * max(1.0, alignment_estimates[lens]["pos_rms"] / rms_min)
+               if fusion_parameters.adaptive_sigma and lens in full_lenses else position_sigma_m)
+        for lens in lenses
+    }
+
+
+def _add_lever_priors(graph, init, lenses, segments, optimize_front_lever: bool, lever_sigma_m: float):
+    """需要优化的镜头杆臂加入变量和先验（先工作镜头、后环境镜头，保持插入顺序）。"""
+    use_rear_lever = any(segments["rear"])
+    use_front_lever = optimize_front_lever and any(segments["front"])
+    for used, key, lens in ((use_front_lever, FRONT_LEVER_KEY, "front"), (use_rear_lever, REAR_LEVER_KEY, "rear")):
+        if used:
+            init.insert(key, lenses[lens]["lever"].astype(float))
+            graph.add(gtsam.PriorFactorVector(key, lenses[lens]["lever"].astype(float), gtsam.noiseModel.Isotropic.Sigma(3, lever_sigma_m)))
+    return use_front_lever, use_rear_lever
+
+
+def _poster_seeds(poster, nodes, video_times_s):
+    """海报约束：补充观测时刻节点，并以基线轨迹在节点时刻的位姿与速度作初值。"""
+    from umi.core.geometry import resample_pose_series
+    nodes, node_times = poster.augment_nodes(nodes, video_times_s)
+    query = np.array([node_times[frame_index] for frame_index in nodes])
+    poses = resample_pose_series(poster.baseline.video_times_s, poster.baseline.T_world_imu, query)
+    velocities = np.column_stack([np.interp(query, poster.baseline.video_times_s,
+                                             poster.baseline.velocities[:, axis_index])
+                                   for axis_index in range(3)])
+    seeds = {frame_index: (gtsam.Pose3(pose), velocity)
+             for frame_index, pose, velocity in zip(nodes, poses, velocities)}
+    return nodes, node_times, seeds
 
 
 def skew(w):
