@@ -310,7 +310,6 @@ def refine_shared_poster_pose(contexts: list[PosterInputs], *, _allow_cull=True)
     if not contexts:
         return {}
     import gtsam
-    from gtsam.symbol_shorthand import L
 
     def retry_without(plan):
         filtered = [replace(context, detections=plan[context.arm]['detections'])
@@ -328,24 +327,57 @@ def refine_shared_poster_pose(contexts: list[PosterInputs], *, _allow_cull=True)
     if initial_cull:
         return retry_without(initial_cull)
     if not active:
-        return {
-            context.arm: replace(context.baseline, evidence=dict(
-                context.baseline.evidence,
-                environment_poster=dict(status='insufficient_observations', enabled=True,
-                                         method=context.method,
-                                         layout=context.board.record(), pose_scope='this_recording',
-                                         map_scale='fixed', actual_error='not_measured')))
-            for context in contexts
-        }
+        return {context.arm: _unfused(context, status='insufficient_observations', pose_scope='this_recording')
+                for context in contexts}
 
     first = active[0]['context']
-    board = first.board
-    parameters = first.parameters
     # Use the arm with the most observations as the shared initialization.
     # Each arm's own camera model is still used by its reprojection factors.
     seed_item = max(active, key=lambda item: len(item['selected']))
-    board_pose = seed_item['board_seed']
+    graph, values, board_key, solved = _shared_poster_graph(active, seed_item['board_seed'])
 
+    solver = gtsam.LevenbergMarquardtParams()
+    solver.setMaxIterations(first.inertial_parameters.fusion.lm_iterations)
+    initial_error = float(graph.error(values))
+    optimized = gtsam.LevenbergMarquardtOptimizer(graph, values, solver).optimize()
+    final_error = float(graph.error(optimized))
+    if not np.isfinite(final_error) or final_error > initial_error + 1e-5:
+        raise PosterGeometryError('双手环境海报联合优化未通过优化误差检查')
+    final_board = optimized.atPose3(board_key).matrix()
+    cull_plan = {}
+    for item in solved:
+        plan = _measure_shared_arm(item, optimized, final_board, first.parameters, allow_cull=_allow_cull)
+        if plan is not None:
+            cull_plan[item['context'].arm] = plan
+    # 先完成所有手的剔除计划，再做最终门槛；坏观测不能在剔除前触发全图 RMS 拒绝。
+    if cull_plan:
+        return retry_without(cull_plan)
+    output = {}
+    for item in solved:
+        output[item['context'].arm] = _accept_shared_arm(
+            item, contexts, first, seed_item, final_board, initial_error=initial_error, final_error=final_error)
+    for context in contexts:
+        if context.arm not in output:
+            output[context.arm] = _unfused(context, status='not_observed_shared_board', pose_scope='shared_task',
+                                           shared_board_arms=sorted(c.arm for c in contexts))
+    return output
+
+
+def _unfused(context: PosterInputs, *, status: str, pose_scope: str, **extra) -> FusedTrajectory:
+    """未参与共享海报求解的手保留基线轨迹，只记录原因。"""
+    return replace(context.baseline, evidence=dict(
+        context.baseline.evidence,
+        environment_poster=dict(status=status, enabled=True, method=context.method,
+                                layout=context.board.record(), pose_scope=pose_scope,
+                                map_scale='fixed', actual_error='not_measured', **extra)))
+
+
+def _shared_poster_graph(active: list[dict], board_pose: np.ndarray):
+    """一个共享海报位姿 + 各手的惯性链、地图先验、静止速度与海报角点因子。"""
+    import gtsam
+    from gtsam.symbol_shorthand import L
+
+    parameters = active[0]['context'].parameters
     graph = gtsam.NonlinearFactorGraph()
     values = gtsam.Values()
     board_key = L(0)
@@ -387,103 +419,88 @@ def refine_shared_poster_pose(contexts: list[PosterInputs], *, _allow_cull=True)
                            selected=selected, rear_key=rear_key, base_ext=base_ext,
                            pose_key=pose_key))
 
-    solver = gtsam.LevenbergMarquardtParams()
-    solver.setMaxIterations(first.inertial_parameters.fusion.lm_iterations)
-    initial_error = float(graph.error(values))
-    optimized = gtsam.LevenbergMarquardtOptimizer(graph, values, solver).optimize()
-    final_error = float(graph.error(optimized))
-    if not np.isfinite(final_error) or final_error > initial_error + 1e-5:
-        raise PosterGeometryError('双手环境海报联合优化未通过优化误差检查')
-    final_board = optimized.atPose3(board_key).matrix()
-    output = {}
-    solved_arms = set()
-    cull_plan = {}
-    for item in solved:
-        context = item['context']
-        poses = np.array([optimized.atPose3(item['pose_key'](i)).matrix()
-                          for i in range(len(item['node_times']))])
-        final_ext, rear_correction_deg = _solved_rear_extrinsic(
-            optimized, item['rear_key'], item['base_ext'], context.parameters)
-        prediction, camera_points = project_observations(
-            final_board, poses[item['tag_indices']] @ np.linalg.inv(final_ext),
-            item['points'], item['model'])
-        metrics = residual_metrics(prediction, item['pixels'],
-                                   frame_ids=context.detections.sample_indices[item['selected']],
-                                   tag_ids=context.detections.tag_ids[item['selected']])
-        corner_errors = np.linalg.norm(prediction - item['pixels'], axis=2)
-        sighting_rms = np.sqrt(np.mean(corner_errors ** 2, axis=1))
-        cull_limit = cull_threshold(parameters)
-        cull_mask = sighting_rms > cull_limit
-        frame_ids = context.detections.sample_indices[item['selected']]
-        if (_allow_cull and isolated_cull(cull_mask, frame_ids, parameters.tag_minimum_frames,
-                                         times=item['used_times'], parameters=parameters)):
-            cull_plan[context.arm] = dict(
-                detections=without_sightings(context.detections, item['selected'], cull_mask),
-                audit=dict(**culling_record(cull_mask, item['selected'], frame_ids,
-                    context.detections.tag_ids[item['selected']], item['used_times'], parameters, stage='optimization'),
-                    pre_cull_reprojection_rms_px=float(metrics['rms_px']), pre_cull_reprojection_metrics=metrics))
-        item.update(poses=poses, final_ext=final_ext, rear_correction_deg=rear_correction_deg,
-                    metrics=metrics, camera_points=camera_points, cull_mask=cull_mask)
-    # 先完成所有手的剔除计划，再做最终门槛；坏观测不能在剔除前触发全图 RMS 拒绝。
-    if cull_plan:
-        return retry_without(cull_plan)
-    for item in solved:
-        context = item['context']
-        poses, final_ext, rear_correction_deg = item['poses'], item['final_ext'], item['rear_correction_deg']
-        metrics, camera_points = item['metrics'], item['camera_points']
-        if np.any(item['cull_mask']):
-            raise PosterGeometryError('双手海报优化后异常观测无法在单轮预算内剔除', metrics=dict(metrics,
-                culling=cull_decision(item['cull_mask'], context.detections.sample_indices[item['selected']],
-                                     item['used_times'], context.parameters)))
-        if (not np.isfinite(poses).all() or not np.isfinite(metrics['rms_px'])
-                or metrics['rms_px'] > parameters.tag_maximum_reprojection_rms_px
-                or np.any(camera_points[:, :, 2] <= 0)):
-            raise PosterGeometryError('双手环境海报联合优化未通过正深度或重投影检查')
-        try:
-            map_rms = fusion.measure_map_consistency(poses, item['remapped'], context.T_cam_imu, parameters)
-        except fusion.SceneFusionQualityError as error:
-            raise PosterGeometryError(str(error)) from error
-        evidence = dict(
-            layout=board.record(), enabled=True, method=first.method,
-            status='fused', pose_scope='shared_task',
-            map_scale='fixed', observations=int(len(item['selected'])),
-            frames=int(len(np.unique(context.detections.sample_indices[item['selected']]))),
-            visible_ids=sorted(set(int(x) for x in context.detections.tag_ids[item['selected']])),
-            observability=_observability_metrics(
-                poses[item['tag_indices']] @ np.linalg.inv(final_ext),
-                item['used_times'], context.detections.tag_ids[item['selected']]),
-            T_scene_board_initial=seed_item['board_seed'].tolist(),
-            initial_reprojection_rms_px=float(seed_item['initial_rms']),
-            initial_reprojection_metrics=seed_item['initial_metrics'],
-            T_scene_board=final_board.tolist(), final_reprojection_rms_px=metrics['rms_px'],
-            rear_rotation_correction_deg=rear_correction_deg,
-            rear_rotation_refinement=rear_rotation_evidence(rear_correction_deg, context.parameters),
-            final_reprojection_metrics=metrics, nodes=len(item['node_times']),
-            added_nodes=len(item['node_times'])-len(context.times),
-            initial_error=initial_error, final_error=final_error,
-            zero_velocity_nodes=item['zero_nodes'], visual_consistency_rms_m=map_rms,
-            shared_board_arms=sorted(c.arm for c in contexts),
-            actual_error='not_measured')
-        video_times = item['used_times'] - context.front_time_offset_ns / 1e9
-        support = position_support_metrics(poses[item['tag_indices']], final_board, final_ext,
-            item['points'], item['pixels'], item['model'], video_times, parameters)
-        evidence.update(_support_evidence(support, video_times, final_ext))
-        baseline = context.baseline
-        output[context.arm] = replace(baseline, T_reference_imu=poses[item['output_indices']],
-                                         evidence=dict(baseline.evidence, environment_poster=evidence))
-        solved_arms.add(context.arm)
+    return graph, values, board_key, solved
 
-    for context in contexts:
-        if context.arm in solved_arms:
-            continue
-        output[context.arm] = replace(context.baseline, evidence=dict(
-            context.baseline.evidence,
-            environment_poster=dict(status='not_observed_shared_board', enabled=True,
-                                     method=context.method,
-                                     pose_scope='shared_task', map_scale='fixed',
-                                     layout=context.board.record(), actual_error='not_measured',
-                                     shared_board_arms=sorted(c.arm for c in contexts))))
-    return output
+
+def _measure_shared_arm(item: dict, optimized, final_board, parameters, *, allow_cull: bool) -> dict | None:
+    """读出一只手的优化位姿与重投影；需要剔除孤立异常观测时返回剔除计划（就地记录测量结果）。"""
+    plan = None
+    context = item['context']
+    poses = np.array([optimized.atPose3(item['pose_key'](i)).matrix()
+                      for i in range(len(item['node_times']))])
+    final_ext, rear_correction_deg = _solved_rear_extrinsic(
+        optimized, item['rear_key'], item['base_ext'], context.parameters)
+    prediction, camera_points = project_observations(
+        final_board, poses[item['tag_indices']] @ np.linalg.inv(final_ext),
+        item['points'], item['model'])
+    metrics = residual_metrics(prediction, item['pixels'],
+                               frame_ids=context.detections.sample_indices[item['selected']],
+                               tag_ids=context.detections.tag_ids[item['selected']])
+    corner_errors = np.linalg.norm(prediction - item['pixels'], axis=2)
+    sighting_rms = np.sqrt(np.mean(corner_errors ** 2, axis=1))
+    cull_limit = cull_threshold(parameters)
+    cull_mask = sighting_rms > cull_limit
+    frame_ids = context.detections.sample_indices[item['selected']]
+    if (allow_cull and isolated_cull(cull_mask, frame_ids, parameters.tag_minimum_frames,
+                                     times=item['used_times'], parameters=parameters)):
+        plan = dict(
+            detections=without_sightings(context.detections, item['selected'], cull_mask),
+            audit=dict(**culling_record(cull_mask, item['selected'], frame_ids,
+                context.detections.tag_ids[item['selected']], item['used_times'], parameters, stage='optimization'),
+                pre_cull_reprojection_rms_px=float(metrics['rms_px']), pre_cull_reprojection_metrics=metrics))
+    item.update(poses=poses, final_ext=final_ext, rear_correction_deg=rear_correction_deg,
+                metrics=metrics, camera_points=camera_points, cull_mask=cull_mask)
+    return plan
+
+
+def _accept_shared_arm(item: dict, contexts, first: PosterInputs, seed_item: dict, final_board, *,
+                       initial_error: float, final_error: float) -> FusedTrajectory:
+    """最终门槛（剔除预算、正深度、重投影、地图一致性）与证据整理。"""
+    parameters, board = first.parameters, first.board
+    context = item['context']
+    poses, final_ext, rear_correction_deg = item['poses'], item['final_ext'], item['rear_correction_deg']
+    metrics, camera_points = item['metrics'], item['camera_points']
+    if np.any(item['cull_mask']):
+        raise PosterGeometryError('双手海报优化后异常观测无法在单轮预算内剔除', metrics=dict(metrics,
+            culling=cull_decision(item['cull_mask'], context.detections.sample_indices[item['selected']],
+                                 item['used_times'], context.parameters)))
+    if (not np.isfinite(poses).all() or not np.isfinite(metrics['rms_px'])
+            or metrics['rms_px'] > parameters.tag_maximum_reprojection_rms_px
+            or np.any(camera_points[:, :, 2] <= 0)):
+        raise PosterGeometryError('双手环境海报联合优化未通过正深度或重投影检查')
+    try:
+        map_rms = fusion.measure_map_consistency(poses, item['remapped'], context.T_cam_imu, parameters)
+    except fusion.SceneFusionQualityError as error:
+        raise PosterGeometryError(str(error)) from error
+    evidence = dict(
+        layout=board.record(), enabled=True, method=first.method,
+        status='fused', pose_scope='shared_task',
+        map_scale='fixed', observations=int(len(item['selected'])),
+        frames=int(len(np.unique(context.detections.sample_indices[item['selected']]))),
+        visible_ids=sorted(set(int(x) for x in context.detections.tag_ids[item['selected']])),
+        observability=_observability_metrics(
+            poses[item['tag_indices']] @ np.linalg.inv(final_ext),
+            item['used_times'], context.detections.tag_ids[item['selected']]),
+        T_scene_board_initial=seed_item['board_seed'].tolist(),
+        initial_reprojection_rms_px=float(seed_item['initial_rms']),
+        initial_reprojection_metrics=seed_item['initial_metrics'],
+        T_scene_board=final_board.tolist(), final_reprojection_rms_px=metrics['rms_px'],
+        rear_rotation_correction_deg=rear_correction_deg,
+        rear_rotation_refinement=rear_rotation_evidence(rear_correction_deg, context.parameters),
+        final_reprojection_metrics=metrics, nodes=len(item['node_times']),
+        added_nodes=len(item['node_times'])-len(context.times),
+        initial_error=initial_error, final_error=final_error,
+        zero_velocity_nodes=item['zero_nodes'], visual_consistency_rms_m=map_rms,
+        shared_board_arms=sorted(c.arm for c in contexts),
+        actual_error='not_measured')
+    video_times = item['used_times'] - context.front_time_offset_ns / 1e9
+    support = position_support_metrics(poses[item['tag_indices']], final_board, final_ext,
+        item['points'], item['pixels'], item['model'], video_times, parameters)
+    evidence.update(_support_evidence(support, video_times, final_ext))
+    baseline = context.baseline
+    return replace(baseline, T_reference_imu=poses[item['output_indices']],
+                                     evidence=dict(baseline.evidence, environment_poster=evidence))
+
 
 
 # ---------------------------------------------------------------------------
