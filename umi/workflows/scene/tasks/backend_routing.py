@@ -128,90 +128,107 @@ def execute(inputs: TaskInputs, selection: MapSelection) -> ArmExecutionResult:
         if report is not None:
             result.coordinate_record['recording_trim'] = report
         return result
+    return _AutoRoute(inputs, selection).run()
 
-    # A published map is still the preferred source.  It is skipped only when
-    # map selection failed before reconstruction; a low-quality map attempt is
-    # represented by SceneFusionQualityError and falls through the same chain.
-    candidates = (AUTO_CANDIDATES_WITH_MAP if selection.manifest is not None
-                  else AUTO_CANDIDATES_WITHOUT_MAP)
-    console = getattr(inputs, 'console', None)
-    recording = getattr(getattr(inputs, 'episode', None), 'root', None)
-    recording = getattr(recording, 'name', None)
 
-    def route_message(message):
+# 允许 auto 换下一个后端的失败类型：(异常类型, 记录类别, 只对哪个后端生效)。
+# 输入、标定、引擎和程序错误不在此列，不能作为改用下一种重建策略的依据。
+_CANDIDATE_FAILURES = (
+    # The map was present, but its usable visual support was too weak.
+    (SceneFusionQualityError, 'scene_quality', None),
+    (PosterVioQualityError, 'poster_vio_quality', None),
+    # A candidate can be unavailable because the prepared recording cannot be
+    # decoded by its feature frontend; the independent poster backend may
+    # still have a valid engine path.
+    (InvalidDataError, 'poster_vio_unavailable', 'poster_vio'),
+)
+
+
+class _AutoRoute:
+    """auto：按顺序尝试候选后端，每个候选在独立目录运行，成功者的产物移入任务目录。"""
+
+    def __init__(self, inputs: TaskInputs, selection: MapSelection):
+        self.inputs, self.selection = inputs, selection
+        # A published map is still the preferred source.  It is skipped only when
+        # map selection failed before reconstruction; a low-quality map attempt is
+        # represented by SceneFusionQualityError and falls through the same chain.
+        self.candidates = (AUTO_CANDIDATES_WITH_MAP if selection.manifest is not None
+                           else AUTO_CANDIDATES_WITHOUT_MAP)
+        self.attempts_root = inputs.directory / 'reconstruction_attempts'
+        self.attempts: list[dict] = []
+        self.failure = dict(selection.failure) if selection.failure else None
+        self._trimmed = None
+
+    def message(self, text: str) -> None:
+        console = getattr(self.inputs, 'console', None)
         if console is not None:
-            console.write(message, recording=recording)
+            recording = getattr(getattr(self.inputs, 'episode', None), 'root', None)
+            console.write(text, recording=getattr(recording, 'name', None))
 
-    route_message('自动后端路由：' + ' → '.join(candidates) +
-                  ('；场景地图可用' if selection.manifest is not None else '；无可用场景地图'))
-    attempts_root = inputs.directory / 'reconstruction_attempts'
-    attempts_root.mkdir(exist_ok=True)
-    attempts = []
-    failure = dict(selection.failure) if selection.failure else None
+    def run(self) -> ArmExecutionResult:
+        self.message('自动后端路由：' + ' → '.join(self.candidates) +
+                     ('；场景地图可用' if self.selection.manifest is not None else '；无可用场景地图'))
+        self.attempts_root.mkdir(exist_ok=True)
+        for index, backend in enumerate(self.candidates):
+            self.message(f'后端尝试 {index + 1}/{len(self.candidates)}：{backend}')
+            attempt_dir = self.attempts_root / f'{index:02d}_{backend}'
+            attempt_dir.mkdir()
+            next_backend = self.candidates[index + 1] if index + 1 < len(self.candidates) else None
+            try:
+                result = self._run_candidate(backend, attempt_dir)
+            except Exception as error:
+                category = next((category for kind, category, only in _CANDIDATE_FAILURES
+                                 if isinstance(error, kind) and only in (None, backend)), None)
+                if category is None:
+                    self._record_fatal(backend, error)
+                    raise
+                self._record_failure(backend, error, category=category, next_backend=next_backend)
+                continue
+            return self._adopt(backend, attempt_dir, result)
+        # The final candidate is expected to raise its own actionable error.  This
+        # guard protects the invariant if a future candidate list is edited.
+        raise RuntimeError('自动重建没有可尝试的后端')
 
-    def record_failure(backend, error, *, category, next_backend=None):
-        nonlocal failure
+    def _run_candidate(self, backend: str, attempt_dir: Path) -> ArmExecutionResult:
+        inputs, trim_report = self.inputs, None
+        if uses_edge_trim(inputs.episode.scene, backend):
+            if self._trimmed is None:
+                self._trimmed = tag_trimming.prepare(inputs)
+            inputs, trim_report = self._trimmed
+        selection = self.selection if backend == 'scene_map' else MapSelection.without_map(self.failure)
+        result = ESTIMATORS[backend](replace(inputs, directory=attempt_dir), selection)
+        if trim_report is not None:
+            result.coordinate_record['recording_trim'] = trim_report
+        return result
+
+    def _write_attempts(self, selected_backend: str | None) -> None:
+        write_json(self.attempts_root / 'attempts.json', dict(
+            requested_mode='auto', selected_backend=selected_backend, attempts=self.attempts))
+
+    def _record_failure(self, backend, error, *, category, next_backend=None) -> None:
         details = fallback_record(error, category=category)
-        attempts.append(dict(backend=backend, status='failed', **details))
-        failure = dict(failure or details)
+        self.attempts.append(dict(backend=backend, status='failed', **details))
+        self.failure = dict(self.failure or details)
         # Keep the selection passed to the next candidate immutable with
         # respect to later successes; the root manifest records the full list.
-        failure['attempts'] = list(attempts)
-        write_json(attempts_root / 'attempts.json', dict(
-            requested_mode='auto', selected_backend=None, attempts=attempts))
+        self.failure['attempts'] = list(self.attempts)
+        self._write_attempts(None)
         if next_backend is None:
-            route_message(f'后端失败：{backend}；类别={category}；原因={details["reason"]}')
+            self.message(f'后端失败：{backend}；类别={category}；原因={details["reason"]}')
         else:
-            route_message(f'后端切换：{backend} → {next_backend}；类别={category}；原因={details["reason"]}')
+            self.message(f'后端切换：{backend} → {next_backend}；类别={category}；原因={details["reason"]}')
 
-    trimmed_inputs, trim_report = None, None
-    for index, backend in enumerate(candidates):
-        route_message(f'后端尝试 {index + 1}/{len(candidates)}：{backend}')
-        attempt_dir = attempts_root / f'{index:02d}_{backend}'
-        attempt_dir.mkdir()
-        candidate_selection = (selection if backend == 'scene_map' else
-                               MapSelection.without_map(failure))
-        try:
-            candidate_inputs, candidate_trim_report = inputs, None
-            if uses_edge_trim(scene, backend):
-                if trimmed_inputs is None:
-                    trimmed_inputs, trim_report = tag_trimming.prepare(inputs)
-                candidate_inputs, candidate_trim_report = trimmed_inputs, trim_report
-            result = ESTIMATORS[backend](replace(candidate_inputs, directory=attempt_dir), candidate_selection)
-            if candidate_trim_report is not None:
-                result.coordinate_record['recording_trim'] = candidate_trim_report
-        except SceneFusionQualityError as error:
-            # The map was present, but its usable visual support was too weak.
-            record_failure(backend, error, category='scene_quality',
-                           next_backend=candidates[index + 1] if index + 1 < len(candidates) else None)
-            continue
-        except PosterVioQualityError as error:
-            record_failure(backend, error, category='poster_vio_quality',
-                           next_backend=candidates[index + 1] if index + 1 < len(candidates) else None)
-            continue
-        except InvalidDataError as error:
-            # A candidate can be unavailable because the prepared recording
-            # cannot be decoded by its feature frontend; the independent
-            # poster backend may still have a valid engine path.
-            if backend != 'poster_vio':
-                raise
-            record_failure(backend, error, category='poster_vio_unavailable',
-                           next_backend=candidates[index + 1] if index + 1 < len(candidates) else None)
-            continue
-        except Exception as error:
-            # Input, calibration, engine and programming errors are not
-            # evidence that the next reconstruction strategy should be tried.
-            # Still record the terminal candidate for failed-run diagnostics.
-            attempts.append(dict(backend=backend, status='failed', category='fatal',
-                                 reason=str(error), error_type=type(error).__name__))
-            write_json(attempts_root / 'attempts.json', dict(
-                requested_mode='auto', selected_backend=None, attempts=attempts))
-            route_message(f'后端终止：{backend}；类别=fatal；原因={error}')
-            raise
+    def _record_fatal(self, backend, error) -> None:
+        # Still record the terminal candidate for failed-run diagnostics.
+        self.attempts.append(dict(backend=backend, status='failed', category='fatal',
+                                  reason=str(error), error_type=type(error).__name__))
+        self._write_attempts(None)
+        self.message(f'后端终止：{backend}；类别=fatal；原因={error}')
 
-        attempts.append(dict(backend=backend, status='succeeded'))
+    def _adopt(self, backend: str, attempt_dir: Path, result: ArmExecutionResult) -> ArmExecutionResult:
+        self.attempts.append(dict(backend=backend, status='succeeded'))
         for entry in attempt_dir.iterdir():
-            target = inputs.directory / entry.name
+            target = self.inputs.directory / entry.name
             if target.exists():
                 if target.is_dir():
                     shutil.rmtree(target)
@@ -219,14 +236,9 @@ def execute(inputs: TaskInputs, selection: MapSelection) -> ArmExecutionResult:
                     target.unlink()
             entry.rename(target)
         attempt_dir.rmdir()
-        write_json(attempts_root / 'attempts.json', dict(
-            requested_mode='auto', selected_backend=backend, attempts=attempts))
-        result.coordinate_record['attempts'] = attempts
-        if failure:
-            result.coordinate_record['fallback'] = dict(failure, attempts=attempts)
-        route_message(f'后端选定：{backend}；尝试次数={len(attempts)}')
+        self._write_attempts(backend)
+        result.coordinate_record['attempts'] = self.attempts
+        if self.failure:
+            result.coordinate_record['fallback'] = dict(self.failure, attempts=self.attempts)
+        self.message(f'后端选定：{backend}；尝试次数={len(self.attempts)}')
         return result
-
-    # The final candidate is expected to raise its own actionable error.  This
-    # guard protects the invariant if a future candidate list is edited.
-    raise RuntimeError('自动重建没有可尝试的后端')
