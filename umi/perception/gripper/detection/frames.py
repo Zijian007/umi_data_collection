@@ -12,7 +12,7 @@ import numpy as np
 
 from umi.core.frame import SRC_H, SRC_W
 from umi.config import operational_settings as settings
-from umi.perception.gripper import DEFAULT_TAG_ROI
+from umi.perception.gripper import default_tag_roi
 from umi.perception.gripper.detection.markers import CascadeMarkerDetector, FrameDetection, MarkerDetector, validate_roi
 from umi.infra import provenance as artifact_identity
 from umi.infra.file_store import mark_used, read_npz_cache, write_npz_cache
@@ -91,15 +91,16 @@ class DetectionSeries:
 
 def identity() -> dict:
     """检测缓存的数据输入：检测设置与源画面几何；不含代码或依赖版本。"""
-    return dict(settings=dict(settings.values('gripper_tag_detection')),
-                source_size=[SRC_W, SRC_H], lens_half='right', default_roi_px=list(DEFAULT_TAG_ROI))
+    parameters = dict(settings.values('gripper_tag_detection'))
+    roi = parameters.pop('roi_px')
+    return dict(settings=parameters, source_size=[SRC_W, SRC_H], lens_half='right', default_roi_px=list(roi))
 
 
 class WidthDetection:
     """逐个源帧检测，保持宽度检测器的独立状态和原始时间轴。"""
 
-    def __init__(self, roi: tuple[int, int, int, int] = DEFAULT_TAG_ROI):
-        self.detector = FrameDetector(roi, mode='cascade')
+    def __init__(self, roi: tuple[int, int, int, int] | None = None):
+        self.detector = FrameDetector(default_tag_roi() if roi is None else roi, mode='cascade')
         self.times_s, self.distances_px, self.corners_px = [], [], []
 
     def validate(self, streams) -> None:
@@ -122,7 +123,7 @@ class WidthDetection:
         return DetectionSeries(timestamps, np.asarray(self.distances_px), np.asarray(self.corners_px))
 
 
-def scan_width(video: Path, *, roi: tuple[int, int, int, int] = DEFAULT_TAG_ROI) -> DetectionSeries:
+def scan_width(video: Path, *, roi: tuple[int, int, int, int] | None = None) -> DetectionSeries:
     decoder = VideoDecode(video)
     decoder.add(WidthDetection(roi))
     return decoder.run()[0]

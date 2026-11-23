@@ -21,7 +21,7 @@ from scipy.ndimage import maximum_filter
 
 from umi.devices.x3.insv_reader import metadata_summary, read_metadata
 from umi.config import audio_sync as sync_config
-from umi.config.audio_sync import KiwiParameters as SyncParams, KIWI_SAMPLE_RATE as SAMPLE_RATE
+from umi.config.audio_sync import KiwiParameters as SyncParams
 from umi.config.audio_sync import AUDIO_SYNC_RECIPES
 from umi.perception.audio.specialist_audio import AudioSyncError, AudioSyncEstimate
 
@@ -137,10 +137,10 @@ def vote_offset(
     a: np.ndarray,
     b: np.ndarray,
     *,
-    params: SyncParams = SyncParams(),
+    params: SyncParams | None = None,
 ) -> VoteResult:
     """Prior-free coarse offset of ``b`` relative to ``a`` (positive = b later)."""
-    p = params
+    p = params if params is not None else sync_config.load('kiwi')
     la = _landmarks(*_spectral_peaks(a, p), p)
     lb = _landmarks(*_spectral_peaks(b, p), p)
     frame_s = p.hop / p.sample_rate
@@ -237,10 +237,10 @@ class RefineResult:
 
 
 def refine_offset(
-    a: np.ndarray, b: np.ndarray, coarse_s: float, *, params: SyncParams = SyncParams()
+    a: np.ndarray, b: np.ndarray, coarse_s: float, *, params: SyncParams | None = None
 ) -> RefineResult:
     """Sub-sample offset: GCC-PHAT peak within ±``refine_window_s`` of ``coarse_s``."""
-    p = params
+    p = params if params is not None else sync_config.load('kiwi')
     lags, cc = gcc_phat(a, b)
     acc = np.abs(cc)
     sel = np.abs(lags / p.sample_rate - coarse_s) <= p.refine_window_s
@@ -353,7 +353,7 @@ def estimate_drift(
     b: np.ndarray,
     coarse_s: float,
     *,
-    params: SyncParams = SyncParams(),
+    params: SyncParams | None = None,
     anchor_times_s: tuple[float, ...] | None = None,
 ) -> DriftResult | None:
     """Relative clock-rate estimate from independently refined sliding windows.
@@ -367,7 +367,7 @@ def estimate_drift(
     survive the quality filters. Missing measurements lower confidence without
     vetoing an offset supported by a short shared pattern.
     """
-    p = params
+    p = params if params is not None else sync_config.load('kiwi')
     win = int(p.drift_window_s * p.sample_rate)
     hop = int(p.drift_hop_s * p.sample_rate)
     if min(win, hop) <= 0:
@@ -446,11 +446,13 @@ def onset_times(
     x: np.ndarray,
     k: int,
     *,
-    sample_rate: int = SAMPLE_RATE,
+    sample_rate: int | None = None,
     hop: int = 240,
     gap_s: float = 1.5,
 ) -> list[tuple[float, float]]:
     """Times + strengths of the ``k`` strongest RMS-derivative onsets, ``gap_s`` apart."""
+    if sample_rate is None:
+        sample_rate = sync_config.load('kiwi').sample_rate
     n = len(x) // hop
     if n < 2:
         return []
@@ -472,7 +474,7 @@ def onset_times(
 
 
 def onset_agreement(
-    a: np.ndarray, b: np.ndarray, offset_s: float, *, params: SyncParams = SyncParams()
+    a: np.ndarray, b: np.ndarray, offset_s: float, *, params: SyncParams | None = None
 ) -> tuple[int, int]:
     """``(matched, total)`` strong onsets that line up under ``offset_s``.
 
@@ -480,7 +482,7 @@ def onset_agreement(
     spectrum. It is only ever a check, never an estimator, and it is
     advisory: the counts are reported without gating on them.
     """
-    p = params
+    p = params if params is not None else sync_config.load('kiwi')
     a, b, shift, _ = _aligned_audio(a, b, offset_s, p.sample_rate)
     residual = offset_s - shift
     a_on = onset_times(a, p.onset_count, sample_rate=p.sample_rate)

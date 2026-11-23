@@ -38,7 +38,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
         mapping.parent.mkdir(parents=True)
         mapping.write_text('mapping')
         collection = normalize_collection(dict(kit='rig', recording=dict(arms=['left']),
-                                               scene={}, reconstruction=dict(backend='auto')))
+                                               scene={}, backend=dict(mode='auto')))
         for directory, expected in ((batch, True), (self.f.scene.root / 'auto_without_mapping', False)):
             with self.subTest(directory=directory):
                 has_mapping = bool(recordings.insv_files(directory / 'mapping'))
@@ -61,7 +61,7 @@ class SceneVideoLayoutTests(unittest.TestCase):
         write_yaml(batch / 'collection.yaml', dict(scene=dict(description=''), kit='rig',
                    recording=dict(arms=['left', 'right']),
                    map=dict(layout='auto', reference_arm='left', selection=dict(policy='latest_prior')),
-                   reconstruction=dict(backend='scene_map')))
+                   backend=dict(mode='scene_map')))
         with patch.object(ingest, 'scan_raw_videos', return_value=(infos, [])):
             preview = processing.prepare_batch(batch, dry_run=True)
         self.assertEqual(len(preview['episodes']), 1)

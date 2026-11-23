@@ -49,9 +49,6 @@ class AudioSyncEstimate:
     diagnostics: dict[str, object] = field(default_factory=dict)
 
 
-_DEFAULT_SAMPLE_RATE = SpecialistParameters().sample_rate_hz
-
-
 @functools.lru_cache(maxsize=1)
 def _ffmpeg() -> str:
     """Resolve ffmpeg lazily so importing the module stays lightweight."""
@@ -66,12 +63,14 @@ def _ffmpeg() -> str:
     return str(imageio_ffmpeg.get_ffmpeg_exe())
 
 
-def decode_mono(path: Path, *, sample_rate_hz: int = _DEFAULT_SAMPLE_RATE) -> np.ndarray:
+def decode_mono(path: Path, *, sample_rate_hz: int | None = None) -> np.ndarray:
     """Decode the first audio stream to mono float64 PCM."""
 
     path = Path(path)
     if not path.is_file():
         raise AudioSyncError(f"audio source not found: {path}")
+    if sample_rate_hz is None:
+        sample_rate_hz = sync_config.load('specialist').sample_rate_hz
     command = [
         _ffmpeg(), "-v", "error", "-i", str(path), "-ac", "1",
         "-ar", str(sample_rate_hz), "-f", "f32le", "-",

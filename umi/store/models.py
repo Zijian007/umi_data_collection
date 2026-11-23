@@ -160,6 +160,7 @@ class Scene:
     scene_map_poster_constraint_enabled: bool | None = None
     scene_map_tag_detection_enabled: bool | None = None
     scene_map_edge_trim: bool = False
+    position_support_gap_sources: dict[str, str] = field(default_factory=dict)
 
     @property
     def root(self) -> Path:

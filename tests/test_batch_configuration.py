@@ -87,7 +87,7 @@ class KitTests(unittest.TestCase):
         write_yaml(declaration, dict(kit='rig',
             recording=dict(arms=['right']), scene=dict(description=''),
             map=dict(layout='shared', reference_arm='right', selection=dict(policy='latest_prior')),
-            reconstruction=dict(backend='scene_map')))
+            backend=dict(mode='scene_map')))
         before = declaration.read_bytes()
         self.assertFalse((batch / '.pipeline').exists())
         resolved = batch_inputs.read_batch(batches.save_record(batches.read_inputs(batch, require_mapping=False)))

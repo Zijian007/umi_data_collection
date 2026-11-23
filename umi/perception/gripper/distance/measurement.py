@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from umi.config import operational_settings as settings
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from contextlib import closing
 from fractions import Fraction
 from math import ceil
@@ -16,7 +16,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from umi.infra import provenance as artifact_identity
-from umi.perception.gripper import DEFAULT_TAG_ROI
+from umi.perception.gripper import default_tag_roi
 from umi.perception.gripper.detection import frames
 from umi.perception.gripper.detection.markers import validate_roi
 from umi.perception.gripper.distance.pose_estimation import TagPoseEstimator, TagPoseQuality
@@ -41,7 +41,7 @@ class TagDistanceRequest:
     quality: TagPoseQuality
     min_valid_fraction: float = .5
     max_missing_frames: int = 15
-    roi_px: tuple[int, int, int, int] = DEFAULT_TAG_ROI
+    roi_px: tuple[int, int, int, int] = field(default_factory=default_tag_roi)
     detection_times_s: NDArray[np.float64] | None = None
 
     def __post_init__(self) -> None:

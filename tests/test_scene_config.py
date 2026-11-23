@@ -9,7 +9,7 @@ from umi.workflows.scene.inputs import scene as scene_inputs
 from umi.store import layout
 from umi.workflows.scene.parameters import SceneOverrides
 from umi.workflows.scene.maps import repository as map_lifecycle
-from umi.infra.file_store import write_yaml as _write_yaml
+from umi.infra.file_store import read_yaml, write_yaml as _write_yaml
 
 
 def write_yaml(path, data):
@@ -24,16 +24,17 @@ def write_yaml(path, data):
             map=dict(layout=scene.pop('layout', 'auto'),
                      reference_arm=scene.pop('map_reference_arm', 'left'),
                      selection=dict(policy='latest_prior')),
-            reconstruction=dict(backend='scene_map'))
+            backend=dict(mode='scene_map'))
         normalized['scene'].update(scene)
         if tags is not None:
             normalized['environment_poster'] = dict(
                 layout_path=tags.get('layout'),
                 detection=dict(enabled=tags.get('enabled', False)),
                 mapping=dict(enabled=tags.get('mapping', {}).get('enabled', False),
-                             scale_correction=dict(enabled=tags.get('mapping', {}).get('scale', {}).get('enabled', False))),
-                task_constraint=dict(enabled=tags.get('fusion', {}).get('enabled', False),
-                                     method=tags.get('fusion', {}).get('method', 'staged')))
+                             scale_correction=dict(enabled=tags.get('mapping', {}).get('scale', {}).get('enabled', False))))
+            normalized['backend']['scene_map'] = dict(poster_constraint=dict(
+                enabled=tags.get('fusion', {}).get('enabled', False),
+                method=tags.get('fusion', {}).get('method', 'staged')))
         if data.get('tasks'):
             normalized['tasks'] = {}
             for name, task in data['tasks'].items():
@@ -41,7 +42,7 @@ def write_yaml(path, data):
                 if 'expected_arms' in item:
                     item['arms'] = item.pop('expected_arms')
                 if 'reconstruction' in item and 'mode' in item['reconstruction']:
-                    item['reconstruction'] = dict(backend=item['reconstruction']['mode'])
+                    item['backend'] = item.pop('reconstruction')
                 normalized['tasks'][name] = item
         data = normalized
     _write_yaml(path, data)
@@ -103,10 +104,10 @@ class SceneConfigurationTests(unittest.TestCase):
             map_lifecycle.build_scene(self.path)
 
     def test_inline_algorithm_settings_rejected_regardless_of_comments_and_order(self):
-        self.path.write_text('kit: rig\nrecording:\n  arms: [left, right]\nscene:\n  description: test\n  trajectory:\n    video:\n      size_px: 960\nreconstruction:\n  backend: scene_map\n')
+        self.path.write_text('kit: rig\nrecording:\n  arms: [left, right]\nscene:\n  description: test\n  trajectory:\n    video:\n      size_px: 960\nbackend:\n  mode: scene_map\n')
         with self.assertRaisesRegex(ValueError, '不承载算法参数'):
             scene_inputs.read_scene(self.path)
-        self.path.write_text('kit: rig\nrecording:\n  arms: [left, right]\nscene:\n  description: test\n  trajectory:\n    video:\n      size_px: 960\nreconstruction:\n  backend: scene_map\n')
+        self.path.write_text('kit: rig\nrecording:\n  arms: [left, right]\nscene:\n  description: test\n  trajectory:\n    video:\n      size_px: 960\nbackend:\n  mode: scene_map\n')
         with self.assertRaisesRegex(ValueError, '不承载算法参数'):
             scene_inputs.read_scene(self.path)
 
@@ -249,7 +250,7 @@ class SceneConfigurationTests(unittest.TestCase):
                 write_yaml(collection, dict(kit='rig',
                     recording=dict(arms=['left', 'right']), scene=dict(description='test'),
                     map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
-                    environment_poster=poster, reconstruction=dict(backend='scene_map')))
+                    environment_poster=poster, backend=dict(mode='scene_map')))
                 with self.assertRaisesRegex(ValueError, 'environment_poster'):
                     scene_inputs.read_scene(collection)
 
@@ -274,7 +275,8 @@ class SceneConfigurationTests(unittest.TestCase):
                 enabled=True, layout=str(board),
                 mapping=dict(enabled=True, scale=dict(enabled=False)),
                               fusion=dict(enabled=True, method='joint')))))
-        scene = scene_inputs.read_scene(collection)
+        from umi.config.collection_schema import apply_task_backend
+        scene = apply_task_backend(scene_inputs.read_scene(collection))
         self.assertTrue(scene.environment_tag_detection)
         self.assertEqual(scene.parameters.tag_fusion_method, 'joint')
         self.assertEqual(scene.environment_tag_policy,
@@ -297,8 +299,11 @@ class SceneConfigurationTests(unittest.TestCase):
                 tags = dict(policy, layout=str(board))
                 write_yaml(collection, dict(schema_version=1, kit='rig', scene=dict(
                     layout='shared', map_reference_arm='left', tags=tags)))
+                from umi.config.collection_schema import apply_task_backend, normalize_collection
                 with self.assertRaises(ValueError):
-                    scene_inputs.read_scene(collection)
+                    declaration = normalize_collection(read_yaml(collection))
+                    apply_task_backend(scene_inputs.read_scene(collection, collection=declaration),
+                                       declaration.get('disabled_poster_switches', ()))
 
     def test_environment_tag_fusion_method_is_validated(self):
         board = scene_inputs.ROOT / 'hardware/environment_poster/environment_poster.json'

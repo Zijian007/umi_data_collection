@@ -25,7 +25,53 @@ from umi.infra.paths import CONFIG_ROOT, PROJECT_ROOT
 
 ROOT = PROJECT_ROOT
 ALGORITHM_DIRECTORY = CONFIG_ROOT / 'algorithms'
+POSTER_GEOMETRY_FILENAME = 'poster_geometry.yaml'
 SCHEMA_VERSION = 1
+
+_PARAMETER_NAMES = {
+    'trajectory': {
+        'environment_tags': {'tag_minimum_pose_observation_times': 'tag_minimum_frames'},
+        'retry': {
+            'target_map_position_fraction': 'minimum_full_fraction',
+            'target_maximum_position_support_gap_s': 'maximum_position_support_gap_s',
+        },
+        'notes': {'warn_below_map_position_fraction': 'minimum_full_fraction'},
+    },
+    'calibration': {
+        'checks': {
+            'intrinsics_mean_reprojection_px': 'intrinsics_reprojection_px',
+            'camera_imu_mean_reprojection_px': 'camera_imu_reprojection_px',
+        },
+    },
+}
+
+
+def normalize_parameter_names(kind: str, values: dict, *, public: bool = False) -> dict:
+    """Keep the normalized parameter names used by existing snapshots and hashes."""
+    result = dict(values)
+    for group, names in _PARAMETER_NAMES[kind].items():
+        section = result.get(group)
+        if not isinstance(section, dict):
+            continue
+        if public:
+            for name, internal in names.items():
+                if internal in section:
+                    raise ValueError(f'{group}.{internal} 已移除，请使用 {group}.{name}')
+        if not section.keys() & names.keys():
+            continue
+        section = dict(section)
+        for name, internal in names.items():
+            if name in section:
+                if internal in section:
+                    raise ValueError(f'{group} 不能同时填写 {name} 和 {internal}')
+                section[internal] = section.pop(name)
+        result[group] = section
+    return result
+
+
+def load_poster_geometry(path: Path) -> dict:
+    return normalize_parameter_names('trajectory', {'environment_tags': read_yaml(path)},
+                                     public=True)['environment_tags']
 
 
 def validate_environment_tags(parameters) -> None:
@@ -197,8 +243,7 @@ class Configuration:
         path = self.values.trajectory_validation.config
         target = Path(path).expanduser() if path else None
         if target is not None and not target.is_absolute():
-            source_path = next(source for source in reversed(self.sources)
-                               if Path(source).name != 'environment_tags.yaml')
+            source_path = self.sources[-1]
             target = Path(source_path).parent / target
         # C validates one candidate camera independently; task-only poster/dual
         # selections must never leak in from a shared trajectory configuration.
@@ -211,11 +256,11 @@ class Configuration:
 def load(kind: str, path: Path | None = None, overrides: dict | None = None, *, inline: dict | None = None) -> Configuration:
     default_path = ALGORITHM_DIRECTORY / f'{kind}.yaml'
     try:
-        defaults = read_yaml(default_path)
+        defaults = normalize_parameter_names(kind, read_yaml(default_path), public=True)
         sources = [str(default_path)]
         if kind == 'trajectory':
-            shared_environment_tags_path = ALGORITHM_DIRECTORY / 'environment_tags.yaml'
-            shared_environment_tags = read_yaml(shared_environment_tags_path)
+            shared_environment_tags_path = ALGORITHM_DIRECTORY / POSTER_GEOMETRY_FILENAME
+            shared_environment_tags = load_poster_geometry(shared_environment_tags_path)
             defaults = dict(defaults,
                             environment_tags=dict(defaults.get('environment_tags', {}),
                                                   **shared_environment_tags))
@@ -223,11 +268,11 @@ def load(kind: str, path: Path | None = None, overrides: dict | None = None, *, 
         overlay = {}
         if path is not None:
             path = Path(path).expanduser().resolve()
-            overlay = read_yaml(path)
+            overlay = normalize_parameter_names(kind, read_yaml(path), public=True)
             sources.append(str(path))
         configuration_values = merge_overrides(defaults, overlay)
-        configuration_values = merge_overrides(configuration_values, inline or {})
-        configuration_values = merge_overrides(configuration_values, overrides or {})
+        configuration_values = merge_overrides(configuration_values, normalize_parameter_names(kind, inline or {}))
+        configuration_values = merge_overrides(configuration_values, normalize_parameter_names(kind, overrides or {}))
         effective = decode_parameters(kind, configuration_values)
         changed = _changed_values(defaults, asdict(effective))
         return Configuration(kind, effective, tuple(sources), json.dumps(changed, sort_keys=True),
@@ -263,6 +308,11 @@ def write_yaml(path: Path, values) -> None:
     writer.default_flow_style = False
     writer.sort_base_mapping_type_on_output = False
     writer.allow_unicode = True
+    document = asdict(values)
+    kind = 'trajectory' if isinstance(values, TrajectoryParameters) else 'calibration'
+    for group, names in _PARAMETER_NAMES[kind].items():
+        for name, internal in names.items():
+            document[group][name] = document[group].pop(internal)
     with path.open('w', encoding='utf-8') as output:
-        writer.dump(asdict(values), output)
+        writer.dump(document, output)
 

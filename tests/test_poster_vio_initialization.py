@@ -192,13 +192,13 @@ class PosterVioInitializationTests(unittest.TestCase):
         from umi.workflows.scene.inputs.scene import load_scene_parameters
 
         values = load_scene_parameters(overrides=dict(
-            poster_vio=dict(minimum_tag_frames=10, maximum_position_support_gap_s=.75),
+            poster_vio=dict(minimum_training_observation_times=10, maximum_position_support_gap_s=.75),
             poster_independent=dict(maximum_position_support_gap_s=3.)))
         self.assertEqual(values.poster_vio_minimum_tag_frames, 10)
         self.assertEqual(values.poster_vio_maximum_position_support_gap_s, .75)
         self.assertEqual(values.poster_maximum_position_support_gap_s, 3.)
         with self.assertRaises(ValueError):
-            load_scene_parameters(overrides=dict(poster_vio=dict(minimum_tag_frames=2)))
+            load_scene_parameters(overrides=dict(poster_vio=dict(minimum_training_observation_times=2)))
 
     def test_vio_frontend_refinement_and_holdout_settings_validate_and_snapshot(self):
         from dataclasses import asdict

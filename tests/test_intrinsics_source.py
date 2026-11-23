@@ -190,7 +190,7 @@ class BatchSourceTests(unittest.TestCase):
             write_yaml(batch/'collection.yaml',dict(
                 scene=dict(description=''),
                 map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
-                reconstruction=dict(backend='scene_map'),
+                backend=dict(mode='scene_map'),
                 kit='rig', recording=dict(arms=['left'])))
             def current_camera(serial, *, front, rear):
                 return dict(serial=serial, calibration='001' if front == 'measured' else '002',
@@ -216,7 +216,7 @@ class BatchSourceTests(unittest.TestCase):
                 self.assertEqual(read_yaml(batch/'collection.yaml'), dict(
                     scene=dict(description=''),
                     map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
-                    reconstruction=dict(backend='scene_map'),
+                    backend=dict(mode='scene_map'),
                     kit='rig', recording=dict(arms=['left'])))
 
     def test_legacy_sample_factory_override_cannot_select_insv_factory(self):

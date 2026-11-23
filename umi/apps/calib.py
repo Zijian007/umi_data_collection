@@ -66,13 +66,15 @@ def main(argv: list[str] | None = None, *, prepare_environment: bool = False) ->
     if args.cmd in ('preview-width', 'detect-width'):
         from av.error import FFmpegError
         from cv2 import error as OpenCVError
+        from umi.perception.gripper import default_tag_roi
         from umi.perception.gripper import video_tools as width_video
         try:
+            roi = default_tag_roi() if args.roi is None else args.roi
             if args.cmd == 'preview-width':
-                result = width_video.preview(args.video, args.out, roi=args.roi, contrast=args.contrast)
+                result = width_video.preview(args.video, args.out, roi=roi, contrast=args.contrast)
             else:
                 video_output = None if args.no_video else (args.video_out or args.video.with_name(args.video.stem + '_width_detect.mp4'))
-                result = width_video.monitor(args.video, args.roi, hz=args.hz, output=args.out,
+                result = width_video.monitor(args.video, roi, hz=args.hz, output=args.out,
                                      benchmark=args.benchmark, video_output=video_output, contrast=args.contrast)
         except (OSError, ValueError, RuntimeError, FFmpegError, OpenCVError) as error:
             runtime.console.write(str(error), state='失败')
@@ -112,8 +114,6 @@ def main(argv: list[str] | None = None, *, prepare_environment: bool = False) ->
 
 
 def build_parser() -> argparse.ArgumentParser:
-    from umi.perception.gripper import DEFAULT_TAG_ROI
-
     parser = argparse.ArgumentParser(prog="umi-calib", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='示例：\n  umi-calib run /path/to/front --tag-size-mm 24 --resume\n'
@@ -127,14 +127,14 @@ def build_parser() -> argparse.ArgumentParser:
     width_preview = commands.add_parser('preview-width', help='从 INSV 生成标签框、ID 和像素距离叠加 MP4')
     width_preview.add_argument('video', type=Path, help='X3 原始 3840×1920 INSV')
     width_preview.add_argument('--out', type=Path, help='输出 MP4，默认原片旁的 <原名>_width_preview.mp4；已有文件拒绝覆盖')
-    width_preview.add_argument('--roi', type=int, nargs=4, default=DEFAULT_TAG_ROI,
+    width_preview.add_argument('--roi', type=int, nargs=4,
                                metavar=('LEFT', 'TOP', 'RIGHT', 'BOTTOM'),
-                               help='工作镜头原始半幅的固定范围；默认 600 980 1350 1250，先裁剪再检测')
+                               help='工作镜头原始半幅的固定范围；默认读取 gripper_tag_detection.yaml')
     width_detection = commands.add_parser('detect-width', help='固定 ROI 无界面检测，默认以 30 Hz 输出 CSV 并保存叠加 MP4')
     width_detection.add_argument('video', type=Path, help='X3 原始 3840×1920 INSV')
-    width_detection.add_argument('--roi', type=int, nargs=4, default=DEFAULT_TAG_ROI,
+    width_detection.add_argument('--roi', type=int, nargs=4,
                                  metavar=('LEFT', 'TOP', 'RIGHT', 'BOTTOM'),
-                                 help='工作镜头原始半幅的固定范围；默认 600 980 1350 1250')
+                                 help='工作镜头原始半幅的固定范围；默认读取 gripper_tag_detection.yaml')
     width_detection.add_argument('--hz', type=float, default=30., help='视频时间上的采样频率，须为有限正数，默认 %(default)g Hz；不补帧')
     width_detection.add_argument('--out', type=Path, help='保存 CSV，默认逐条输出到终端；已有文件拒绝覆盖')
     video_options = width_detection.add_mutually_exclusive_group()

@@ -38,16 +38,16 @@ class CompactManifestTests(unittest.TestCase):
         collection.parent.mkdir(parents=True)
         write_yaml(collection, dict(kit='rig', recording=dict(arms=['left', 'right']),
                                    scene=dict(description=''), map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
-                                   reconstruction=dict(backend='scene_map')))
+                                   backend=dict(mode='scene_map')))
         minimal = scene_inputs.read_scene(collection)
         self.assertEqual((minimal.name, minimal.mode, minimal.reference_arm), ('shelf', 'shared_front', 'left'))
         write_yaml(collection, dict(kit='rig', recording=dict(arms=['left', 'right']),
                                    scene=dict(description=''), map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
-                                   reconstruction=dict(backend='scene_map')))
+                                   backend=dict(mode='scene_map')))
         self.assertEqual(minimal, scene_inputs.read_scene(collection))
         write_yaml(collection, dict(kit='rig', recording=dict(arms=['left', 'right']),
                                    scene=dict(description=''), map=dict(layout='per_arm', reference_arm='right', selection=dict(policy='latest_prior')),
-                                   reconstruction=dict(backend='scene_map')))
+                                   backend=dict(mode='scene_map')))
         explicit = scene_inputs.read_scene(collection)
         self.assertEqual((explicit.mode, explicit.reference_arm), ('dual', 'right'))
 

@@ -8,6 +8,7 @@ import os
 from umi.infra import provenance as artifact_identity
 from umi.devices import registry
 from umi.config import user_settings as user_config, audio_sync as sync_config
+from umi.config.loader import POSTER_GEOMETRY_FILENAME
 from umi.store import layout
 from umi.config.scene_parameters import nested_snapshot
 from umi.workflows.scene.parameters import SceneOverrides
@@ -22,7 +23,7 @@ from umi.workflows.scene.inputs.batch import mapping_records, task_video_sources
 from umi.workflows.scene import episodes
 from umi.workflows.scene.inputs import scene as kit_inputs
 from umi.store.layout import configured_batches
-from umi.workflows.scene.task_configuration import default_audio_sync_enabled, resolve_task_configuration
+from umi.workflows.scene.task_configuration import default_audio_sync_enabled, independent_retry_gap, resolve_task_configuration
 from umi.perception.audio.specialist_audio import DEFAULT_AUDIO_SYNC_ALGORITHM
 
 
@@ -272,7 +273,7 @@ def save_record(batch: BatchInputs) -> Path:
 
 
 DEFAULT_SOURCES = tuple(str(ROOT / 'config/algorithms' / name)
-                        for name in ('trajectory.yaml', 'scene_parameters.yaml', 'environment_tags.yaml'))
+                        for name in ('trajectory.yaml', 'scene_parameters.yaml', POSTER_GEOMETRY_FILENAME))
 
 
 def _backend_report(scene) -> dict:
@@ -290,6 +291,24 @@ def _backend_report(scene) -> dict:
                               min_missing_duration_s=trim.get('minimum_missing_duration_s', 1.0),
                               scene_map_applies=uses_edge_trim(scene, 'scene_map')),
     )
+
+
+def _position_support_report(scene: Scene, arms: tuple[str, ...]) -> dict:
+    report = {}
+    if scene.reconstruction_mode in ('poster_independent', 'auto'):
+        maximum_gap_s, source = independent_retry_gap(scene, require_poster=True)
+        report['poster_independent'] = dict(retry_target_s=maximum_gap_s, acceptance_maximum_s=maximum_gap_s,
+                                            source=source)
+    if scene.reconstruction_mode in ('poster_vio', 'auto'):
+        report['poster_vio'] = dict(acceptance_maximum_s=scene.parameters.poster_vio_maximum_position_support_gap_s,
+                                     source=scene.position_support_gap_sources.get('poster_vio_maximum_position_support_gap_s'))
+    if scene.reconstruction_mode == 'scene_map' and len(arms) == 1:
+        maximum_gap_s, source = independent_retry_gap(scene, require_poster=False)
+        report['scene_map_single_arm_fallback'] = dict(retry_target_s=maximum_gap_s, source=source)
+    if report:
+        return dict(retry_uses_poster_position_support=scene.trajectory.values.retry.use_poster_position_support,
+                    backends=report)
+    return {}
 
 
 def _report_targets(paths: list[Path]) -> list[Path]:
@@ -367,7 +386,8 @@ def _target_report(directory: Path, *, overrides: SceneOverrides | None,
                                               collection=collection)
         scene, task_arms, map_version = resolved.scene, resolved.expected_arms, resolved.map_version
         task_effective = dict(instruction=resolved.instruction, synchronization=resolved.synchronization,
-                              task_map_request=resolved.map_request, map_selection=resolved.map_selection)
+                              task_map_request=resolved.map_request, map_selection=resolved.map_selection,
+                              position_support=_position_support_report(scene, task_arms))
     else:
         scene = apply_task_backend(scene, collection.get('disabled_poster_switches', ()))
         if scene.reconstruction_mode in ('poster_independent', 'poster_vio'):
@@ -376,17 +396,19 @@ def _target_report(directory: Path, *, overrides: SceneOverrides | None,
         scene = replace(scene, mode='shared_front' if len(frozen_mapping) == 1 else 'dual',
                         reference_arm=manifest.get('mapping_reference_arm', next(iter(frozen_mapping))))
     audio_algorithm = collection.get('audio_sync_algorithm', DEFAULT_AUDIO_SYNC_ALGORITHM)
+    audio_parameters, audio_sources = sync_config.load_with_sources(audio_algorithm)
+    audio_override = dict(audio_sync_override=str(audio_sources[1])) if len(audio_sources) > 1 else {}
     return dict(
         target=str(task_root or directory), scope='task' if task_root else 'batch', sources=dict(
             defaults=list(DEFAULT_SOURCES),
-            audio_sync=str(sync_config.source_path(audio_algorithm)),
+            audio_sync=str(audio_sources[0]), **audio_override,
             scene=str(scene_path) if scene_path.is_file() else None, declarations=declarations,
             override=overrides.snapshot() if overrides else None),
         effective=dict(mode=scene.mode, reconstruction_mode=scene.reconstruction_mode,
             backend=_backend_report(scene),
             batch_audio_sync_enabled=default_audio_sync_enabled(collection.get('audio_sync_enabled')),
             batch_audio_sync_algorithm=audio_algorithm,
-            audio_sync_parameters=sync_config.snapshot(sync_config.load(audio_algorithm)),
+            audio_sync_parameters=sync_config.snapshot(audio_parameters),
             poster_vio_base_tag_enabled=scene.poster_vio_base_tag_enabled,
             recording_trim=scene.recording_trim,
             **task_effective,

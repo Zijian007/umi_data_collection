@@ -118,6 +118,27 @@ class OperationalSettingsTests(unittest.TestCase):
         self.assertEqual(detector._candidate_limit, 48)
         self.assertEqual(detector._full_search_interval, 10)
 
+    def test_gripper_roi_default_is_shared_by_scene_width_commands_and_detection(self):
+        from umi.apps import calib
+        from umi.perception.gripper import video_tools
+        from umi.workflows.scene.inputs.scene import load_scene_parameters
+
+        roi = (620, 990, 1330, 1240)
+        prior_identity = detection.identity()
+        self.overlay('gripper_tag_detection', roi_px=list(roi))
+        self.assertEqual(load_scene_parameters().tag_distance_roi_px, list(roi))
+        self.assertEqual(load_scene_parameters(overrides=dict(tag_distance_roi_px=[1, 2, 3, 4])).tag_distance_roi_px,
+                         [1, 2, 3, 4])
+        self.assertNotEqual(detection.identity(), prior_identity)
+        self.assertEqual(detection.identity()['default_roi_px'], list(roi))
+        for command, function in (('preview-width', 'preview'), ('detect-width', 'monitor')):
+            with self.subTest(command=command), patch.object(video_tools, function, return_value={}) as called, \
+                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                for value, extra in ((roi, []), ([5, 6, 7, 8], ['--roi', '5', '6', '7', '8'])):
+                    self.assertEqual(calib.main([command, 'recording.insv', *extra]), 0)
+                    selected_roi = called.call_args.kwargs['roi'] if function == 'preview' else called.call_args.args[1]
+                    self.assertEqual(selected_roi, value)
+
     def test_viewer_content_changes_invalidate_only_related_artifacts(self):
         video = self.root / 'video.mp4'
         video.write_bytes(b'video')

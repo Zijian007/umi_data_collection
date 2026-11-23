@@ -511,20 +511,19 @@ class PosterWorkflowTests(unittest.TestCase):
             write_yaml(path, dict(kit='rig', recording=dict(arms=['left', 'right']),
                                   scene=dict(description='', parameters=dict(tag_fusion_enabled=True)),
                                   map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
-                                  reconstruction=dict(backend='scene_map')))
+                                  backend=dict(mode='scene_map')))
             with self.assertRaisesRegex(ValueError, '不承载算法参数'):
                 scene_inputs.read_scene(path)
             write_yaml(path, dict(kit='rig', recording=dict(arms=['left', 'right']),
                                   scene=dict(description=''),
                                   map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
-                                  environment_poster=dict(layout_path=str(tag_board.DEFAULT_LAYOUT), detection=dict(enabled=True),
-                                      task_constraint=dict(enabled=True)),
-                                  reconstruction=dict(backend='scene_map')))
+                                  environment_poster=dict(layout_path=str(tag_board.DEFAULT_LAYOUT), detection=dict(enabled=True)),
+                                  backend=dict(mode='scene_map', scene_map=dict(poster_constraint=dict(enabled=True)))))
             expert = Path(temporary)/'expert.yaml'
             write_yaml(expert, dict(parameters=dict(fusion=dict(environment_tags=dict(enabled=True)))))
             with self.assertRaisesRegex(ValueError, 'collection.yaml'):
                 SceneOverrides.load(expert)
-            self.assertTrue(scene_inputs.read_scene(path).parameters.tag_fusion_enabled)
+            self.assertTrue(scene_inputs.read_scene(path).scene_map_poster_constraint_enabled)
             for override in (dict(tag_minimum_frames=2), dict(tag_corner_sigma_px=0.), dict(tag_fusion_enabled=1)):
                 with self.subTest(override=override), self.assertRaises(ValueError):
                     load_scene_parameters(overrides=override)

@@ -8,9 +8,8 @@ from pathlib import Path
 
 from ruamel.yaml.error import YAMLError
 
-from umi.config.loader import decode_dataclass, merge_overrides
+from umi.config.loader import ALGORITHM_DIRECTORY, decode_dataclass, merge_overrides
 from umi.infra.file_store import read_yaml
-from umi.infra.paths import CONFIG_ROOT
 
 
 # 两套音频同步算法的结果配方标识；写入同步记录，变化会使旧记录失效。
@@ -20,17 +19,17 @@ AUDIO_SYNC_RECIPES = {
 }
 
 
-DIRECTORY = CONFIG_ROOT / 'algorithm'
+DIRECTORY = ALGORITHM_DIRECTORY / 'audio_sync'
 
 
 @dataclass(frozen=True)
 class SpecialistParameters:
-    sample_rate_hz: int = 16000
-    max_offset_s: float = 30.0
-    min_peak_ratio: float = 1.3
-    envelope_cutoff_hz: float = 50.0
-    decimation: int = 16
-    lobe_half_width_s: float = 0.25
+    sample_rate_hz: int
+    max_offset_s: float
+    min_peak_ratio: float
+    envelope_cutoff_hz: float
+    decimation: int
+    lobe_half_width_s: float
 
     def __post_init__(self) -> None:
         for name in ('sample_rate_hz', 'decimation'):
@@ -47,58 +46,43 @@ class SpecialistParameters:
             raise ValueError('lobe_half_width_s 必须是有限非负数')
 
 
-KIWI_SAMPLE_RATE = 48_000
-
-
 @dataclass(frozen=True)
 class KiwiParameters:
-    """UMI project defaults for the KIWI 0.1.0 audio recipe."""
+    """Typed parameters for the KIWI 0.1.0 audio recipe."""
 
-    sample_rate: int = KIWI_SAMPLE_RATE
-    # --- stage 2 (GCC-PHAT refine) ---
-    refine_window_s: float = 0.3
-    # --- gates ---
-    min_votes: int = 15
-    vote_margin: float = 1.5
-    duration_tol_s: float = 0.15
-    # --- advisory onset agreement (reported, not gating) ---
-    onset_count: int = 8
-    onset_tol_s: float = 0.150
-    # --- level gates ---
-    # Each clip is judged on its own, against the WORSE one: one dead
-    # microphone or one pinned track must trip even when the other clip is
-    # healthy.
-    silence_peak_frac: float = 0.05  # min over both clips of peak / full scale
-    clip_frac_max: float = 1e-3  # share of samples pinned at full scale
-    # --- stage 1 (landmark fingerprint vote) ---
-    nfft: int = 4096  # ~85 ms window at 48 kHz
-    hop: int = 1024  # ~21 ms hop at 48 kHz
-    fan: int = 16  # landmark pairs per anchor peak
-    dt_min: int = 3  # pair separation, frames
-    dt_max: int = 60
-    df_max: int = 96  # pair separation, freq bins
-    vote_bin_s: float = 0.05
-    peak_neighborhood: tuple[int, int] = (15, 31)
-    peak_floor: float = 1.5
-    max_hash_pairs: int = 64  # degenerate near-constant hash guard
-    # --- repetition + drift gates ---
-    min_vote_span_s: float = 3.0  # winning votes' anchors must span at least this
-    drift_window_s: float = 20.0  # sliding-window refine length
-    drift_hop_s: float = 10.0
-    drift_min_duration_s: float = 90.0  # shorter clips: drift not measured
-    drift_min_windows: int = 5
-    max_drift_ppm: float = 150.0  # measured CI outside this range is excessive
-    # Drift evidence thresholds: missing support lowers confidence, while
-    # measured excessive skew or a well-supported budget failure refuses.
-    max_drift_error_s: float = 0.020
-    min_overlap_s: float = 3.0
-    # Diagnostics by default.
-    min_landmark_match_fraction: float = 0.0
-    min_support_coverage: float = 0.0
-    drift_min_coverage: float = 0.8
-    analysis_block_frames: int = 256
-    refine_max_duration_s: float = 30.0
-    refine_windows: int = 5
+    sample_rate: int
+    refine_window_s: float
+    min_votes: int
+    vote_margin: float
+    duration_tol_s: float
+    onset_count: int
+    onset_tol_s: float
+    silence_peak_frac: float
+    clip_frac_max: float
+    nfft: int
+    hop: int
+    fan: int
+    dt_min: int
+    dt_max: int
+    df_max: int
+    vote_bin_s: float
+    peak_neighborhood: tuple[int, int]
+    peak_floor: float
+    max_hash_pairs: int
+    min_vote_span_s: float
+    drift_window_s: float
+    drift_hop_s: float
+    drift_min_duration_s: float
+    drift_min_windows: int
+    max_drift_ppm: float
+    max_drift_error_s: float
+    min_overlap_s: float
+    min_landmark_match_fraction: float
+    min_support_coverage: float
+    drift_min_coverage: float
+    analysis_block_frames: int
+    refine_max_duration_s: float
+    refine_windows: int
 
     def __post_init__(self) -> None:
         for name in ('sample_rate', 'refine_window_s', 'min_votes', 'duration_tol_s', 'onset_count',
@@ -129,14 +113,27 @@ def source_path(algorithm: str) -> Path:
     return DIRECTORY / f'{algorithm}.yaml'
 
 
-def load(algorithm: str) -> KiwiParameters | SpecialistParameters:
+def load_with_sources(algorithm: str) -> tuple[KiwiParameters | SpecialistParameters, tuple[Path, ...]]:
     model = {'kiwi': KiwiParameters, 'specialist': SpecialistParameters}[algorithm]
     path = source_path(algorithm)
     try:
-        values = merge_overrides(asdict(model()), read_yaml(path))
-        return decode_dataclass(model, values)
+        values = read_yaml(path)
+        defaults = decode_dataclass(model, values)
     except (OSError, ValueError, YAMLError) as error:
         raise ValueError(f'读取音频同步配置 {path} 失败：{error}') from error
+    override_path = path.with_suffix('.local.yaml')
+    try:
+        overrides = read_yaml(override_path)
+        parameters = decode_dataclass(model, merge_overrides(values, overrides))
+    except FileNotFoundError:
+        return defaults, (path,)
+    except (OSError, ValueError, YAMLError) as error:
+        raise ValueError(f'读取音频同步配置 {override_path} 失败：{error}') from error
+    return parameters, (path, override_path)
+
+
+def load(algorithm: str) -> KiwiParameters | SpecialistParameters:
+    return load_with_sources(algorithm)[0]
 
 
 def snapshot(parameters: KiwiParameters | SpecialistParameters) -> dict:

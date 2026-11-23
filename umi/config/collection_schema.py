@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 from umi.core.arms import ARMS, read_arms, resolve_arms
 from umi.config.audio_sync import AUDIO_SYNC_RECIPES
+from umi.config.scene_parameters import DEFAULT_POSTER_FUSION_METHOD
 from dataclasses import replace
 
 
@@ -109,39 +110,6 @@ def _backend(record, label, *, batch=False):
     return normalized
 
 
-def _backend_declaration(document, prefix='', *, batch=False):
-    if 'backend' in document:
-        if 'reconstruction' in document:
-            raise ValueError(f'{prefix}backend 与 {prefix}reconstruction 不能同时填写')
-        return _backend(document['backend'], f'{prefix}backend', batch=batch)
-    return _reconstruction(document.get('reconstruction'), f'{prefix}reconstruction', require_backend=batch)
-
-
-def _reconstruction(record, label, *, require_backend=False):
-    if record is None:
-        if require_backend:
-            raise ValueError(f'{label}.backend 是必需字段')
-        return None
-    record = _mapping(record, label)
-    if set(record) - {'backend', 'base_tag'}:
-        raise ValueError(f'{label} 只允许 backend、base_tag')
-    backend = record.get('backend')
-    if require_backend and backend is None:
-        raise ValueError(f'{label}.backend 是必需字段')
-    if backend is not None and (not isinstance(backend, str) or backend not in MODES):
-        raise ValueError(f'{label}.backend 必须为 {"、".join(MODES)}')
-    normalized = {}
-    if backend is not None:
-        normalized['backend'] = backend
-    if 'base_tag' in record:
-        base_tag = _mapping(record['base_tag'], f'{label}.base_tag')
-        if set(base_tag) - {'enabled'}:
-            raise ValueError(f'{label}.base_tag 只允许 enabled')
-        normalized['base_tag'] = dict(enabled=_boolean(
-            base_tag.get('enabled'), f'{label}.base_tag.enabled', default=True))
-    return normalized
-
-
 def _arms(value, label, available=ARMS):
     if not isinstance(value, list):
         raise ValueError(f'{label} 必须为 left、right 或两者的非空列表')
@@ -178,12 +146,14 @@ def normalize_collection(document: dict) -> dict:
     if 'schema_version' in document:
         raise ValueError('collection.yaml 不再使用 schema_version；请直接使用当前字段布局')
     allowed = {'kit', 'recording', 'scene', 'map',
-               'environment_poster', 'backend', 'reconstruction', 'tasks'}
+               'environment_poster', 'backend', 'tasks'}
     unknown = set(document) - allowed
-    if unknown or not {'kit', 'scene'} <= set(document) or not {'backend', 'reconstruction'} & set(document):
-        raise ValueError('collection.yaml 字段无效或缺失；旧格式不再兼容')
-    reconstruction = _backend_declaration(document, batch=True)
-    arms, audio_sync, trim = _recording_section(document)
+    if unknown:
+        raise ValueError(f'collection.yaml 含未知字段：{sorted(unknown, key=str)}')
+    if not {'kit', 'scene', 'backend'} <= set(document):
+        raise ValueError('collection.yaml 需要 kit、scene 和 backend')
+    reconstruction = _backend(document['backend'], 'backend', batch=True)
+    arms, audio_sync = _recording_section(document)
     description = _scene_section(document['scene'])
     layout, reference_arm, policy, version = _map_section(document.get('map', {}))
     tags, disabled_poster_switches = _environment_poster_section(document)
@@ -198,8 +168,6 @@ def normalize_collection(document: dict) -> dict:
         result['audio_sync_enabled'] = audio_sync['enabled']
     if 'algorithm' in audio_sync:
         result['audio_sync_algorithm'] = audio_sync['algorithm']
-    if trim is not None:
-        result['recording_trim'] = trim
     if version is not None:
         result['map_version'] = version
     if tags is not None:
@@ -210,10 +178,8 @@ def normalize_collection(document: dict) -> dict:
 
 
 def _recording_section(document: dict):
-    """recording：使用手、音频同步策略与（旧布局的）首尾裁剪。"""
-    recording = _fields(document.get('recording'), 'recording', {'arms', 'audio_sync', 'trim'})
-    if 'backend' in document and 'trim' in recording:
-        raise ValueError('使用 backend 时请将 recording.trim 移到 backend.poster_edge_trim')
+    """recording：使用手和音频同步策略。"""
+    recording = _fields(document.get('recording'), 'recording', {'arms', 'audio_sync'})
     arms = _arms(recording.get('arms'), 'recording.arms')
     audio_sync = _fields(recording.get('audio_sync', {}), 'recording.audio_sync', {'enabled', 'algorithm'})
     audio_sync_policy = _enabled(audio_sync, 'recording.audio_sync')
@@ -222,13 +188,7 @@ def _recording_section(document: dict):
         if not isinstance(algorithm, str) or algorithm not in AUDIO_SYNC_RECIPES:
             raise ValueError('recording.audio_sync.algorithm 必须为 specialist 或 kiwi')
         audio_sync_policy['algorithm'] = algorithm
-    trim = None
-    if 'trim' in recording:
-        record = _fields(recording['trim'], 'recording.trim', {'enabled', 'minimum_missing_duration_s'})
-        trim = dict(enabled=_boolean(record.get('enabled'), 'recording.trim.enabled'),
-                    minimum_missing_duration_s=_positive(record.get('minimum_missing_duration_s', 1.0),
-                                                         'recording.trim.minimum_missing_duration_s'))
-    return arms, audio_sync_policy, trim
+    return arms, audio_sync_policy
 
 
 def _scene_section(record) -> str:
@@ -273,10 +233,8 @@ def _environment_poster_section(document: dict):
     if poster is None:
         return None, []
     poster = _mapping(poster, 'environment_poster')
-    if set(poster) - {'layout_path', 'detection', 'mapping', 'task_constraint'}:
+    if set(poster) - {'layout_path', 'detection', 'mapping'}:
         raise ValueError('environment_poster 含未知字段')
-    if 'backend' in document and 'task_constraint' in poster:
-        raise ValueError('使用 backend 时请将 environment_poster.task_constraint 移到 backend.scene_map.poster_constraint')
     if 'layout_path' not in poster:
         raise ValueError('environment_poster.layout_path 是必需字段')
     detection = _mapping(poster.get('detection', {}), 'environment_poster.detection')
@@ -287,30 +245,19 @@ def _environment_poster_section(document: dict):
         raise ValueError('environment_poster.mapping 含未知字段')
     scale = _mapping(mapping.get('scale_correction', {}),
                      'environment_poster.mapping.scale_correction')
-    constraint = _mapping(poster.get('task_constraint', {}),
-                          'environment_poster.task_constraint')
     if set(scale) - {'enabled'}:
         raise ValueError('environment_poster.mapping.scale_correction 只允许 enabled')
-    if set(constraint) - {'enabled', 'method'}:
-        raise ValueError('environment_poster.task_constraint 含未知字段')
-    disabled_poster_switches = [name for name, section in (
-        ('detection', detection), ('task_constraint', constraint)) if section.get('enabled') is False]
-    method = constraint.get('method', 'staged')
-    if method not in ('staged', 'joint'):
-        raise ValueError('environment_poster.task_constraint.method 必须为 staged 或 joint')
+    disabled_poster_switches = ['detection'] if detection.get('enabled') is False else []
     tags = dict(
         enabled=_boolean(detection.get('enabled'), 'environment_poster.detection.enabled',
-            default=any(section.get('enabled') is True for section in (mapping, scale, constraint))),
+            default=any(section.get('enabled') is True for section in (mapping, scale))),
         layout=poster['layout_path'],
         mapping=dict(
             enabled=_boolean(mapping.get('enabled'), 'environment_poster.mapping.enabled'),
             scale=dict(enabled=_boolean(scale.get('enabled'),
                                          'environment_poster.mapping.scale_correction.enabled'))),
-        fusion=dict(enabled=_boolean(constraint.get('enabled'),
-                                     'environment_poster.task_constraint.enabled'),
-                    method=method))
-    if (tags['mapping']['enabled'] or tags['mapping']['scale']['enabled']
-            or tags['fusion']['enabled']) and not tags['enabled']:
+        fusion=dict(enabled=False, method=DEFAULT_POSTER_FUSION_METHOD))
+    if (tags['mapping']['enabled'] or tags['mapping']['scale']['enabled']) and not tags['enabled']:
         raise ValueError('environment_poster.detection.enabled 必须先开启')
     if tags['mapping']['scale']['enabled'] and not tags['mapping']['enabled']:
         raise ValueError('environment_poster.mapping.scale_correction.enabled 需要 mapping.enabled')
@@ -320,7 +267,7 @@ def _environment_poster_section(document: dict):
 def _task_section(name: str, task, arms) -> dict:
     """tasks.<name>：指令、使用手子集、同步覆盖、地图选择与后端覆盖。"""
     task = _mapping(task, f'tasks.{name}')
-    allowed_task = {'instruction', 'arms', 'synchronization', 'map', 'backend', 'reconstruction'}
+    allowed_task = {'instruction', 'arms', 'synchronization', 'map', 'backend'}
     if set(task) - allowed_task:
         raise ValueError(f'tasks.{name} 含未知字段')
     normalized = {}
@@ -344,9 +291,8 @@ def _task_section(name: str, task, arms) -> dict:
             normalized[field] = task_map[key]
     if task_map.get('epoch') is not None and task_map.get('version') is not None:
         raise ValueError(f'tasks.{name}.map.epoch 与 map.version 不能同时填写')
-    task_reconstruction = _backend_declaration(task, f'tasks.{name}.')
-    if task_reconstruction is not None:
-        normalized['reconstruction'] = task_reconstruction
+    if 'backend' in task:
+        normalized['reconstruction'] = _backend(task['backend'], f'tasks.{name}.backend')
     return normalized
 
 
@@ -358,18 +304,22 @@ def require_poster(scene):
         raise ValueError('海报重建需要有效的 environment_poster.layout_path、环境标签检测和海报融合')
 
 
-def apply_backend_options(scene, record):
+def apply_backend_options(scene, record, *, source: str | None = None):
     """Apply one normalized batch or task layer, inheriting omitted options."""
     if not record:
         return scene
     parameters = record.get('parameter_overrides', {})
     if parameters and scene.overrides is not None:
         from umi.config.scene_parameters import flatten
-        expert = flatten(scene.overrides.values.get('parameters', {}), label='parameters')
+        expert = flatten(scene.overrides.values.get('parameters', {}), label='parameters', historical=True)
         parameters = {key: value for key, value in parameters.items() if key not in expert}
     constraint = record.get('scene_map_poster_constraint', {})
     if 'method' in constraint:
         parameters = dict(parameters, tag_fusion_method=constraint['method'])
+    gap_sources = scene.position_support_gap_sources
+    if source is not None and 'poster_maximum_position_support_gap_s' in parameters:
+        gap_sources = {**gap_sources, 'poster_maximum_position_support_gap_s':
+                       f'{source}.poster_independent.max_position_support_gap_s'}
     trim = scene.recording_trim
     has_edge_trim = 'poster_edge_trim' in record
     if has_edge_trim:
@@ -381,6 +331,7 @@ def apply_backend_options(scene, record):
                    scene_map_poster_constraint_enabled=constraint.get(
                        'enabled', scene.scene_map_poster_constraint_enabled),
                    recording_trim=trim, scene_map_edge_trim=scene.scene_map_edge_trim or has_edge_trim,
+                   position_support_gap_sources=gap_sources,
                    parameters=replace(scene.parameters, **parameters) if parameters else scene.parameters)
 
 
@@ -418,8 +369,6 @@ def apply_task_backend(scene, disabled_poster_switches=()):
     if scene.tag_layout is None:
         raise ValueError(f'{mode} 需要 environment_poster.layout_path')
     for field in disabled_poster_switches:
-        if field == 'task_constraint' and map_constraint is not None:
-            continue
         raise ValueError(f'{mode} 与 environment_poster.{field}.enabled: false 冲突；省略开关即可')
     # Auto needs poster capabilities only after a map candidate without its own poster constraint.
     map_detection = scene.environment_tags_enabled if mode == 'auto' and map_constraint is False else None

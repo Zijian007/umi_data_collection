@@ -141,7 +141,7 @@ class PosterScaleIdentityTests(unittest.TestCase):
                                  scene=dict(description=''),
                                  map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
                                  environment_poster=dict(layout_path=str(board_path), detection=dict(enabled=True)),
-                                 reconstruction=dict(backend='scene_map')))
+                                 backend=dict(mode='scene_map')))
             scene = scene_inputs.read_scene(path)
             before = mapping.definition(scene)
             scene = replace(scene, parameters=replace(scene.parameters, tag_fusion_enabled=True))
@@ -165,7 +165,7 @@ class PosterScaleIdentityTests(unittest.TestCase):
             write_yaml(path, dict(kit='rig', recording=dict(arms=['left']),
                                  scene=dict(description='', parameters=dict(tag_mapping_enabled=True)),
                                  map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
-                                 reconstruction=dict(backend='scene_map')))
+                                 backend=dict(mode='scene_map')))
             with self.assertRaisesRegex(ValueError, '不承载算法参数'):
                 scene_inputs.read_scene(path)
 
@@ -183,11 +183,10 @@ class PosterMappingWorkflowTests(unittest.TestCase):
         declaration = read_yaml(declaration_path)
         declaration['environment_poster'] = dict(
             layout_path=str(tag_board.DEFAULT_LAYOUT), detection=dict(enabled=True),
-            task_constraint=dict(enabled=False, method='staged'),
             mapping=dict(enabled=True, scale_correction=dict(enabled=correction)))
         write_yaml(declaration_path, declaration)
         expert = helper.root / 'expert.yaml'
-        write_yaml(expert, dict(parameters=dict(mapping=dict(environment_tags=dict(minimum_frames=6)))))
+        write_yaml(expert, dict(parameters=dict(mapping=dict(poster_scale=dict(minimum_scale_observation_times=6)))))
         helper.scene_overrides = SceneOverrides.load(expert)
         helper.scene = batch_inputs.read_batch(helper.session_path, overrides=helper.scene_overrides).scene
         for video, camera in list(helper.cameras.items()):

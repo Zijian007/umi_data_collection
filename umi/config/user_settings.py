@@ -16,26 +16,22 @@ from umi.infra.paths import CONFIG_ROOT
 
 
 DEFAULT_PATH = CONFIG_ROOT / 'user.yaml'
-_DEFAULTS = {
-    'schema_version': 2,
-    'features': {
-        'audio_sync': {'enabled': False},
-        'factory_intrinsics': {'enabled': False},
-    },
-    'runtime': {'parallel_tasks': {'enabled': False, 'jobs': 1}, 'cores': 'auto'},
-    'viewer': {'host': None, 'port': None},
+_USER_FIELDS = {
+    'schema_version': None,
+    'features': {'audio_sync': {'enabled': None}, 'factory_intrinsics': {'enabled': None}},
+    'runtime': {'parallel_tasks': {'enabled': None, 'jobs': None}, 'cores': None},
 }
 
 
 def _validate(values: dict) -> dict:
-    """Validate user preferences, including older files with omitted fields."""
+    """Validate and normalize the complete preferences document."""
     from umi.config.loader import merge_overrides
     if not isinstance(values, dict):
         raise ValueError('config/user.yaml 顶层必须是配置表')
-    values = merge_overrides(_DEFAULTS, values, 'user.')
+    values = merge_overrides(_USER_FIELDS, values, 'user.')
     if type(values['schema_version']) is not int or values['schema_version'] != 2:
-        raise ValueError('config/user.yaml 需要 schema_version: 2；旧格式请改为 features/runtime/viewer')
-    features, runtime, viewer = values['features'], values['runtime'], values['viewer']
+        raise ValueError('config/user.yaml 需要 schema_version: 2；旧格式请改为 features 和 runtime')
+    features, runtime = values['features'], values['runtime']
     for name, group in features.items():
         if type(group['enabled']) is not bool:
             raise ValueError(f'user.features.{name}.enabled 必须为布尔值')
@@ -47,15 +43,9 @@ def _validate(values: dict) -> dict:
     cores = runtime['cores']
     if not isinstance(cores, str) or not cores.strip():
         raise ValueError('user.runtime.cores 必须是 auto 或 CPU 范围字符串')
-    host, port = viewer['host'], viewer['port']
-    if host is not None and (not isinstance(host, str) or not host.strip()):
-        raise ValueError('user.viewer.host 必须是非空字符串或 null')
-    if port is not None and (type(port) is not int or not 0 <= port <= 65535):
-        raise ValueError('user.viewer.port 必须是 0–65535 的整数或 null')
     return {
         'scene': {'sync_policy': 'audio_auto' if features['audio_sync']['enabled'] else 'assumed_simultaneous'},
         'calibration': {'intrinsics_source': 'factory' if features['factory_intrinsics']['enabled'] else None},
-        'viewer': {'host': host, 'port': port},
         'runtime': {'jobs': parallel['jobs'] if parallel['enabled'] else 1, 'cores': cores},
     }
 
@@ -71,8 +61,7 @@ class UserConfig:
 
 def load(path: Path | None = None) -> UserConfig:
     path = (path or DEFAULT_PATH).expanduser().resolve()
-    document = read_yaml(path) if path.is_file() else {}
-    return UserConfig(path, MappingProxyType(_validate(document)))
+    return UserConfig(path, MappingProxyType(_validate(read_yaml(path))))
 
 
 @lru_cache(maxsize=None)

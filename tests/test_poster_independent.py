@@ -127,11 +127,10 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         h = self.helper
         collection = h.batch_root / 'collection.yaml'
         doc = read_yaml(collection)
-        doc['reconstruction'] = dict(backend=mode)
+        doc['backend'] = dict(mode=mode, scene_map=dict(poster_constraint=dict(enabled=True, method='joint')))
         doc['environment_poster'] = dict(
             layout_path=str(tag_board.DEFAULT_LAYOUT),
-            detection=dict(enabled=True),
-            task_constraint=dict(enabled=True, method='joint'))
+            detection=dict(enabled=True))
         doc['tasks'] = dict(take_001=dict(instruction='move both grippers', arms=['left', 'right'], synchronization=dict(
             mode='manual', offsets_s=dict(left=0., right=0.), confirmed=confirmed,
             note='fixture common clock' if confirmed else '')))
@@ -266,10 +265,10 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         self.configure()
         path = self.helper.batch_root / 'collection.yaml'
         doc = read_yaml(path)
-        doc['environment_poster']['task_constraint']['enabled'] = False
+        doc['environment_poster']['detection']['enabled'] = False
         write_yaml(path, doc)
         with patch.object(independent_reconstruction, 'reconstruct') as solve:
-            with self.assertRaisesRegex(ValueError, 'task_constraint.enabled'):
+            with self.assertRaisesRegex(ValueError, 'detection.enabled'):
                 workflow.run_episode(self.helper.episode_path)
         solve.assert_not_called()
 
@@ -392,8 +391,8 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         inputs = batches.read_inputs(h.batch_root)
         self.assertEqual(inputs.mapping_records, {})
         self.assertEqual(inputs.scene.mode, 'shared_front')
-        doc['reconstruction'] = dict(backend='scene_map')
-        doc['tasks']['take_001']['reconstruction'] = dict(backend='poster_independent')
+        doc['backend'] = dict(mode='scene_map')
+        doc['tasks']['take_001']['backend'] = dict(mode='poster_independent')
         write_yaml(collection, doc)
         episode = episode_inputs.read_episode(h.episode_path)
         self.assertEqual(episode.scene.reconstruction_mode, 'poster_independent')

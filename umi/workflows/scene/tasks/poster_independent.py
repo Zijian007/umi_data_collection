@@ -9,6 +9,7 @@ import numpy as np
 from umi.infra.concurrency import daemon_map
 from umi.infra.file_store import read_tum, write_json
 from umi.workflows.scene.tasks import measurements, trajectory_writers
+from umi.workflows.scene.task_configuration import independent_retry_gap
 from umi.config.collection_schema import require_poster
 from umi.store.models import TaskInputs, ArmExecutionResult, Episode, PreparedRecording
 from pathlib import Path
@@ -102,8 +103,7 @@ def reconstruct(episode: Episode, arm: str, recording: PreparedRecording, direct
         validate_poster(episode.scene)
     if not require_poster and episode.scene.parameters.tag_fusion_enabled and episode.scene.parameters.tag_fusion_method != 'staged':
         raise ValueError('独立回退暂不支持 joint 环境标签方法；请先修复共享场景融合或改用 staged')
-    maximum_position_gap_s = (episode.scene.parameters.poster_maximum_position_support_gap_s
-                             if require_poster else episode.scene.parameters.maximum_visual_gap_s)
+    maximum_position_gap_s, _ = independent_retry_gap(episode.scene, require_poster=require_poster)
     # 使用工作镜头+IMU，不借用独立 dual 模式的历史环境镜头样例标定。
     parameters = episode.scene.trajectory.values
     parameters = replace(parameters, input=replace(parameters.input, mode='handheld'),

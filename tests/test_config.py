@@ -57,7 +57,8 @@ class ConfigTests(unittest.TestCase):
         from umi.workflows.scene.inputs.scene import load_scene_parameters
         from umi.infra.file_store import read_yaml
 
-        shared = read_yaml(Path('config/algorithms/environment_tags.yaml'))
+        shared_path = Path('config/algorithms/poster_geometry.yaml').resolve()
+        shared = config.load_poster_geometry(shared_path)
         trajectory_yaml = read_yaml(Path('config/algorithms/trajectory.yaml'))
         scene_yaml = read_yaml(Path('config/algorithms/scene_parameters.yaml'))
         trajectory = config.load('trajectory')
@@ -65,10 +66,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(set(trajectory_yaml['environment_tags']), {'tag_fusion_enabled'})
         self.assertNotIn('tag_fusion_enabled', shared)
         self.assertTrue(set(shared).isdisjoint(scene_yaml))
-        self.assertIn(str(Path('config/algorithms/environment_tags.yaml').resolve()), trajectory.sources)
+        self.assertIn(str(shared_path), trajectory.sources)
         for name, expected in shared.items():
             self.assertEqual(getattr(trajectory.values.environment_tags, name), expected)
             self.assertEqual(getattr(scene, name), expected)
+
+    def test_renamed_algorithm_overlays_preserve_values_and_hashes(self):
+        for kind, section, old, new, value in (
+                ('trajectory', 'retry', 'minimum_full_fraction', 'target_map_position_fraction', .8),
+                ('trajectory', 'retry', 'maximum_position_support_gap_s', 'target_maximum_position_support_gap_s', 3.),
+                ('trajectory', 'notes', 'minimum_full_fraction', 'warn_below_map_position_fraction', .7),
+                ('trajectory', 'environment_tags', 'tag_minimum_frames', 'tag_minimum_pose_observation_times', 4),
+                ('calibration', 'checks', 'intrinsics_reprojection_px', 'intrinsics_mean_reprojection_px', 1.1),
+                ('calibration', 'checks', 'camera_imu_reprojection_px', 'camera_imu_mean_reprojection_px', 1.3)):
+            with self.subTest(section=section, field=new):
+                legacy = config.load(kind, inline={section: {old: value}})
+                current = config.load(kind, inline={section: {new: value}})
+                self.assertEqual(current.snapshot(), legacy.snapshot())
+                with self.assertRaisesRegex(ValueError, '已移除'):
+                    config.load(kind, self.overlay(f'{section}:\n  {old}: {value}'))
 
     def test_cli_only_overrides_explicit_fields(self):
         path = self.overlay("input:\n  mode: \"dual\"\n  allow_irregular: true\nretry:\n  max_tries: 7\n")
@@ -87,7 +103,7 @@ class ConfigTests(unittest.TestCase):
                "video:\n  size_px: 719", "video:\n  size_px: 1442", "video:\n  size_px: 0",
                "video:\n  size_px: true", "video:\n  size_px: 720.0",
                "video:\n  crf: 52", "video:\n  preset: \"made-up\"", "input:\n  mode: \"rear\"",
-               "retry:\n  minimum_full_fraction: 1.1", "retry:\n  max_tries: 0",
+               "retry:\n  target_map_position_fraction: 1.1", "retry:\n  max_tries: 0",
                "fusion:\n  group_scale_ratio: 0.5", "fusion:\n  initial_bias_min_samples: 3000",
                "orb:\n  scale_factor: 1.0", "orb:\n  minimum_fast: 30", "schema_version: 2",
                "fusion:\n  step: \"10\"", "fusion: 10", "zupt:\n  enabled: 1"]
@@ -153,8 +169,8 @@ class ConfigTests(unittest.TestCase):
 
     def test_numerical_and_evaluation_hashes_are_independent(self):
         default = config.load('trajectory')
-        notes = config.load('trajectory', self.overlay("notes:\n  minimum_full_fraction: 0.8"))
-        retry = config.load('trajectory', self.overlay("retry:\n  minimum_full_fraction: 0.8"))
+        notes = config.load('trajectory', self.overlay("notes:\n  warn_below_map_position_fraction: 0.8"))
+        retry = config.load('trajectory', self.overlay("retry:\n  target_map_position_fraction: 0.8"))
         self.assertEqual(notes.computation_hash, default.computation_hash)
         self.assertNotEqual(notes.evaluation_hash, default.evaluation_hash)
         self.assertNotEqual(retry.computation_hash, default.computation_hash)
@@ -446,7 +462,7 @@ class EvaluationTests(unittest.TestCase):
             trajectory = helper.output / 'traj_tcp.txt'
             before = trajectory.read_bytes()
             cfg = helper.root / 'notes.yaml'
-            cfg.write_text("notes:\n  minimum_full_fraction: 0.8")
+            cfg.write_text("notes:\n  warn_below_map_position_fraction: 0.8")
             with patch.object(reconstruction, 'run_attempts') as reconstruct:
                 self.assertEqual(helper.run_recording(TrajectoryRequest(config=cfg))['status'], 'skipped')
             reconstruct.assert_not_called()

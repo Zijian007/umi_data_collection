@@ -12,7 +12,6 @@ import os
 import re
 
 from umi.config import operational_settings as settings
-from umi.config import user_settings as user_config
 from umi.apps.viewer.resources import video as media
 from umi.apps.viewer.resources.cache import root as cache_root
 from umi.infra.paths import SCENES_ROOT
@@ -215,21 +214,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         defaults = settings.current('viewer')
         export_budget = settings.current('runtime')
-        common = user_config.current().values['viewer']
         explicit = {key: getattr(args, key) for key in ('host', 'port') if getattr(args, key) is not None}
-        common_overrides = {key: value for key, value in common.items() if value is not None}
-        origins = {key: f'{user_config.current().path}:viewer.{key}' for key in common_overrides}
-        common_overrides.update(explicit)
-        origins.update({key: f'command_line:--{key}' for key in explicit})
         configured = settings.load('viewer', environment={settings.SNAPSHOT_ENV: json.dumps({'viewer': defaults.report()})},
-                                   overrides=common_overrides, origins=origins)
+                                   overrides=explicit)
         args.host, args.port = configured.values['host'], configured.values['port']
         if args.show_config:
+            configuration = dict(configured.report(), precedence=['project_defaults', 'local_override', 'command_line'])
             print(json.dumps(dict(program='umi-view', operation='serve', scope='configuration_only',
-                precedence=configured.report()['precedence'], defaults=dict(root=str(DEFAULT_ROOT), **defaults.values),
+                precedence=configuration['precedence'], defaults=dict(root=str(DEFAULT_ROOT), **defaults.values),
                 effective=dict(root=str(args.root.expanduser().resolve()), **configured.values),
-                configuration=configured.report(),
-                user_config=user_config.current().report(),
+                configuration=configuration,
                 map_export=dict(timeout_s=export_budget.values['map_export_timeout_s'],
                                 origin=export_budget.origins['map_export_timeout_s']),
                 cache=dict(path=str(cache_root()), origin='environment:UMI_VIEW_CACHE' if os.environ.get('UMI_VIEW_CACHE')

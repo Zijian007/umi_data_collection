@@ -12,7 +12,7 @@ import numpy as np
 
 from umi.infra import provenance as artifact_identity
 from umi.core.frame import FPS_SRC, SRC_H, SRC_W
-from umi.perception.gripper import DEFAULT_TAG_ROI
+from umi.perception.gripper import default_tag_roi
 from umi.perception.gripper.detection.frames import FrameDetector, identity
 from umi.perception.gripper.detection.markers import FrameDetection, reconcile_detections, validate_roi
 from umi.infra.file_store import mark_used, read_npz_cache, write_npz_cache
@@ -175,11 +175,11 @@ def recovery_order(indices: np.ndarray, corners: np.ndarray) -> np.ndarray:
 class SampledDetectionCache:
     def __init__(self, video: Path, cache: Path, recording_sha256: str,
                  query_times_s: np.ndarray, progress: ProgressCallback | None, *,
-                 roi_px: tuple[int, int, int, int] = DEFAULT_TAG_ROI,
+                 roi_px: tuple[int, int, int, int] | None = None,
                  on_progress: Callable[[ScanProgress], None] | None = None):
 
         self.video, self.progress, self.on_progress = video, progress, on_progress
-        self.roi_px = validate_roi(roi_px)
+        self.roi_px = default_tag_roi() if roi_px is None else validate_roi(roi_px)
         self.query_times_s = np.asarray(query_times_s, dtype=float)
         if (self.query_times_s.ndim != 1 or not len(self.query_times_s)
                 or not np.isfinite(self.query_times_s).all() or not np.all(np.diff(self.query_times_s) > 0)):

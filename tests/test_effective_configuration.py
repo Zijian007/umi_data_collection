@@ -29,7 +29,7 @@ class EffectiveConfigurationTests(unittest.TestCase):
         write_yaml(scene_path, dict(scene=dict(description='test'), kit='rig',
                                     recording=dict(arms=['left', 'right']),
                                     map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
-                                    reconstruction=dict(backend='scene_map')))
+                                    backend=dict(mode='scene_map')))
         override_path = self.root/'override.yaml'
         write_yaml(override_path, dict(trajectory=dict(video=dict(frame_step=4, crf=15)),
                                       parameters=dict(measurements=dict(gripper_width=dict(max_gap_s=.8)))))
@@ -67,7 +67,7 @@ class EffectiveConfigurationTests(unittest.TestCase):
         write_yaml(collection, dict(scene=dict(description='test'), kit='kit_001',
                                     recording=dict(arms=['left', 'right']),
                                     map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
-                                    reconstruction=dict(backend='scene_map')))
+                                    backend=dict(mode='scene_map')))
         before = {path: path.read_bytes() for path in self.root.rglob('*') if path.is_file()}
         open_path = Path.open
         collection_reads = []
@@ -94,10 +94,10 @@ class EffectiveConfigurationTests(unittest.TestCase):
         task = batch / 'take_001'
         task.mkdir(parents=True)
         write_yaml(batch / 'collection.yaml', dict(kit='rig', recording=dict(arms=['left', 'right']),
-            scene=dict(description=''), map=dict(layout='per_arm'), reconstruction=dict(backend='scene_map'),
+            scene=dict(description=''), map=dict(layout='per_arm'), backend=dict(mode='scene_map'),
             environment_poster=dict(layout_path=str(Path(__file__).resolve().parents[1] /
                 'hardware/environment_poster/environment_poster.json')),
-            tasks=dict(take_001=dict(arms=['right'], reconstruction=dict(backend='poster_vio')))))
+            tasks=dict(take_001=dict(arms=['right'], backend=dict(mode='poster_vio')))))
         episode = batch / '.pipeline/tasks/take_001/episode.yaml'
         write_yaml(episode, dict(schema_version=5, recordings={}))
         before = {p: p.read_bytes() for p in batch.rglob('*') if p.is_file()}
@@ -117,21 +117,6 @@ class EffectiveConfigurationTests(unittest.TestCase):
             self.assertEqual(batch_report['selection']['arms'], ['left', 'right'])
             self.assertEqual(batch_report['effective']['reconstruction_mode'], 'scene_map')
         self.assertEqual(before, {p: p.read_bytes() for p in batch.rglob('*') if p.is_file()})
-
-    def test_viewer_user_origin_is_distinct_from_cli_origin(self):
-        from umi.config import user_settings
-        path = self.root / 'user.yaml'
-        write_yaml(path, dict(schema_version=2, viewer=dict(port=12345)))
-        user = user_settings.load(path)
-        with patch.object(server.user_config, 'current', return_value=user):
-            for args, expected, origin in (([], 12345, str(path) + ':viewer.port'),
-                                           (['--port', '0'], 0, 'command_line:--port')):
-                with redirect_stdout(io.StringIO()) as output:
-                    self.assertEqual(server.main(['--show-config'] + args), 0)
-                report = json.loads(output.getvalue())
-                self.assertEqual(report['effective']['port'], expected)
-                self.assertEqual(report['configuration']['origins']['port'], origin)
-                self.assertIn('user_config', report['configuration']['precedence'])
 
     def test_calibration_show_config_without_recordings_or_environment(self):
         overlay = self.root/'calibration.yaml'

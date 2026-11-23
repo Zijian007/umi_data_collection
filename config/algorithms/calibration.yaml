@@ -146,7 +146,7 @@ checks:
 
   # A 重投影误差均值的提醒上限，单位 px；超过给 WARN。
   # 均值 = 每个角点像素误差范数的算术平均；报告另列 RMS，仅供参考（RMS 不小于均值）。
-  intrinsics_reprojection_px: 1.0  # A 重投影 RMS 提醒/验收值，单位 px；正数。
+  intrinsics_mean_reprojection_px: 1.0  # A 角点重投影误差均值的提醒上限，单位 px。
 
   # 内参 fx 相对样例 fx 的偏差提醒界限，无量纲；这里只比较 fx，0.03 即 3%。
   focal_warn_fraction: 0.03  # 焦距相对偏差提醒阈值；范围 [0,1]，须 <= focal_fail_fraction。
@@ -164,8 +164,8 @@ checks:
   # B 角速度模长第 95 百分位的下限，单位 rad/s；不足给 WARN，提示运动激励偏弱。
   minimum_gyro_p95_rad_s: 0.8  # B 角速度 P95 最低运动证据，单位 rad/s；正数。
 
-  # B 重投影误差均值的提醒上限，单位 px，口径同 intrinsics_reprojection_px；超过给 WARN。
-  camera_imu_reprojection_px: 1.2  # B 重投影 RMS 上限，单位 px；正数。
+  # B 重投影误差均值的提醒上限，单位 px，口径同 intrinsics_mean_reprojection_px；超过给 WARN。
+  camera_imu_mean_reprojection_px: 1.2  # B 角点重投影误差均值的提醒上限，单位 px。
 
   # 相机在 IMU 系中的平移向量，与样例平移向量之差的模长提醒界限，单位 mm。
   translation_warn_mm: 10.0  # 平移偏差提醒阈值，单位 mm；正数且 <= translation_fail_mm。

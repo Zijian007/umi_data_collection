@@ -8,7 +8,8 @@ import math
 import re
 from umi.config import loader as config
 from umi.store import layout
-from umi.config.scene_parameters import FIELD_PATHS, SCENE_PARAMETER_FIELDS, flatten as flatten_scene_parameters
+from umi.config.scene_parameters import POSTER_POLICY_DEFAULTS, SCENE_PARAMETER_FIELDS, SCENE_PARAMETER_GROUPS
+from umi.config.scene_parameters import flatten as flatten_scene_parameters
 from umi.workflows.scene.parameters import SceneOverrides, apply_overrides
 from umi.store.models import Scene, SceneParameters
 from umi.infra.file_store import read_yaml
@@ -16,6 +17,7 @@ from umi.infra.paths import KITS_ROOT as KITS, PROJECT_ROOT
 from umi.config.collection_schema import normalize_collection
 from umi.devices import registry, calibration_source
 from umi.core.arms import ARMS, read_arms
+from umi.perception.gripper import default_tag_roi, validate_roi
 
 
 ROOT = PROJECT_ROOT
@@ -60,19 +62,23 @@ def validate_batch_name(value: str) -> str:
     return value
 
 
-def load_scene_parameters(path: Path | None = None, *, overrides: dict | None = None) -> SceneParameters:
+def load_scene_parameters(path: Path | None = None, *, overrides: dict | None = None,
+                          gap_sources: dict[str, str] | None = None) -> SceneParameters:
+    default_path = ROOT / 'config/algorithms/scene_parameters.yaml'
     parameter_values = flatten_scene_parameters(
-        read_yaml(ROOT / 'config/algorithms/scene_parameters.yaml'),
-        label='scene_parameters.yaml', require_schema=True)
-    shared_environment_tags = read_yaml(ROOT / 'config/algorithms/environment_tags.yaml')
-    parameter_values = dict(shared_environment_tags, **parameter_values)
+        read_yaml(default_path), label=str(default_path), require_schema=True, allow_poster_policy=False,
+        gap_sources=gap_sources)
+    shared_environment_tags = config.load_poster_geometry(ROOT / 'config/algorithms' / config.POSTER_GEOMETRY_FILENAME)
+    parameter_values = {'tag_distance_roi_px': default_tag_roi(),
+                        **shared_environment_tags, **parameter_values, **POSTER_POLICY_DEFAULTS}
     if path is not None:
-        overlay = flatten_scene_parameters(read_yaml(path), label=str(path))
+        overlay = flatten_scene_parameters(read_yaml(path), label=str(path), allow_poster_policy=False,
+                                           gap_sources=gap_sources)
         parameter_values = config.merge_overrides(parameter_values, overlay, 'parameters.')
     if overrides is not None:
-        nested_roots = set(overrides) & {path[0] for path in FIELD_PATHS}
+        nested_roots = set(overrides) & SCENE_PARAMETER_GROUPS
         if nested_roots:
-            overrides = flatten_scene_parameters(overrides, label='parameters')
+            overrides = flatten_scene_parameters(overrides, label='parameters', gap_sources=gap_sources)
         else:
             unknown = set(overrides) - SCENE_PARAMETER_FIELDS
             if unknown:
@@ -84,8 +90,6 @@ def load_scene_parameters(path: Path | None = None, *, overrides: dict | None = 
     for field in fields(SceneParameters):
         value = parameter_values[field.name]
         if field.name == 'tag_distance_roi_px':
-            from umi.perception.gripper.detection.markers import validate_roi
-
             parameter_values[field.name] = list(validate_roi(value))
             continue
         if field.name == 'tag_fusion_method':
@@ -236,12 +240,14 @@ def read_scene(path: Path, *, overrides: SceneOverrides | None = None, collectio
     if scene_document['reference_arm'] not in ARMS:
         raise ValueError('map_reference_arm 必须为 left 或 right')
     # 用途开关来自 collection；当前 expert-config 只覆盖算法参数。历史覆盖按冻结值复现。
-    parameters = load_scene_parameters()
+    gap_sources: dict[str, str] = {}
+    parameters = load_scene_parameters(gap_sources=gap_sources)
     tag_layout = None
     environment_tags_enabled = False
     if 'tags' in scene_document:
         parameters, tag_layout, environment_tags_enabled = _read_tags(scene_document['tags'], base, parameters)
-    trajectory_config, parameters = apply_overrides(config.load('trajectory'), parameters, overrides)
+    trajectory_config, parameters = apply_overrides(config.load('trajectory'), parameters, overrides,
+                                                    gap_sources=gap_sources)
     if parameters.tag_fusion_enabled or parameters.tag_mapping_enabled:
         if tag_layout is None:
             raise ValueError('启用环境标签需要 collection.yaml 的 scene.tags.layout')
@@ -252,8 +258,8 @@ def read_scene(path: Path, *, overrides: SceneOverrides | None = None, collectio
     scene = Scene(path, scene_document['name'], scene_document['mode'], scene_document['reference_arm'],
                   recordings={}, rear_calibrations={}, trajectory=trajectory_config, parameters=parameters,
                   tag_layout=tag_layout, overrides=overrides, environment_tags_enabled=environment_tags_enabled,
-                  recording_trim=collection.get('recording_trim', {}))
-    return apply_backend_options(scene, collection['reconstruction'])
+                  position_support_gap_sources=gap_sources)
+    return apply_backend_options(scene, collection['reconstruction'], source=f'{path}:backend')
 
 
 def gripper_paths(declaration: dict, directory: Path | None = None) -> dict:

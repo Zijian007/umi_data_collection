@@ -27,16 +27,19 @@ from umi.perception.tools import make_lens_video
 
 class TagTrimmingTests(unittest.TestCase):
     def test_configuration_defaults_and_invalid_values(self):
-        doc = dict(kit='rig', scene={}, recording=dict(arms=['right']), reconstruction=dict(backend='poster_vio'))
-        self.assertNotIn('recording_trim', normalize_collection(doc))
+        doc = dict(kit='rig', scene={}, recording=dict(arms=['right']), backend=dict(mode='poster_vio'))
+        self.assertNotIn('poster_edge_trim', normalize_collection(doc)['reconstruction'])
         doc['recording']['trim'] = dict(enabled=True)
-        self.assertEqual(normalize_collection(doc)['recording_trim'],
-                         dict(enabled=True, minimum_missing_duration_s=1.))
+        with self.assertRaisesRegex(ValueError, 'recording 含未知字段'):
+            normalize_collection(doc)
+        doc['recording'].pop('trim')
+        doc['backend']['poster_edge_trim'] = dict(enabled=True)
+        self.assertEqual(normalize_collection(doc)['reconstruction']['poster_edge_trim'], dict(enabled=True))
         for value in (False, 0, -1, float('nan'), float('inf'), '1'):
-            doc['recording']['trim']['minimum_missing_duration_s'] = value
+            doc['backend']['poster_edge_trim']['min_missing_duration_s'] = value
             with self.subTest(value=value), self.assertRaises(ValueError):
                 normalize_collection(doc)
-        doc['recording']['trim'] = dict(enabled='true')
+        doc['backend']['poster_edge_trim'] = dict(enabled='true')
         with self.assertRaises(ValueError):
             normalize_collection(doc)
 

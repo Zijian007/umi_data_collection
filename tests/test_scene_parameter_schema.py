@@ -43,6 +43,26 @@ class SceneParameterSchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unknown|未知'):
             flatten({'schema_version': 2, 'localization': {'unknown': True}}, require_schema=True)
 
+    def test_renamed_observation_thresholds_keep_the_normalized_values(self):
+        legacy = dict(mapping=dict(environment_tags=dict(minimum_frames=7, minimum_motion_m=.2)),
+                      poster_vio=dict(minimum_tag_frames=9))
+        current = dict(mapping=dict(poster_scale=dict(minimum_scale_observation_times=7, minimum_motion_m=.2)),
+                       poster_vio=dict(minimum_training_observation_times=9))
+        with self.assertRaisesRegex(ValueError, '未知字段'):
+            flatten(legacy)
+        self.assertEqual(flatten(current), flatten(legacy, historical=True))
+        self.assertEqual(nested_snapshot(flatten(legacy, historical=True))['mapping'], current['mapping'])
+
+    def test_backend_gap_overrides_the_shared_default_regardless_of_yaml_order(self):
+        document = dict(poster_independent=dict(maximum_position_support_gap_s=4.),
+                        poster_acceptance=dict(maximum_position_support_gap_s=3.))
+        origins = {}
+        values = flatten(document, gap_sources=origins)
+        self.assertEqual(values['poster_maximum_position_support_gap_s'], 4.)
+        self.assertEqual(values['poster_vio_maximum_position_support_gap_s'], 3.)
+        self.assertIn(':poster_independent.', origins['poster_maximum_position_support_gap_s'])
+        self.assertIn(':poster_acceptance.', origins['poster_vio_maximum_position_support_gap_s'])
+
 
 if __name__ == '__main__':
     unittest.main()

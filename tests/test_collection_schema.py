@@ -11,20 +11,18 @@ class CollectionSchemaTests(unittest.TestCase):
             scene=dict(description='shelf'),
             environment_poster=dict(
                 layout_path='poster.json', detection=dict(enabled=True),
-                mapping=dict(enabled=False, scale_correction=dict(enabled=False)),
-                task_constraint=dict(enabled=True, method='staged')),
-            reconstruction=dict(backend='auto'))
+                mapping=dict(enabled=False, scale_correction=dict(enabled=False))),
+            backend=dict(mode='auto', scene_map=dict(poster_constraint=dict(enabled=True, method='staged'))))
 
     def test_normalizes_map_poster_reconstruction_and_task_override(self):
         document = self.base()
-        document['reconstruction']['base_tag'] = dict(enabled=False)
+        document['backend']['poster_vio'] = dict(base_tag=dict(enabled=False))
         document.update(map=dict(layout='per_arm', reference_arm='right',
                                  selection=dict(policy='latest_prior', version='map-v1')),
                         tasks=dict(take_001=dict(
                             arms=['right'], synchronization='assumed_simultaneous',
                             map=dict(epoch='epoch_001'),
-                            reconstruction=dict(backend='poster_vio',
-                                                base_tag=dict(enabled=True)))))
+                            backend=dict(mode='poster_vio', poster_vio=dict(base_tag=dict(enabled=True))))))
         normalized = normalize_collection(document)
         self.assertNotIn('schema_version', normalized)
         self.assertEqual(normalized['scene']['layout'], 'per_arm')
@@ -38,8 +36,8 @@ class CollectionSchemaTests(unittest.TestCase):
 
     def test_task_base_tag_switch_can_inherit_batch_setting(self):
         document = self.base()
-        document['reconstruction']['base_tag'] = dict(enabled=False)
-        document['tasks'] = dict(take_001=dict(reconstruction=dict(backend='poster_vio')))
+        document['backend']['poster_vio'] = dict(base_tag=dict(enabled=False))
+        document['tasks'] = dict(take_001=dict(backend=dict(mode='poster_vio')))
         normalized = normalize_collection(document)
         self.assertNotIn('base_tag', normalized['tasks']['take_001']['reconstruction'])
 
@@ -76,14 +74,18 @@ class CollectionSchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '不能同时'):
             normalize_collection(document)
 
-    def test_rejects_duplicate_backend_formats_at_the_same_scope(self):
+    def test_rejects_retired_backend_and_poster_declarations(self):
         document = self.base()
-        document['backend'] = dict(mode='auto')
-        with self.assertRaisesRegex(ValueError, 'backend 与 reconstruction 不能同时'):
+        document['reconstruction'] = dict(backend='auto')
+        with self.assertRaisesRegex(ValueError, '未知字段.*reconstruction'):
             normalize_collection(document)
-        document.pop('backend')
-        document['tasks'] = dict(take_001=dict(backend={}, reconstruction={}))
-        with self.assertRaisesRegex(ValueError, r'tasks\.take_001\.backend'):
+        document.pop('reconstruction')
+        document['environment_poster']['task_constraint'] = dict(enabled=True)
+        with self.assertRaisesRegex(ValueError, 'environment_poster 含未知字段'):
+            normalize_collection(document)
+        document['environment_poster'].pop('task_constraint')
+        document['tasks'] = dict(take_001=dict(reconstruction={}))
+        with self.assertRaisesRegex(ValueError, r'tasks\.take_001 含未知字段'):
             normalize_collection(document)
 
     def test_backend_reports_invalid_options_at_the_public_paths(self):

@@ -11,7 +11,7 @@ schema_version: 1  # 配置结构版本；当前固定为整数 1。
 
 # 独立轨迹海报；资产通过 --tag-layout 与 --rear-calibration 指定。
 # 声明资产后默认只诊断；显式 true 才联合优化。场景回退继承 scene 的对应参数。
-# 独立轨迹的环境海报数值参数见 config/algorithms/environment_tags.yaml。
+# 独立轨迹的环境海报数值参数见 config/algorithms/poster_geometry.yaml。
 # 这里仅保留独立轨迹的融合策略；共享几何数值由加载器注入。
 environment_tags:
   tag_fusion_enabled: false  # 独立轨迹海报联合优化开关；true/false，场景任务由 collection 后端推导。
@@ -301,10 +301,10 @@ retry:
   # ── 选轮目标 · 耗尽次数后仍可选最佳有效结果 ──
   # 地图位置约束覆盖帧比例的下限，范围 0–1；0.95 即 95%。
   # 低于此值触发下一轮（若还有次数）；调大更容易重试，不会直接让轨迹更准确。
-  minimum_full_fraction: 0.95  # 重试目标位置支持比例；范围 0–1。
+  target_map_position_fraction: 0.95  # 重试目标位置支持比例；范围 0–1。
   # 有完整几何证据时，以自然视觉与海报共同位置支持判断是否重试；保留原视觉覆盖记录。
   use_poster_position_support: true  # 重试时是否把合格海报位置支持计入覆盖；true/false。
-  maximum_position_support_gap_s: 2.0  # 共同位置支持最大缺口，秒；场景独立后端沿用场景缺口门槛。
+  target_maximum_position_support_gap_s: 2.0  # 独立轨迹的重试目标，单位 s；场景运行另行解析。
 
   # 可接受的独立地图放置数上限；超过则尝试重建，数量按融合链及分组统计。
   # 多轮有效结果优先选放置数少的，再选覆盖率高的；耗尽次数仍会选最佳有效结果。
@@ -319,11 +319,10 @@ retry:
 # 7. 结果质量提醒（不参与求解或重试）
 # ────────────────────────────────────────────────────────────────────
 # 下面只生成质量提醒，不改变轨迹、不触发重试，也不能代替独立真值误差评估。
-# retry.minimum_full_fraction 与这里的同名参数作用不同。
 notes:
   # 有地图位置约束的帧比例低于此值时提醒，范围 0–1；0.5 即 50%。
   # 完全没有地图位置约束时始终有单独提醒，与此阈值无关。
-  minimum_full_fraction: 0.5  # 重试目标位置支持比例；范围 0–1。
+  warn_below_map_position_fraction: 0.5  # 触发地图位置覆盖率提醒的门槛；范围 0–1。
 
   # 从开头到第一帧获得地图位置约束的时间超过此值时提醒，单位 s。
   # 表示开头有较长 IMU 桥接区间，不表示这一段实测误差有多少。

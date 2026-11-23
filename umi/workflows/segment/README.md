@@ -214,7 +214,7 @@ python -m umi.apps.segment /path/to/task.insv --mode dual --rear-calibration rea
 
 ## 环境海报
 
-独立 `handheld` / `dual` 支持 `--tag-layout FILE`，可加 `--rear-calibration measured|factory` 选择本设备已登记的完整 rear 标定，要求序列号、参数来源和验收匹配。省略时按上述规则兜底，显式绑定损坏则拒绝。两种路径均冻结 rear 参数和来源到 `devices/rear/`；工厂转换不合格或元数据缺失时在预检失败，保留旧结果。指定资产默认只诊断；通过 YAML `environment_tags.tag_fusion_enabled: true` 显式启用。共享默认阈值在 `config/algorithms/environment_tags.yaml`，实验覆盖写在 `--config` 指定文件的 `environment_tags` 内。
+独立 `handheld` / `dual` 支持 `--tag-layout FILE`，可加 `--rear-calibration measured|factory` 选择本设备已登记的完整 rear 标定，要求序列号、参数来源和验收匹配。省略时按上述规则兜底，显式绑定损坏则拒绝。两种路径均冻结 rear 参数和来源到 `devices/rear/`；工厂转换不合格或元数据缺失时在预检失败，保留旧结果。指定资产默认只诊断；通过 YAML `environment_tags.tag_fusion_enabled: true` 显式启用。共享默认阈值在 `config/algorithms/poster_geometry.yaml`，实验覆盖写在 `--config` 指定文件的 `environment_tags` 内。
 
 `environment_assets.py` 选择环境镜头标定，并冻结标定、海报布局和原始角点；`umi/estimation/fusion/poster.py` 在原生图中添加单板角点因子。原有地图分段尺度仍是变量，不把上一轮融合轨迹作为固定地图先验再平滑一次。真实 rear 观测时刻插入 IMU 节点；恢复全帧轨迹时使用这些实际时间节点。dual 地图定位也按镜头时差重采样，不跨丢帧/地图切换。没有海报观测时保持原图输出；仍需通过惯性初始化和原有质量验收。
 

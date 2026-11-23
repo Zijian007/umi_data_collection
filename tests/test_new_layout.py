@@ -104,7 +104,7 @@ class NewLayoutTests(unittest.TestCase):
         write_yaml(declaration, dict(kit='single', recording=dict(arms=['right']),
                      scene=dict(description=''),
                      map=dict(layout='shared', reference_arm='right', selection=dict(policy='latest_prior')),
-                     reconstruction=dict(backend='scene_map')))
+                     backend=dict(mode='scene_map')))
         mapping = batch / 'mapping/map.insv'
         mapping.parent.mkdir()
         mapping.write_text('right_mapping')

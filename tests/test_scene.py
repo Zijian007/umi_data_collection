@@ -149,8 +149,12 @@ class SceneWorkflowTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        # Synthetic INSVs have no audio. Use packaged preferences for workflow fixtures.
-        preferences = user_settings.load(self.root / 'user.yaml')
+        # Synthetic INSVs have no audio.
+        preferences_path = self.root / 'user.yaml'
+        preferences_values = read_yaml(user_settings.DEFAULT_PATH)
+        preferences_values['features']['audio_sync']['enabled'] = False
+        write_yaml(preferences_path, preferences_values)
+        preferences = user_settings.load(preferences_path)
         self.enterContext(patch.object(user_settings, 'current', return_value=preferences))
         kit_root = patch.object(kit_inputs, 'KITS', self.root / 'kits')
         kit_root.start(); self.addCleanup(kit_root.stop)
@@ -170,7 +174,7 @@ class SceneWorkflowTests(unittest.TestCase):
                    scene=dict(description='test'),
                    map=dict(layout='shared', reference_arm='left',
                             selection=dict(policy='latest_prior')),
-                   reconstruction=dict(backend='scene_map')))
+                   backend=dict(mode='scene_map')))
         self.scene = scene_inputs.read_scene(self.scene_path)
         kit = self.write_kit('test_kit', {arm: dict(serial='SERIAL_'+arm, **self.device_pins['SERIAL_'+arm]) for arm in models.ARMS})
         self.batch_root = self.scene.root / '20261025_001'
@@ -179,7 +183,7 @@ class SceneWorkflowTests(unittest.TestCase):
                    map=dict(layout='shared', reference_arm='left',
                             selection=dict(policy='latest_prior')),
                    kit='test_kit', recording=dict(arms=['left', 'right']),
-                   reconstruction=dict(backend='scene_map')))
+                   backend=dict(mode='scene_map')))
         self.session_path = self.batch_root / '.pipeline/manifest.yaml'
         mapping_reference = dict(self.ref('left'), **{key: value for key, value in kit['arms']['left'].items() if key != 'serial'})
         write_yaml(self.session_path, dict(schema_version=5, scene='collection.yaml',

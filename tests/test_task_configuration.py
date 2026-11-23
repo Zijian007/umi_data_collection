@@ -30,7 +30,7 @@ class TaskConfigurationTests(unittest.TestCase):
 
     def configure(self, *, backend='scene_map', task=None, poster=False):
         document = read_yaml(self.collection)
-        document['reconstruction'] = dict(backend=backend)
+        document['backend'] = dict(mode=backend)
         document['tasks'] = dict(take_001=task or {})
         if poster:
             document['environment_poster'] = dict(layout_path=str(
@@ -75,6 +75,7 @@ class TaskConfigurationTests(unittest.TestCase):
 
     def test_audio_sync_uses_task_then_batch_then_global_settings(self):
         user_path = self.helper.root / 'audio-user.yaml'
+        user_values = read_yaml(user_settings.DEFAULT_PATH)
         manual = dict(mode='manual', offsets_s=dict(left=0., right=.12), confirmed=False)
         for global_enabled, batch_enabled, task, expected in (
             (True, None, {}, 'audio_auto'),
@@ -86,7 +87,8 @@ class TaskConfigurationTests(unittest.TestCase):
             (False, True, {'arms': ['right']}, 'single_camera'),
         ):
             with self.subTest(global_enabled=global_enabled, batch_enabled=batch_enabled, task=task):
-                write_yaml(user_path, dict(features=dict(audio_sync=dict(enabled=global_enabled))))
+                user_values['features']['audio_sync']['enabled'] = global_enabled
+                write_yaml(user_path, user_values)
                 with patch.object(user_settings, 'current', return_value=user_settings.load(user_path)):
                     document = self.configure(task=task)
                     if batch_enabled is None:
@@ -137,31 +139,29 @@ class TaskConfigurationTests(unittest.TestCase):
                 self.assertIsNone(batch_report['selection']['map_version'])
 
     def test_explicit_disabled_capabilities_conflict_with_poster_backend(self):
-        for field in ('detection', 'task_constraint'):
-            document = self.configure(backend='poster_vio', poster=True)
-            document['environment_poster'][field] = dict(enabled=False)
-            write_yaml(self.collection, document)
-            with self.subTest(field=field):
-                with self.assertRaisesRegex(ValueError, '冲突'):
-                    read_episode(self.helper.episode_path, verify=False)
-                with self.assertRaisesRegex(ValueError, '冲突'):
-                    self.preview()
+        document = self.configure(backend='poster_vio', poster=True)
+        document['environment_poster']['detection'] = dict(enabled=False)
+        write_yaml(self.collection, document)
+        with self.assertRaisesRegex(ValueError, '冲突'):
+            read_episode(self.helper.episode_path, verify=False)
+        with self.assertRaisesRegex(ValueError, '冲突'):
+            self.preview()
 
     def test_task_backend_derivation_does_not_enable_other_map_tasks(self):
-        self.configure(poster=True, task={'reconstruction': {'backend': 'poster_vio'}})
+        self.configure(poster=True, task=dict(backend=dict(mode='poster_vio')))
         self.assertTrue(read_episode(self.helper.episode_path, verify=False).scene.parameters.tag_fusion_enabled)
         self.configure(poster=True)
         self.assertFalse(read_episode(self.helper.episode_path, verify=False).scene.parameters.tag_fusion_enabled)
 
     def test_base_tag_switch_inherits_and_task_can_override(self):
         document = self.configure(backend='auto', poster=True)
-        document['reconstruction']['base_tag'] = dict(enabled=False)
+        document['backend']['poster_vio'] = dict(base_tag=dict(enabled=False))
         write_yaml(self.collection, document)
         episode = read_episode(self.helper.episode_path, verify=False)
         self.assertFalse(episode.scene.poster_vio_base_tag_enabled)
 
         document['tasks'] = dict(take_001=dict(
-            reconstruction=dict(base_tag=dict(enabled=True))))
+            backend=dict(poster_vio=dict(base_tag=dict(enabled=True)))))
         write_yaml(self.collection, document)
         episode = read_episode(self.helper.episode_path, verify=False)
         self.assertTrue(episode.scene.poster_vio_base_tag_enabled)
@@ -176,7 +176,6 @@ class TaskConfigurationTests(unittest.TestCase):
 
     def test_backend_options_apply_through_batch_task_and_expert_configuration(self):
         document = self.configure(poster=True)
-        document.pop('reconstruction')
         document['backend'] = dict(
             mode='auto',
             scene_map=dict(poster_constraint=dict(enabled=True, method='joint')),
@@ -216,9 +215,41 @@ class TaskConfigurationTests(unittest.TestCase):
         self.assertEqual(episode.scene.parameters.poster_vio_maximum_observation_gap_s, 7.)
         self.assertEqual(episode.scene.parameters.poster_maximum_gravity_difference_deg, 4.)
 
+    def test_show_config_reports_the_effective_retry_target_and_its_origin(self):
+        document = self.configure(poster=True)
+        document['backend'] = dict(mode='poster_independent',
+                                   poster_independent=dict(max_position_support_gap_s=3.))
+        task_backend = dict(poster_independent=dict(max_position_support_gap_s=4.))
+        document['tasks']['take_001']['backend'] = task_backend
+        write_yaml(self.collection, document)
+        expert_path = self.helper.batch_root / 'expert.yaml'
+        write_yaml(expert_path, dict(
+            trajectory=dict(retry=dict(target_maximum_position_support_gap_s=9.)),
+            parameters=dict(poster_acceptance=dict(maximum_position_support_gap_s=5.))))
+
+        project_source = ':poster_acceptance.maximum_position_support_gap_s'
+        batch_source = ':backend.poster_independent.max_position_support_gap_s'
+        task_source = ':tasks.take_001.backend.poster_independent.max_position_support_gap_s'
+        for use_task, use_batch, expert, expected, source in (
+                (False, False, None, 2., project_source), (False, True, None, 3., batch_source),
+                (True, True, None, 4., task_source),
+                (True, True, SceneOverrides.load(expert_path), 5., ':parameters:poster_acceptance.maximum_position_support_gap_s')):
+            with self.subTest(source=source):
+                batch_options = dict(poster_independent=dict(max_position_support_gap_s=3.)) if use_batch else {}
+                document['backend'] = dict(mode='poster_independent', **batch_options)
+                document['tasks']['take_001'] = {'backend': task_backend} if use_task else {}
+                write_yaml(self.collection, document)
+                effective = effective_report([self.helper.task_root], overrides=expert)[0]['effective']
+                support = effective['position_support']['backends']['poster_independent']
+                self.assertEqual((support['retry_target_s'], support['acceptance_maximum_s']), (expected, expected))
+                self.assertTrue(support['source'].endswith(source), support['source'])
+                episode = read_episode(self.helper.episode_path, verify=False, overrides=expert)
+                self.assertEqual(episode.scene.parameters.poster_maximum_position_support_gap_s, expected)
+                if expert:
+                    self.assertEqual(effective['trajectory']['values']['retry']['maximum_position_support_gap_s'], 9.)
+
     def test_auto_map_constraint_is_independent_of_poster_fallback(self):
         document = self.configure(poster=True)
-        document.pop('reconstruction')
         document['backend'] = dict(mode='auto', scene_map=dict(poster_constraint=dict(enabled=False)))
         write_yaml(self.collection, document)
         episode = read_episode(self.helper.episode_path, verify=False)

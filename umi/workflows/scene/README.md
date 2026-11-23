@@ -246,7 +246,7 @@ KIWI 方法来源和许可证见 [第三方来源](../../../docs/dev/PROVENANCE.
 
 ## 场景配置的唯一来源
 
-`collection.yaml` 集中声明 `map`、`environment_poster`、`backend`、批次使用手和任务覆盖。`map.layout` 的用户取值为 `auto`、`shared` 或 `per_arm`，解析为 `shared_front` 或 `dual`。后端阈值按算法默认值、批次、任务、专家配置的顺序覆盖。设备配置来自 kit.yaml，建图录像来自批次 mapping/。已有的 `reconstruction` 布局仍可读取。
+`collection.yaml` 集中声明 `map`、`environment_poster`、`backend`、批次使用手和任务覆盖。`map.layout` 的用户取值为 `auto`、`shared` 或 `per_arm`，解析为 `shared_front` 或 `dual`。后端阈值按算法默认值、批次、任务、专家配置的顺序覆盖。设备配置来自 kit.yaml，建图录像来自批次 mapping/。
 
 kit.yaml 和 collection.yaml 只通过手动创建和修改；原片按 take 分组或放入 pending，run 自动登记、补片和处理。run 与 build 共用 batch_snapshot.read_inputs/make_record/save_record 解析当前配置与生成内部快照。ingest.register_recordings() 只接收已解析的批次对象，不再接受旧命令的外部输入目录、手选择或硬链接选项；预览和实际运行在同一条路径规划任务，仅实际运行写入文件。build 仅接受批次。manifest.yaml、episode.yaml 仅从批次 .pipeline/ 当前布局读取；批次和任务清单仍支持 schema 4/5，人工选项优先从 collection.yaml.tasks 读取。已有 episode.json 结果协议保持可读。Session/Episode 是内部类型，不再作为用户命令名称。
 

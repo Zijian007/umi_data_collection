@@ -165,9 +165,9 @@ class SceneSyncTests(unittest.TestCase):
         kiwi.assert_called_once()
 
     def test_effective_yaml_parameters_invalidate_sync_cache_for_both_algorithms(self):
-        directory = self.root / 'algorithm'
-        write_yaml(directory / 'specialist.yaml', {'min_peak_ratio': 1.3})
-        write_yaml(directory / 'kiwi.yaml', {'min_votes': 15, 'peak_neighborhood': [15, 31]})
+        directory = self.root / 'audio_sync'
+        for name in ('specialist', 'kiwi'):
+            write_yaml(directory / f'{name}.yaml', read_yaml(sync_config.source_path(name)))
         self.enterContext(patch.object(sync_config, 'DIRECTORY', directory))
         kiwi = self.enterContext(patch.object(synchronization.landmark_audio, 'estimate_offset_from_files',
                                              return_value=KIWI_ESTIMATE))
@@ -181,12 +181,13 @@ class SceneSyncTests(unittest.TestCase):
                 self.assertEqual((code, first['status'], first['parameters'][field]), (0, 'ready', initial))
                 output = Path(first['output'])
                 previous = output.read_bytes()
-                config_path = directory / f'{name}.yaml'
-                config_path.write_text(config_path.read_text() + '# Comments do not change parameter identity.\n')
+                config_path = directory / f'{name}.local.yaml'
+                write_yaml(config_path, {field: initial})
                 self.assertEqual(self.invoke(self.task)[1][0]['status'], 'reused')
                 write_yaml(config_path, {field: modified})
                 code, [preview] = self.invoke(self.task, '--dry-run')
                 self.assertEqual((code, preview['status'], preview['parameters'][field]), (0, 'planned', modified))
+                self.assertEqual(preview['parameters'], {**first['parameters'], field: modified})
                 self.assertEqual(output.read_bytes(), previous)
                 code, [ready] = self.invoke(self.task)
                 self.assertEqual((code, ready['status'], ready['parameters'][field]), (0, 'ready', modified))
@@ -195,8 +196,9 @@ class SceneSyncTests(unittest.TestCase):
                 self.assertEqual(estimator.call_count, 3)
 
     def test_invalid_yaml_is_reported_before_calling_the_estimator(self):
-        directory = self.root / 'algorithm'
-        write_yaml(directory / 'specialist.yaml', {'min_peak_ratio': True})
+        directory = self.root / 'audio_sync'
+        write_yaml(directory / 'specialist.yaml', read_yaml(sync_config.source_path('specialist')))
+        write_yaml(directory / 'specialist.local.yaml', {'min_peak_ratio': True})
         with patch.object(sync_config, 'DIRECTORY', directory):
             code, [result] = self.invoke(self.task)
         self.assertEqual((code, result['status']), (1, 'failed'))

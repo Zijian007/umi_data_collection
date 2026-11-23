@@ -3,3 +3,4 @@ full_search_interval: 30  # 每隔多少个输出帧执行一次全 ROI 搜索�
 candidate_limit: 96  # 单帧完整检测最多保留的候选区域数。
 recovery_candidate_limit: 16  # 补检阶段单帧最多放大的候选区域数。
 recovery_batch_size: 32  # 补检每轮最多处理的采样窗口大小。
+roi_px: [600, 980, 1350, 1250]  # 原始工作镜头半幅 LEFT TOP RIGHT BOTTOM，单位 px。

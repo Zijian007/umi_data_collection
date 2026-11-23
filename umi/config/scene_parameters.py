@@ -5,6 +5,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 
+DEFAULT_POSTER_FUSION_METHOD = 'staged'
+POSTER_POLICY_DEFAULTS = {
+    'tag_mapping_enabled': False,
+    'tag_mapping_scale_enabled': False,
+    'tag_fusion_enabled': False,
+    'tag_fusion_method': DEFAULT_POSTER_FUSION_METHOD,
+}
+
+
 # 外部配置按处理阶段分组；内部字段名保持稳定，供现有算法和结果快照使用。
 FIELD_PATHS: dict[tuple[str, ...], str] = {
     ('pairing', 'start_tolerance_s'): 'pairing_start_tolerance_s',
@@ -26,14 +35,14 @@ FIELD_PATHS: dict[tuple[str, ...], str] = {
     ('mapping', 'alignment', 'maximum_acc_bias_m_s2'): 'maximum_acc_bias_m_s2',
     ('mapping', 'environment_tags', 'enabled'): 'tag_mapping_enabled',
     ('mapping', 'environment_tags', 'scale', 'enabled'): 'tag_mapping_scale_enabled',
-    ('mapping', 'environment_tags', 'minimum_frames'): 'tag_mapping_minimum_frames',
-    ('mapping', 'environment_tags', 'minimum_motion_m'): 'tag_mapping_minimum_motion_m',
-    ('mapping', 'environment_tags', 'minimum_board_extent_m'): 'tag_mapping_minimum_board_extent_m',
-    ('mapping', 'environment_tags', 'maximum_relative_std'): 'tag_mapping_maximum_relative_std',
-    ('mapping', 'environment_tags', 'imu_std_floor'): 'tag_mapping_imu_std_floor',
-    ('mapping', 'environment_tags', 'tag_std_floor'): 'tag_mapping_tag_std_floor',
-    ('mapping', 'environment_tags', 'compatibility_sigma'): 'tag_mapping_compatibility_sigma',
-    ('mapping', 'environment_tags', 'maximum_scale_difference'): 'tag_mapping_maximum_scale_difference',
+    ('mapping', 'poster_scale', 'minimum_scale_observation_times'): 'tag_mapping_minimum_frames',
+    ('mapping', 'poster_scale', 'minimum_motion_m'): 'tag_mapping_minimum_motion_m',
+    ('mapping', 'poster_scale', 'minimum_board_extent_m'): 'tag_mapping_minimum_board_extent_m',
+    ('mapping', 'poster_scale', 'maximum_relative_std'): 'tag_mapping_maximum_relative_std',
+    ('mapping', 'poster_scale', 'imu_std_floor'): 'tag_mapping_imu_std_floor',
+    ('mapping', 'poster_scale', 'tag_std_floor'): 'tag_mapping_tag_std_floor',
+    ('mapping', 'poster_scale', 'compatibility_sigma'): 'tag_mapping_compatibility_sigma',
+    ('mapping', 'poster_scale', 'maximum_scale_difference'): 'tag_mapping_maximum_scale_difference',
     ('placement', 'minimum_pose_pairs'): 'minimum_pose_pairs',
     ('placement', 'position_sigma_m'): 'placement_position_sigma_m',
     ('placement', 'rotation_sigma_deg'): 'placement_rotation_sigma_deg',
@@ -48,7 +57,7 @@ FIELD_PATHS: dict[tuple[str, ...], str] = {
     ('localization', 'maximum_visual_gap_s'): 'maximum_visual_gap_s',
     ('poster_independent', 'maximum_position_support_gap_s'): 'poster_maximum_position_support_gap_s',
     ('poster_independent', 'maximum_gravity_difference_deg'): 'poster_maximum_gravity_difference_deg',
-    ('poster_vio', 'minimum_tag_frames'): 'poster_vio_minimum_tag_frames',
+    ('poster_vio', 'minimum_training_observation_times'): 'poster_vio_minimum_tag_frames',
     ('poster_vio', 'maximum_observation_gap_s'): 'poster_vio_maximum_observation_gap_s',
     ('poster_vio', 'minimum_time_span_s'): 'poster_vio_minimum_time_span_s',
     ('poster_vio', 'maximum_position_support_gap_s'): 'poster_vio_maximum_position_support_gap_s',
@@ -104,6 +113,20 @@ FIELD_PATHS: dict[tuple[str, ...], str] = {
     ('diagnostics', 'export_auxiliary_trajectories'): 'export_auxiliary_trajectories',
 }
 
+_LEGACY_FIELD_PATHS = {
+    ('mapping', 'environment_tags', path[-1]): field
+    for path, field in FIELD_PATHS.items()
+    if path[:2] == ('mapping', 'poster_scale') and path[-1] != 'minimum_scale_observation_times'
+}
+_LEGACY_FIELD_PATHS.update({
+    ('mapping', 'environment_tags', 'minimum_frames'): 'tag_mapping_minimum_frames',
+    ('poster_vio', 'minimum_tag_frames'): 'poster_vio_minimum_tag_frames',
+})
+_SHARED_POSITION_GAP_PATH = ('poster_acceptance', 'maximum_position_support_gap_s')
+POSITION_SUPPORT_GAP_FIELDS = ('poster_maximum_position_support_gap_s', 'poster_vio_maximum_position_support_gap_s')
+POSITION_GAP_SOURCE_FIELDS = frozenset((*POSITION_SUPPORT_GAP_FIELDS, 'maximum_visual_gap_s'))
+SCENE_PARAMETER_GROUPS = frozenset(path[0] for path in (*FIELD_PATHS, _SHARED_POSITION_GAP_PATH))
+
 SHARED_ENVIRONMENT_TAG_FIELDS = frozenset({
     'tag_minimum_side_px', 'tag_minimum_frames', 'tag_corner_sigma_px',
     'tag_sigma_per_radius_px', 'tag_huber', 'tag_maximum_reprojection_rms_px',
@@ -118,14 +141,16 @@ SCENE_SCHEMA_VERSION = 2
 INTERNAL_SCHEMA_VERSION = 1
 
 
-def flatten(document: Mapping, *, label: str = 'parameters', require_schema: bool = False) -> dict:
+def flatten(document: Mapping, *, label: str = 'parameters', require_schema: bool = False,
+            allow_poster_policy: bool = True, gap_sources: dict[str, str] | None = None,
+            historical: bool = False) -> dict:
     """Flatten the versioned, grouped user configuration."""
     if not isinstance(document, Mapping):
         raise ValueError(f'{label} 必须是配置表')
     if not document:
         return {'schema_version': INTERNAL_SCHEMA_VERSION}
 
-    nested_keys = set(document) & {path[0] for path in FIELD_PATHS}
+    nested_keys = set(document) & SCENE_PARAMETER_GROUPS
     is_nested = bool(nested_keys)
     if not is_nested:
         raise ValueError(f'{label} 必须使用分组 schema_version: {SCENE_SCHEMA_VERSION}')
@@ -133,12 +158,15 @@ def flatten(document: Mapping, *, label: str = 'parameters', require_schema: boo
     schema_version = document.get('schema_version', SCENE_SCHEMA_VERSION)
     if schema_version != SCENE_SCHEMA_VERSION:
         raise ValueError(f'{label} 需要 schema_version: {SCENE_SCHEMA_VERSION}')
-    allowed_roots = {path[0] for path in FIELD_PATHS}
-    unknown_roots = set(document) - allowed_roots - {'schema_version'}
+    unknown_roots = set(document) - SCENE_PARAMETER_GROUPS - {'schema_version'}
     if unknown_roots:
         raise ValueError(f'{label} 含未知分组：{sorted(unknown_roots)}')
 
     flat: dict = {'schema_version': INTERNAL_SCHEMA_VERSION}
+    shared_gap: dict = {}
+    sources: dict[str, str] = {}
+    input_paths = {**FIELD_PATHS, **_LEGACY_FIELD_PATHS} if historical else FIELD_PATHS
+    grouped_paths = (*input_paths, _SHARED_POSITION_GAP_PATH)
 
     def walk(node: Mapping, prefix: tuple[str, ...]) -> None:
         if not isinstance(node, Mapping):
@@ -147,20 +175,32 @@ def flatten(document: Mapping, *, label: str = 'parameters', require_schema: boo
             if not isinstance(key, str):
                 raise ValueError(f'{label} 配置项名称必须是字符串')
             path = prefix + (key,)
-            matches = [candidate for candidate in FIELD_PATHS if candidate[:len(path)] == path]
-            if not matches:
-                raise ValueError(f'{label}.{".".join(path)} 是未知字段')
-            if path in FIELD_PATHS:
-                flat[FIELD_PATHS[path]] = value
-            else:
+            if path == _SHARED_POSITION_GAP_PATH:
+                shared_gap.update(dict.fromkeys(POSITION_SUPPORT_GAP_FIELDS, value))
+            elif path in input_paths:
+                field = input_paths[path]
+                if not allow_poster_policy and field in POSTER_POLICY_DEFAULTS:
+                    raise ValueError(f'{label}.{".".join(path)} 请在 collection.yaml 的 '
+                                     'environment_poster 或 backend.scene_map 中配置')
+                if field in flat:
+                    raise ValueError(f'{label}.{".".join(path)} 重复设置了 {field}')
+                flat[field] = value
+                if gap_sources is not None and field in POSITION_GAP_SOURCE_FIELDS:
+                    sources[field] = f'{label}:{".".join(path)}'
+            elif any(candidate[:len(path)] == path for candidate in grouped_paths):
                 if not isinstance(value, Mapping):
                     raise ValueError(f'{label}.{".".join(path)} 必须是配置表')
                 walk(value, path)
+            else:
+                raise ValueError(f'{label}.{".".join(path)} 是未知字段')
 
     for root, value in document.items():
         if root != 'schema_version':
             walk({root: value}, ())
-    return flat
+    if gap_sources is not None:
+        gap_sources.update({field: f'{label}:{".".join(_SHARED_POSITION_GAP_PATH)}' for field in shared_gap})
+        gap_sources.update(sources)
+    return {**shared_gap, **flat}
 
 
 def nested_snapshot(values: Mapping) -> dict:

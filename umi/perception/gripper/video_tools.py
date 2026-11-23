@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import ExitStack, contextmanager
 from fractions import Fraction
 from pathlib import Path
+from types import EllipsisType
 import csv
 import math
 import sys
@@ -16,7 +17,7 @@ import numpy as np
 
 from umi.core.frame import FPS_SRC_RATE, SRC_H, SRC_W
 from umi.config import operational_settings as settings
-from umi.perception.gripper import DEFAULT_TAG_ROI
+from umi.perception.gripper import default_tag_roi
 from umi.perception.gripper.detection.frames import FrameDetector
 from umi.perception.gripper.detection.markers import FrameDetection, validate_roi
 from umi.infra.file_store import atomic_file
@@ -136,7 +137,7 @@ class PreviewWriter:
 
 
 def preview(video: Path, output: Path | None = None, *,
-           roi: tuple[int, int, int, int] | None = DEFAULT_TAG_ROI,
+           roi: tuple[int, int, int, int] | None | EllipsisType = ...,
            contrast: float = 1.) -> dict:
     video = _recording_path(video)
     output = output.expanduser().resolve() if output is not None else video.with_name(video.stem + '_width_preview.mp4')
@@ -144,6 +145,8 @@ def preview(video: Path, output: Path | None = None, *,
         raise ValueError('--out 需要 MP4 文件路径')
     if output.exists():
         raise FileExistsError(f'预览文件已存在，请使用 --out 选择新文件：{output}')
+    if roi is ...:
+        roi = default_tag_roi()
     detection_roi = roi if roi is not None else (0, 0, SRC_H, SRC_H)
     detector = FrameDetector(detection_roi, contrast=contrast)
     roi = detector.roi if roi is not None else None

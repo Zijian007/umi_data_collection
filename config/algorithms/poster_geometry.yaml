@@ -2,7 +2,7 @@
 # 场景建图、场景任务融合、独立轨迹和标定 C 都从这里读取同一份默认值。
 # collection.yaml.environment_poster 和 trajectory.environment_tags 只负责本次运行的策略覆盖。
 tag_minimum_side_px: 8.0  # 单个环境标签的最短投影边长，单位 px。
-tag_minimum_frames: 3  # 海报位姿估计至少需要的独立观测时刻数。
+tag_minimum_pose_observation_times: 3  # 海报位姿估计至少需要的独立观测时刻数。
 tag_corner_sigma_px: 1.0  # 标签角点基础像素标准差，单位 px。
 tag_sigma_per_radius_px: 40.0  # 远离主点后的角点噪声增量系数，单位 px。
 tag_huber: 1.345  # 标签角点鲁棒核阈值，作用于归一化残差。

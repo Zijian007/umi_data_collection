@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from umi.config import audio_sync as sync_config
 from umi.infra import provenance
 from umi.perception.audio import kiwi_audio as landmark_audio
 from umi.perception.audio.specialist_audio import AudioSyncError, AudioSyncEstimate, estimate_offset
@@ -50,7 +51,7 @@ class AudioSyncTests(unittest.TestCase):
             estimate_offset(np.zeros(1024), np.zeros(1024))
 
     def test_landmark_matching_and_refinement_recover_unequal_clips_in_both_directions(self) -> None:
-        rate = landmark_audio.SAMPLE_RATE
+        rate = sync_config.load('kiwi').sample_rate
         rng = np.random.default_rng(7)
         reference = rng.normal(0, .001, 9 * rate)
         onsets = np.cumsum(rng.uniform(.09, .18, 55))
@@ -72,7 +73,7 @@ class AudioSyncTests(unittest.TestCase):
                     self.assertIsNone(result.max_offset_s)
 
     def test_kiwi_rejects_audio_with_no_distinctive_landmarks(self) -> None:
-        rate = landmark_audio.SAMPLE_RATE
+        rate = sync_config.load('kiwi').sample_rate
         time = np.arange(4 * rate) / rate
         periodic = .2 * np.sin(2 * np.pi * 440 * time)
         for signal in (periodic, np.round(32768 * periodic) / 32768):

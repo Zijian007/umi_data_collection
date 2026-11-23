@@ -294,11 +294,13 @@ class TagDistanceAcceptanceTests(unittest.TestCase):
             with self.subTest(roi=roi), self.assertRaises(ValueError):
                 scene_inputs.load_scene_parameters(overrides={'tag_distance_roi_px': roi})
 
-    def test_cli_and_scene_share_the_requested_default_roi(self):
+    def test_cli_parser_defers_an_unspecified_roi_to_the_shared_default(self):
         from umi.apps.calib import build_parser
+        from umi.perception.gripper import default_tag_roi
         for command in ('preview-width', 'detect-width'):
             parsed = build_parser().parse_args([command, 'raw.insv'])
-            self.assertEqual(tuple(parsed.roi), (600, 980, 1350, 1250))
+            self.assertIsNone(parsed.roi)
+        self.assertEqual(tuple(scene_inputs.load_scene_parameters().tag_distance_roi_px), default_tag_roi())
 
     def test_actual_quick_and_recovery_search_do_not_escape_configured_roi(self):
         from test_marker_detection import bright_markers

@@ -34,16 +34,17 @@ def write_yaml(path, data):
                    map=dict(layout=scene.pop('layout', 'auto'),
                             reference_arm=scene.pop('map_reference_arm', 'left'),
                             selection=dict(policy='latest_prior')),
-                   reconstruction=dict(backend='scene_map'))
+                   backend=dict(mode='scene_map'))
         if 'map_version' in data:
             out['map']['selection']['version'] = data['map_version']
         if tags is not None:
             out['environment_poster'] = dict(
                 layout_path=tags.get('layout'), detection=dict(enabled=tags.get('enabled', False)),
                 mapping=dict(enabled=tags.get('mapping', {}).get('enabled', False),
-                             scale_correction=dict(enabled=tags.get('mapping', {}).get('scale', {}).get('enabled', False))),
-                task_constraint=dict(enabled=tags.get('fusion', {}).get('enabled', False),
-                                     method=tags.get('fusion', {}).get('method', 'staged')))
+                             scale_correction=dict(enabled=tags.get('mapping', {}).get('scale', {}).get('enabled', False))))
+            out['backend']['scene_map'] = dict(poster_constraint=dict(
+                enabled=tags.get('fusion', {}).get('enabled', False),
+                method=tags.get('fusion', {}).get('method', 'staged')))
         if data.get('tasks'):
             out['tasks'] = data['tasks']
         for key, value in data.items():
@@ -71,7 +72,7 @@ class ProcessingTests(unittest.TestCase):
                    recording=dict(arms=['left', 'right']),
                    map=dict(layout='shared', reference_arm='left',
                              selection=dict(policy='latest_prior')),
-                   reconstruction=dict(backend='scene_map')))
+                   backend=dict(mode='scene_map')))
         mapping = self.batch / 'mapping/map.INSV'
         mapping.parent.mkdir()
         mapping.write_text('left_mapping')

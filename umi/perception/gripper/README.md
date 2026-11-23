@@ -8,7 +8,7 @@
 
 套件配置 `gripper.tag_distance: tag_distance.json`，文件包含 `{"tag_sizes_mm":{"0":6.0,"1":6.0}}`；两枚边长分别配置，必须为正数。测量黑色外框，不含白边；尺寸变化线性改变尺度，不能借用标定板尺寸。原片检测缓存保存 `[帧, ID, 角点, xy]`，重复/缺失 ID 的角点保留 NaN。标签中心距按最终轨迹时间点检测，像素锚点宽度沿用原片逐帧检测；两者分别缓存。改尺寸或内参会复用角点重算几何，有效比例不足时再补检尚未尝试的帧。
 
-标签检测先裁剪原始工作镜头半幅中的固定范围，默认 `LEFT TOP RIGHT BOTTOM = 600 980 1350 1250`，即 750×270 像素；坐标原点仍是 1920×1920 工作镜头半幅左上角。场景通过 `parameters.measurements.gripper_tags.roi_px` 配置范围，`preview-width`、`detect-width` 使用相同默认值，可用 `--roi` 覆盖。场景快速扫描/补检、像素宽度提取和两个宽度 CLI 共用 `detection/frames.py`：先裁剪源像素平面，再仅把 ROI 转灰度，检测后统一恢复原始半幅坐标。RGB 输入也先裁剪再转灰度。快速扫描、补检和重搜都不越过配置范围。`trajectory.video.crop` 负责轨迹视频准备；标签检测使用这里明确配置的 ROI。
+场景测距、像素宽度提取、`preview-width` 和 `detect-width` 共用 `config/operations/gripper_tag_detection.yaml` 的 `roi_px`。初始值为 `LEFT TOP RIGHT BOTTOM = 600 980 1350 1250`，原点在 1920×1920 工作镜头半幅左上角。场景中心距测量可在专家配置中用 `parameters.measurements.gripper_tags.roi_px` 覆盖，两个宽度命令可用 `--roi` 覆盖。检测先裁剪源像素平面，再将 ROI 转灰度，最终恢复原始半幅坐标。`trajectory.video.crop` 用于轨迹视频准备。
 
 共享灰度转换保留颜色空间、亮度量程及色度采样对齐；奇数 ROI 坐标先对齐后取回精确边界，高位深转 8 位保留抖动相位。视频仍需解码源帧，减少的是灰度转换和检测的像素量；预览视频的彩色显示转换独立于标签检测图像。
 

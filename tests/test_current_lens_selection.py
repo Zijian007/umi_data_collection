@@ -71,7 +71,7 @@ class CurrentLensSelectionTests(unittest.TestCase):
         write_yaml(batch/'collection.yaml', dict(
             scene=dict(description=''),
             map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
-            reconstruction=dict(backend='scene_map'),
+            backend=dict(mode='scene_map'),
             kit='rig', recording=dict(arms=['right'])))
         first = batches.read_inputs(batch, require_mapping=False)
         path = batches.save_record(first)

@@ -107,7 +107,6 @@ class SceneSchedulingTests(unittest.TestCase):
         second = self.second_task()
         path = self.f.batch_root / 'collection.yaml'
         collection = read_yaml(path)
-        collection.pop('reconstruction')
         collection['environment_poster'] = dict(layout_path=str(
             Path(__file__).resolve().parents[1] / 'hardware/environment_poster/environment_poster.json'))
         collection['backend'] = dict(mode='auto', poster_edge_trim=dict(enabled=True))

@@ -100,17 +100,18 @@ def write_batch(scene: Path, name: str, *, kit: str, arms=None, map_version=None
             layout_path=old_tags.get('layout'),
             detection=dict(enabled=old_tags.get('enabled', False)),
             mapping=dict(enabled=old_tags.get('mapping', {}).get('enabled', False),
-                         scale_correction=dict(enabled=old_tags.get('mapping', {}).get('scale', {}).get('enabled', False))),
-            task_constraint=dict(enabled=old_tags.get('fusion', {}).get('enabled', False),
-                                 method=old_tags.get('fusion', {}).get('method', 'staged')))
+                         scale_correction=dict(enabled=old_tags.get('mapping', {}).get('scale', {}).get('enabled', False))))
     data = dict(kit=kit, recording=dict(arms=selected_arms),
                 scene=dict(description=scene_document.get('description', '')),
                 map=dict(layout=scene_document.get('layout', 'auto'),
                          reference_arm=scene_document.get('map_reference_arm', 'left'),
                          selection=dict(policy='latest_prior')),
-                reconstruction=dict(backend='scene_map'))
+                backend=dict(mode='scene_map'))
     if poster is not None:
         data['environment_poster'] = poster
+        data['backend']['scene_map'] = dict(poster_constraint=dict(
+            enabled=old_tags.get('fusion', {}).get('enabled', False),
+            method=old_tags.get('fusion', {}).get('method', 'staged')))
     if map_version is not None:
         data['map']['selection']['version'] = map_version
     write_yaml(batch / 'collection.yaml', data)
@@ -139,7 +140,7 @@ def write_task(session, name: str, recording_paths: dict, *, expected_arms=None,
         collection_path = session.root / 'collection.yaml'
         collection = read_yaml(collection_path) if collection_path.is_file() else dict(
             kit=session.kit['id'], recording=dict(arms=list(session.expected_arms)),
-            scene=dict(description=''), reconstruction=dict(backend='scene_map'))
+            scene=dict(description=''), backend=dict(mode='scene_map'))
         collection.setdefault('tasks', {})[name] = dict(
             **({'arms': configuration.pop('expected_arms')} if 'expected_arms' in configuration else {}),
             **configuration)
@@ -163,14 +164,14 @@ def write_task_configuration(task: Path, data: dict) -> Path:
     path = batch / 'collection.yaml'
     collection = read_yaml(path) if path.is_file() else dict(
         kit='rig', recording=dict(arms=['left', 'right']),
-        scene=dict(description=''), reconstruction=dict(backend='scene_map'))
+        scene=dict(description=''), backend=dict(mode='scene_map'))
     task_data = deepcopy(data)
     if isinstance(task_data.get('synchronization'), dict) and 'mode' not in task_data['synchronization']:
         task_data['synchronization']['mode'] = 'manual'
     if 'expected_arms' in task_data:
         task_data['arms'] = task_data.pop('expected_arms')
     if 'reconstruction' in task_data and isinstance(task_data['reconstruction'], dict):
-        task_data['reconstruction'] = dict(backend=task_data['reconstruction'].get('mode'))
+        task_data['backend'] = task_data.pop('reconstruction')
     task_map = {}
     if 'map_epoch' in task_data:
         task_map['epoch'] = task_data.pop('map_epoch')

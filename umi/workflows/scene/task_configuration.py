@@ -27,6 +27,11 @@ def default_audio_sync_enabled(batch_setting: bool | None) -> bool:
     return user_config.current().values['scene']['sync_policy'] == 'audio_auto'
 
 
+def independent_retry_gap(scene: Scene, *, require_poster: bool) -> tuple[float, str | None]:
+    field = 'poster_maximum_position_support_gap_s' if require_poster else 'maximum_visual_gap_s'
+    return getattr(scene.parameters, field), getattr(scene, 'position_support_gap_sources', {}).get(field)
+
+
 def read_synchronization(synchronization_record: dict | str | None, arms: tuple[str, ...], *,
                          audio_sync_enabled: bool | None = None,
                          audio_sync_algorithm: str = DEFAULT_AUDIO_SYNC_ALGORITHM) -> dict:
@@ -118,7 +123,8 @@ def resolve_task_configuration(root: Path, scene: Scene, batch_arms: tuple[str, 
     if collection is None:
         collection = normalize_collection(read_yaml(scene.path))
     declaration = collection['tasks'].get(root.name, {})
-    scene = apply_backend_options(scene, declaration.get('reconstruction'))
+    scene = apply_backend_options(scene, declaration.get('reconstruction'),
+                                  source=f'{scene.path}:tasks.{root.name}.backend')
     mode = scene.reconstruction_mode
     scene = apply_task_backend(scene, collection.get('disabled_poster_switches', ()))
     arms = resolve_arms(declaration, batch_arms)

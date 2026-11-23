@@ -1,6 +1,6 @@
 # 共享场景算法默认值：配对、预检、建图、放置、定位、融合、测量和诊断。
 # 用户日常策略写在 collection.yaml；一次实验覆盖写在 --expert-config 的 parameters 下。
-# 环境海报的共享几何数值位于 config/algorithms/environment_tags.yaml。
+# 环境海报的共享几何数值位于 config/algorithms/poster_geometry.yaml。
 
 schema_version: 2  # 场景参数文件格式；内部算法快照仍使用规范化 schema 1。
 
@@ -27,11 +27,8 @@ mapping:  # 共享场景地图的米制尺度、惯性对齐和环境标签尺�
     gravity_tolerance_m_s2: 0.5  # 自由估计重力与参考重力允许的差值，单位 m/s²。
     maximum_rms_m: 0.05  # 对齐位置方程 RMS 上限，单位 m。
     maximum_acc_bias_m_s2: 2.0  # 对齐得到的加速度零偏分量上限，单位 m/s²。
-  environment_tags:  # 建图阶段环境海报尺度证据；日常策略由 collection.yaml 控制。
-    enabled: false  # 是否在建图阶段检测并记录环境海报观测。
-    scale:  # 是否把海报尺度作为建图尺度修正证据。
-      enabled: false  # 启用前必须同时启用 environment_tags.enabled。
-    minimum_frames: 6  # 海报尺度估计至少需要的有效观测时刻数。
+  poster_scale:  # 建图阶段环境海报尺度证据；用途由 collection.yaml 控制。
+    minimum_scale_observation_times: 6  # 海报尺度估计至少需要的有效观测时刻数。
     minimum_motion_m: 0.15  # 看到海报期间建图镜头中心的最小移动范围，单位 m。
     minimum_board_extent_m: 0.08  # 海报角点在板面方向的最小跨度，单位 m。
     maximum_relative_std: 0.15  # 海报尺度相对标准差上限，无量纲。
@@ -56,8 +53,10 @@ localization:  # 固定地图任务的双向定位、覆盖和连续性规则。
   minimum_fraction: 0.5  # 每只手获得地图位置约束的最低帧比例。
   maximum_visual_gap_s: 2.0  # 允许的最长连续无视觉时长，单位 s。
 
-poster_independent:  # 本录像独立引擎海报后端的支持与重力验收。
+poster_acceptance:  # 场景海报后端共用的验收默认值，各后端可以单独覆盖。
   maximum_position_support_gap_s: 2.0  # 自然视觉与合格海报均无位置支持的最大间隔，单位 s。
+
+poster_independent:  # 本录像独立引擎海报后端的重力验收。
   maximum_gravity_difference_deg: 5.0  # 两手在海报坐标中的重力夹角上限，单位 deg。
 
 poster_vio:  # 实验性联合图的观测门槛；与独立引擎后端分开配置。
@@ -67,10 +66,9 @@ poster_vio:  # 实验性联合图的观测门槛；与独立引擎后端分开�
     maximum_rotation_correction_deg: 10.0  # 安装外参相对种子允许的最大修正角，单位 deg；(0,180]，超出拒绝任务。
     maximum_translation_correction_m: 0.05  # 安装外参相对种子允许的最大平移修正，单位 m；正数，超出拒绝任务。
     minimum_self_frames: 3  # 跨手安装变量所需的不同自身观测时刻数；整数 >=3，单手不使用。
-  minimum_tag_frames: 8  # 每手最少的独立训练标签时刻数，留出后仍需满足，不按同帧 ID 数累计。
+  minimum_training_observation_times: 8  # 每手最少的独立训练标签时刻数，留出后仍需满足。
   maximum_observation_gap_s: 3.5  # 初始化标签时刻之间的最大间隔，单位 s。
   minimum_time_span_s: 1.0  # 每手标签观测的最小时间跨度，单位 s。
-  maximum_position_support_gap_s: 2.0  # 含首尾、无自然视觉或合格海报支持的最大间隔，单位 s。
   maximum_gravity_difference_deg: 5.0  # 两手惯性初始化重力方向夹角上限，单位 deg。
   initialization:
     maximum_hypotheses: 32  # 每帧整板/标签子集 PnP 假设的确定性上限。
@@ -101,10 +99,7 @@ poster_vio:  # 实验性联合图的观测门槛；与独立引擎后端分开�
     natural_stride: 5  # 按冻结图节点索引留出自然点像素；0 关闭，复访/抽样后不重新分类。
     maximum_rms_px: 5.0  # 未参与初始化或求解的标签/自然点像素 RMS 上限，单位 px。
 
-fusion:  # 固定场景任务的视觉融合权重和环境海报因子。
-  environment_tags:  # 场景任务是否把环境海报角点加入视觉–IMU 图。
-    enabled: false  # collection.yaml.environment_poster.task_constraint.enabled 会覆盖此默认值。
-    method: staged  # staged 用地图+IMU基线初值，joint 用视觉位姿种子；最终图均含地图、IMU和海报。
+fusion:  # 固定场景任务的视觉融合权重；海报约束策略由 collection.yaml 控制。
   front_position_sigma_m: 0.015  # 工作镜头位置观测标准差，单位 m。
   rear_position_sigma_m: 0.020  # 环境镜头位置观测标准差，单位 m。
   visual_rotation_sigma_deg: 1.0  # 视觉旋转观测标准差，单位 deg。
@@ -112,7 +107,6 @@ fusion:  # 固定场景任务的视觉融合权重和环境海报因子。
 
 measurements:  # 夹爪标签中心距和开口宽度测量。
   gripper_tags:  # 两枚夹爪标签中心距的几何质量规则。
-    roi_px: [600, 980, 1350, 1250]  # 原始工作镜头半幅 LEFT TOP RIGHT BOTTOM，单位 px。
     max_reprojection_error_px: 2.0  # 标签角点重投影 RMS 上限，单位 px。
     max_center_ambiguity_mm: 2.0  # 平面两解中心距离超过此值才接受，单位 mm。
     minimum_valid_fraction: 0.5  # 有效中心距帧的最低比例。

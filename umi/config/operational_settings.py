@@ -11,6 +11,7 @@ import os
 from ruamel.yaml.error import YAMLError
 from umi.infra.file_store import read_yaml
 from umi.infra.paths import CONFIG_ROOT
+from umi.perception.gripper import validate_roi
 
 DIRECTORY = CONFIG_ROOT / 'operations'
 SNAPSHOT_ENV = 'UMI_SETTINGS_SNAPSHOT'
@@ -32,8 +33,11 @@ SCHEMA = {
         'frame_quality': (int, 2, 31), 'preview_crf': (int, 0, 63),
         'map_max_points': (int, 1, 50000),
     },
-    'gripper_tag_detection': {k: (int, 1, None) for k in (
-        'full_search_interval', 'candidate_limit', 'recovery_candidate_limit', 'recovery_batch_size')},
+    'gripper_tag_detection': {
+        **{k: (int, 1, None) for k in ('full_search_interval', 'candidate_limit',
+                                     'recovery_candidate_limit', 'recovery_batch_size')},
+        'roi_px': (tuple, None, None),
+    },
 }
 
 
@@ -47,6 +51,9 @@ def _validate(kind: str, values: dict, *, complete: bool = False) -> None:
     if complete and values.keys() != schema.keys():
         raise ValueError(f'{kind} 缺少配置项：{sorted(schema.keys() - values.keys())}')
     for key, value in values.items():
+        if kind == 'gripper_tag_detection' and key == 'roi_px':
+            values[key] = validate_roi(value)
+            continue
         expected, lower, upper = schema[key]
         if (type(value) is not expected or expected is str and not value.strip()
                 or lower is not None and value < lower or upper is not None and value > upper):

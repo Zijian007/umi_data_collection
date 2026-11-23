@@ -1,18 +1,14 @@
-# 本机通用配置；直接修改下方设置。
-schema_version: 2  # 固定整数 2；只描述 user 格式，collection.yaml 不填写此项。
+# 本机通用偏好；在此修改功能和并发设置。
+schema_version: 2  # 通用偏好格式版本。
 
-features:  # 本机全局功能偏好。
-  audio_sync:  # 双手任务的全局同步默认值，可由批次和任务覆盖。
-    enabled: false  # true=audio_auto，false=假设同时开始。
-  factory_intrinsics:  # 全局镜头来源设置。
-    enabled: false  # true=两个镜头统一选择 factory；false=沿用 kit 的逐镜头来源。
+features:
+  audio_sync:
+    enabled: true  # true=估计双手音频偏移，false=假设同时开始。
+  factory_intrinsics:
+    enabled: false  # true=全部使用 factory，false=沿用 kit 的逐镜头来源。
 
-runtime:  # CPU 与多个 take 的并发；CLI --cores/--jobs 优先。
-  parallel_tasks:  # 控制同时运行的 take 数量。
-    enabled: false  # true=使用 jobs；false=一次一个任务。
-    jobs: 1  # 整数 >=1；enabled 为 true 时生效。
-  cores: auto  # auto 或 CPU 编号/范围字符串，如 "0-3,8"；只使用进程可用 CPU 的交集。
-
-viewer:  # 查看器监听配置；CLI --host/--port 优先。
-  host: null  # null=沿用 operations/viewer 配置；0.0.0.0 允许远程访问。
-  port: null  # null=沿用 operations/viewer 配置；整数 0–65535，0=自动分配空闲端口。
+runtime:
+  parallel_tasks:
+    enabled: false  # 开启后可同时执行多个 take。
+    jobs: 1  # 任务并发数；仅在并发开启时使用。
+  cores: auto  # 可用 CPU 由进程 affinity 决定，也可写成 "0-3,8"。
