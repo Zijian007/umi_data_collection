@@ -183,7 +183,34 @@ def normalize_collection(document: dict) -> dict:
     if unknown or not {'kit', 'scene'} <= set(document) or not {'backend', 'reconstruction'} & set(document):
         raise ValueError('collection.yaml 字段无效或缺失；旧格式不再兼容')
     reconstruction = _backend_declaration(document, batch=True)
+    arms, audio_sync, trim = _recording_section(document)
+    description = _scene_section(document['scene'])
+    layout, reference_arm, policy, version = _map_section(document.get('map', {}))
+    tags, disabled_poster_switches = _environment_poster_section(document)
+    tasks = _mapping(document.get('tasks', {}), 'tasks')
+    normalized_tasks = {name: _task_section(name, task, arms) for name, task in tasks.items()}
 
+    result = dict(kit=document['kit'], arms=arms,
+                  map_policy=policy, scene=dict(layout=layout,
+                  map_reference_arm=reference_arm, description=description),
+                  reconstruction=reconstruction, tasks=normalized_tasks)
+    if 'enabled' in audio_sync:
+        result['audio_sync_enabled'] = audio_sync['enabled']
+    if 'algorithm' in audio_sync:
+        result['audio_sync_algorithm'] = audio_sync['algorithm']
+    if trim is not None:
+        result['recording_trim'] = trim
+    if version is not None:
+        result['map_version'] = version
+    if tags is not None:
+        result['scene']['tags'] = tags
+    if disabled_poster_switches:
+        result['disabled_poster_switches'] = disabled_poster_switches
+    return result
+
+
+def _recording_section(document: dict):
+    """recording：使用手、音频同步策略与（旧布局的）首尾裁剪。"""
     recording = _fields(document.get('recording'), 'recording', {'arms', 'audio_sync', 'trim'})
     if 'backend' in document and 'trim' in recording:
         raise ValueError('使用 backend 时请将 recording.trim 移到 backend.poster_edge_trim')
@@ -195,12 +222,18 @@ def normalize_collection(document: dict) -> dict:
         if not isinstance(algorithm, str) or algorithm not in AUDIO_SYNC_RECIPES:
             raise ValueError('recording.audio_sync.algorithm 必须为 specialist 或 kiwi')
         audio_sync_policy['algorithm'] = algorithm
+    trim = None
     if 'trim' in recording:
-        trim = _fields(recording['trim'], 'recording.trim', {'enabled', 'minimum_missing_duration_s'})
-        trim_enabled = _boolean(trim.get('enabled'), 'recording.trim.enabled')
-        trim_gap = _positive(trim.get('minimum_missing_duration_s', 1.0),
-                             'recording.trim.minimum_missing_duration_s')
-    scene = _mapping(document['scene'], 'scene')
+        record = _fields(recording['trim'], 'recording.trim', {'enabled', 'minimum_missing_duration_s'})
+        trim = dict(enabled=_boolean(record.get('enabled'), 'recording.trim.enabled'),
+                    minimum_missing_duration_s=_positive(record.get('minimum_missing_duration_s', 1.0),
+                                                         'recording.trim.minimum_missing_duration_s'))
+    return arms, audio_sync_policy, trim
+
+
+def _scene_section(record) -> str:
+    """scene：只承载描述文字；算法参数走 --expert-config。"""
+    scene = _mapping(record, 'scene')
     if {'trajectory', 'parameters'} & set(scene):
         raise ValueError('collection.yaml 的 scene 不承载算法参数；请使用 --expert-config')
     if set(scene) - {'description'}:
@@ -208,8 +241,12 @@ def normalize_collection(document: dict) -> dict:
     description = scene.get('description', '')
     if not isinstance(description, str):
         raise ValueError('scene.description 必须为文本')
+    return description
 
-    map_record = _mapping(document.get('map', {}), 'map')
+
+def _map_section(record):
+    """map：地图拓扑、参考手与版本选择。"""
+    map_record = _mapping(record, 'map')
     if set(map_record) - {'layout', 'reference_arm', 'selection'}:
         raise ValueError('map 只允许 layout、reference_arm、selection')
     layout = map_record.get('layout', 'auto')
@@ -227,107 +264,90 @@ def normalize_collection(document: dict) -> dict:
     version = selection.get('version')
     if version is not None and (not isinstance(version, str) or not version.strip()):
         raise ValueError('map.selection.version 必须为地图版本字符串或 null')
+    return layout, reference_arm, policy, version
 
+
+def _environment_poster_section(document: dict):
+    """environment_poster：布局、检测与各用途开关；返回规范化开关和被显式关闭的项。"""
     poster = document.get('environment_poster')
-    tags = None
-    disabled_poster_switches = []
-    if poster is not None:
-        poster = _mapping(poster, 'environment_poster')
-        if set(poster) - {'layout_path', 'detection', 'mapping', 'task_constraint'}:
-            raise ValueError('environment_poster 含未知字段')
-        if 'backend' in document and 'task_constraint' in poster:
-            raise ValueError('使用 backend 时请将 environment_poster.task_constraint 移到 backend.scene_map.poster_constraint')
-        if 'layout_path' not in poster:
-            raise ValueError('environment_poster.layout_path 是必需字段')
-        detection = _mapping(poster.get('detection', {}), 'environment_poster.detection')
-        mapping = _mapping(poster.get('mapping', {}), 'environment_poster.mapping')
-        if set(detection) - {'enabled'}:
-            raise ValueError('environment_poster.detection 只允许 enabled')
-        if set(mapping) - {'enabled', 'scale_correction'}:
-            raise ValueError('environment_poster.mapping 含未知字段')
-        scale = _mapping(mapping.get('scale_correction', {}),
-                         'environment_poster.mapping.scale_correction')
-        constraint = _mapping(poster.get('task_constraint', {}),
-                              'environment_poster.task_constraint')
-        if set(scale) - {'enabled'}:
-            raise ValueError('environment_poster.mapping.scale_correction 只允许 enabled')
-        if set(constraint) - {'enabled', 'method'}:
-            raise ValueError('environment_poster.task_constraint 含未知字段')
-        disabled_poster_switches = [name for name, section in (
-            ('detection', detection), ('task_constraint', constraint)) if section.get('enabled') is False]
-        method = constraint.get('method', 'staged')
-        if method not in ('staged', 'joint'):
-            raise ValueError('environment_poster.task_constraint.method 必须为 staged 或 joint')
-        tags = dict(
-            enabled=_boolean(detection.get('enabled'), 'environment_poster.detection.enabled',
-                default=any(section.get('enabled') is True for section in (mapping, scale, constraint))),
-            layout=poster['layout_path'],
-            mapping=dict(
-                enabled=_boolean(mapping.get('enabled'), 'environment_poster.mapping.enabled'),
-                scale=dict(enabled=_boolean(scale.get('enabled'),
-                                             'environment_poster.mapping.scale_correction.enabled'))),
-            fusion=dict(enabled=_boolean(constraint.get('enabled'),
-                                         'environment_poster.task_constraint.enabled'),
-                        method=method))
-        if (tags['mapping']['enabled'] or tags['mapping']['scale']['enabled']
-                or tags['fusion']['enabled']) and not tags['enabled']:
-            raise ValueError('environment_poster.detection.enabled 必须先开启')
-        if tags['mapping']['scale']['enabled'] and not tags['mapping']['enabled']:
-            raise ValueError('environment_poster.mapping.scale_correction.enabled 需要 mapping.enabled')
+    if poster is None:
+        return None, []
+    poster = _mapping(poster, 'environment_poster')
+    if set(poster) - {'layout_path', 'detection', 'mapping', 'task_constraint'}:
+        raise ValueError('environment_poster 含未知字段')
+    if 'backend' in document and 'task_constraint' in poster:
+        raise ValueError('使用 backend 时请将 environment_poster.task_constraint 移到 backend.scene_map.poster_constraint')
+    if 'layout_path' not in poster:
+        raise ValueError('environment_poster.layout_path 是必需字段')
+    detection = _mapping(poster.get('detection', {}), 'environment_poster.detection')
+    mapping = _mapping(poster.get('mapping', {}), 'environment_poster.mapping')
+    if set(detection) - {'enabled'}:
+        raise ValueError('environment_poster.detection 只允许 enabled')
+    if set(mapping) - {'enabled', 'scale_correction'}:
+        raise ValueError('environment_poster.mapping 含未知字段')
+    scale = _mapping(mapping.get('scale_correction', {}),
+                     'environment_poster.mapping.scale_correction')
+    constraint = _mapping(poster.get('task_constraint', {}),
+                          'environment_poster.task_constraint')
+    if set(scale) - {'enabled'}:
+        raise ValueError('environment_poster.mapping.scale_correction 只允许 enabled')
+    if set(constraint) - {'enabled', 'method'}:
+        raise ValueError('environment_poster.task_constraint 含未知字段')
+    disabled_poster_switches = [name for name, section in (
+        ('detection', detection), ('task_constraint', constraint)) if section.get('enabled') is False]
+    method = constraint.get('method', 'staged')
+    if method not in ('staged', 'joint'):
+        raise ValueError('environment_poster.task_constraint.method 必须为 staged 或 joint')
+    tags = dict(
+        enabled=_boolean(detection.get('enabled'), 'environment_poster.detection.enabled',
+            default=any(section.get('enabled') is True for section in (mapping, scale, constraint))),
+        layout=poster['layout_path'],
+        mapping=dict(
+            enabled=_boolean(mapping.get('enabled'), 'environment_poster.mapping.enabled'),
+            scale=dict(enabled=_boolean(scale.get('enabled'),
+                                         'environment_poster.mapping.scale_correction.enabled'))),
+        fusion=dict(enabled=_boolean(constraint.get('enabled'),
+                                     'environment_poster.task_constraint.enabled'),
+                    method=method))
+    if (tags['mapping']['enabled'] or tags['mapping']['scale']['enabled']
+            or tags['fusion']['enabled']) and not tags['enabled']:
+        raise ValueError('environment_poster.detection.enabled 必须先开启')
+    if tags['mapping']['scale']['enabled'] and not tags['mapping']['enabled']:
+        raise ValueError('environment_poster.mapping.scale_correction.enabled 需要 mapping.enabled')
+    return tags, disabled_poster_switches
 
-    tasks = _mapping(document.get('tasks', {}), 'tasks')
-    normalized_tasks = {}
-    for name, task in tasks.items():
-        task = _mapping(task, f'tasks.{name}')
-        allowed_task = {'instruction', 'arms', 'synchronization', 'map', 'backend', 'reconstruction'}
-        if set(task) - allowed_task:
-            raise ValueError(f'tasks.{name} 含未知字段')
-        normalized = {}
-        if 'instruction' in task:
-            if not isinstance(task['instruction'], str):
-                raise ValueError(f'tasks.{name}.instruction 必须为文本')
-            normalized['instruction'] = task['instruction']
-        if 'arms' in task:
-            normalized['expected_arms'] = _arms(task['arms'], f'tasks.{name}.arms', arms)
-        if 'synchronization' in task:
-            normalized['synchronization'] = _synchronization(
-                task['synchronization'], resolve_arms(normalized, arms),
-                f'tasks.{name}.synchronization')
-        task_map = _mapping(task.get('map', {}), f'tasks.{name}.map')
-        if set(task_map) - {'epoch', 'version'}:
-            raise ValueError(f'tasks.{name}.map 只允许 epoch、version')
-        if task_map.get('epoch') is not None:
-            if not isinstance(task_map['epoch'], str) or not task_map['epoch'].strip():
-                raise ValueError(f'tasks.{name}.map.epoch 必须为非空字符串')
-            normalized['map_epoch'] = task_map['epoch']
-        if task_map.get('version') is not None:
-            if not isinstance(task_map['version'], str) or not task_map['version'].strip():
-                raise ValueError(f'tasks.{name}.map.version 必须为非空字符串')
-            normalized['map_version'] = task_map['version']
-        if {'epoch', 'version'} <= set(task_map) and task_map['epoch'] is not None and task_map['version'] is not None:
-            raise ValueError(f'tasks.{name}.map.epoch 与 map.version 不能同时填写')
-        task_reconstruction = _backend_declaration(task, f'tasks.{name}.')
-        if task_reconstruction is not None:
-            normalized['reconstruction'] = task_reconstruction
-        normalized_tasks[name] = normalized
 
-    result = dict(kit=document['kit'], arms=arms,
-                  map_policy=policy, scene=dict(layout=layout,
-                  map_reference_arm=reference_arm, description=description),
-                  reconstruction=reconstruction, tasks=normalized_tasks)
-    if 'enabled' in audio_sync_policy:
-        result['audio_sync_enabled'] = audio_sync_policy['enabled']
-    if 'algorithm' in audio_sync_policy:
-        result['audio_sync_algorithm'] = audio_sync_policy['algorithm']
-    if 'trim' in recording:
-        result['recording_trim'] = dict(enabled=trim_enabled, minimum_missing_duration_s=trim_gap)
-    if version is not None:
-        result['map_version'] = version
-    if tags is not None:
-        result['scene']['tags'] = tags
-    if disabled_poster_switches:
-        result['disabled_poster_switches'] = disabled_poster_switches
-    return result
+def _task_section(name: str, task, arms) -> dict:
+    """tasks.<name>：指令、使用手子集、同步覆盖、地图选择与后端覆盖。"""
+    task = _mapping(task, f'tasks.{name}')
+    allowed_task = {'instruction', 'arms', 'synchronization', 'map', 'backend', 'reconstruction'}
+    if set(task) - allowed_task:
+        raise ValueError(f'tasks.{name} 含未知字段')
+    normalized = {}
+    if 'instruction' in task:
+        if not isinstance(task['instruction'], str):
+            raise ValueError(f'tasks.{name}.instruction 必须为文本')
+        normalized['instruction'] = task['instruction']
+    if 'arms' in task:
+        normalized['expected_arms'] = _arms(task['arms'], f'tasks.{name}.arms', arms)
+    if 'synchronization' in task:
+        normalized['synchronization'] = _synchronization(
+            task['synchronization'], resolve_arms(normalized, arms),
+            f'tasks.{name}.synchronization')
+    task_map = _mapping(task.get('map', {}), f'tasks.{name}.map')
+    if set(task_map) - {'epoch', 'version'}:
+        raise ValueError(f'tasks.{name}.map 只允许 epoch、version')
+    for key, field in (('epoch', 'map_epoch'), ('version', 'map_version')):
+        if task_map.get(key) is not None:
+            if not isinstance(task_map[key], str) or not task_map[key].strip():
+                raise ValueError(f'tasks.{name}.map.{key} 必须为非空字符串')
+            normalized[field] = task_map[key]
+    if task_map.get('epoch') is not None and task_map.get('version') is not None:
+        raise ValueError(f'tasks.{name}.map.epoch 与 map.version 不能同时填写')
+    task_reconstruction = _backend_declaration(task, f'tasks.{name}.')
+    if task_reconstruction is not None:
+        normalized['reconstruction'] = task_reconstruction
+    return normalized
 
 
 MODES = ('scene_map', 'poster_independent', 'poster_vio', 'auto')

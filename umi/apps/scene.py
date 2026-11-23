@@ -193,154 +193,11 @@ def main(argv: list[str] | None = None) -> int:
         overrides, handled = _prepare_execution(args)
         if handled:
             return 0
-        if args.command == 'check':
-            from umi.apps.health import check
-            return check()
-        elif args.command == 'build':
-            result = processing.build(args.batch, force=args.force, keep_work=args.keep_work,
-                                      cores=args.cores, dry_run=args.dry_run,
-                                      overrides=overrides, epochs=args.epochs)
-        elif args.command == 'plan-epochs':
-            result = processing.plan_epoch_draft(args.batch, write=args.write, force=args.force,
-                                                 overrides=overrides)
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-            return int(result['status'] != 'ready')
-        elif args.command == 'pipeline':
-            result = processing.run_epoch_pipeline(args.batch, jobs=args.jobs, force=args.force,
-                keep_work=args.keep_work, cores=args.cores, dry_run=args.dry_run,
-                check_recordings=not args.skip_preflight, overrides=overrides)
-            print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else workflow.format_batch_summary(result.get('run', [])))
-            return int(result.get('status') not in ('ok', 'planned'))
-        elif args.command == 'run':
-            result = processing.run(args.paths, jobs=args.jobs, force=args.force,
-                cores=args.cores, dry_run=args.dry_run, check_recordings=not args.skip_preflight,
-                overrides=overrides)
-            print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else workflow.format_batch_summary(result))
-            return int(any(item['status'] not in ('ok', 'skipped', 'local_ok', 'local_skipped', 'planned') for item in result))
-        elif args.command == 'sync':
-            from umi.workflows.scene import audio_sync
-
-            result = audio_sync.run(args.paths, force=args.force, dry_run=args.dry_run)
-            print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
-                  if args.json else audio_sync.format_summary(result, dry_run=args.dry_run))
-            return int(any(item['status'] == 'failed' for item in result))
-        elif args.command == 'preflight':
-            target = args.target.expanduser().resolve()
-            result = recording_checks.check_video(target) if target.suffix.lower() == '.insv' else recording_checks.check_episode(
-                episode_inputs.read_episode(target))
-            print(json.dumps(asdict(result), ensure_ascii=False, indent=2) if args.json else recording_checks.format_report(result))
-            return int(not result.passed)
-        elif args.command == 'detect-tags':
-            from umi.perception.poster.detection import DetectionSettings, cached
-            from umi.perception.poster.layout import DEFAULT_LAYOUT, load
-            board = load(args.layout or DEFAULT_LAYOUT)
-            detection_settings = DetectionSettings(border_bits=board.border_bits if args.border_bits is None else args.border_bits,
-                dictionary=board.dictionary, ids=board.ids, frame_step=args.frame_step,
-                full_frame_every=args.full_frame_every, minimum_side_px=args.minimum_side_px)
-            result = cached(args.video, args.out, detection_settings, force=args.force,
-                            progress=workflow.console.write, layout=board)
-        elif args.command == 'status':
-            result = []
-            for path in episode_paths(args.paths):
-                try:
-                    result.append(episodes.task_status(path))
-                except ITEM_FAILURES as error:
-                    result.append(dict(path=str(path), status='invalid', reason=str(error)))
-            if not args.json:
-                for item in result:
-                    print(f'{item["path"]}: {item["status"]} / {item.get("review", "unreviewed")} {item.get("reason", "")}')
-                return 0
-        elif args.command == 'review':
-            targets = episode_paths(args.paths)
-            if not targets:
-                raise ValueError(f'未找到任何任务清单：{args.paths}')
-            if len(targets) == 1:
-                result = episodes.review(targets[0], accept=args.accept, reviewer=args.reviewer, reason=args.reason)
-            else:
-                details = []
-                for target in targets:
-                    try:
-                        decision = episodes.review(target, accept=args.accept, reviewer=args.reviewer,
-                                                   reason=args.reason)['decision']
-                        details.append(dict(episode=str(target), status='ok', decision=decision))
-                    except Exception as error:
-                        details.append(dict(episode=str(target), status='error', error=str(error)))
-                reviewed = sum(item['status'] == 'ok' for item in details)
-                result = dict(total=len(targets), accepted=reviewed if args.accept else 0,
-                              rejected=0 if args.accept else reviewed,
-                              failed=len(details) - reviewed, details=details)
-        elif args.command == 'export':
-            if args.format == 'training':
-                if args.with_video:
-                    raise ValueError('training 包已包含视频，不需要 --with-video')
-                if (args.start_s is None) != (args.end_s is None):
-                    raise ValueError('--start-s 和 --end-s 必须同时提供')
-                from umi.dataset.export import build
-                result = build(args.paths, args.out, fps=args.fps, max_gap_s=args.max_gap_s,
-                               quality_policy=args.quality_policy, unknown_support=args.unknown_support,
-                               time_window_s=None if args.start_s is None else (args.start_s, args.end_s))
-            else:
-                if args.quality_policy != 'all' or args.unknown_support != 'drop' or args.start_s is not None or args.end_s is not None:
-                    raise ValueError('训练采样选项只适用于 --format training')
-                result = episodes.export(episode_paths(args.paths), args.out, with_video=args.with_video)
-        elif args.command == 'clean':
-            result = processing.clean(args.paths, dry_run=args.dry_run, cache=args.cache)
-        elif args.command == 'evaluate-relative':
-            from umi.dataset.relative_pose_evaluation import evaluate
-            from umi.infra.file_store import write_json
-            result = evaluate(args.path, args.reference)
-            if args.out.expanduser().resolve().is_relative_to(Path(result['run'])):
-                raise ValueError('评估报告不能写入冻结运行结果目录')
-            if args.out.expanduser().resolve() == args.reference.expanduser().resolve():
-                raise ValueError('评估报告不能覆盖实测参考')
-            write_json(args.out, result)
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-            return 0 if result['status'] == 'passed' else 1
-        elif args.command == 'inspect':
-            batch = batch_root(args.batch)
-            if not layout.is_batch(batch):
-                raise ValueError(f'不是采集批次目录：{batch}')
-            session = batch_inputs.read_batch(layout.manifest(batch, 'manifest.yaml'))
-            scene = session.scene
-            try:
-                directory, published = map_repository.load_published(scene)
-            except ValueError:
-                if session.map_version is not None:
-                    raise
-                result = dict(directory=None, name=scene.name, version=None, frame_id=None,
-                              maps=[], map_status='默认地图尚未绑定')
-            else:
-                result = dict(directory=str(directory), name=published['name'], version=published['version'],
-                              frame_id=published['frame_id'], maps=published['maps'])
-            epoch_plan_path = layout.metadata(batch, 'map_epochs.yaml')
-            if epoch_plan_path.is_file():
-                plan = map_epoch_selection.read_plan(epoch_plan_path)
-                epoch_maps = []
-                for epoch in plan.epochs:
-                    if epoch.map_version is None:
-                        epoch_maps.append(dict(epoch=epoch.epoch, map_version=None,
-                                               sequence=epoch.sequence, available=False,
-                                               error='地图尚未构建'))
-                        continue
-                    try:
-                        epoch_directory, epoch_manifest = map_repository.load_published(
-                            scene, version=epoch.map_version, allow_import=True)
-                        epoch_maps.append(dict(epoch=epoch.epoch, map_version=epoch.map_version,
-                                               sequence=epoch.sequence, available=True,
-                                               directory=str(epoch_directory),
-                                               frame_id=epoch_manifest['frame_id']))
-                    except (OSError, ValueError, KeyError) as error:
-                        epoch_maps.append(dict(epoch=epoch.epoch, map_version=epoch.map_version,
-                                               sequence=epoch.sequence, available=False,
-                                               error=str(error)))
-                result['map_epochs'] = dict(
-                    path=str(epoch_plan_path),
-                    maps=[item.__dict__ for item in plan.epochs],
-                    tasks=[item.__dict__ for item in plan.tasks.values()],
-                    map_status=epoch_maps,
-                    assignments=map_epoch_selection.select_many(plan.tasks.values(), plan.epochs),
-                )
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        outcome = COMMANDS[args.command](args, overrides)
+        if isinstance(outcome, int):
+            return outcome
+        # 其余命令统一以 JSON 输出结果。
+        print(json.dumps(outcome, ensure_ascii=False, indent=2))
         return 0
     except ITEM_FAILURES as error:
         workflow.console.write(str(error), state='失败')
@@ -351,6 +208,195 @@ def main(argv: list[str] | None = None) -> int:
         # enter interpreter teardown while that daemon thread still owns a
         # Python callback and can abort with ``thread state must be current``.
         os._exit(130)
+
+
+# 每个子命令一个处理函数：返回 int 表示已自行输出、作为退出码；返回结果对象则由 main 以 JSON 输出。
+
+def _check(args, overrides):
+    from umi.apps.health import check
+    return check()
+
+
+def _build(args, overrides):
+    return processing.build(args.batch, force=args.force, keep_work=args.keep_work,
+                            cores=args.cores, dry_run=args.dry_run,
+                            overrides=overrides, epochs=args.epochs)
+
+
+def _plan_epochs(args, overrides):
+    result = processing.plan_epoch_draft(args.batch, write=args.write, force=args.force,
+                                         overrides=overrides)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return int(result['status'] != 'ready')
+
+
+def _pipeline(args, overrides):
+    result = processing.run_epoch_pipeline(args.batch, jobs=args.jobs, force=args.force,
+        keep_work=args.keep_work, cores=args.cores, dry_run=args.dry_run,
+        check_recordings=not args.skip_preflight, overrides=overrides)
+    print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else workflow.format_batch_summary(result.get('run', [])))
+    return int(result.get('status') not in ('ok', 'planned'))
+
+
+def _run(args, overrides):
+    result = processing.run(args.paths, jobs=args.jobs, force=args.force,
+        cores=args.cores, dry_run=args.dry_run, check_recordings=not args.skip_preflight,
+        overrides=overrides)
+    print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else workflow.format_batch_summary(result))
+    return int(any(item['status'] not in ('ok', 'skipped', 'local_ok', 'local_skipped', 'planned') for item in result))
+
+
+def _sync(args, overrides):
+    from umi.workflows.scene import audio_sync
+
+    result = audio_sync.run(args.paths, force=args.force, dry_run=args.dry_run)
+    print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
+          if args.json else audio_sync.format_summary(result, dry_run=args.dry_run))
+    return int(any(item['status'] == 'failed' for item in result))
+
+
+def _preflight(args, overrides):
+    target = args.target.expanduser().resolve()
+    result = recording_checks.check_video(target) if target.suffix.lower() == '.insv' else recording_checks.check_episode(
+        episode_inputs.read_episode(target))
+    print(json.dumps(asdict(result), ensure_ascii=False, indent=2) if args.json else recording_checks.format_report(result))
+    return int(not result.passed)
+
+
+def _detect_tags(args, overrides):
+    from umi.perception.poster.detection import DetectionSettings, cached
+    from umi.perception.poster.layout import DEFAULT_LAYOUT, load
+    board = load(args.layout or DEFAULT_LAYOUT)
+    detection_settings = DetectionSettings(border_bits=board.border_bits if args.border_bits is None else args.border_bits,
+        dictionary=board.dictionary, ids=board.ids, frame_step=args.frame_step,
+        full_frame_every=args.full_frame_every, minimum_side_px=args.minimum_side_px)
+    return cached(args.video, args.out, detection_settings, force=args.force,
+                  progress=workflow.console.write, layout=board)
+
+
+def _status(args, overrides):
+    result = []
+    for path in episode_paths(args.paths):
+        try:
+            result.append(episodes.task_status(path))
+        except ITEM_FAILURES as error:
+            result.append(dict(path=str(path), status='invalid', reason=str(error)))
+    if not args.json:
+        for item in result:
+            print(f'{item["path"]}: {item["status"]} / {item.get("review", "unreviewed")} {item.get("reason", "")}')
+        return 0
+    return result
+
+
+def _review(args, overrides):
+    targets = episode_paths(args.paths)
+    if not targets:
+        raise ValueError(f'未找到任何任务清单：{args.paths}')
+    if len(targets) == 1:
+        return episodes.review(targets[0], accept=args.accept, reviewer=args.reviewer, reason=args.reason)
+    details = []
+    for target in targets:
+        try:
+            decision = episodes.review(target, accept=args.accept, reviewer=args.reviewer,
+                                       reason=args.reason)['decision']
+            details.append(dict(episode=str(target), status='ok', decision=decision))
+        except Exception as error:
+            details.append(dict(episode=str(target), status='error', error=str(error)))
+    reviewed = sum(item['status'] == 'ok' for item in details)
+    return dict(total=len(targets), accepted=reviewed if args.accept else 0,
+                rejected=0 if args.accept else reviewed,
+                failed=len(details) - reviewed, details=details)
+
+
+def _export(args, overrides):
+    if args.format == 'training':
+        if args.with_video:
+            raise ValueError('training 包已包含视频，不需要 --with-video')
+        if (args.start_s is None) != (args.end_s is None):
+            raise ValueError('--start-s 和 --end-s 必须同时提供')
+        from umi.dataset.export import build
+        return build(args.paths, args.out, fps=args.fps, max_gap_s=args.max_gap_s,
+                     quality_policy=args.quality_policy, unknown_support=args.unknown_support,
+                     time_window_s=None if args.start_s is None else (args.start_s, args.end_s))
+    if args.quality_policy != 'all' or args.unknown_support != 'drop' or args.start_s is not None or args.end_s is not None:
+        raise ValueError('训练采样选项只适用于 --format training')
+    return episodes.export(episode_paths(args.paths), args.out, with_video=args.with_video)
+
+
+def _clean(args, overrides):
+    return processing.clean(args.paths, dry_run=args.dry_run, cache=args.cache)
+
+
+def _evaluate_relative(args, overrides):
+    from umi.dataset.relative_pose_evaluation import evaluate
+    from umi.infra.file_store import write_json
+    result = evaluate(args.path, args.reference)
+    if args.out.expanduser().resolve().is_relative_to(Path(result['run'])):
+        raise ValueError('评估报告不能写入冻结运行结果目录')
+    if args.out.expanduser().resolve() == args.reference.expanduser().resolve():
+        raise ValueError('评估报告不能覆盖实测参考')
+    write_json(args.out, result)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result['status'] == 'passed' else 1
+
+
+def _inspect(args, overrides):
+    batch = batch_root(args.batch)
+    if not layout.is_batch(batch):
+        raise ValueError(f'不是采集批次目录：{batch}')
+    session = batch_inputs.read_batch(layout.manifest(batch, 'manifest.yaml'))
+    scene = session.scene
+    try:
+        directory, published = map_repository.load_published(scene)
+    except ValueError:
+        if session.map_version is not None:
+            raise
+        result = dict(directory=None, name=scene.name, version=None, frame_id=None,
+                      maps=[], map_status='默认地图尚未绑定')
+    else:
+        result = dict(directory=str(directory), name=published['name'], version=published['version'],
+                      frame_id=published['frame_id'], maps=published['maps'])
+    epoch_plan_path = layout.metadata(batch, 'map_epochs.yaml')
+    if epoch_plan_path.is_file():
+        result['map_epochs'] = _inspect_epochs(scene, epoch_plan_path)
+    return result
+
+
+def _inspect_epochs(scene, epoch_plan_path: Path) -> dict:
+    plan = map_epoch_selection.read_plan(epoch_plan_path)
+    epoch_maps = []
+    for epoch in plan.epochs:
+        if epoch.map_version is None:
+            epoch_maps.append(dict(epoch=epoch.epoch, map_version=None,
+                                   sequence=epoch.sequence, available=False,
+                                   error='地图尚未构建'))
+            continue
+        try:
+            epoch_directory, epoch_manifest = map_repository.load_published(
+                scene, version=epoch.map_version, allow_import=True)
+            epoch_maps.append(dict(epoch=epoch.epoch, map_version=epoch.map_version,
+                                   sequence=epoch.sequence, available=True,
+                                   directory=str(epoch_directory),
+                                   frame_id=epoch_manifest['frame_id']))
+        except (OSError, ValueError, KeyError) as error:
+            epoch_maps.append(dict(epoch=epoch.epoch, map_version=epoch.map_version,
+                                   sequence=epoch.sequence, available=False,
+                                   error=str(error)))
+    return dict(
+        path=str(epoch_plan_path),
+        maps=[item.__dict__ for item in plan.epochs],
+        tasks=[item.__dict__ for item in plan.tasks.values()],
+        map_status=epoch_maps,
+        assignments=map_epoch_selection.select_many(plan.tasks.values(), plan.epochs),
+    )
+
+
+COMMANDS = {
+    'check': _check, 'build': _build, 'plan-epochs': _plan_epochs, 'pipeline': _pipeline, 'run': _run,
+    'sync': _sync, 'preflight': _preflight, 'detect-tags': _detect_tags, 'status': _status,
+    'review': _review, 'export': _export, 'clean': _clean, 'evaluate-relative': _evaluate_relative,
+    'inspect': _inspect,
+}
 
 
 if __name__ == '__main__':
