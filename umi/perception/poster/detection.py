@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
-import json
 import time
 
 import cv2
@@ -14,7 +13,7 @@ import numpy as np
 from umi.infra import provenance
 from umi.core.timing import video_to_imu_seconds
 from umi.core.frame import CROP, FPS_SRC, FPS_TOLERANCE, SRC_H, SRC_W
-from umi.infra.file_store import atomic_file, is_current, mark_used, write_json
+from umi.infra.file_store import mark_used, read_npz_cache, write_json, write_npz_cache
 from umi.perception.decoding import ScanProgress, VideoDecode
 
 if TYPE_CHECKING:
@@ -316,26 +315,24 @@ def cached(video: Path, output: Path, settings: DetectionSettings, *, force: boo
     key = provenance.canonical_hash(identity)
     cache_file, manifest_file = output / 'observations.npz', output / 'detection.json'
     observations = None
-    if not force and cache_file.is_file() and is_current(manifest_file):
+    saved = None if force else read_npz_cache(cache_file, manifest_file, identity)
+    if saved is not None:
         try:
-            saved = json.loads(manifest_file.read_text())
-            if saved['identity_hash'] == key and saved['observations_sha256'] == provenance.file_hash(cache_file):
-                observations = load_observations(cache_file)
-        except (ValueError, KeyError, OSError, TypeError):
+            observations = TagObservations(**{name: saved[0][name] for name in TagObservations.__dataclass_fields__})
+            observations.validate()
+        except (KeyError, TypeError, ValueError):
             observations = None
         if observations is not None:
             mark_used(output)
             if cache_audit is not None:
                 cache_audit.record(stage='environment_tags', key=key, path=str(output), status='reused',
-                                   reason='detection.json 身份和 observations.npz 哈希校验通过')
+                                   reason='detection.json 输入身份和 observations.npz 哈希校验通过')
     def publish(observations: TagObservations, reused: bool) -> dict:
         if not reused:
             if provenance.file_hash(video) != identity['recording_sha256']:
                 raise ValueError('原片在标签检测期间发生变化，未保存检测结果')
-            with atomic_file(cache_file) as temporary, temporary.open('wb') as stream:
-                np.savez_compressed(stream, **{name: getattr(observations, name) for name in TagObservations.__dataclass_fields__})
-            write_json(manifest_file, dict(identity=identity, identity_hash=key,
-                                          observations_sha256=provenance.file_hash(cache_file)))
+            write_npz_cache(cache_file, manifest_file, identity,
+                            **{name: getattr(observations, name) for name in TagObservations.__dataclass_fields__})
         result = dict(report(observations, settings), identity_hash=key, recording=str(video),
                       settings=asdict(settings), cache_reused=reused, observations_file=str(cache_file))
         if layout is not None:

@@ -74,15 +74,27 @@ def write_json(path: Path, document: dict) -> None:
         temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False)+'\n', encoding='utf-8')
 
 
-def read_npz_cache(path: Path, marker: Path, inputs: dict, *, mismatch: str) -> tuple[dict, str] | None:
-    """读取已发布的数组缓存，并核对输入身份与文件内容。"""
+def read_npz_cache(path: Path, marker: Path, inputs: dict, *, mismatch: str | None = None) -> tuple[dict, str] | None:
+    """读取已发布的数组缓存，并核对输入身份与文件内容。
+
+    未命中（无标记、--force 之前生成）返回 None；身份或内容不符时，给了 ``mismatch`` 则报错，
+    否则同样视为未命中。
+    """
     if not is_current(marker):
         return None
     import numpy as np
     from umi.infra.provenance import file_hash
 
-    record = json.loads(marker.read_text(encoding='utf-8'))
-    if record['inputs'] != inputs or file_hash(path) != record['sha256']:
+    try:
+        record = json.loads(marker.read_text(encoding='utf-8'))
+        # 按 JSON 规范形式比较：元组与列表、整数键等在落盘后不再区分。
+        expected = json.loads(json.dumps(inputs, allow_nan=False))
+        valid = record['inputs'] == expected and path.is_file() and file_hash(path) == record['sha256']
+    except (OSError, ValueError, KeyError, TypeError):
+        valid = False
+    if not valid:
+        if mismatch is None:
+            return None
         raise ValueError(mismatch)
     with np.load(path, allow_pickle=False) as arrays:
         return dict(arrays), record['sha256']
