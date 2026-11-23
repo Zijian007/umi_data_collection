@@ -405,14 +405,7 @@ def execute_episode(resolved: ResolvedInputs, task_console: Console, *, cores: s
         with run_console.heartbeat('准备录像和时间轴', step=(1, 3)):
             prepared_recordings = recordings.prepare_episode_recordings(episode, cameras, video_offsets_s,
                 work_dir=work_dir, cores=cores, arm_cores=arm_cpu_sets, cache_audit=cache_audit)
-        common_start, common_end = recordings.shared_interval(prepared_recordings, video_offsets_s)
-        run_console.write(
-            ' · '.join(
-                f'{arm} {len(recording.video_times_s)} 帧 / {recording.video_times_s[-1] - recording.video_times_s[0]:.2f}s'
-                for arm, recording in prepared_recordings.items())
-            + f' · {"共同时间" if len(prepared_recordings) > 1 else "时间范围"} {common_start:.3f}–{common_end:.3f}s',
-            step=(1, 3), state='完成',
-        )
+        run_console.write(_recordings_summary(prepared_recordings, video_offsets_s), step=(1, 3), state='完成')
         # Step 2: 各手独立求解轨迹、夹爪测量与共享海报融合
         audit.event('stage_finished', stage='prepare_recordings')
         audit.event('stage_started', stage='estimate_tracks')
@@ -420,22 +413,8 @@ def execute_episode(resolved: ResolvedInputs, task_console: Console, *, cores: s
                                  run_dir, arm_cpu_sets, cache_audit, run_console)
         with run_console.heartbeat('轨迹重建', step=(2, 3)):
             arm_execution = estimation.execute(task_inputs, map_selection)
-        tracks = arm_execution.tracks
         coordinate_record = arm_execution.coordinate_record
-        backend_names = sorted({
-            track.metadata.get('fusion', {}).get('reconstruction_backend')
-            for track in tracks.values()
-            if track.metadata.get('fusion', {}).get('reconstruction_backend')
-        })
-        selected = next((attempt['backend'] for attempt in coordinate_record.get('attempts', [])
-                         if attempt['status'] == 'succeeded'), mode)
-        backend_text = ('独立局部重建' if is_local_scene(coordinate_record)
-                        else ', '.join(backend_names) or selected)
-        fallback_text = ' · 已回退' if coordinate_record.get('fallback') else ''
-        run_console.write(
-            f'{backend_text} · 坐标 {coordinate_record.get("frame_id", "unknown")}{fallback_text}',
-            step=(2, 3), state='完成',
-        )
+        run_console.write(_backend_summary(arm_execution, mode), step=(2, 3), state='完成')
         # 局部回退结果不引用共享地图。
         display_map_path = (None if is_local_scene(coordinate_record) or is_poster_scene(coordinate_record)
                             else map_dir / 'map.json')
@@ -489,6 +468,30 @@ def execute_episode(resolved: ResolvedInputs, task_console: Console, *, cores: s
         synchronization=episode.synchronization,
         quality=published.quality,
     )
+
+
+def _recordings_summary(prepared_recordings: dict, video_offsets_s: dict) -> str:
+    common_start, common_end = recordings.shared_interval(prepared_recordings, video_offsets_s)
+    return (' · '.join(
+                f'{arm} {len(recording.video_times_s)} 帧 / {recording.video_times_s[-1] - recording.video_times_s[0]:.2f}s'
+                for arm, recording in prepared_recordings.items())
+            + f' · {"共同时间" if len(prepared_recordings) > 1 else "时间范围"} {common_start:.3f}–{common_end:.3f}s')
+
+
+def _backend_summary(arm_execution, mode: str) -> str:
+    """终端一行：实际使用的后端（auto 时为选中者）、输出坐标及是否回退。"""
+    coordinate_record = arm_execution.coordinate_record
+    backend_names = sorted({
+        track.metadata.get('fusion', {}).get('reconstruction_backend')
+        for track in arm_execution.tracks.values()
+        if track.metadata.get('fusion', {}).get('reconstruction_backend')
+    })
+    selected = next((attempt['backend'] for attempt in coordinate_record.get('attempts', [])
+                     if attempt['status'] == 'succeeded'), mode)
+    backend_text = ('独立局部重建' if is_local_scene(coordinate_record)
+                    else ', '.join(backend_names) or selected)
+    fallback_text = ' · 已回退' if coordinate_record.get('fallback') else ''
+    return f'{backend_text} · 坐标 {coordinate_record.get("frame_id", "unknown")}{fallback_text}'
 
 
 def _create_cache_audit(episode: Episode, cameras: dict, sync_status: str, sync_reason: str) -> CacheAudit:
