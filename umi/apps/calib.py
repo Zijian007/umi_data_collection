@@ -122,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
                '  umi-calib install /path/to/rear/calibration_result\n'
                '  umi-calib detect-width recording.insv --roi 600 980 1350 1250 --contrast 2\n'
                '安装说明：install 自动识别 front/rear，更新对应镜头和来源的当前登记，并保留已登记的历史版本。\n'
-               '  umi-calib check\n参数帮助：umi-calib <子命令> --help；完整参数参考：docs/命令行参数.md；录制与标定说明：docs/标定.md。')
+               '  umi-calib check\n参数帮助：umi-calib <子命令> --help；完整参数参考：docs/命令行参数.md；录制与标定说明：docs/02-相机与夹爪标定.md。')
     commands = parser.add_subparsers(dest="cmd")
     width_preview = commands.add_parser('preview-width', help='从 INSV 生成标签框、ID 和像素距离叠加 MP4')
     width_preview.add_argument('video', type=Path, help='X3 原始 3840×1920 INSV')
@@ -151,7 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--compare-sample", action="store_true", help="仅 front：额外用样例标定跑 C 段轨迹作对照；rear 不支持")
     run_parser.add_argument("--install", action="store_true", help="检查通过后按序列号写入设备档案；替换同镜头、同来源的当前安装")
     verify_parser = commands.add_parser("verify", help="用 C 段录像复查已有工作镜头标定，不生成或启用新参数")
-    verify_parser.add_argument("video", help="C 段录像（录法见 docs/标定.md 的“录 4 段”）")
+    verify_parser.add_argument("video", help="C 段录像（录法见 docs/02-相机与夹爪标定.md 的“录 4 段”）")
     verify_parser.add_argument("--out", help="结果目录（默认 <录像名>_calibration_verification，在录像旁边）")
     for command_parser in (run_parser, verify_parser):
         configuration = command_parser.add_argument_group('专家配置', 'config/algorithms/calibration.yaml；C 段自动使用本次板尺寸')

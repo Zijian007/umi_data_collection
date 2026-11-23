@@ -2,7 +2,7 @@
 
 用户入口为 `umi-scene`。 硬核数学实现的统一变量、变换方向和优化边界见 [算法实现约定](../../../docs/dev/算法实现约定.md)。`run <批次>` 由 `umi/workflows/scene/batch_processing.py` 读取批次根目录唯一的 `collection.yaml`，自动保存设备快照和登记原片，再调用 workflow 的地图与任务流水线。场景代码按“每类事实一个权威来源”组织，具体边界见 [SSOT 与权威来源](../../../docs/dev/SSOT与权威来源.md)。`export --format training` 调用 umi.dataset。标定统一由 umi-calib 发起，查看由 umi-view 提供。
 
-从 `umi/apps/scene.py` 找命令入口，再读 `umi/workflows/scene/maps/repository.py` 的 `build_scene()` 或 `workflow.py` 的 `run_episode()`。用户操作见[场景指南](../../../docs/场景处理.md)，完整选项见[命令行参数](../../../docs/命令行参数.md#umi-scene)。
+从 `umi/apps/scene.py` 找命令入口，再读 `umi/workflows/scene/maps/repository.py` 的 `build_scene()` 或 `workflow.py` 的 `run_episode()`。用户操作见[场景指南](../../../docs/03-场景处理.md)，完整选项见[命令行参数](../../../docs/命令行参数.md#umi-scene)。
 
 模块通过真实目录直接导入；`__init__.py` 仅说明包职责，不注册别名或预先加载全部子模块。
 
@@ -160,7 +160,7 @@ run → workflow.run_episode()
 
 `trajectory_writers.write_arm_result()` 将每手 TCP 位姿与已配置的夹爪测量写入 `trajectory.csv`，返回供双手对齐使用的 `ArmTrajectory`。发布阶段在内部运行目录组装 `published/`，写出 `report.txt` 和 schema 5 的 `data/episode.json`，校验值按发布文件和内部证据分别登记，再原子更新任务的 `results/`。逐帧信息、融合诊断与冻结设备文件留在同一次运行目录，由 `umi.store.result_io` 统一定位。schema 4 的发布目录同样可读。
 
-标签间距报告只保存在任务层 `tag_distance.<手>`，没有测量时不写空报告。坐标身份仅保存在 `scene.frame_id`，批次名仅保存在 `session`；输入记录使用地图/同步内容摘要，`inputs.code` 合并全部源码哈希。默认不保存可重建的相机/IMU TUM 轨迹；`parameters.diagnostics.export_auxiliary_trajectories: true` 可开启排障导出，查看器默认由 TCP 和固定外参重建显示。
+有标签间距测量时，任务层 `tag_distance.<手>` 保存报告。`scene.frame_id` 记录坐标身份，`session` 记录批次名。输入记录保存地图与同步的内容摘要，`code_revision` 记录代码版本供追溯。查看器默认由 TCP 和固定外参重建相机和 IMU 的显示轨迹，`parameters.diagnostics.export_auxiliary_trajectories: true` 可在排障时写出 TUM 轨迹。
 
 `umi.store.result_io` 提供只读的摘要和设置适配，查看器及训练导出共用；当前结果从任务层 `episode.json` 取值。查看器校验地图路径、版本、固定坐标与内容身份后直接加载共享地图。
 
@@ -251,7 +251,7 @@ KIWI 方法来源和许可证见 [第三方来源](../../../docs/dev/PROVENANCE.
 kit.yaml 和 collection.yaml 只通过手动创建和修改；原片按 take 分组或放入 pending，run 自动登记、补片和处理。run 与 build 共用 batch_snapshot.read_inputs/make_record/save_record 解析当前配置与生成内部快照。ingest.register_recordings() 只接收已解析的批次对象，不再接受旧命令的外部输入目录、手选择或硬链接选项；预览和实际运行在同一条路径规划任务，仅实际运行写入文件。build 仅接受批次。manifest.yaml、episode.yaml 仅从批次 .pipeline/ 当前布局读取；批次和任务清单仍支持 schema 4/5，人工选项优先从 collection.yaml.tasks 读取。已有 episode.json 结果协议保持可读。Session/Episode 是内部类型，不再作为用户命令名称。
 
 
-环境海报的布局、检测和建图尺度修正配置在 `environment_poster`。地图定位是否融合海报以及融合初值的选择配置在 `backend.scene_map.poster_constraint`。融合默认随用途开启检测。实现位于 `umi/estimation/fixed_map/poster.py`，初值与投影位于 `umi/perception/poster/geometry.py`。单手每段录像求一个海报位姿，双手开启融合时求两手共享的海报位姿。布局随结果冻结，地图尺度保持固定。`staged` 先求地图与 IMU 基线再进行海报优化。`joint` 从视觉种子构建包含地图先验、IMU 和海报角点的最终图。环境检测按采样帧做周期性全图扫描，中间帧跟随上次标签窗口。[海报约束质量与实测评估](../../../docs/场景处理.md#海报约束质量和双手实测评估)
+环境海报的布局、检测和建图尺度修正配置在 `environment_poster`。地图定位是否融合海报以及融合初值的选择配置在 `backend.scene_map.poster_constraint`。融合默认随用途开启检测。实现位于 `umi/estimation/fixed_map/poster.py`，初值与投影位于 `umi/perception/poster/geometry.py`。单手每段录像求一个海报位姿，双手开启融合时求两手共享的海报位姿。布局随结果冻结，地图尺度保持固定。`staged` 先求地图与 IMU 基线再进行海报优化。`joint` 从视觉种子构建包含地图先验、IMU 和海报角点的最终图。环境检测按采样帧做周期性全图扫描，中间帧跟随上次标签窗口。[海报约束质量与实测评估](../../../docs/03-场景处理.md#海报约束质量和双手实测评估)
 
 代码内部将 `tags.mapping.enabled` 和 `tags.mapping.scale.enabled` 映射为 `tag_mapping_enabled`、`tag_mapping_scale_enabled`；二者默认关闭。`umi/estimation/mapping.py` 保持视觉地图形状并处理米制镜头杆臂，合并后由 `geometry.metric_alignment(fixed_scale=...)` 精确固定尺度重做惯性验收。地图目录保留冻结布局及角点，任务不复用建图海报位姿。
 

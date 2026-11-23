@@ -17,9 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CURRENT_DOCS = (
     'README.md', 'config/README.md', 'hardware/kits/README.md', 'scenes/README.md',
     'hardware/calibration_targets/README.md', 'hardware/environment_poster/README.md',
-    *(str(path.relative_to(ROOT)) for path in sorted((ROOT / 'docs').glob('*.md'))),
-    'docs/dev/README.md', 'docs/dev/SSOT与权威来源.md', 'docs/dev/算法实现约定.md',
-    'docs/dev/标定架构与验证.md',
+    *(str(path.relative_to(ROOT)) for path in sorted((ROOT / 'docs').rglob('*.md'))),
     'umi/workflows/scene/README.md', 'umi/workflows/segment/README.md',
     'umi/estimation/poster_vio/README.md', 'umi/dataset/README.md', 'umi/perception/README.md',
 )

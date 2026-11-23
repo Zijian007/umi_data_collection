@@ -32,7 +32,7 @@ flowchart LR
 
 实拍对照使用本次所选镜头的当前 KB4、原始 MEI、诊断拟合 KB4；当前参数明确标记 measured/factory。工作镜头两种模式都自动对照；环境镜头 factory 模式对自身镜头做实拍对照，另一镜头只做数值诊断。方法版本 4 不复用旧诊断，成功后清除旧版错误镜头的射线图。`factory/kb4_fit.json` 是不可单独安装的光学诊断，不改本次参数；正式工厂候选由 `solve/factory_intrinsics.py` 生成并另行验收。自动对照失败转为诊断状态，中断仍传播。
 
-`compare_insv_factory` 检查点包含原片、标定、板配置和方法身份，并核对 `factory/` 数值与图片哈希。失败不复用；成功诊断在 work 清理后仍可读取，报告渲染不执行计算。`verify` 不触发这一对照；环境镜头的 factory 模式会针对环境镜头运行自身对照。使用方法和结果解释见[标定指南](../../../docs/标定.md)。
+`compare_insv_factory` 检查点包含原片、标定、板配置和方法身份，并核对 `factory/` 数值与图片哈希。失败不复用；成功诊断在 work 清理后仍可读取，报告渲染不执行计算。`verify` 不触发这一对照；环境镜头的 factory 模式会针对环境镜头运行自身对照。使用方法和结果解释见[标定指南](../../../docs/02-相机与夹爪标定.md)。
 
 A/B 只求解和返回测量；验收策略决定是否可用；安装是独立操作。`verify` 只用已选标定跑 C，不生成新参数、不安装，也不要求 Basalt 或 rosbags。
 
@@ -135,7 +135,7 @@ Basalt 保留 bag 输入、KB4、噪声先验和 `--fixed-scale-opt-offset`。�
 ./umi-calib run hardware/calibration_runs/CAMERA_SERIAL/YYYYMMDD/front --dry-run
 ```
 
-测试覆盖真实 D 工具、时间匹配、灰度像素、数值环境镜头后端、恢复/中断、安装边界和只读报告。真实回归状态见 [架构与验证](../../../docs/dev/标定架构与验证.md)，不能用模拟替代工作镜头与环境镜头整套实测。操作见 [标定指南](../../../docs/标定.md)，配置见 [参数说明](../../../config/README.md)。
+测试覆盖真实 D 工具、时间匹配、灰度像素、数值环境镜头后端、恢复/中断、安装边界和只读报告。真实回归状态见 [架构与验证](../../../docs/dev/标定架构与验证.md)，不能用模拟替代工作镜头与环境镜头整套实测。操作见 [标定指南](../../../docs/02-相机与夹爪标定.md)，配置见 [参数说明](../../../config/README.md)。
 
 宽度测量辅助入口由 [umi/perception/gripper/video_tools.py](../../perception/gripper/video_tools.py) 共用原片读取与标签叠加编码。`preview-width` 输出逐帧标签视频。`detect-width` 在固定 ROI 内采样，输出 CSV 并默认保存带标签和 ROI 框的 MP4。两者均使用基础环境。
 

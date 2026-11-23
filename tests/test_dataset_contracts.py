@@ -132,7 +132,7 @@ class DatasetContractIntegrationTests(unittest.TestCase):
         self.assertTrue(arrays['left_full_constraint'].all())
         from pathlib import Path
         import re
-        guide = (Path(__file__).resolve().parents[1] / 'docs/训练数据.md').read_text()
+        guide = (Path(__file__).resolve().parents[1] / 'docs/05-训练数据准备与导出.md').read_text()
         fields = re.findall(r'^\| `([^`]+)` \|', guide, re.M)
         documented = set()
         for field in fields:

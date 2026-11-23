@@ -54,7 +54,7 @@ base tag 固定在不随开合运动的夹爪基座上，配置写在 kit 内，
 安装变换会在任务图内带先验联合细化，修正量和自身/跨相机残差保存在质量证据中。
 参数与验收边界见 [poster_vio](../../umi/estimation/poster_vio/README.md)。
 
-左右安装几何相同时，可以共同引用 `../shared/tcp_camera.json`；不同时分别填写。没有实测开口关系时省略 `width`。TCP 格式与方向见[设备与坐标](../../docs/设备与坐标.md#几何资产)，宽度格式与测量方法见[训练数据指南](../../docs/训练数据.md#夹爪宽度标定与接入)。
+左右安装几何相同时，可以共同引用 `../shared/tcp_camera.json`；不同时分别填写。没有实测开口关系时省略 `width`。TCP 格式与方向见[设备与坐标](../../docs/principles/设备与坐标.md#几何资产)，宽度格式与测量方法见[训练数据指南](../../docs/05-训练数据准备与导出.md#夹爪宽度标定与接入)。
 
 只测两个标签中心的实际距离时，可单独配置 `gripper.tag_distance: tag_distance.json`，无需 `gripper.width`。JSON 格式为 `{"tag_sizes_mm": {"0": 6.0, "1": 6.0}}`；数值是每枚标签黑色外框实测边长，单位 mm，不包括外侧白边，两枚可以不同。`kit_001` 和 `kit_002` 当前按用户给定尺寸使用各 6 mm；其他套件须填写各自尺寸。这与 AprilGrid 标定板尺寸是不同资产，不修改 `hardware/calibration_targets/aprilgrid.json`。
 
@@ -88,7 +88,7 @@ hardware/kits/
 
 rear 工厂推导沿用 front 时差，标记 `NOT_EVALUATED`；它不等于通过 rear A/B/C/D。当前选择存在但损坏、身份或来源不符时直接报错，不会改用推导。只有实际需要环境镜头时才执行原片推导；`shared_front` 不因此增加环境镜头地图定位。
 
-前后镜头分别选来源。正式 factory 标定须使用与其配套的 B。详见[标定指南](../../docs/标定.md#选择实测或工厂内参)。
+前后镜头分别选来源。正式 factory 标定须使用与其配套的 B。详见[标定指南](../../docs/02-相机与夹爪标定.md#选择实测或工厂内参)。
 
 ## 更新当前参数与历史结果
 
@@ -113,4 +113,4 @@ kit 使用 `intrinsics.front/rear` 选择参数来源，运行时读取各镜头
 
 ## 海报采集
 
-需要独立验收的环境镜头时，按[双镜头标定](../../docs/标定.md#双镜头标定与海报接入)完成 rear 求解与登记，再将 `intrinsics.rear` 设为对应来源。布局填写在 `environment_poster.layout_path`，任务的海报开关写在批次的 `backend` 下。[场景后端配置](../../docs/场景处理.md#选择轨迹估计后端)
+需要独立验收的环境镜头时，按[双镜头标定](../../docs/02-相机与夹爪标定.md#双镜头标定与海报接入)完成 rear 求解与登记，再将 `intrinsics.rear` 设为对应来源。布局填写在 `environment_poster.layout_path`，任务的海报开关写在批次的 `backend` 下。[场景后端配置](../../docs/03-场景处理.md#选择轨迹估计后端)

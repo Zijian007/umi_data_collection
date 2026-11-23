@@ -73,7 +73,7 @@ specialist 参考实现的来源、局部改编和 MIT 许可见 [NOTICE](NOTICE
 
 ## 镜头与掩膜
 
-当前 X3 3840×1920 原片中，工作镜头 `front` 是右半幅，环境镜头 `rear` 是左半幅；与左右手无关，统一定义见 [设备与坐标](../../../docs/设备与坐标.md#镜头术语)及 `umi/core/frame.py`。两镜头自然特征像素始终保留在各自 1440×1440 标定裁切内，不使用缩放后的播放视频坐标。
+当前 X3 3840×1920 原片中，工作镜头 `front` 是右半幅，环境镜头 `rear` 是左半幅；与左右手无关，统一定义见 [设备与坐标](../../../docs/principles/设备与坐标.md#镜头术语)及 `umi/core/frame.py`。两镜头自然特征像素始终保留在各自 1440×1440 标定裁切内，不使用缩放后的播放视频坐标。
 
 front 使用相机冻结资产中的原始遮手图，按最近邻缩放到标定裁切。资产中非零表示遮挡，转换成 OpenCV 的允许区域掩膜后，既限制新建特征，也终止进入遮挡区的已有轨迹。遮手图缺失或损坏会拒绝输入；静态遮手图不能替代动态物体筛除。
 
@@ -125,7 +125,7 @@ LM 在接受一步后按相对目标函数下降提前停止，当前阈值为 `
 
 ## 配置和边界
 
-在 collection.yaml 设置 `backend.mode: poster_vio`。可在批次或任务的 `backend.poster_vio.initialization.max_observation_gap_s` 设置海报观测间隔上限。算法默认值位于 `config/algorithms/scene_parameters.yaml`，可通过 `parameters.poster_vio` 专家覆盖。`culling.maximum_rounds: 0` 关闭重求解，`holdout.stride: 0` 和 `natural_stride: 0` 分别关闭标签和自然点留出。海报像素和条件几何质量使用公共环境标签参数。[场景处理](../../../docs/场景处理.md#选择轨迹估计后端)
+在 collection.yaml 设置 `backend.mode: poster_vio`。可在批次或任务的 `backend.poster_vio.initialization.max_observation_gap_s` 设置海报观测间隔上限。算法默认值位于 `config/algorithms/scene_parameters.yaml`，可通过 `parameters.poster_vio` 专家覆盖。`culling.maximum_rounds: 0` 关闭重求解，`holdout.stride: 0` 和 `natural_stride: 0` 分别关闭标签和自然点留出。海报像素和条件几何质量使用公共环境标签参数。[场景处理](../../../docs/03-场景处理.md#选择轨迹估计后端)
 
 当前已接入整板鲁棒初始化、双镜头自然点、几何异常筛选、描述子重关联、有限轮热启动剔除、标签/自然点留出，以及关键帧和条件惯性恢复。语义动态分割、滑窗边缘化和 GPU 加速未接入；真实录像精度和规模基准仍待验收。当前遇到几何冲突或质量不足会拒绝；不声称具备长期标签失联恢复能力。`auto` 在场景地图质量不足后尝试本后端，失败再回退到 `poster_independent`。
 

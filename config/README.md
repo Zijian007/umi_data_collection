@@ -1,6 +1,6 @@
 # 命令行、配置与测量资产
 
-本页按设备、批次、用户选项和算法参数说明配置位置与覆盖顺序。[从设备到结果](../docs/安装与日常使用.md#从设备到结果)
+本页按设备、批次、用户选项和算法参数说明配置位置与覆盖顺序。[从设备到结果](../docs/01-安装与日常使用.md#从设备到结果)
 
 ## 配置心智模型
 
@@ -58,7 +58,7 @@ viewer:
 ./umi-view scenes/test_shelf --port 9092 --show-config
 ```
 
-`--show-config` 输出 JSON，展示配置值、来源和执行选项，然后退出；不读取视频内容、不启动求解环境、不扫描查看器结果或监听端口。场景与标定入口可以同时使用 `--expert-config`。它优先于 `--dry-run`；配置展示成功不代表录像、标定资产和地图已满足运行条件，输入检查继续使用 `--dry-run`。标定 run / verify 仍需填写目录/录像位置参数，但展示时不访问它们。run 的输入目录末级名称必须为 front / rear，由目录名选择镜头；两者都使用 run，详见[标定目录约定](../docs/标定.md#52-算标定)。
+`--show-config` 输出 JSON，展示配置值、来源和执行选项，然后退出；不读取视频内容、不启动求解环境、不扫描查看器结果或监听端口。场景与标定入口可以同时使用 `--expert-config`。它优先于 `--dry-run`；配置展示成功不代表录像、标定资产和地图已满足运行条件，输入检查继续使用 `--dry-run`。标定 run / verify 仍需填写目录/录像位置参数，但展示时不访问它们。run 的输入目录末级名称必须为 front / rear，由目录名选择镜头；两者都使用 run，详见[标定目录约定](../docs/02-相机与夹爪标定.md#52-算标定)。
 
 ## 运行与查看器默认值
 
@@ -113,7 +113,7 @@ map_max_points: 20000
 |---|---|---|
 | [calibration.yaml](algorithms/calibration.yaml) | 标定算法、板检测、D 静止窗口、验收规则 | `umi-calib run / verify / recheck` |
 | [trajectory.yaml](algorithms/trajectory.yaml) | 视频尺寸与编码、ORB、重建重试、IMU 融合、ZUPT、质量提醒 | `umi-scene`、内部逐段轨迹引擎及标定 C 段验证 |
-| [scene_parameters.yaml](algorithms/scene_parameters.yaml) | 场景尺度/放置验收、固定坐标融合、原片配对、宽度处理与录制检查规则 | `umi-scene`；操作和覆盖方式见 [场景指南](../docs/场景处理.md) |
+| [scene_parameters.yaml](algorithms/scene_parameters.yaml) | 场景尺度/放置验收、固定坐标融合、原片配对、宽度处理与录制检查规则 | `umi-scene`；操作和覆盖方式见 [场景指南](../docs/03-场景处理.md) |
 | [environment_tags.yaml](algorithms/environment_tags.yaml) | 环境海报共享几何数值：角点噪声、观测筛选和重投影门槛 | `umi-scene`、独立轨迹、标定 C；不承载流程策略开关 |
 | 相机内参、实测相机–IMU 参数与时间差 | `hardware/.registry/` 中的版本化相机标定；含实测/工厂内参来源 | 按序列号及套件的前后镜头来源选择当前参数，通过验收后统一执行 `install` |
 | TCP、宽度、遮手图 | 套件引用的测量文件；未自定义遮手图时用 `hardware/grippers/masks/front_hand_mask.png` | 按 `kit.yaml` 选择，更新后重新运行 |
@@ -134,7 +134,7 @@ arms: [right]
 
 任务人工选项只能写在批次根目录 `collection.yaml.tasks.<take>`；`.pipeline/tasks/<take>/episode.yaml` 由程序生成并冻结原片身份。
 
-同步配置见[训练数据指南](../docs/训练数据.md#2-核验双手同步)。修改任务选项后重跑即可复用兼容地图和阶段缓存；原验收会失效。
+同步配置见[训练数据指南](../docs/05-训练数据准备与导出.md#2-核验双手同步)。修改任务选项后重跑即可复用兼容地图和阶段缓存；原验收会失效。
 
 ## 第一次阅读从哪里开始
 
@@ -279,7 +279,7 @@ C 固定覆盖 `input.mode: handheld` 和 `environment_tags.tag_fusion_enabled: 
 | `parameters.measurements.gripper_width.closed_threshold_mm` | 3.0 | 闭合判定阈值，毫米；非负且小于该手标定最大开口 |
 | `parameters.diagnostics.gripper_width` | false | 输出原片逐帧诊断 CSV |
 
-这些参数参与任务结果身份，不参与建图身份。原片检测缓存仅由原片内容和检测器决定；测量、阈值和输出时间轴变化会复用检测。宽度报告统一保存在 episode.json，格式见[训练数据](../docs/训练数据.md#夹爪宽度标定与接入)。
+这些参数参与任务结果身份，不参与建图身份。原片检测缓存仅由原片内容和检测器决定；测量、阈值和输出时间轴变化会复用检测。宽度报告统一保存在 episode.json，格式见[训练数据](../docs/05-训练数据准备与导出.md#夹爪宽度标定与接入)。
 
 ## 重试与配置校验
 
@@ -411,7 +411,7 @@ environment_poster:
 
 `tag_minimum_side_px` / `tag_minimum_frames` 筛选像素尺寸和独立观测时刻；`tag_corner_sigma_px` / `tag_sigma_per_radius_px` 设置角点噪声；`tag_huber` 是每 ID 四角点共同的鲁棒核阈值；`tag_maximum_reprojection_rms_px` 检查初始化和最终像素残差。默认值只经合成数据验证。无足够观测保留基线，启用后的几何冲突明确失败。每段录像独立求解海报位姿，海报在录像内须静止、平整；任务融合本身不会改变已发布地图尺度；建图修正由下述开关单独控制。打印尺寸状态仍为 PDF 设计值，需核对成品尺寸后评估实拍效果。
 
-`tag_maximum_position_std_m`（默认 0.05 m）和 `tag_maximum_rotation_std_deg`（默认 5°）筛查固定海报/标定下的局部线性化约束强度；不表示真实轨迹精度。独立、场景 `staged/joint` 共用几何诊断，`poster_independent` 用通过筛查的观测评估共同位置支持缺口。场景单次覆盖使用 `parameters.fusion.environment_tags.maximum_position_std_m` / `maximum_rotation_std_deg`；内部独立引擎使用 `--config` 文件的 `environment_tags.tag_maximum_position_std_m` / `tag_maximum_rotation_std_deg`。输出字段与实测流程见[海报约束质量](../docs/场景处理.md#海报约束质量和双手实测评估)。
+`tag_maximum_position_std_m`（默认 0.05 m）和 `tag_maximum_rotation_std_deg`（默认 5°）筛查固定海报/标定下的局部线性化约束强度；不表示真实轨迹精度。独立、场景 `staged/joint` 共用几何诊断，`poster_independent` 用通过筛查的观测评估共同位置支持缺口。场景单次覆盖使用 `parameters.fusion.environment_tags.maximum_position_std_m` / `maximum_rotation_std_deg`；内部独立引擎使用 `--config` 文件的 `environment_tags.tag_maximum_position_std_m` / `tag_maximum_rotation_std_deg`。输出字段与实测流程见[海报约束质量](../docs/03-场景处理.md#海报约束质量和双手实测评估)。
 
 剔除预算统一使用 `tag_maximum_cull_fraction`（默认 0.15，数量上限向上取整，0 关闭剔除）、`tag_minimum_retained_time_fraction`（默认 0.8）和剩余最少帧数。建图尺度、场景单手/共享图及独立图共用规则；一次求解至多一轮剔除，不能递归重置预算。场景单次覆盖路径是 `parameters.fusion.environment_tags.culling.maximum_fraction` / `minimum_retained_time_fraction`，两项是共享海报规则，也影响本次建图尺度估计。记录保留 `culling` 的阶段、预算、时间跨度及移除的原始观测索引/帧/ID/时刻；时刻沿用各求解器时钟。优化后仍有超过逐标签剔除门槛的观测、且无法在本轮预算内处理时，拒绝融合。
 
@@ -420,9 +420,9 @@ rear 旋转修正由共享因子实现：`tag_rear_rotation_refinement_enabled` 
 
 ### 建图海报尺度
 
-任务估计后端由 `collection.yaml.backend.mode` 选择。每个 take 可在 `tasks.<take>.backend` 覆盖个别字段。数值门槛的优先级由低到高为算法默认值、批次、任务和显式 `--expert-config`。后端顺序、字段与默认值见[估计后端说明](../docs/场景处理.md#选择轨迹估计后端)。
+任务估计后端由 `collection.yaml.backend.mode` 选择。每个 take 可在 `tasks.<take>.backend` 覆盖个别字段。数值门槛的优先级由低到高为算法默认值、批次、任务和显式 `--expert-config`。后端顺序、字段与默认值见[估计后端说明](../docs/03-场景处理.md#选择轨迹估计后端)。
 
-`parameters.poster_vio` 的 `initialization` 管理整板/标签子集假设上限；`keyframes` 管理时间、位移和旋转选帧，间隔为 0 时保留逐帧对照；`frontend` 管理活动点、轨迹预算、长度、几何筛选及有界重关联；`culling` 管理短求解迭代、热启动重求解轮数和累计剔除预算；`holdout` 管理标签/自然像素留出及验收 RMS。默认值见 `algorithms/scene_parameters.yaml`，完整覆盖示例及证据边界见[场景处理](../docs/场景处理.md#选择轨迹估计后端)。
+`parameters.poster_vio` 的 `initialization` 管理整板/标签子集假设上限；`keyframes` 管理时间、位移和旋转选帧，间隔为 0 时保留逐帧对照；`frontend` 管理活动点、轨迹预算、长度、几何筛选及有界重关联；`culling` 管理短求解迭代、热启动重求解轮数和累计剔除预算；`holdout` 管理标签/自然像素留出及验收 RMS。默认值见 `algorithms/scene_parameters.yaml`，完整覆盖示例及证据边界见[场景处理](../docs/03-场景处理.md#选择轨迹估计后端)。
 
 `environment_poster.mapping.scale_correction.enabled: true` 开启建图阶段的标签尺度诊断和尺度融合，同时需要开启 `environment_poster.mapping.enabled` 和环境标签检测，并要求建图设备可解析正式 rear 参数或工厂兜底。修正后固定新尺度重求重力与零偏，并复核整图惯性残差；地图形状保持原值。
 

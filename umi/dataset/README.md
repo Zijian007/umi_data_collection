@@ -1,6 +1,6 @@
 # 训练中间包代码
 
-操作与字段见 [训练数据指南](../../docs/训练数据.md)。由 `./umi-scene export <路径> --format training --out <输出目录>` 调用，无独立启动程序。
+操作与字段见 [训练数据指南](../../docs/05-训练数据准备与导出.md)。由 `./umi-scene export <路径> --format training --out <输出目录>` 调用，无独立启动程序。
 
 | 文件 | 职责 |
 |---|---|

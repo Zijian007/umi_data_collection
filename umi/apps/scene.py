@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog='示例：\n  umi-scene run scenes/test_shelf/20261120_002\n'
                '  umi-scene run scenes/test_shelf/20261120_002 --dry-run\n'
                '  umi-scene run <批次>\n'
-               '参数帮助：umi-scene <子命令> --help；完整参数参考：docs/命令行参数.md；操作说明：docs/场景处理.md。')
+               '参数帮助：umi-scene <子命令> --help；完整参数参考：docs/命令行参数.md；操作说明：docs/03-场景处理.md。')
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('check', help='检查场景轨迹处理环境')
     build = commands.add_parser('build', help='按 collection.yaml 和批次 mapping/ 单独构建地图')
