@@ -6,6 +6,7 @@ fixes the gauge; published poses are transformed to the poster layout frame.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from typing import Any
 from collections.abc import Callable
 import threading
 import time
@@ -264,63 +265,151 @@ def _resolve_inputs(request, arms):
 def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_lambda=None,
                 maximum_iterations=None, progress: Callable[[str], None] | None = None):
     """Build one graph from the currently retained training observations."""
-    board_seed = validate_transform(board_seed)
-    graph, values = gtsam.NonlinearFactorGraph(), gtsam.Values()
-    board_key = gtsam.symbol('l', 0)
-    board_pose = gtsam.Pose3(board_seed)
-    values.insert(board_key, board_pose)
-    # This is a coordinate gauge, not measured geometric information.
-    graph.add(gtsam.NonlinearEqualityPose3(board_key, board_pose))
-    keys_by_arm = {}
     full_arms = arms
-    arms = tuple(graph_input(item, graph_nodes[item.arm]) for item in arms)
-    for arm_index, item in enumerate(arms):
-        keys = InertialGraphKeys(arm_index * 1_000_000)
-        keys_by_arm[item.arm] = keys
-        positions = item.seed_poses[:, :3, 3]
-        velocities = (np.gradient(positions, item.times_s, axis=0)
-                      if item.seed_velocities is None else item.seed_velocities)
-        arm_graph, arm_values = build_inertial_graph(
-            item.times_s, item.imu, Rotation.from_matrix(item.seed_poses[:, :3, :3]), positions,
-            velocities, item.fusion_parameters, pose_key_fn=keys.pose,
-            velocity_key_fn=keys.velocity, bias_key_fn=keys.bias,
-            gravity_m_s2=item.gravity_m_s2, initial_acc_bias=item.initial_acc_bias,
-            initial_gyro_bias=item.initial_gyro_bias)
-        graph.push_back(arm_graph)
-        values.insert(arm_values)
-        # Quiet IMU measurements also occur during constant-velocity motion.
-        # VIO has no independently confirmed stationary intervals yet.
-        # VIO's first version fixes measured extrinsics for both pixel factor types.
-        fixed_parameters = replace(item.parameters, tag_rear_rotation_refinement_enabled=False)
-        factors.add_tag_factors(
-            graph, pose_key=keys.pose, board_key=board_key, rear_key=None,
-            base_ext=item.T_cam_imu, model=item.camera_model, points=item.board_points_m,
-            pixels=item.pixels, tag_indices=item.tag_indices, parameters=fixed_parameters)
-        barrier_points = (item.board_points_m if item.depth_barrier_points_m is None
-                          else item.depth_barrier_points_m)
-        barrier_indices = (item.tag_indices if item.depth_barrier_indices is None
-                           else item.depth_barrier_indices)
-        if len(barrier_points):
-            factors.add_tag_depth_barrier_factors(
-                graph, pose_key=keys.pose, board_key=board_key, base_ext=item.T_cam_imu,
-                points=barrier_points, tag_indices=barrier_indices)
-        _add_holdout_pose_priors(graph, keys, item)
-        for camera_name in ('rear', 'front'):
-            tracks = tuple(track for track in item.natural_tracks if track.get('camera', 'rear') == camera_name)
-            if not tracks:
-                continue
-            camera = natural_camera(item, camera_name)
-            factors.add_natural_track_factors(
-                graph, values, pose_key_fn=keys.pose,
-                point_key_fn=lambda track_id, arm_index=arm_index, camera_name=camera_name:
-                    _point_key(arm_index, camera_name, track_id),
-                T_camera_imu=camera.T_cam_imu, model=camera.model, tracks=tracks)
+    graph = _JointGraph.build(request, arms, board_seed, graph_nodes)
+    solver = _lm_parameters(graph, warm=warm, initial_lambda=initial_lambda,
+                            maximum_iterations=maximum_iterations)
+    initial_error = float(graph.graph.error(graph.values))
+    if not np.isfinite(initial_error):
+        raise ValueError('poster_vio 初始图残差非有限')
+    optimized, optimizer = _optimize(graph.graph, graph.values, solver, progress)
+    final_error = float(graph.graph.error(optimized))
+    board_pose = optimized.atPose3(graph.board_key).matrix()
 
-    base_tag_keys, base_records = base_tags.add_graph(
-        request, arms, graph, values, keys_by_arm, natural_camera)
+    trajectories, evidence, counts, support_fraction, rms_values = {}, {}, {}, {}, []
+    base_evidence, base_rejected = base_tags.evaluate(full_arms, graph.base_tag_keys, graph.base_records, optimized)
+    rejected = base_rejected or not np.isfinite(final_error) or final_error > initial_error + 1e-5
+    for record in base_evidence.values():
+        for kind in ('self', 'cross'):
+            if record[kind]['rms_px'] is not None:
+                rms_values.append(record[kind]['rms_px'])
+    for arm_index, item in enumerate(full_arms):
+        poses, _, biases, recovery = recover_states(item, graph_nodes[item.arm], optimized,
+                                                    graph.keys_by_arm[item.arm])
+        if not np.isfinite(poses).all():
+            raise ValueError('poster_vio 优化后位姿非有限')
+        prediction, camera_points = project_observations(
+            board_pose, poses[item.tag_indices] @ np.linalg.inv(item.T_cam_imu),
+            item.board_points_m, item.camera_model)
+        metrics = residual_metrics(prediction, item.pixels)
+        tag_depth_diagnostics = _tag_depth_diagnostics(item, camera_points[:, :, 2])
+        rejected |= tag_depth_diagnostics['invalid_depth_observations'] > 0
+        rms_values.append(metrics['rms_px'])
+        rejected |= metrics['rms_px'] > item.parameters.tag_maximum_reprojection_rms_px
+        support = position_support_metrics(
+            poses[item.tag_indices], board_pose, item.T_cam_imu, item.board_points_m,
+            item.pixels, item.camera_model, item.times_s[item.tag_indices], item.parameters)
+        natural = _natural_evidence(item, arm_index, poses, optimized)
+        rms_values.extend(natural.camera_rms_values)
+        rejected |= natural.rejected
+        max_acc_bias = max(float(np.linalg.norm(bias.accelerometer())) for bias in biases)
+        rejected |= max_acc_bias > item.fusion_parameters.maximum_acc_bias_m_s2
+        support_fraction[item.arm] = support['supported_frames'] / len(support['frames'])
+        counts[item.arm] = len(item.pixels) + natural.observations
+        trajectories[item.arm] = np.linalg.inv(board_pose) @ poses
+        gravity = (np.array([0., 0., -item.fusion_parameters.gravity_m_s2])
+                   if item.gravity_m_s2 is None else item.gravity_m_s2)
+        evidence[item.arm] = dict(
+            keyframes=recovery, warm_started=warm is not None, optimizer_iterations=optimizer.iterations(),
+            initial_error=initial_error, final_error=final_error, factor_count=graph.graph.size(),
+            tag_metrics=metrics, natural_reprojection_rms_px=natural.rms_px,
+            tag_depth=tag_depth_diagnostics,
+            tag_observation_rms_px=np.sqrt(np.mean(np.sum((prediction - item.pixels) ** 2, axis=-1), axis=-1)).tolist(),
+            natural_residuals=natural.residuals,
+            natural_tracks=len(item.natural_tracks), natural_observations=natural.observations,
+            natural_by_camera=natural.by_camera,
+            natural_support_imu_times_s=item.times_s[natural.supported_nodes].tolist(),
+            position_support=support, maximum_acc_bias_m_s2=max_acc_bias,
+            observation_imu_times_s=np.unique(item.times_s[item.tag_indices]).tolist(),
+            gravity_output_m_s2=(board_pose[:3, :3].T @ gravity).tolist(),
+            extrinsics_fixed=True, base_tag_extrinsics_optimized=item.arm in graph.base_tag_keys,
+            actual_error='not_measured', base_tag=base_evidence[item.arm])
 
+    quality = PosterVioQuality('rejected' if rejected else 'solved', counts,
+                               float(max(rms_values)), support_fraction)
+    result = PosterVioResult(trajectories, quality, arm_evidence=evidence)
+    validate_result(result, request.arms)
+    return result, optimized, optimizer.lambda_()
+
+
+@dataclass
+class _JointGraph:
+    """海报位姿（规范固定）+ 各手惯性链、标签因子、深度屏障、留出先验、自然点与基座标签。"""
+
+    graph: Any
+    values: Any
+    board_key: int
+    keys_by_arm: dict[str, InertialGraphKeys]
+    arms: tuple  # graph-node views of the arms
+    base_tag_keys: dict
+    base_records: Any
+
+    @classmethod
+    def build(cls, request, arms, board_seed, graph_nodes) -> '_JointGraph':
+        board_seed = validate_transform(board_seed)
+        graph, values = gtsam.NonlinearFactorGraph(), gtsam.Values()
+        board_key = gtsam.symbol('l', 0)
+        board_pose = gtsam.Pose3(board_seed)
+        values.insert(board_key, board_pose)
+        # This is a coordinate gauge, not measured geometric information.
+        graph.add(gtsam.NonlinearEqualityPose3(board_key, board_pose))
+        keys_by_arm = {}
+        arms = tuple(graph_input(item, graph_nodes[item.arm]) for item in arms)
+        for arm_index, item in enumerate(arms):
+            keys = InertialGraphKeys(arm_index * 1_000_000)
+            keys_by_arm[item.arm] = keys
+            _add_arm(graph, values, item, arm_index, keys, board_key)
+        base_tag_keys, base_records = base_tags.add_graph(
+            request, arms, graph, values, keys_by_arm, natural_camera)
+        return cls(graph, values, board_key, keys_by_arm, arms, base_tag_keys, base_records)
+
+
+def _add_arm(graph, values, item, arm_index: int, keys: InertialGraphKeys, board_key) -> None:
+    positions = item.seed_poses[:, :3, 3]
+    velocities = (np.gradient(positions, item.times_s, axis=0)
+                  if item.seed_velocities is None else item.seed_velocities)
+    arm_graph, arm_values = build_inertial_graph(
+        item.times_s, item.imu, Rotation.from_matrix(item.seed_poses[:, :3, :3]), positions,
+        velocities, item.fusion_parameters, pose_key_fn=keys.pose,
+        velocity_key_fn=keys.velocity, bias_key_fn=keys.bias,
+        gravity_m_s2=item.gravity_m_s2, initial_acc_bias=item.initial_acc_bias,
+        initial_gyro_bias=item.initial_gyro_bias)
+    graph.push_back(arm_graph)
+    values.insert(arm_values)
+    # Quiet IMU measurements also occur during constant-velocity motion.
+    # VIO has no independently confirmed stationary intervals yet.
+    # VIO's first version fixes measured extrinsics for both pixel factor types.
+    fixed_parameters = replace(item.parameters, tag_rear_rotation_refinement_enabled=False)
+    factors.add_tag_factors(
+        graph, pose_key=keys.pose, board_key=board_key, rear_key=None,
+        base_ext=item.T_cam_imu, model=item.camera_model, points=item.board_points_m,
+        pixels=item.pixels, tag_indices=item.tag_indices, parameters=fixed_parameters)
+    barrier_points = (item.board_points_m if item.depth_barrier_points_m is None
+                      else item.depth_barrier_points_m)
+    barrier_indices = (item.tag_indices if item.depth_barrier_indices is None
+                       else item.depth_barrier_indices)
+    if len(barrier_points):
+        factors.add_tag_depth_barrier_factors(
+            graph, pose_key=keys.pose, board_key=board_key, base_ext=item.T_cam_imu,
+            points=barrier_points, tag_indices=barrier_indices)
+    _add_holdout_pose_priors(graph, keys, item)
+    for camera_name in ('rear', 'front'):
+        tracks = tuple(track for track in item.natural_tracks if track.get('camera', 'rear') == camera_name)
+        if not tracks:
+            continue
+        camera = natural_camera(item, camera_name)
+        factors.add_natural_track_factors(
+            graph, values, pose_key_fn=keys.pose,
+            point_key_fn=lambda track_id, arm_index=arm_index, camera_name=camera_name:
+                _point_key(arm_index, camera_name, track_id),
+            T_camera_imu=camera.T_cam_imu, model=camera.model, tracks=tracks)
+
+
+def _lm_parameters(joint: _JointGraph, *, warm, initial_lambda, maximum_iterations):
+    """LM 设置、热启动初值（就地写入 values）与保持稀疏的消元顺序。"""
+    values = joint.values
     solver = gtsam.LevenbergMarquardtParams()
-    solver.setMaxIterations(maximum_iterations or arms[0].fusion_parameters.lm_iterations)
+    solver.setMaxIterations(maximum_iterations or joint.arms[0].fusion_parameters.lm_iterations)
     # Match specialist's accepted-step stopping rule. Once the joint graph
     # improves by less than this fraction, further native LM iterations add
     # cost without changing the accepted state materially.
@@ -340,8 +429,8 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
             ordering.push_back(key)
     # Preserve temporal locality after landmark elimination. Sorting all B then
     # all V then all X can create a dense state clique through the IMU chain.
-    for item in arms:
-        keys = keys_by_arm[item.arm]
+    for item in joint.arms:
+        keys = joint.keys_by_arm[item.arm]
         for index in range(len(item.times_s)):
             for key in (keys.pose(index), keys.velocity(index), keys.bias(index)):
                 ordering.push_back(key)
@@ -349,13 +438,15 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
     # stay in the separator until the moving states have been eliminated.  If
     # eliminated before them, sparse elimination creates a global clique over
     # both arms and makes each LM iteration needlessly dense.
-    ordering.push_back(board_key)
-    for key in base_tag_keys.values():
+    ordering.push_back(joint.board_key)
+    for key in joint.base_tag_keys.values():
         ordering.push_back(key)
     solver.setOrdering(ordering)
-    initial_error = float(graph.error(values))
-    if not np.isfinite(initial_error):
-        raise ValueError('poster_vio 初始图残差非有限')
+    return solver
+
+
+def _optimize(graph, values, solver, progress: Callable[[str], None] | None):
+    """运行 LM；每次迭代和每 15 秒心跳汇报进度，使长时间的原生调用可观察。"""
     iteration_started = time.monotonic()
 
     def iteration_hook(iteration, error_before, error_after):
@@ -387,125 +478,93 @@ def _solve_once(request, arms, board_seed, *, graph_nodes, warm=None, initial_la
         heartbeat_stop.set()
         if heartbeat is not None:
             heartbeat.join(timeout=1.0)
-    final_error = float(graph.error(optimized))
-    board_pose = optimized.atPose3(board_key).matrix()
-    trajectories, evidence, counts, support_fraction, rms_values = {}, {}, {}, {}, []
-    base_evidence, base_rejected = base_tags.evaluate(full_arms, base_tag_keys, base_records, optimized)
-    rejected = base_rejected or not np.isfinite(final_error) or final_error > initial_error + 1e-5
-    for record in base_evidence.values():
-        for kind in ('self', 'cross'):
-            if record[kind]['rms_px'] is not None:
-                rms_values.append(record[kind]['rms_px'])
-    for arm_index, item in enumerate(full_arms):
-        keys = keys_by_arm[item.arm]
-        poses, velocities, biases, recovery = recover_states(item, graph_nodes[item.arm], optimized, keys)
-        if not np.isfinite(poses).all():
-            raise ValueError('poster_vio 优化后位姿非有限')
-        prediction, camera_points = project_observations(
-            board_pose, poses[item.tag_indices] @ np.linalg.inv(item.T_cam_imu),
-            item.board_points_m, item.camera_model)
-        metrics = residual_metrics(prediction, item.pixels)
-        tag_depths = camera_points[:, :, 2]
-        invalid_tag_depths = tag_depths <= 0
-        tag_depth_diagnostics = dict(
-            threshold_m=0.0,
-            invalid_depth_observations=int(np.count_nonzero(invalid_tag_depths)),
-            min_m=float(np.min(tag_depths)), p01_m=float(np.percentile(tag_depths, 1)),
-            median_m=float(np.median(tag_depths)), max_m=float(np.max(tag_depths)),
-            positive_fraction=float(np.mean(tag_depths > 0)),
-            invalid_details=[dict(observation=int(row), node=int(item.tag_indices[row]),
-                imu_time_s=float(item.times_s[item.tag_indices[row]]),
-                invalid_corner_indices=np.flatnonzero(invalid_tag_depths[row]).astype(int).tolist(),
-                depths_m=np.asarray(tag_depths[row], dtype=float).tolist())
-                for row in np.flatnonzero(np.any(invalid_tag_depths, axis=1))])
-        rejected |= tag_depth_diagnostics['invalid_depth_observations'] > 0
-        rms_values.append(metrics['rms_px'])
-        rejected |= metrics['rms_px'] > item.parameters.tag_maximum_reprojection_rms_px
-        support = position_support_metrics(
-            poses[item.tag_indices], board_pose, item.T_cam_imu, item.board_points_m,
-            item.pixels, item.camera_model, item.times_s[item.tag_indices], item.parameters)
-        natural_errors = []
-        per_camera = {name: dict(errors=[], nodes=[], tracks=0, invalid_depth_observations=0)
-                      for name in ('front', 'rear')}
-        natural_residuals = []
-        for track in item.natural_tracks:
-            camera_name = track.get('camera', 'rear')
-            camera = natural_camera(item, camera_name)
-            camera_evidence = per_camera[camera_name]
-            camera_evidence['tracks'] += 1
-            track_errors, invalid_projections = [], []
-            point = np.asarray(optimized.atPoint3(_point_key(arm_index, camera_name, track['track_id'])))
-            for node, observed in zip(track['node_indices'], track['pixels']):
-                body = poses[int(node)]
-                in_body = body[:3, :3].T @ (point - body[:3, 3])
-                in_camera = camera.T_cam_imu[:3, :3] @ in_body + camera.T_cam_imu[:3, 3]
-                in_front = np.isfinite(in_camera).all() and in_camera[2] > _MIN_NATURAL_DEPTH_M
-                error = float('nan')
-                if in_front:
-                    error = float(np.linalg.norm(camera.model.project(in_camera[None])[0] - observed))
-                invalid = not np.isfinite(error)
-                if invalid:
-                    camera_evidence['invalid_depth_observations'] += 1
-                    error = _INVALID_NATURAL_RESIDUAL_PX
-                natural_errors.append(error)
-                track_errors.append(error)
-                invalid_projections.append(invalid)
-                camera_evidence['errors'].append(error)
-                if error <= item.parameters.tag_maximum_reprojection_rms_px:
-                    camera_evidence['nodes'].append(int(node))
-            natural_residuals.append(dict(key=list(refinement.track_key(track)), errors_px=track_errors,
-                                          invalid_projections=invalid_projections))
-        finite_natural_errors = [error for error in natural_errors
-                                 if np.isfinite(error) and error < _INVALID_NATURAL_RESIDUAL_PX]
-        natural_rms = (float(np.sqrt(np.mean(np.square(finite_natural_errors))))
-                       if finite_natural_errors else None)
-        by_camera, supported_nodes = {}, []
-        for camera_name, camera_evidence in per_camera.items():
-            errors = camera_evidence['errors']
-            finite_errors = [error for error in errors
-                             if np.isfinite(error) and error < _INVALID_NATURAL_RESIDUAL_PX]
-            rms = (float(np.sqrt(np.mean(np.square(finite_errors))))
-                   if finite_errors else None)
-            if rms is not None:
-                rms_values.append(rms)
-                rejected |= rms > item.parameters.tag_maximum_reprojection_rms_px
-            rejected |= camera_evidence['invalid_depth_observations'] > 0
-            # Require three landmarks in one camera, without mixing lens pixels.
-            unique, node_counts = np.unique(camera_evidence['nodes'], return_counts=True)
-            nodes = unique[node_counts >= 3].astype(int)
-            supported_nodes.extend(nodes.tolist())
-            by_camera[camera_name] = dict(tracks=camera_evidence['tracks'], observations=len(errors),
-                invalid_depth_observations=camera_evidence['invalid_depth_observations'],
-                reprojection_rms_px=rms, support_imu_times_s=item.times_s[nodes].tolist())
-        max_acc_bias = max(float(np.linalg.norm(bias.accelerometer())) for bias in biases)
-        rejected |= max_acc_bias > item.fusion_parameters.maximum_acc_bias_m_s2
-        natural_nodes = np.unique(supported_nodes).astype(int)
-        support_fraction[item.arm] = support['supported_frames'] / len(support['frames'])
-        counts[item.arm] = len(item.pixels) + len(natural_errors)
-        trajectories[item.arm] = np.linalg.inv(board_pose) @ poses
-        gravity = (np.array([0., 0., -item.fusion_parameters.gravity_m_s2])
-                   if item.gravity_m_s2 is None else item.gravity_m_s2)
-        evidence[item.arm] = dict(
-            keyframes=recovery, warm_started=warm is not None, optimizer_iterations=optimizer.iterations(),
-            initial_error=initial_error, final_error=final_error, factor_count=graph.size(),
-            tag_metrics=metrics, natural_reprojection_rms_px=natural_rms,
-            tag_depth=tag_depth_diagnostics,
-            tag_observation_rms_px=np.sqrt(np.mean(np.sum((prediction - item.pixels) ** 2, axis=-1), axis=-1)).tolist(),
-            natural_residuals=natural_residuals,
-            natural_tracks=len(item.natural_tracks), natural_observations=len(natural_errors),
-            natural_by_camera=by_camera,
-            natural_support_imu_times_s=item.times_s[natural_nodes].tolist(),
-            position_support=support, maximum_acc_bias_m_s2=max_acc_bias,
-            observation_imu_times_s=np.unique(item.times_s[item.tag_indices]).tolist(),
-            gravity_output_m_s2=(board_pose[:3, :3].T @ gravity).tolist(),
-            extrinsics_fixed=True, base_tag_extrinsics_optimized=item.arm in base_tag_keys,
-            actual_error='not_measured', base_tag=base_evidence[item.arm])
+    return optimized, optimizer
 
-    quality = PosterVioQuality('rejected' if rejected else 'solved', counts,
-                               float(max(rms_values)), support_fraction)
-    result = PosterVioResult(trajectories, quality, arm_evidence=evidence)
-    validate_result(result, request.arms)
-    return result, optimized, optimizer.lambda_()
+
+def _tag_depth_diagnostics(item, tag_depths: np.ndarray) -> dict:
+    """标签角点在相机前方的深度分布；任何非正深度都使结果被拒绝。"""
+    invalid_tag_depths = tag_depths <= 0
+    return dict(
+        threshold_m=0.0,
+        invalid_depth_observations=int(np.count_nonzero(invalid_tag_depths)),
+        min_m=float(np.min(tag_depths)), p01_m=float(np.percentile(tag_depths, 1)),
+        median_m=float(np.median(tag_depths)), max_m=float(np.max(tag_depths)),
+        positive_fraction=float(np.mean(tag_depths > 0)),
+        invalid_details=[dict(observation=int(row), node=int(item.tag_indices[row]),
+            imu_time_s=float(item.times_s[item.tag_indices[row]]),
+            invalid_corner_indices=np.flatnonzero(invalid_tag_depths[row]).astype(int).tolist(),
+            depths_m=np.asarray(tag_depths[row], dtype=float).tolist())
+            for row in np.flatnonzero(np.any(invalid_tag_depths, axis=1))])
+
+
+@dataclass
+class _NaturalEvidence:
+    observations: int
+    rms_px: float | None
+    residuals: list
+    by_camera: dict
+    supported_nodes: np.ndarray
+    camera_rms_values: list
+    rejected: bool
+
+
+def _natural_evidence(item, arm_index: int, poses, optimized) -> _NaturalEvidence:
+    """自然点重投影：逐观测残差、各镜头 RMS 与位置支持节点（同一镜头至少三个地标）。"""
+    natural_errors = []
+    per_camera = {name: dict(errors=[], nodes=[], tracks=0, invalid_depth_observations=0)
+                  for name in ('front', 'rear')}
+    natural_residuals = []
+    for track in item.natural_tracks:
+        camera_name = track.get('camera', 'rear')
+        camera = natural_camera(item, camera_name)
+        camera_evidence = per_camera[camera_name]
+        camera_evidence['tracks'] += 1
+        track_errors, invalid_projections = [], []
+        point = np.asarray(optimized.atPoint3(_point_key(arm_index, camera_name, track['track_id'])))
+        for node, observed in zip(track['node_indices'], track['pixels']):
+            body = poses[int(node)]
+            in_body = body[:3, :3].T @ (point - body[:3, 3])
+            in_camera = camera.T_cam_imu[:3, :3] @ in_body + camera.T_cam_imu[:3, 3]
+            in_front = np.isfinite(in_camera).all() and in_camera[2] > _MIN_NATURAL_DEPTH_M
+            error = float('nan')
+            if in_front:
+                error = float(np.linalg.norm(camera.model.project(in_camera[None])[0] - observed))
+            invalid = not np.isfinite(error)
+            if invalid:
+                camera_evidence['invalid_depth_observations'] += 1
+                error = _INVALID_NATURAL_RESIDUAL_PX
+            natural_errors.append(error)
+            track_errors.append(error)
+            invalid_projections.append(invalid)
+            camera_evidence['errors'].append(error)
+            if error <= item.parameters.tag_maximum_reprojection_rms_px:
+                camera_evidence['nodes'].append(int(node))
+        natural_residuals.append(dict(key=list(refinement.track_key(track)), errors_px=track_errors,
+                                      invalid_projections=invalid_projections))
+    finite_natural_errors = [error for error in natural_errors
+                             if np.isfinite(error) and error < _INVALID_NATURAL_RESIDUAL_PX]
+    natural_rms = (float(np.sqrt(np.mean(np.square(finite_natural_errors))))
+                   if finite_natural_errors else None)
+    by_camera, supported_nodes, camera_rms_values, rejected = {}, [], [], False
+    for camera_name, camera_evidence in per_camera.items():
+        errors = camera_evidence['errors']
+        finite_errors = [error for error in errors
+                         if np.isfinite(error) and error < _INVALID_NATURAL_RESIDUAL_PX]
+        rms = (float(np.sqrt(np.mean(np.square(finite_errors))))
+               if finite_errors else None)
+        if rms is not None:
+            camera_rms_values.append(rms)
+            rejected |= rms > item.parameters.tag_maximum_reprojection_rms_px
+        rejected |= camera_evidence['invalid_depth_observations'] > 0
+        # Require three landmarks in one camera, without mixing lens pixels.
+        unique, node_counts = np.unique(camera_evidence['nodes'], return_counts=True)
+        nodes = unique[node_counts >= 3].astype(int)
+        supported_nodes.extend(nodes.tolist())
+        by_camera[camera_name] = dict(tracks=camera_evidence['tracks'], observations=len(errors),
+            invalid_depth_observations=camera_evidence['invalid_depth_observations'],
+            reprojection_rms_px=rms, support_imu_times_s=item.times_s[nodes].tolist())
+    return _NaturalEvidence(len(natural_errors), natural_rms, natural_residuals, by_camera,
+                            np.unique(supported_nodes).astype(int), camera_rms_values, bool(rejected))
 
 
 def solve_joint_poster_imu(request: PosterVioProblem, arms: tuple[ArmSolveInput, ...],
