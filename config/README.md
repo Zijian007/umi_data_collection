@@ -62,7 +62,7 @@ viewer:
 
 ## 运行与查看器默认值
 
-以下配置由 `software/configuration/operational_settings.py` 读取。项目默认值只在 YAML 中定义；机器配置写到同目录的 `*.local.yaml`，不提交 Git。文件不存在就使用项目默认值；修改后重启程序生效。未知字段、错误类型、负数预算、重复键会在启动时报错。
+以下配置由 `umi/config/operational_settings.py` 读取。项目默认值只在 YAML 中定义；机器配置写到同目录的 `*.local.yaml`，不提交 Git。文件不存在就使用项目默认值；修改后重启程序生效。未知字段、错误类型、负数预算、重复键会在启动时报错。
 
 | 配置 | 主要参数与初始值 | 是否影响结果缓存 |
 |---|---|---|
@@ -96,7 +96,7 @@ map_max_points: 20000
 
 ## 算法参数归属
 
-标定和单段轨迹抽取共用 [software/configuration/loader.py](../software/configuration/loader.py) 加载配置。场景流程由 `software/scene/management/inputs/scene.py` 加载场景参数，并复用轨迹配置。数值默认值集中在下面的 YAML 中。
+标定和单段轨迹抽取共用 [umi/config/loader.py](../umi/config/loader.py) 加载配置。场景流程由 `umi/workflows/scene/inputs/scene.py` 加载场景参数，并复用轨迹配置。数值默认值集中在下面的 YAML 中。
 
 ### 双手音频同步
 
@@ -118,7 +118,7 @@ map_max_points: 20000
 | 相机内参、实测相机–IMU 参数与时间差 | `registry/` 中的版本化相机标定；含实测/工厂内参来源 | 按序列号及套件的前后镜头来源选择当前参数，通过验收后统一执行 `install` |
 | TCP、宽度、遮手图 | 套件引用的测量文件；未自定义遮手图时用 `hardware/grippers/masks/front_hand_mask.png` | 按 `kit.yaml` 选择，更新后重新运行 |
 | 输入/输出路径、CPU、并行数、保留中间文件 | 命令行请求 | 只影响执行方式，不写入算法配置 |
-| 原片规格、标定区域、像素变换与派生帧率规则 | `software/camera/x3/frame.py` | 相机图像规格；在结果中记录 |
+| 原片规格、标定区域、像素变换与派生帧率规则 | `umi/core/frame.py` | 相机图像规格；在结果中记录 |
 
 `config/algorithms/scene_parameters.yaml` 保存算法默认参数；批次 `collection.yaml` 的 `map` 保存地图布局/参考手/选择规则，`environment_poster` 保存标签布局和用途开关，`scene` 保存描述；一次专家实验的算法覆盖写入 `--expert-config` 指定的文件。建图原片位于各批次 `mapping/`，设备与地图快照保存在该批次 `.pipeline/manifest.yaml`。
 
@@ -376,13 +376,13 @@ Basalt/ORB/OpenCV/GTSAM 内部尚未暴露的参数，通过当前引擎内容/�
 
 标定配置的 `factory` 负责工厂来源的转换和独立 A 验证：转换 RMS/P99 与原片射线一致性属于候选生成约束；`minimum_holdout_frames`、`holdout_warn_rms_px` 属于可通过 `umi-calib recheck` 重新判定的 A 证据/提醒规则。后两项不会改变已生成的参数，缺 A 证据不能安装。
 
-算法参数类型位于 [`software/configuration/parameter_models.py`](../software/configuration/parameter_models.py)；覆盖合并、校验和快照由 [`software/configuration/loader.py`](../software/configuration/loader.py) 管理。规范 JSON、文件、源代码及引擎身份统一由 [`software/infrastructure/provenance.py`](../software/infrastructure/provenance.py) 计算，修改结构时保留序列化字段和单位。
+算法参数类型位于 [`umi/config/parameter_models.py`](../umi/config/parameter_models.py)；覆盖合并、校验和快照由 [`umi/config/loader.py`](../umi/config/loader.py) 管理。规范 JSON、文件、源代码及引擎身份统一由 [`umi/infra/provenance.py`](../umi/infra/provenance.py) 计算，修改结构时保留序列化字段和单位。
 
 ## 维护布局的约定
 
 新增参数放在实际消费它的流程小节，注释说明作用、单位、特殊值和调大/调小的影响；共享参数注明哪些模式使用、哪些模式另有配置。多个字段共同作用时，在相邻位置说明关系，避免让读者只凭字段名猜测。
 
-分区使用注释，不为展示分组新增 YAML 层级。修改字段路径需要同时考虑类型模型、覆盖文件、校验、结果快照和内容指纹；纯粹调整顺序与注释则应保持解析后的字段、类型、数值以及配置指纹不变。场景参数的类型与校验分别位于 `software/scene/models.py` 和 `software/scene/parameter_schema.py`。
+分区使用注释，不为展示分组新增 YAML 层级。修改字段路径需要同时考虑类型模型、覆盖文件、校验、结果快照和内容指纹；纯粹调整顺序与注释则应保持解析后的字段、类型、数值以及配置指纹不变。场景参数的类型与校验分别位于 `umi/store/models.py` 和 `umi/workflows/scene/parameter_schema.py`。
 
 
 ### 环境海报参与任务融合

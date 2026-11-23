@@ -10,11 +10,11 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.trajectory.algorithms.fixed_map.parameters import MapPlacementParameters
-from software.configuration import loader as config
-from software.scene.management.inputs.scene import load_scene_parameters
-from software.scene import spatial as mapping
-from software.trajectory.algorithms.fixed_map import geometry
+from umi.estimation.fixed_map.parameters import MapPlacementParameters
+from umi.config import loader as config
+from umi.workflows.scene.inputs.scene import load_scene_parameters
+from umi.estimation import mapping
+from umi.estimation.fixed_map import geometry
 
 
 def recording():

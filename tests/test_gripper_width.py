@@ -1,8 +1,8 @@
-from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import scene as kit_inputs
-from software.infrastructure import provenance as artifact_identity
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene.inputs import scene as kit_inputs
+from umi.infra import provenance as artifact_identity
 """main 宽度算法的场景集成：标定冻结、原片检测、时钟、缺失值与训练导出。"""
-from software.scene.management import camera_assets
+from umi.workflows.scene import camera_assets
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
@@ -15,14 +15,12 @@ import av
 import cv2
 import numpy as np
 
-from software.camera import registry
-from software.gripper_width import calibration, series, width_estimation
-from software.gripper_width.detection import frames as detection
-from software.scene.management import batch_snapshot as batches
-from software.scene.management.inputs import (
-    batch as batch_inputs,
-)
-from software.infrastructure.file_store import write_json, write_yaml
+from umi.devices import registry
+from umi.perception.gripper import calibration, series, width_estimation
+from umi.perception.gripper.detection import frames as detection
+from umi.workflows.scene import batch_snapshot as batches
+from umi.workflows.scene.inputs import batch as batch_inputs
+from umi.infra.file_store import write_json, write_yaml
 import test_scene_management as registry_fixtures
 
 
@@ -236,7 +234,7 @@ class WidthKitTests(unittest.TestCase):
     def test_install_width_cli_is_removed(self):
         from contextlib import redirect_stderr
         import io
-        from software.calibration import cli
+        from umi.apps import calib as cli
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
             cli.build_parser().parse_args(['install-width', 'CAMERA_A', str(self.width),
                                           '--gripper', 'test', '--gripper-version', '001'])

@@ -8,14 +8,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from software.configuration import loader as config
-from software.calibration import cli as calibration_cli
-from software.scene import cli as scene_cli
-from software.scene.parameters import SceneOverrides, apply_overrides
-from software.scene.parameters import nested_snapshot
-from software.scene.management.inputs import batch as episode_inputs, scene as scene_inputs
-from software.infrastructure.file_store import write_yaml
-from software.viewer import server
+from umi.config import loader as config
+from umi.apps import calib as calibration_cli
+from umi.apps import scene as scene_cli
+from umi.workflows.scene.parameters import SceneOverrides, apply_overrides
+from umi.workflows.scene.parameters import nested_snapshot
+from umi.workflows.scene.inputs import batch as episode_inputs, scene as scene_inputs
+from umi.infra.file_store import write_yaml
+from umi.apps.viewer import server
 
 
 class EffectiveConfigurationTests(unittest.TestCase):
@@ -89,7 +89,7 @@ class EffectiveConfigurationTests(unittest.TestCase):
         self.assertEqual({path: path.read_bytes() for path in self.root.rglob('*') if path.is_file()}, before)
 
     def test_task_show_config_preserves_overrides_and_never_reads_recordings(self):
-        from software.scene.management import batch_snapshot as effective_config
+        from umi.workflows.scene import batch_snapshot as effective_config
         batch = self.root / 'batch'
         task = batch / 'take_001'
         task.mkdir(parents=True)
@@ -119,7 +119,7 @@ class EffectiveConfigurationTests(unittest.TestCase):
         self.assertEqual(before, {p: p.read_bytes() for p in batch.rglob('*') if p.is_file()})
 
     def test_viewer_user_origin_is_distinct_from_cli_origin(self):
-        from software.configuration import user_settings
+        from umi.config import user_settings
         path = self.root / 'user.yaml'
         write_yaml(path, dict(schema_version=2, viewer=dict(port=12345)))
         user = user_settings.load(path)

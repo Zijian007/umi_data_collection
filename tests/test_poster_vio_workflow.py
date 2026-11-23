@@ -12,11 +12,11 @@ import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.scene import layout
-from software.scene.models import TaskInputs
-from software.scene.pipeline.tasks import poster_vio, poster_vio as poster_vio_inputs
-from software.trajectory.algorithms.poster_vio import solve_joint_poster_imu
-from software.vision.poster import geometry, layout as tag_board
+from umi.store import layout
+from umi.store.models import TaskInputs
+from umi.workflows.scene.tasks import poster_vio, poster_vio as poster_vio_inputs
+from umi.estimation.poster_vio import solve_joint_poster_imu
+from umi.perception.poster import geometry, layout as tag_board
 
 
 class PosterVioWorkflowTests(unittest.TestCase):
@@ -272,10 +272,10 @@ class PosterVioWorkflowTests(unittest.TestCase):
 class PosterVioPublicationTests(unittest.TestCase):
     def test_no_map_workflow_publication_reuse_viewer_and_atomic_failure(self):
         from test_poster_independent import PosterIndependentWorkflowTests
-        from software.scene import workflow
-        from software.scene.pipeline.maps import repository as lifecycle
-        from software.scene.result_io import read_arm_summary
-        from software.viewer.resources import maps
+        from umi.workflows.scene import workflow
+        from umi.workflows.scene.maps import repository as lifecycle
+        from umi.store.result_io import read_arm_summary
+        from umi.apps.viewer.resources import maps
 
         boundary = PosterIndependentWorkflowTests('runTest')
         boundary.setUp()

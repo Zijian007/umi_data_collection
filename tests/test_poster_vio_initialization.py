@@ -5,10 +5,10 @@ import unittest
 
 import numpy as np
 
-from software.trajectory.algorithms.poster_vio.initialization import select_observations, seed_poses, robust_seed_poses
-from software.trajectory.algorithms.poster_vio.initialization import align_inertial, inertial_tail_seed, single_tag_geometry
-from software.trajectory.algorithms.poster_vio.frontend import triangulate_track
-from software.vision.poster.geometry import camera_model
+from umi.estimation.poster_vio.initialization import select_observations, seed_poses, robust_seed_poses
+from umi.estimation.poster_vio.initialization import align_inertial, inertial_tail_seed, single_tag_geometry
+from umi.estimation.poster_vio.frontend import triangulate_track
+from umi.perception.poster.geometry import camera_model
 
 
 class PosterVioInitializationTests(unittest.TestCase):
@@ -42,7 +42,7 @@ class PosterVioInitializationTests(unittest.TestCase):
     def test_each_frame_unprojects_once_with_or_without_the_shared_pnp_cache(self):
         from unittest.mock import patch
         from test_poster_fusion import fixture
-        from software.vision.poster.pnp import FrameCandidateCache, solve_frame_candidates
+        from umi.perception.poster.pnp import FrameCandidateCache, solve_frame_candidates
 
         _, _, _, _, extrinsics, _, parameters, detections, board, measured, _, _ = fixture()
         times, indices, _, points, pixels, _ = select_observations(detections, board, measured, parameters)
@@ -126,8 +126,8 @@ class PosterVioInitializationTests(unittest.TestCase):
         imu[:, 1:4] = gyro_bias
         imu[:, 4:7] = orientation.T @ (acceleration - gravity) + acc_bias
         times = np.array([0., 1., 1.02, 1.73, 3.])
-        from software.configuration import loader
-        from software.scene.management.inputs.scene import load_scene_parameters
+        from umi.config import loader
+        from umi.workflows.scene.inputs.scene import load_scene_parameters
         seed, velocities, evidence = inertial_tail_seed(np.array([0., 1.]), poses, speeds, times,
             imu, gravity, gyro_bias, acc_bias, parameters=load_scene_parameters(), fusion=loader.load('trajectory').values.fusion)
         self.assertEqual(evidence['method'], 'smoothed_endpoint_preintegration')
@@ -158,7 +158,7 @@ class PosterVioInitializationTests(unittest.TestCase):
 
     def test_inertial_alignment_recovers_gravity_in_a_strongly_tilted_poster_frame(self):
         from test_scene import motion
-        from software.configuration.loader import load
+        from umi.config.loader import load
         from scipy.spatial.transform import Rotation
 
         times, poses, imu = motion()
@@ -173,7 +173,7 @@ class PosterVioInitializationTests(unittest.TestCase):
         self.assertLess(evidence['acceleration_fit_rms_m_s2'], .02)
 
     def test_slow_rotation_is_not_mistaken_for_gyro_bias(self):
-        from software.configuration.loader import load
+        from umi.config.loader import load
         from scipy.spatial.transform import Rotation
 
         times = np.linspace(.1, 1.9, 15)
@@ -189,7 +189,7 @@ class PosterVioInitializationTests(unittest.TestCase):
         np.testing.assert_allclose(gravity, [0., 0., -9.81], atol=.005)
 
     def test_vio_quality_parameters_have_an_independent_expert_namespace(self):
-        from software.scene.management.inputs.scene import load_scene_parameters
+        from umi.workflows.scene.inputs.scene import load_scene_parameters
 
         values = load_scene_parameters(overrides=dict(
             poster_vio=dict(minimum_tag_frames=10, maximum_position_support_gap_s=.75),
@@ -202,8 +202,8 @@ class PosterVioInitializationTests(unittest.TestCase):
 
     def test_vio_frontend_refinement_and_holdout_settings_validate_and_snapshot(self):
         from dataclasses import asdict
-        from software.scene.management.inputs.scene import load_scene_parameters
-        from software.scene.parameters import nested_snapshot
+        from umi.workflows.scene.inputs.scene import load_scene_parameters
+        from umi.workflows.scene.parameters import nested_snapshot
 
         values = load_scene_parameters(overrides=dict(poster_vio=dict(
             frontend=dict(maximum_tracks=120, maximum_track_length=20),
@@ -222,8 +222,8 @@ class PosterVioInitializationTests(unittest.TestCase):
 
     def test_specialist_inspired_options_validate_in_expert_namespace(self):
         from dataclasses import asdict
-        from software.scene.management.inputs.scene import load_scene_parameters
-        from software.scene.parameters import nested_snapshot
+        from umi.workflows.scene.inputs.scene import load_scene_parameters
+        from umi.workflows.scene.parameters import nested_snapshot
 
         values = load_scene_parameters(overrides=dict(poster_vio=dict(keyframes=dict(maximum_dt_s=0.),
             frontend=dict(revisit=dict(enabled=False)), holdout=dict(natural_stride=0))))

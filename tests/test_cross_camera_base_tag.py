@@ -6,11 +6,11 @@ import unittest
 import gtsam
 import numpy as np
 
-from software.camera.x3.factory_geometry import Kb4Model
-from software.scene.management.inputs.scene import gripper_paths
-from software.trajectory.algorithms.poster_vio import base_tags, refinement, solve_joint_poster_imu
-from software.trajectory.algorithms.poster_vio.models import validate_problem
-from software.vision.poster import factors
+from umi.devices.x3.factory_geometry import Kb4Model
+from umi.workflows.scene.inputs.scene import gripper_paths
+from umi.estimation.poster_vio import base_tags, refinement, solve_joint_poster_imu
+from umi.estimation.poster_vio.models import validate_problem
+from umi.estimation.factors import poster as factors
 
 
 class CrossCameraBaseTagTests(unittest.TestCase):
@@ -86,7 +86,7 @@ class CrossCameraBaseTagTests(unittest.TestCase):
 class BaseTagWorkflowTests(unittest.TestCase):
     def prepared(self):
         from test_poster_vio_workflow import PosterVioWorkflowTests
-        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
+        from umi.workflows.scene.tasks import poster_vio as poster_vio_inputs
         helper = PosterVioWorkflowTests('runTest')
         helper.setUp()
         self.addCleanup(helper.doCleanups)
@@ -203,8 +203,8 @@ class BaseTagWorkflowTests(unittest.TestCase):
 
     def production_fixture(self, *, pairs=(), self_frames=None, single=False, outside_only=False):
         from test_poster_vio_workflow import PosterVioWorkflowTests
-        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
-        from software.vision.poster import geometry
+        from umi.workflows.scene.tasks import poster_vio as poster_vio_inputs
+        from umi.perception.poster import geometry
         helper = PosterVioWorkflowTests('runTest')
         helper.setUp()
         self.addCleanup(helper.doCleanups)
@@ -255,7 +255,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
     def test_production_preparation_freezes_working_lens_pixels_and_mounts(self):
         from pathlib import Path
         from unittest.mock import patch
-        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
+        from umi.workflows.scene.tasks import poster_vio as poster_vio_inputs
         helper, mounts, detect = self.production_fixture(pairs=(('left', 'right'), ('right', 'left')))
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect):
             request, arms, _ = poster_vio_inputs.prepare_task_inputs(helper.inputs)
@@ -272,7 +272,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
 
     def test_single_hand_skips_base_detection_and_fitting_with_declared_tag(self):
         from unittest.mock import patch
-        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
+        from umi.workflows.scene.tasks import poster_vio as poster_vio_inputs
         helper, _, detect = self.production_fixture(single=True)
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect) as detector, \
                 patch.object(poster_vio_inputs, 'estimate_static_tag_extrinsic') as fit:
@@ -289,7 +289,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
 
     def test_self_only_sparse_observations_do_not_fit_or_reject_trajectories(self):
         from unittest.mock import patch
-        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
+        from umi.workflows.scene.tasks import poster_vio as poster_vio_inputs
         helper, _, detect = self.production_fixture(self_frames={'left': 1, 'right': 1})
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
                 patch.object(poster_vio_inputs, 'estimate_static_tag_extrinsic') as fit:
@@ -306,7 +306,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
 
     def test_one_way_cross_sighting_only_fits_owner_mount(self):
         from unittest.mock import patch
-        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
+        from umi.workflows.scene.tasks import poster_vio as poster_vio_inputs
         helper, mounts, detect = self.production_fixture(pairs=(('left', 'right'),), self_frames={'left': 1})
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
                 patch.object(poster_vio_inputs, 'estimate_static_tag_extrinsic',
@@ -324,7 +324,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
 
     def test_cross_sighting_outside_overlap_does_not_require_mount(self):
         from unittest.mock import patch
-        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
+        from umi.workflows.scene.tasks import poster_vio as poster_vio_inputs
         helper, _, detect = self.production_fixture(pairs=(('left', 'right'),), outside_only=True,
                                                    self_frames={'left': 1, 'right': 1})
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
@@ -339,7 +339,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
 
     def test_required_owner_still_needs_sufficient_self_observations(self):
         from unittest.mock import patch
-        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
+        from umi.workflows.scene.tasks import poster_vio as poster_vio_inputs
         helper, _, detect = self.production_fixture(pairs=(('left', 'right'),), self_frames={'right': 1})
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
                 self.assertRaisesRegex(ValueError, 'right.*自身观测'):
@@ -364,7 +364,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
 class BaseTagDetectionTests(unittest.TestCase):
     def test_front_detector_reads_working_half_and_never_reads_environment_half(self):
         import cv2
-        from software.vision.poster.detection import DetectionSettings, PosterDetection
+        from umi.perception.poster.detection import DetectionSettings, PosterDetection
         image = np.full((1920, 3840), 255, np.uint8)
         dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_100)
         image[700:900, 700:900] = cv2.aruco.generateImageMarker(dictionary, 2, 200)

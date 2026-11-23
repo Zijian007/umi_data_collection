@@ -12,17 +12,18 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from software.calibration.pipeline import board_detection
-from software.calibration.pipeline import recordings
-from software.calibration import cli, workflow, result_io
-from software.calibration.solve import basalt
-from software.calibration.validation import gravity
-from software.calibration.algorithms import board_pnp
-from software.calibration.models import CalibrationInputs, Decision, CameraImuResult, GravityResult, IntrinsicsResult, SegmentPaths
-from software.calibration import rear_workflow as rear_calibration
-from software.scene.management.inputs import scene as scene_inputs
-from software.infrastructure.file_store import write_json
-from software.vision.models import LensVideo
+from umi.workflows.calibration.pipeline import board_detection
+from umi.workflows.calibration.pipeline import recordings
+from umi.apps import calib as cli
+from umi.workflows.calibration import workflow, result_io
+from umi.workflows.calibration.solve import basalt
+from umi.workflows.calibration.validation import gravity
+from umi.workflows.calibration.algorithms import board_pnp
+from umi.workflows.calibration.models import CalibrationInputs, Decision, CameraImuResult, GravityResult, IntrinsicsResult, SegmentPaths
+from umi.workflows.calibration import rear_workflow as rear_calibration
+from umi.workflows.scene.inputs import scene as scene_inputs
+from umi.infra.file_store import write_json
+from umi.perception.models import LensVideo
 import test_scene as scene_fixtures
 
 

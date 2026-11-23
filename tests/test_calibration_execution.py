@@ -14,13 +14,13 @@ import av
 import cv2
 import numpy as np
 
-from software.calibration.pipeline import board_detection
-from software.calibration.pipeline import recordings
-from software.calibration.pipeline import runtime
-from software.calibration.pipeline.steps import StageRunner
-from software.calibration.models import Step
-from software.calibration import result_io
-from software.infrastructure.file_store import write_json
+from umi.workflows.calibration.pipeline import board_detection
+from umi.workflows.calibration.pipeline import recordings
+from umi.workflows.calibration.pipeline import runtime
+from umi.workflows.calibration.pipeline.steps import StageRunner
+from umi.workflows.calibration.models import Step
+from umi.workflows.calibration import result_io
+from umi.infra.file_store import write_json
 
 
 class BackgroundProcessTests(unittest.TestCase):

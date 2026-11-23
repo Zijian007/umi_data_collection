@@ -1,5 +1,5 @@
 """套件限定、单手身份、缺一路、重复入库和只读预览的回归。"""
-from software.infrastructure import provenance as artifact_identity
+from umi.infra import provenance as artifact_identity
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -7,13 +7,13 @@ import unittest
 from registry_fakes import write_task, write_task_configuration, read_task_configuration
 from unittest.mock import patch
 
-from software.camera import registry
-from software.scene import layout
-from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
-from software.scene.management import ingest
-from software.scene.arms import read_arms
-from software.infrastructure.file_store import write_json, write_yaml
+from umi.devices import registry
+from umi.store import layout
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
+from umi.workflows.scene import ingest
+from umi.core.arms import read_arms
+from umi.infra.file_store import write_json, write_yaml
 import test_scene as fixtures
 
 

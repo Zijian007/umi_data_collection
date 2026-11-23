@@ -8,7 +8,7 @@ import numpy as np
 from rosbags.rosbag1 import Reader
 from rosbags.typesys import Stores, get_typestore
 
-from software.calibration.tools.euroc_to_bag import write_mono_bag
+from umi.workflows.calibration.tools.euroc_to_bag import write_mono_bag
 
 
 class BagConversionTests(unittest.TestCase):

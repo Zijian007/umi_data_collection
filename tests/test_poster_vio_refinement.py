@@ -5,9 +5,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software.trajectory.algorithms.poster_vio import solve_joint_poster_imu
-from software.trajectory.algorithms.poster_vio import refinement
-from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs, poster_vio
+from umi.estimation.poster_vio import solve_joint_poster_imu
+from umi.estimation.poster_vio import refinement
+from umi.workflows.scene.tasks import poster_vio as poster_vio_inputs, poster_vio
 
 
 class PosterVioRefinementTests(unittest.TestCase):
@@ -224,7 +224,7 @@ class PosterVioRefinementTests(unittest.TestCase):
         self.assertEqual(audit['rounds'][0]['reasons'], ['round_limit'])
 
     def test_nonfinite_holdout_projection_cannot_pass_comparisons(self):
-        from software.trajectory.algorithms.poster_vio import solver
+        from umi.estimation.poster_vio import solver
 
         request, arms, seed = self.prepared()
         project = solver.project_observations

@@ -11,20 +11,20 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.trajectory.algorithms.fixed_map.parameters import MapPlacementParameters, PosterScaleParameters
-from software.configuration.loader import load
-from software.configuration import loader as config
-from software.scene.parameters import SceneOverrides
-from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import batch as batch_inputs, scene as scene_inputs
-from software.scene import spatial as mapping
-from software.scene.spatial import correct_poster_placement
-from software.trajectory.algorithms.fixed_map import poster
-from software.trajectory.algorithms.fixed_map import geometry
-from software.vision.poster import layout as tag_board, detection as environment_tags
+from umi.estimation.fixed_map.parameters import MapPlacementParameters, PosterScaleParameters
+from umi.config.loader import load
+from umi.config import loader as config
+from umi.workflows.scene.parameters import SceneOverrides
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene.inputs import batch as batch_inputs, scene as scene_inputs
+from umi.estimation import mapping
+from umi.estimation.mapping import correct_poster_placement
+from umi.estimation.fixed_map import poster
+from umi.estimation.fixed_map import geometry
+from umi.perception.poster import layout as tag_board, detection as environment_tags
 tags = environment_tags
-from software.infrastructure.file_store import write_yaml
-from software.scene import result_io as asset_identity
+from umi.infra.file_store import write_yaml
+from umi.store import result_io as asset_identity
 
 
 def scale_fixture():
@@ -195,7 +195,7 @@ class PosterMappingWorkflowTests(unittest.TestCase):
                                             files=dict(camera.files, rear=camera.files['front']))
 
     def detections(self, helper, *, empty=False, shifted=False):
-        from software.vision.poster import geometry as poster_pose, detection as environment_tags
+        from umi.perception.poster import geometry as poster_pose, detection as environment_tags
         from test_scene import motion
         times, truth, _ = motion()
         frame_indices = np.arange(0,len(times),3)
@@ -213,7 +213,7 @@ class PosterMappingWorkflowTests(unittest.TestCase):
             np.ones(len(ids),bool), np.full(len(ids),not empty,bool), np.zeros(len(frame_indices),int), np.zeros(len(frame_indices),int))
 
     def fake_cache(self, detections):
-        from software.infrastructure.file_store import write_json
+        from umi.infra.file_store import write_json
         def cached(video, output, settings, **kwargs):
             output.mkdir(parents=True,exist_ok=True)
             np.savez_compressed(output/'observations.npz', **{name:getattr(detections,name) for name in detections.__dataclass_fields__})

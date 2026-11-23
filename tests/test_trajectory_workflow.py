@@ -7,21 +7,23 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from software.vision import recordings as visual_recordings
-from software.configuration import loader as config
-from software.camera import registry
-from software.camera import calibration_assets as calibration_assets
-from software.trajectory import cli, workflow
-from software.trajectory import reconstruction, reconstruction as runtime
-from software.trajectory.reporting import artifacts as results
-from software.trajectory import calibration as selection
-from software.camera.x3 import extraction
-from software.trajectory.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
-from software.vision.models import RecordingData
-from software.trajectory.workflow import REQUIRED_OUTPUTS, reuse_decision, run_fingerprint
-from software.trajectory.environment_assets import select_environment_assets
-from software.trajectory.calibration import CalibrationAssets, SelectedCalibration
+from umi.perception import recordings as visual_recordings
+from umi.config import loader as config
+from umi.devices import registry
+from umi.devices import calibration_assets
+from umi.apps import segment as cli
+from umi.workflows.segment import workflow
+from umi.workflows.segment import reconstruction, reconstruction as runtime
+from umi.workflows.segment.reporting import artifacts as results
+from umi.devices import selection
+from umi.devices.x3 import extraction
+from umi.estimation.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
+from umi.perception.models import RecordingData
+from umi.workflows.segment.workflow import REQUIRED_OUTPUTS, reuse_decision, run_fingerprint
+from umi.workflows.segment.environment_assets import select_environment_assets
+from umi.devices.selection import CalibrationAssets, SelectedCalibration
 from trajectory_fakes import FakeEngines
+from umi.workflows.segment import fusion_runner
 from registry_fakes import device_record
 
 
@@ -166,19 +168,22 @@ class WorkflowTests(RecordingFixture):
     def fake_runner(self, command, **kwargs):
         return self.engines(command, **kwargs)
 
+    def fake_fusion(self, request, **kwargs):
+        return self.engines.fuse(request, **kwargs)
+
     def fake_postprocess(self, kd, manifest, output, mode, name, calibration, command, *, parameters=None):
         for filename in REQUIRED_OUTPUTS:
             (output / filename).write_text('processed output')
         return dict(tcp_path_length_m=1.2, constraint_fraction={'full': 1.0}, notes=[])
 
     def run_recording(self, request=TrajectoryRequest(), *, extraction_error=None, manifest=None):
-        from software.trajectory import trajectory_export as postprocess
+        from umi.workflows.segment import trajectory_export as postprocess
         manifest = manifest or {'frames': dict(regular=True, n_frames_used=100, duration_s=3.3)}
         def extract(video, output, **kwargs):
             self.engines.write_dataset(output)
             return manifest
 
-        with patch.object(selection, 'select_calibration', return_value=self.selected), patch.object(extraction, 'extract', side_effect=extraction_error or extract), patch.object(runtime.subprocess, 'run', side_effect=self.fake_runner), patch.object(postprocess, 'export_trajectories', side_effect=self.fake_postprocess), patch.object(runtime.console, 'write'):
+        with patch.object(selection, 'select_calibration', return_value=self.selected), patch.object(extraction, 'extract', side_effect=extraction_error or extract), patch.object(runtime.subprocess, 'run', side_effect=self.fake_runner), patch.object(fusion_runner, 'execute', side_effect=self.fake_fusion), patch.object(postprocess, 'export_trajectories', side_effect=self.fake_postprocess), patch.object(runtime.console, 'write'):
             return workflow.run_recording(self.video, self.output.parent, request)
 
     def test_success_skip_and_reprocess_after_calibration_change(self):
@@ -200,7 +205,7 @@ class WorkflowTests(RecordingFixture):
 
     def test_display_map_survives_successful_debug_cleanup(self):
         display = dict(kind='umi_map_view', schema_version=1, maps=[])
-        with patch('software.trajectory.reporting.map_data.export_attempt', return_value=display):
+        with patch('umi.workflows.segment.reporting.map_data.export_attempt', return_value=display):
             result = self.run_recording()
         self.assertEqual(result['status'], 'ok')
         self.assertFalse((self.output/'debug/reconstruction').exists())
@@ -229,13 +234,13 @@ class WorkflowTests(RecordingFixture):
 
     def test_reuse_reads_summary_once(self):
         self.assertEqual(self.run_recording()['status'], 'ok')
-        with patch('software.trajectory.workflow.load_summary', wraps=results.load_summary) as load:
+        with patch('umi.workflows.segment.workflow.load_summary', wraps=results.load_summary) as load:
             self.assertEqual(self.run_recording()['status'], 'skipped')
         load.assert_called_once_with(self.output)
 
     def test_force_does_not_read_previous_summary(self):
         self.successful_result()
-        with patch('software.trajectory.workflow.load_summary', side_effect=AssertionError('unexpected reuse check')) as load:
+        with patch('umi.workflows.segment.workflow.load_summary', side_effect=AssertionError('unexpected reuse check')) as load:
             self.assertEqual(self.run_recording(TrajectoryRequest(force=True))['status'], 'ok')
         load.assert_not_called()
 
@@ -330,7 +335,7 @@ class WorkflowTests(RecordingFixture):
         self.engines.write_dataset(paths.dataset)
         times = paths.debug / 'times.csv'
         times.write_text('t_canonical_s\n1.0\n')
-        with patch.object(runtime.subprocess, 'run', side_effect=self.fake_runner), patch.object(reconstruction, 'assess_try', side_effect=qualities), patch.object(runtime.console, 'write'):
+        with patch.object(runtime.subprocess, 'run', side_effect=self.fake_runner), patch.object(fusion_runner, 'execute', side_effect=self.fake_fusion), patch.object(reconstruction, 'assess_try', side_effect=qualities), patch.object(runtime.console, 'write'):
             videos = visual_recordings.prepare_lens_videos(self.video, context, lenses=('front', 'rear') if context.parameters.input.mode == 'dual' else ('front',))
             result = reconstruction.run_attempts(videos, RecordingData({}, paths.dataset / 'mav0/imu0/data.csv', times), context, recording_name=self.video.name)
         self.assertEqual(result.chosen, 2)
@@ -339,11 +344,11 @@ class WorkflowTests(RecordingFixture):
         for directory in (paths.attempt(1), paths.attempt(2), paths.attempt(3)):
             self.assertEqual((directory / 'front/front.mp4').resolve(), paths.lens_videos / 'front.mp4')
         for kind, command, options in self.engines.calls:
-            if kind in ('map', 'localize', 'fuse'):
+            if kind in ('map', 'localize'):
                 self.assertEqual(command[command.index('taskset') + 1:command.index('taskset') + 3], ['-c', '0-3'])
             if kind == 'fuse':
-                self.assertIn('--times', command)
-                self.assertNotIn('--front_only', command)
+                self.assertEqual(options['cores'], '0-3')
+                self.assertIsNotNone(command.times)
 
     def test_cli_retains_arguments_and_calls_workflow(self):
         with patch.object(workflow, 'run_batch', return_value=0) as run:

@@ -7,12 +7,12 @@ from unittest.mock import patch
 from types import SimpleNamespace
 from pathlib import Path
 
-from software.viewer.results.catalog import RecordingCatalog
-from software.viewer.results.catalog import read_manifest
-from software.viewer import ViewerDataError
-from software.viewer.results.trajectory_reader import read_trajectory
-from software.viewer.server import byte_range, make_handler
-from software.viewer.resources.video import decode_frame
+from umi.apps.viewer.results.catalog import RecordingCatalog
+from umi.apps.viewer.results.catalog import read_manifest
+from umi.apps.viewer import ViewerDataError
+from umi.apps.viewer.results.trajectory_reader import read_trajectory
+from umi.apps.viewer.server import byte_range, make_handler
+from umi.apps.viewer.resources.video import decode_frame
 
 TUM = '# t x y z qx qy qz qw\n0 0 0 0 0 0 0 1\n0.5 0.3 0.4 0 0 0 0 1\n1 0.6 0.8 0 0 0 0 1\n'
 
@@ -104,8 +104,8 @@ class ViewerDataTests(unittest.TestCase):
         self.assertEqual([frame['position_source'] for frame in data['frames']], ['poster', 'visual_and_poster', 'imu'])
 
     def test_rear_source_requires_frozen_raw_identity_and_original_frame_grid(self):
-        from software.scene.result_io import recording_identity
-        from software.viewer.resources.video import rear_source
+        from umi.store.result_io import recording_identity
+        from umi.apps.viewer.resources.video import rear_source
 
         arm = self.root / 'take_001' / 'results' / 'left'
         (arm / 'details').mkdir(parents=True)
@@ -134,7 +134,7 @@ class ViewerDataTests(unittest.TestCase):
         self.assertEqual(rear_source(arm, contains), (arm / 'rear.mp4', None))
 
     def test_opening_published_results_can_read_only_matching_task_arm_raw_video(self):
-        from software.scene.result_io import recording_identity
+        from umi.store.result_io import recording_identity
 
         take = self.root / 'take_001'
         run = self.root / '.pipeline' / 'tasks' / take.name / 'runs' / 'completed'
@@ -229,7 +229,7 @@ class HTTPContractTests(unittest.TestCase):
             self.assertEqual(json.loads(body)['rear']['preview_url'], f'/api/recordings/{key}/rear/preview')
             status, body = request(f'/api/recordings/{key}/rear/video', {'Range': 'bytes=1-2'})
             self.assertEqual((status['status'], body), (206, b'ea'))
-            with patch('software.viewer.server.preview_status', return_value={'status': 'ready', 'version': 'rear'}) as prepare:
+            with patch('umi.apps.viewer.server.preview_status', return_value={'status': 'ready', 'version': 'rear'}) as prepare:
                 status, body = request(f'/api/recordings/{key}/rear/preview')
                 self.assertEqual(json.loads(body)['url'], f'/api/recordings/{key}/rear/preview/video?v=rear')
                 prepare.assert_called_once_with(rear, None)
@@ -241,16 +241,16 @@ class HTTPContractTests(unittest.TestCase):
             etag = status['extra']['ETag']
             status, body = request(f'/api/recordings/{key}/video', {'If-None-Match': etag})
             self.assertEqual((status['status'], body), (304, b''))
-            with patch('software.viewer.server.preview_status', return_value={'status': 'ready', 'version': 'test'}):
+            with patch('umi.apps.viewer.server.preview_status', return_value={'status': 'ready', 'version': 'test'}):
                 status, body = request(f'/api/recordings/{key}/preview')
                 self.assertEqual(json.loads(body)['url'], f'/api/recordings/{key}/preview/video?v=test')
             cached = root/'preview.webm'
             cached.write_bytes(b'\x1aE\xdf\xa3preview')
-            with patch('software.viewer.server.preview_file', return_value=cached):
+            with patch('umi.apps.viewer.server.preview_file', return_value=cached):
                 status, body = request(f'/api/recordings/{key}/preview/video?v=test', {'Range': 'bytes=0-3'})
                 self.assertEqual((status['status'], status['content_type'], body), (206, 'video/webm', b'\x1aE\xdf\xa3'))
                 self.assertIn('immutable', status['extra']['Cache-Control'])
-            with patch('software.viewer.server.decode_frame', return_value=b'\xff\xd8jpeg') as decode:
+            with patch('umi.apps.viewer.server.decode_frame', return_value=b'\xff\xd8jpeg') as decode:
                 status, body = request(f'/api/recordings/{key}/frame?t=0.5')
                 self.assertEqual((status['status'], status['content_type'], body), (200, 'image/jpeg', b'\xff\xd8jpeg'))
                 decode.assert_called_once_with(path, .5)
@@ -264,7 +264,7 @@ class HTTPContractTests(unittest.TestCase):
 
 class FrameDecodeTests(unittest.TestCase):
     def setUp(self):
-        from software.viewer.resources import video as media
+        from umi.apps.viewer.resources import video as media
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         environment = patch.dict('os.environ', {'UMI_VIEW_CACHE': self.temp.name})
@@ -274,20 +274,20 @@ class FrameDecodeTests(unittest.TestCase):
 
     def test_invalid_times_are_rejected_before_starting_decoder(self):
         for seconds in (-1, float('nan'), float('inf'), 86401):
-            with patch('software.viewer.resources.video.subprocess.run') as execute:
+            with patch('umi.apps.viewer.resources.video.subprocess.run') as execute:
                 with self.assertRaises(ViewerDataError):
                     decode_frame(Path('input.mp4'), seconds)
                 execute.assert_not_called()
 
     def test_decoder_outputs_jpeg_without_writing_video(self):
-        with patch('software.viewer.resources.video.find_ffmpeg', return_value='/ffmpeg'), patch('software.viewer.resources.video.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=b'\xff\xd8jpeg', stderr=b'')) as execute:
+        with patch('umi.apps.viewer.resources.video.find_ffmpeg', return_value='/ffmpeg'), patch('umi.apps.viewer.resources.video.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=b'\xff\xd8jpeg', stderr=b'')) as execute:
             self.assertEqual(decode_frame(Path('input.mp4'), 17.35), b'\xff\xd8jpeg')
             command = execute.call_args.args[0]
             self.assertEqual(command[-1], 'pipe:1')
             self.assertEqual(command[command.index('-ss') + 1], '17.350000')
 
     def test_empty_decoded_frame_reports_error(self):
-        with patch('software.viewer.resources.video.find_ffmpeg', return_value='/ffmpeg'), patch('software.viewer.resources.video.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=b'', stderr=b'')):
+        with patch('umi.apps.viewer.resources.video.find_ffmpeg', return_value='/ffmpeg'), patch('umi.apps.viewer.resources.video.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=b'', stderr=b'')):
             with self.assertRaisesRegex(ViewerDataError, '没有可用画面'):
                 decode_frame(Path('input.mp4'), 0)
 

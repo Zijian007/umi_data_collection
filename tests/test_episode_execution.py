@@ -5,11 +5,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from software.scene.pipeline.tasks import scene_map as episode_execution, scene_map as scene_reconstruction
-from software.scene.pipeline.tasks import measurements
-from software.scene.pipeline.tasks import trajectory_writers
-from software.trajectory.algorithms.fixed_map import poster
-from software.scene.models import TaskInputs
+from umi.workflows.scene.tasks import scene_map as episode_execution, scene_map as scene_reconstruction
+from umi.workflows.scene.tasks import measurements
+from umi.workflows.scene.tasks import trajectory_writers
+from umi.estimation.fixed_map import poster
+from umi.store.models import TaskInputs
 
 
 class SharedPosterExecutionTests(unittest.TestCase):

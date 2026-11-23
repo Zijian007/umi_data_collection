@@ -7,14 +7,15 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from software.vision import recordings as visual_recordings, runtime as visual_runtime, slam as visual_slam
-from software.configuration import loader as config
-from software.camera import calibration_assets
-from software.trajectory import calibration as trajectory_calibration
-from software.trajectory import reconstruction, reconstruction as runtime
-from software.trajectory.models import FusionArtifacts, RecordingPaths, ReconstructionContext, TrajectoryRequest
-from software.vision.models import RecordingData, ProcessingError
+from umi.perception import recordings as visual_recordings, runtime as visual_runtime, slam as visual_slam
+from umi.config import loader as config
+from umi.devices import calibration_assets
+from umi.devices import selection as trajectory_calibration
+from umi.workflows.segment import reconstruction, reconstruction as runtime
+from umi.estimation.models import FusionArtifacts, RecordingPaths, ReconstructionContext, TrajectoryRequest
+from umi.perception.models import RecordingData, ProcessingError
 from trajectory_fakes import FakeEngines
+from umi.workflows.segment import fusion_runner
 
 
 class ReconstructionTests(unittest.TestCase):
@@ -34,9 +35,9 @@ class ReconstructionTests(unittest.TestCase):
         self.data = RecordingData(dict(source={'name': 'VID.insv'}), self.paths.dataset / 'mav0/imu0/data.csv')
         self.video = self.root / 'VID.insv'
         self.video.write_bytes(b'raw recording')
-        execute = patch.object(runtime.subprocess, 'run', side_effect=self.engines)
-        execute.start()
-        self.addCleanup(execute.stop)
+        for execute in self.engines.patches():
+            execute.start()
+            self.addCleanup(execute.stop)
         quiet = patch.object(runtime.console, 'write')
         quiet.start()
         self.addCleanup(quiet.stop)
@@ -57,13 +58,13 @@ class ReconstructionTests(unittest.TestCase):
         fusion, _ = calls['fuse']
         self.assertEqual(mapping[mapping.index('--input_video')+1], locating[locating.index('--input_video')+1])
         self.assertEqual(mapping[mapping.index('--save_map')+1], locating[locating.index('--load_map')+1])
-        self.assertIn(str(self.paths.attempt(1) / 'front/loc/frames.csv'), fusion)
-        self.assertIn(str(self.data.imu_csv), fusion)
+        self.assertEqual(fusion.front_frames, self.paths.attempt(1) / 'front/loc/frames.csv')
+        self.assertEqual(fusion.imu_csv, self.data.imu_csv)
         self.assertEqual(json.loads(self.settings.parameters_file.read_text())['input']['mode'], 'handheld')
-        self.assertIn('software.trajectory.algorithms.fusion.cli', (result.directory / 'logs/run.txt').read_text())
+        self.assertIn('front_setting', (result.directory / 'logs/run.txt').read_text())
 
     def test_retry_uses_exact_qualified_poster_events_without_hiding_other_failures(self):
-        from software.trajectory.reporting.constraint_quality import scale_consistency
+        from umi.estimation.constraint_quality import scale_consistency
         directory = self.root/'poster-quality'
         directory.mkdir()
         trajectory = directory/'traj_tum.txt'
@@ -125,8 +126,8 @@ class ReconstructionTests(unittest.TestCase):
 
     def test_output_size_reaches_video_slam_mask_and_run_record(self):
         import cv2
-        from software.trajectory import trajectory_export as run_metadata
-        from software.trajectory.reporting import reports
+        from umi.workflows.segment import trajectory_export as run_metadata
+        from umi.workflows.segment.reporting import reports
 
         configuration = config.load('trajectory', overrides={'video': {'size_px': 960}})
         settings = runtime.reconstruction_settings(dict(os.environ, **self.engines.environment),
@@ -171,7 +172,7 @@ class ReconstructionTests(unittest.TestCase):
                 self.assertIn(options['env']['ORB_MAP_INDEX'], ('0', '1'))
             elif kind == 'fuse':
                 self.assertEqual(context.parameters.input.mode, 'dual')
-                self.assertIn(str(result.directory / 'rear/loc/frames.csv'), command)
+                self.assertEqual(command.rear_frames, result.directory / 'rear/loc/frames.csv')
         # 第 1 张图关键帧更多，原合并算法应优先使用 m1。
         self.assertTrue((result.directory / 'front/loc/frames.csv').read_text().splitlines()[1].endswith(',m1'))
 
@@ -186,19 +187,15 @@ class ReconstructionTests(unittest.TestCase):
         for number in (1, 2):
             self.assertEqual((self.paths.attempt(number) / 'front/front.mp4').resolve(), self.paths.lens_videos / 'front.mp4')
 
+    def failing_alignment(self, request, **options):
+        request.output.mkdir()
+        (request.output/'alignment_failure.json').write_text(json.dumps(dict(code='NO_USABLE_LENS')))
+        self.engines.fuse(request, **options)
+
     def test_identical_alignment_failure_stops_before_repeating_fusion(self):
         self.engines.failures['fuse'] = 2
 
-        def execute(command, **options):
-            result = self.engines(command, **options)
-            if 'software.trajectory.algorithms.fusion.cli' in command:
-                pos = command.index('software.trajectory.algorithms.fusion.cli')
-                directory = Path(command[pos+6])
-                directory.mkdir()
-                (directory/'alignment_failure.json').write_text(json.dumps(dict(code='NO_USABLE_LENS')))
-            return result
-
-        with patch.object(runtime.subprocess, 'run', side_effect=execute):
+        with patch.object(fusion_runner, 'execute', side_effect=self.failing_alignment):
             result = self.run_stages()
         self.assertIsNone(result.chosen)
         self.assertEqual(len(result.attempts), 2)
@@ -210,18 +207,14 @@ class ReconstructionTests(unittest.TestCase):
 
         def execute(command, **options):
             result = self.engines(command, **options)
-            if 'software.trajectory.algorithms.fusion.cli' in command:
-                pos = command.index('software.trajectory.algorithms.fusion.cli')
-                directory = Path(command[pos+6])
-                directory.mkdir()
-                (directory/'alignment_failure.json').write_text(json.dumps(dict(code='NO_USABLE_LENS')))
             if './x3_mono_slam' in command and '--localization_only' in command:
                 path = Path(command[command.index('--output_frames_csv')+1])
                 number = next(p.removeprefix('try_') for p in path.parts if p.startswith('try_'))
                 path.write_text(path.read_text().replace('0.000000', f'{number}.000000'))
             return result
 
-        with patch.object(runtime.subprocess, 'run', side_effect=execute):
+        with patch.object(runtime.subprocess, 'run', side_effect=execute), \
+                patch.object(fusion_runner, 'execute', side_effect=self.failing_alignment):
             result = self.run_stages()
         self.assertEqual(len(result.attempts), 3)
         self.assertEqual([kind for kind, *_ in self.engines.calls].count('fuse'), 3)
@@ -375,15 +368,15 @@ class ReconstructionTests(unittest.TestCase):
         times.write_text('t_canonical_s\n1\n1.1\n')
         self.run_stages(context, replace(self.data, times_csv=times))
         for kind, command, options in self.engines.calls:
-            if kind in ('map', 'localize', 'fuse'):
+            if kind in ('map', 'localize'):
                 self.assertEqual(command[:5], ['nice', '-n', '10', 'taskset', '-c'])
                 self.assertEqual(command[5], '0-3')
-            if kind in ('map', 'localize'):
                 self.assertEqual(command[6:8], ['timeout', '348'])
                 self.assertTrue(options['env']['LD_LIBRARY_PATH'].endswith(':/engine/extra'))
             if kind == 'fuse':
-                self.assertEqual(command[command.index('--times')+1], str(times))
-                actual = json.loads(Path(command[command.index('--parameters')+1]).read_text())
+                self.assertEqual(options['cores'], '0-3')
+                self.assertEqual(command.times, times)
+                actual = json.loads(command.parameters.read_text())
                 expected = context.parameters
                 self.assertEqual(actual['fusion']['step'], expected.fusion.step)
                 self.assertEqual(actual['fusion']['node_stride'], expected.fusion.node_stride)
@@ -391,7 +384,7 @@ class ReconstructionTests(unittest.TestCase):
                 self.assertTrue(actual['fusion']['map_residual'])
                 self.assertTrue(actual['fusion']['adaptive_sigma'])
                 self.assertTrue(actual['zupt']['enabled'])
-                self.assertEqual(Path(command[command.index('--calibration')+1]), self.settings.camera_json)
+                self.assertEqual(command.calibration, self.settings.camera_json)
 
 
 if __name__ == '__main__':

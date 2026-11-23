@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from software.infrastructure import provenance
-from software.infrastructure.file_store import read_yaml, write_yaml
-from software.scene.management.import_manifest import ensure_epoch_plan, read_manifest
+from umi.infra import provenance
+from umi.infra.file_store import read_yaml, write_yaml
+from umi.workflows.scene.import_manifest import ensure_epoch_plan, read_manifest
 
 
 class ImportManifestTests(unittest.TestCase):

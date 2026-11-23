@@ -7,9 +7,9 @@ import shlex
 import tempfile
 import unittest
 
-from software.infrastructure.file_store import write_yaml
-from software.scene.cli import build_parser
-from software.scene.parameters import SceneOverrides, apply_overrides
+from umi.infra.file_store import write_yaml
+from umi.apps.scene import build_parser
+from umi.workflows.scene.parameters import SceneOverrides, apply_overrides
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,8 +18,8 @@ CURRENT_DOCS = (
     *(str(path.relative_to(ROOT)) for path in sorted((ROOT / 'docs').glob('*.md'))),
     'docs/dev/README.md', 'docs/dev/SSOT与权威来源.md', 'docs/dev/算法实现约定.md',
     'docs/dev/标定架构与验证.md',
-    'software/scene/README.md', 'software/trajectory/README.md',
-    'software/trajectory/algorithms/poster_vio/README.md', 'software/dataset/README.md', 'software/vision/README.md',
+    'umi/workflows/scene/README.md', 'umi/workflows/segment/README.md',
+    'umi/estimation/poster_vio/README.md', 'umi/dataset/README.md', 'umi/perception/README.md',
 )
 
 
@@ -50,11 +50,11 @@ class DocumentationContractsTests(unittest.TestCase):
                         with tempfile.TemporaryDirectory() as temporary:
                             path = Path(temporary) / 'expert.yaml'
                             write_yaml(path, document)
-                            from software.configuration.loader import load
-                            from software.scene.management.inputs.scene import load_scene_parameters
+                            from umi.config.loader import load
+                            from umi.workflows.scene.inputs.scene import load_scene_parameters
                             apply_overrides(load('trajectory'), load_scene_parameters(), SceneOverrides.load(path))
                     elif kind == 'collection':
-                        from software.scene.management.collection_schema import normalize_collection
+                        from umi.config.collection_schema import normalize_collection
                         normalize_collection(YAML(typ='safe').load(source))
                     else:
                         command = shlex.split(source.replace('\\\n', ' '))
@@ -66,7 +66,7 @@ class DocumentationContractsTests(unittest.TestCase):
 
     def test_collection_template_uses_the_public_schema(self):
         from ruamel.yaml import YAML
-        from software.scene.management.collection_schema import normalize_collection
+        from umi.config.collection_schema import normalize_collection
         source = (ROOT / 'scenes/example_scene/collection.example.yaml').read_text()
         normalize_collection(YAML(typ='safe').load(source))
 
@@ -89,15 +89,15 @@ class DocumentationContractsTests(unittest.TestCase):
     def test_scene_call_chain_references_existing_functions(self):
         # 指南的明确阅读入口必须存在；解析 AST，不导入或启动求解器。
         references = {
-            'pipeline/tasks/backend_routing.py': ('select_map', 'execute'),
-            'pipeline/tasks/scene_map.py': ('execute_task',),
-            'pipeline/tasks/trajectory_writers.py': ('write_arm_result', 'write_bimanual_trajectory'),
-            'pipeline/tasks/publication.py': ('write_episode_result',),
-            'management/batch_snapshot.py': ('read_inputs', 'make_record', 'save_record'),
+            'tasks/backend_routing.py': ('select_map', 'execute'),
+            'tasks/scene_map.py': ('execute_task',),
+            'tasks/trajectory_writers.py': ('write_arm_result', 'write_bimanual_trajectory'),
+            'tasks/publication.py': ('write_episode_result',),
+            'batch_snapshot.py': ('read_inputs', 'make_record', 'save_record'),
         }
-        guide = (ROOT / 'software/scene/README.md').read_text()
+        guide = (ROOT / 'umi/workflows/scene/README.md').read_text()
         for module, functions in references.items():
-            tree = ast.parse((ROOT / 'software/scene' / module).read_text())
+            tree = ast.parse((ROOT / 'umi/workflows/scene' / module).read_text())
             defined = {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
             for function in functions:
                 with self.subTest(module=module, function=function):

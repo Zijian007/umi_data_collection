@@ -11,15 +11,15 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software.configuration import loader as config
-from software.infrastructure import provenance
-from software.scene.cache import StageCache
-from software.scene.cache import preparation_inputs
-from software.scene.cache import source_identity
-from software.scene.pipeline.maps import build as map_build
-from software.scene.pipeline.maps import repository as map_repository
-from software.scene import spatial as slam
-from software.vision.models import LensVideo, MapAtlas
+from umi.config import loader as config
+from umi.infra import provenance
+from umi.store.cache import StageCache
+from umi.store.cache import preparation_inputs
+from umi.store.cache import source_identity
+from umi.workflows.scene.maps import build as map_build
+from umi.workflows.scene.maps import repository as map_repository
+from umi.estimation import mapping as slam
+from umi.perception.models import LensVideo, MapAtlas
 import test_scene as fixtures
 
 
@@ -138,15 +138,15 @@ class MapReuseTests(unittest.TestCase):
 
     def test_map_identity_excludes_cli_and_task_only_changes_but_tracks_algorithm_sources(self):
         sources = source_identity('map')
-        self.assertNotIn('software/scene/cli.py', sources)
-        self.assertNotIn('software/scene/pipeline/tasks/scene_map.py', sources)
-        self.assertNotIn('software/viewer/server.py', sources)
-        for dependency in ('software/vision/slam.py', 'software/camera/x3/extraction.py',
-                           'software/vision/atlas.py', 'software/camera/calibration_assets.py',
-                           'software/camera/x3/factory_kb4.py', 'software/scene/pipeline/maps/build.py',
-                           'software/trajectory/calibration.py',
-                           'software/trajectory/algorithms/fusion/alignment.py',
-                           'software/trajectory/algorithms/inertial.py', 'software/vision/decoding.py'):
+        self.assertNotIn('umi/apps/scene.py', sources)
+        self.assertNotIn('umi/workflows/scene/tasks/scene_map.py', sources)
+        self.assertNotIn('umi/apps/viewer/server.py', sources)
+        for dependency in ('umi/perception/slam.py', 'umi/devices/x3/extraction.py',
+                           'umi/perception/atlas.py', 'umi/devices/calibration_assets.py',
+                           'umi/devices/x3/factory_kb4.py', 'umi/workflows/scene/maps/build.py',
+                           'umi/devices/selection.py',
+                           'umi/estimation/fusion/alignment.py',
+                           'umi/estimation/inertial.py', 'umi/perception/decoding.py'):
             self.assertIn(dependency, sources)
         original_hash = provenance.source_hash
         for module in ('alignment.py', 'inertial.py', 'decoding.py', 'quality.py'):
@@ -194,11 +194,11 @@ class MapReuseTests(unittest.TestCase):
         self.assertEqual(preparation_inputs(source, recalibrated, self.fixture.scene, engines=cache.engines), original)
         self.assertEqual(original['engines'], {'ffmpeg': 'one'})
         sources = source_identity('prepare')
-        for unrelated in ('software/registry.py', 'software/camera/calibration_source.py',
-                          'software/trajectory/calibration.py', 'software/scene/cache.py',
-                          'software/scene/cache.py'):
+        for unrelated in ('umi/registry.py', 'umi/devices/calibration_source.py',
+                          'umi/devices/selection.py', 'umi/store/cache.py',
+                          'umi/store/cache.py'):
             self.assertNotIn(unrelated, sources)
-        for decoder in ('software/camera/x3/extraction.py', 'software/vision/tools/make_lens_video.py'):
+        for decoder in ('umi/devices/x3/extraction.py', 'umi/perception/tools/make_lens_video.py'):
             self.assertIn(decoder, sources)
         newer_ffmpeg = StageCache(self.fixture.root / 'cache', {'ffmpeg': 'two'})
         self.assertNotEqual(preparation_inputs(source, camera, self.fixture.scene, engines=newer_ffmpeg.engines), original)

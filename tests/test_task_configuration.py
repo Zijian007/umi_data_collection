@@ -3,17 +3,17 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from software.configuration import user_settings
-from software.infrastructure.file_store import read_yaml, write_yaml
-from software.scene import layout
-from software.scene.management.batch_snapshot import effective_report
-from software.scene.management.inputs.batch import read_episode
-from software.scene.models import ArmExecutionResult, TaskInputs
-from software.scene.parameters import SceneOverrides
-from software.scene.pipeline.maps.epoch_selection import MapEpochError
-from software.scene.pipeline.tasks import backend_routing as estimation
-from software.trajectory.algorithms.fixed_map.fusion import SceneFusionQualityError
-from software.scene.workflow import requested_map_version
+from umi.config import user_settings
+from umi.infra.file_store import read_yaml, write_yaml
+from umi.store import layout
+from umi.workflows.scene.batch_snapshot import effective_report
+from umi.workflows.scene.inputs.batch import read_episode
+from umi.store.models import ArmExecutionResult, TaskInputs
+from umi.workflows.scene.parameters import SceneOverrides
+from umi.workflows.scene.maps.epoch_selection import MapEpochError
+from umi.workflows.scene.tasks import backend_routing as estimation
+from umi.estimation.fixed_map.fusion import SceneFusionQualityError
+from umi.workflows.scene.workflow import requested_map_version
 
 
 class TaskConfigurationTests(unittest.TestCase):
@@ -46,7 +46,7 @@ class TaskConfigurationTests(unittest.TestCase):
             tasks=[dict(task='take_001', sequence=4)]))
 
     def preview(self):
-        with patch('software.scene.management.inputs.batch.read_recordings',
+        with patch('umi.workflows.scene.inputs.batch.read_recordings',
                    side_effect=AssertionError('preview must not inspect recordings')):
             return effective_report([self.helper.task_root])[0]
 

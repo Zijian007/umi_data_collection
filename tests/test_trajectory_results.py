@@ -7,15 +7,15 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software.calibration.pipeline import runtime
-from software.calibration.validation import trajectory as calibration_validation
-from software.calibration.algorithms import board_pnp
-from software.configuration import loader as config
-from software.calibration.algorithms import trajectory_metrics
-from software.calibration.models import RunPaths, ExecutionOptions
-from software.trajectory.reporting import map_data, artifacts as results
-from software.trajectory.models import RecordingPaths
-from software.trajectory.workflow import REQUIRED_OUTPUTS, reuse_decision
+from umi.workflows.calibration.pipeline import runtime
+from umi.workflows.calibration.validation import trajectory as calibration_validation
+from umi.workflows.calibration.algorithms import board_pnp
+from umi.config import loader as config
+from umi.estimation import trajectory_metrics
+from umi.workflows.calibration.models import RunPaths, ExecutionOptions
+from umi.workflows.segment.reporting import map_data, artifacts as results
+from umi.estimation.models import RecordingPaths
+from umi.workflows.segment.workflow import REQUIRED_OUTPUTS, reuse_decision
 
 
 class ResultLayoutTests(unittest.TestCase):

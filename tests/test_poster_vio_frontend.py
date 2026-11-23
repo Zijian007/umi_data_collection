@@ -9,10 +9,10 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from software.camera.x3.factory_geometry import Kb4Model
-from software.scene.management.inputs.scene import load_scene_parameters
-from software.trajectory.algorithms.poster_vio.models import FeatureTrackingParameters
-from software.trajectory.algorithms.poster_vio.frontend import FeatureCameraInput, subsample_observations, track_cameras, triangulate_track
+from umi.devices.x3.factory_geometry import Kb4Model
+from umi.workflows.scene.inputs.scene import load_scene_parameters
+from umi.estimation.poster_vio.models import FeatureTrackingParameters
+from umi.estimation.poster_vio.frontend import FeatureCameraInput, subsample_observations, track_cameras, triangulate_track
 
 
 class PosterVioFrontendTests(unittest.TestCase):
@@ -245,7 +245,7 @@ class PosterVioFrontendTests(unittest.TestCase):
     def test_natural_factor_jacobians_match_gtsam_pose_retract_and_point_differences(self):
         import gtsam
         from scipy.spatial.transform import Rotation
-        from software.vision.poster.factors import natural_track_error
+        from umi.estimation.factors.poster import natural_track_error
 
         body = np.eye(4)
         body[:3, :3] = Rotation.from_euler('xyz', [.2, -.15, .1]).as_matrix()
@@ -277,7 +277,7 @@ class PosterVioFrontendTests(unittest.TestCase):
 
     def test_natural_factor_cost_batches_only_valid_depths_without_derivatives(self):
         import gtsam
-        from software.vision.poster.factors import add_natural_track_factors, natural_track_error
+        from umi.estimation.factors.poster import add_natural_track_factors, natural_track_error
 
         values, graph = gtsam.Values(), gtsam.NonlinearFactorGraph()
         point = np.array([.2, -.1, 1.])
@@ -301,7 +301,7 @@ class PosterVioFrontendTests(unittest.TestCase):
 
     def test_natural_factor_keeps_negative_depth_finite_for_refinement(self):
         import gtsam
-        from software.vision.poster.factors import natural_track_error
+        from umi.estimation.factors.poster import natural_track_error
 
         pose_key, point_key = gtsam.symbol('x', 0), gtsam.symbol('p', 1)
         values = gtsam.Values()

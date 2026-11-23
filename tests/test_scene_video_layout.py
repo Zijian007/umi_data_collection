@@ -1,4 +1,4 @@
-from software.infrastructure import provenance as artifact_identity
+from umi.infra import provenance as artifact_identity
 """场景内原片：先放视频、后登记，保留原片身份并避免重复复制。"""
 from pathlib import Path
 import tempfile
@@ -6,14 +6,14 @@ import unittest
 from registry_fakes import write_kit, write_batch, write_task
 from unittest.mock import patch
 
-from software.camera import registry
-from software.scene import layout
-from software.scene.management import batch_snapshot as batches
-from software.scene.management import ingest, batch_processing as processing
-from software.scene.management.collection_schema import normalize_collection
-from software.scene.management.inputs import scene as kit_inputs, batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
-from software.scene.pipeline import recordings
-from software.infrastructure.file_store import write_yaml
+from umi.devices import registry
+from umi.store import layout
+from umi.workflows.scene import batch_snapshot as batches
+from umi.workflows.scene import ingest, batch_processing as processing
+from umi.config.collection_schema import normalize_collection
+from umi.workflows.scene.inputs import scene as kit_inputs, batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
+from umi.workflows.scene import recordings
+from umi.infra.file_store import write_yaml
 import test_scene as fixtures
 
 

@@ -5,13 +5,14 @@ from threading import Barrier, Event
 from unittest.mock import patch
 import unittest
 
-from software.scene import layout, workflow
-from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
-from software.scene.pipeline import recordings
-from software.scene.pipeline.maps import repository as map_lifecycle
-from software.scene.pipeline.tasks import scene_map as scene_reconstruction
-from software.infrastructure.file_store import write_yaml
+from umi.store import layout
+from umi.workflows.scene import workflow
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
+from umi.workflows.scene import recordings
+from umi.workflows.scene.maps import repository as map_lifecycle
+from umi.workflows.scene.tasks import scene_map as scene_reconstruction
+from umi.infra.file_store import write_yaml
 import test_scene as fixtures
 
 

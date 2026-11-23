@@ -9,13 +9,15 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from software.camera import registry
-from software.configuration import audio_sync as sync_config
-from software.infrastructure.file_store import read_yaml, write_yaml
-from software.scene import cli, layout, workflow
-from software.scene.management.inputs import scene as kit
-from software.scene.pipeline import recordings, synchronization
-from software.sync.specialist_audio import AUDIO_SYNC_RECIPES, AudioSyncEstimate
+from umi.devices import registry
+from umi.config import audio_sync as sync_config
+from umi.infra.file_store import read_yaml, write_yaml
+from umi.apps import scene as cli
+from umi.store import layout
+from umi.workflows.scene import workflow
+from umi.workflows.scene.inputs import scene as kit
+from umi.workflows.scene import recordings, synchronization
+from umi.perception.audio.specialist_audio import AUDIO_SYNC_RECIPES, AudioSyncEstimate
 
 
 ESTIMATE = AudioSyncEstimate(other_started_later_s=.25, peak_ratio=2., peak_value=3.,

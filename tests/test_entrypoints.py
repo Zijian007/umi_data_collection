@@ -10,10 +10,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from software.calibration import cli as calibration_cli
-from software.calibration.pipeline import runtime
-from software.scene import cli as scene_cli
-from software.viewer import server as viewer_server
+from umi.apps import calib as calibration_cli
+from umi.workflows.calibration.pipeline import runtime
+from umi.apps import scene as scene_cli
+from umi.apps.viewer import server as viewer_server
 
 
 class EntrypointPathTests(unittest.TestCase):
@@ -57,7 +57,7 @@ class CalibrationStartupTests(unittest.TestCase):
         with patch.object(runtime, 'use_calibration_environment') as select_environment, \
              patch.object(calibration_cli.workflow, 'run', return_value=0), \
              patch.object(calibration_cli.workflow, 'verify', return_value=0), \
-             patch('software.calibration.rear_workflow.run', return_value=0), \
+             patch('umi.workflows.calibration.rear_workflow.run', return_value=0), \
              redirect_stdout(io.StringIO()):
             for arguments in (['run', 'front', '--dry-run'], ['verify', 'C.insv'],
                               ['run', 'rear', '--dry-run']):
@@ -75,7 +75,7 @@ class CalibrationStartupTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0].tag_size_mm, 36.)
         arguments = ['run', 'folder with spaces/rear', '--workers', '2']
         with patch.object(runtime, 'use_calibration_environment') as select_environment, \
-             patch('software.calibration.rear_workflow.run', return_value=0), \
+             patch('umi.workflows.calibration.rear_workflow.run', return_value=0), \
              redirect_stdout(io.StringIO()):
             self.assertEqual(calibration_cli.main(arguments, prepare_environment=True), 0)
             select_environment.assert_called_once_with(arguments, install_missing=True)
@@ -125,7 +125,7 @@ class SolverEnvironmentTests(unittest.TestCase):
             runtime.use_calibration_environment(['check'], install_missing=False)
             install.assert_not_called()
             execute.assert_called_once_with(str(self.calibration_python),
-                [str(self.calibration_python), '-m', 'software.calibration', 'check'])
+                [str(self.calibration_python), '-m', 'umi.apps.calib', 'check'])
 
     def test_solve_installs_once_then_executes_without_losing_argument_boundaries(self):
         arguments = ['run', 'folder with spaces', '--resume']
@@ -135,7 +135,7 @@ class SolverEnvironmentTests(unittest.TestCase):
             install.assert_called_once()
             self.assertTrue(install.call_args.kwargs['check'])
             execute.assert_called_once_with(str(self.calibration_python),
-                [str(self.calibration_python), '-m', 'software.calibration', *arguments])
+                [str(self.calibration_python), '-m', 'umi.apps.calib', *arguments])
 
     def test_current_calibration_prefix_prevents_recursive_relaunch(self):
         self.install_files()

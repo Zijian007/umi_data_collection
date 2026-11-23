@@ -1,4 +1,4 @@
-from software.scene import layout
+from umi.store import layout
 """原片检查、静止任务、曝光未知与成功发布保护。"""
 import json
 from pathlib import Path
@@ -7,10 +7,10 @@ import unittest
 from unittest.mock import MagicMock, patch
 import numpy as np
 
-from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
-from software.scene.pipeline import recordings as recording_checks
-from software.scene import workflow
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
+from umi.workflows.scene import recordings as recording_checks
+from umi.workflows.scene import workflow
 import test_scene as fixtures
 
 

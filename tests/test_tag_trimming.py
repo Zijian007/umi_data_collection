@@ -12,17 +12,17 @@ from unittest.mock import patch
 import av
 import numpy as np
 
-from software.camera.x3.frame import output_frame_rate
-from software.configuration.loader import load
-from software.scene.cache import StageCache
-from software.scene.management.collection_schema import normalize_collection
-from software.scene.models import TaskInputs, ArmExecutionResult
-from software.scene.pipeline import recordings
-from software.scene.pipeline.tasks import recording_intervals as trim, backend_routing as estimation
-from software.scene.errors import PosterVioQualityError
-from software.trajectory.algorithms.fixed_map.fusion import SceneFusionQualityError
-from software.vision.models import RecordingData, RecordingPaths
-from software.vision.tools import make_lens_video
+from umi.core.frame import output_frame_rate
+from umi.config.loader import load
+from umi.store.cache import StageCache
+from umi.config.collection_schema import normalize_collection
+from umi.store.models import TaskInputs, ArmExecutionResult
+from umi.workflows.scene import recordings
+from umi.workflows.scene.tasks import recording_intervals as trim, backend_routing as estimation
+from umi.workflows.scene.errors import PosterVioQualityError
+from umi.estimation.fixed_map.fusion import SceneFusionQualityError
+from umi.perception.models import RecordingData, RecordingPaths
+from umi.perception.tools import make_lens_video
 
 
 class TagTrimmingTests(unittest.TestCase):
@@ -71,8 +71,8 @@ class TagTrimmingTests(unittest.TestCase):
 
     def test_trim_and_vio_share_exact_pnp_hypotheses(self):
         from test_poster_fusion import fixture
-        from software.vision.poster import pnp
-        from software.vision.poster.geometry import camera_model
+        from umi.perception.poster import pnp
+        from umi.perception.poster.geometry import camera_model
 
         _, _, _, _, _, _, parameters, observations, board, measured, _, _ = fixture()
         rows = observations.sample_indices == 0
@@ -194,9 +194,9 @@ class TagTrimmingTests(unittest.TestCase):
 
     def test_output_frame_provenance_and_viewer_clock_after_head_trim(self):
         from test_scene import SceneWorkflowTests
-        from software.trajectory.models import FusedTrajectory
-        from software.scene.pipeline.tasks.trajectory_writers import write_arm_trajectory
-        from software.scene.result_io import read_arm_summary, read_arm_settings
+        from umi.estimation.models import FusedTrajectory
+        from umi.workflows.scene.tasks.trajectory_writers import write_arm_trajectory
+        from umi.store.result_io import read_arm_summary, read_arm_settings
 
         fixture = SceneWorkflowTests()
         fixture.setUp()
@@ -225,7 +225,7 @@ class TagTrimmingTests(unittest.TestCase):
 
     def test_cropped_vio_features_keep_original_insv_indices(self):
         from test_poster_vio_workflow import PosterVioWorkflowTests
-        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
+        from umi.workflows.scene.tasks import poster_vio as poster_vio_inputs
         fixture = PosterVioWorkflowTests()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)

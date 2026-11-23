@@ -2,17 +2,9 @@ import unittest
 from pathlib import Path
 import tempfile
 
-from software.scene.pipeline.maps.epoch_selection import draft_plan
-from software.scene.pipeline.maps.epoch_selection import (
-    MapEpoch,
-    MapEpochError,
-    TaskCollection,
-    read_plan,
-    resolve_task_map,
-    select_many,
-    select_map_epoch,
-)
-from software.infrastructure.file_store import write_yaml
+from umi.workflows.scene.maps.epoch_selection import draft_plan
+from umi.workflows.scene.maps.epoch_selection import MapEpoch, MapEpochError, TaskCollection, read_plan, resolve_task_map, select_many, select_map_epoch
+from umi.infra.file_store import write_yaml
 
 
 class MapEpochTests(unittest.TestCase):

@@ -1,9 +1,9 @@
-from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import scene as kit_inputs
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene.inputs import scene as kit_inputs
 """三入口的配置驱动流程：原片到地图和结果、只读预览、补片与快照重跑。"""
-from software.scene import layout
-from software.infrastructure import provenance as artifact_identity
-from software.scene.pipeline.maps import repository as map_lifecycle
+from umi.store import layout
+from umi.infra import provenance as artifact_identity
+from umi.workflows.scene.maps import repository as map_lifecycle
 from contextlib import redirect_stdout, redirect_stderr
 import io
 import json
@@ -12,12 +12,13 @@ import unittest
 from registry_fakes import write_kit
 from unittest.mock import patch
 
-from software.camera import registry
-from software.scene import cli, workflow
-from software.scene.management import batch_snapshot as batches
-from software.scene.management import episodes, ingest, batch_processing as processing
-from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs
-from software.infrastructure.file_store import write_yaml as _write_yaml
+from umi.devices import registry
+from umi.apps import scene as cli
+from umi.workflows.scene import workflow
+from umi.workflows.scene import batch_snapshot as batches
+from umi.workflows.scene import episodes, ingest, batch_processing as processing
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs
+from umi.infra.file_store import write_yaml as _write_yaml
 import test_scene as fixtures
 
 
@@ -121,8 +122,8 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(prepared.scene.mode, 'shared_front')
 
     def test_runtime_overrides_survive_map_binding_and_preserve_reuse(self):
-        from software.scene.parameters import SceneOverrides
-        from software.scene.management.batch_snapshot import effective_report
+        from umi.workflows.scene.parameters import SceneOverrides
+        from umi.workflows.scene.batch_snapshot import effective_report
         override_path = self.f.root/'override.yaml'
         write_yaml(override_path, dict(parameters=dict(
             mapping=dict(alignment=dict(maximum_scale_relative_std=.2)),
@@ -527,7 +528,7 @@ class ProcessingTests(unittest.TestCase):
         for extra, policy, unknown in (([], 'all', 'drop'),
                 (['--quality-policy', 'position_supported', '--unknown-support', 'error'], 'position_supported', 'error')):
             with self.subTest(policy=policy), \
-                    patch('software.dataset.export.build', return_value=dict(training_ready=False)) as build, \
+                    patch('umi.dataset.export.build', return_value=dict(training_ready=False)) as build, \
                     redirect_stdout(io.StringIO()):
                 code = cli.main(['export', str(self.batch), '--format', 'training',
                     '--out', str(self.f.root / 'dataset'), '--fps', '20', *extra])
@@ -536,7 +537,7 @@ class ProcessingTests(unittest.TestCase):
                 quality_policy=policy, unknown_support=unknown, time_window_s=None))
 
     def test_training_export_forwards_manual_sampling_window(self):
-        with patch('software.dataset.export.build', return_value=dict(training_ready=False)) as build, \
+        with patch('umi.dataset.export.build', return_value=dict(training_ready=False)) as build, \
                 redirect_stdout(io.StringIO()):
             code = cli.main(['export', str(self.batch), '--format', 'training',
                 '--out', str(self.f.root / 'dataset'), '--start-s', '.2', '--end-s', '.8'])
@@ -556,7 +557,7 @@ class ProcessingTests(unittest.TestCase):
                          ['umi-calib', 'umi-scene', 'umi-view'])
 
     def test_task_discovery_skips_batches_already_handled_by_processor(self):
-        from software.scene.management import episodes
+        from umi.workflows.scene import episodes
         from unittest.mock import Mock
         processing.prepare_batch(self.batch)
         other = self.f.episode_path
@@ -569,8 +570,8 @@ class ProcessingTests(unittest.TestCase):
                          [layout.metadata(self.batch / 'take_001', 'episode.yaml')])
 
     def test_rear_calibration_belongs_to_calibration_entry(self):
-        from software.calibration import cli as calibration_cli
-        with patch('software.calibration.rear_workflow.run', return_value=0) as run, redirect_stdout(io.StringIO()):
+        from umi.apps import calib as calibration_cli
+        with patch('umi.workflows.calibration.rear_workflow.run', return_value=0) as run, redirect_stdout(io.StringIO()):
             code = calibration_cli.main(['run', str(self.f.source/'rear'), '--dry-run', '--tag-size-mm', '36'])
         self.assertEqual(code, 0)
         self.assertEqual(run.call_args.args[0].folder, self.f.source/'rear')

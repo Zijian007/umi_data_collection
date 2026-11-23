@@ -5,10 +5,10 @@ from copy import deepcopy
 import unittest
 from unittest.mock import patch
 
-from software.scene.errors import MapUnavailableError, MapCompatibilityError, fallback_record
-from software.scene.pipeline.maps import repository as lifecycle
-from software.scene.pipeline.maps import repository
-from software.scene.pipeline.maps import repository as map_repository
+from umi.workflows.scene.errors import MapUnavailableError, MapCompatibilityError, fallback_record
+from umi.workflows.scene.maps import repository as lifecycle
+from umi.workflows.scene.maps import repository
+from umi.workflows.scene.maps import repository as map_repository
 
 
 class MapManifestValidationTests(unittest.TestCase):

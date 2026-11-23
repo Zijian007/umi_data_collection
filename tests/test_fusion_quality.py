@@ -1,8 +1,8 @@
 """A scale guard measures within-map optimization change, not arbitrary map scale."""
 import json
 import unittest
-from software.configuration import loader as config
-from software.trajectory.reporting.constraint_quality import scale_consistency, scale_failure
+from umi.config import loader as config
+from umi.estimation.constraint_quality import scale_consistency, scale_failure
 
 
 class FusionQualityTests(unittest.TestCase):

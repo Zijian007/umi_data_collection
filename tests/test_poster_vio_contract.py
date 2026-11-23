@@ -4,9 +4,9 @@ import unittest
 
 import numpy as np
 
-from software.scene.pipeline.tasks.poster_vio import PosterVioRequest
-from software.trajectory.algorithms.poster_vio.models import PosterVioParameters
-from software.trajectory.algorithms.poster_vio import PosterVioObservation, PosterVioQuality, PosterVioProblem, PosterVioResult, validate_problem, validate_result, PosterVioPolicy, assess_observations, ArmSolveInput, solve_joint_poster_imu
+from umi.workflows.scene.tasks.poster_vio import PosterVioRequest
+from umi.estimation.poster_vio.models import PosterVioParameters
+from umi.estimation.poster_vio import PosterVioObservation, PosterVioQuality, PosterVioProblem, PosterVioResult, validate_problem, validate_result, PosterVioPolicy, assess_observations, ArmSolveInput, solve_joint_poster_imu
 
 
 def observation(arm: str) -> PosterVioObservation:
@@ -65,7 +65,7 @@ class PosterVioContractTests(unittest.TestCase):
 
     def test_joint_poster_imu_solver_optimizes_shared_board_on_synthetic_observations(self):
         from test_poster_fusion import fixture
-        from software.camera.geometry import resample_pose_series
+        from umi.core.geometry import resample_pose_series
 
         data = fixture()
         baseline, times, imu, observations, extrinsics, trajectory, parameters, detections, board, measured, truth, board_pose = data
@@ -73,7 +73,7 @@ class PosterVioContractTests(unittest.TestCase):
         node_times, tag_indices = np.unique(rear_times, return_inverse=True)
         seed = resample_pose_series(times, truth, node_times)
         points = np.array([board.corners_m[int(tag_id)] for tag_id in detections.tag_ids])
-        model = __import__('software.vision.poster.geometry', fromlist=['camera_model']).camera_model(measured)
+        model = __import__('umi.perception.poster.geometry', fromlist=['camera_model']).camera_model(measured)
         world_point = board_pose[:3, :3] @ np.array([.2, .2, 0.]) + board_pose[:3, 3]
         natural_nodes = np.array([0, len(node_times) // 2, len(node_times) - 1])
         natural_pixels = []

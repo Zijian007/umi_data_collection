@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from software.trajectory.reporting.constraint_quality import scale_consistency
+from umi.estimation.constraint_quality import scale_consistency
 
 REAL_RUN = subprocess.run
 
@@ -26,6 +26,33 @@ class FakeEngines:
         self.environment = dict(UMI_PY=sys.executable, UMI_PY_TOOLS=sys.executable,
                                 ORB3_DIR=str(self.orb), ORB3_VOCAB=str(self.orb / 'Vocabulary/ORBvoc.txt'))
 
+    def fuse(self, request, **kwargs):
+        """Stand-in for ``fusion_runner.execute``; writes the files the real worker produces."""
+        from umi.workflows.segment import fusion_runner
+        directory = request.output
+        self.calls.append(('fuse', request, kwargs))
+        if self.failures.get('fuse', 0):
+            raise fusion_runner.FusionFailed('NO_USABLE_LENS')
+        directory.mkdir()
+        number = int(directory.parent.name.removeprefix('try_'))
+        chains = [[[0, self.frames-1], 'full']]
+        if number in self.bad_tries:
+            chains = [[[0, self.frames//2-1], 'full'], [[self.frames//2, self.frames-1], 'full']]
+        (directory / 'fuse_info.json').write_text(json.dumps(dict(
+            scale_consistency=scale_consistency([dict(lens='front', chain=0, sid=0,
+                scale_initial=1., scale_final=self.scale_changes.get(number, 1.))]),
+            frames=self.frames, init_lens='front', chains=dict(front=chains))))
+        (directory / 'traj_tum.txt').write_text(''.join(
+            f'{1+k*1001/30000:.9f} {k*.01:.6f} 0 0 0 0 0 1\n' for k in range(self.frames)))
+
+    def patches(self, run=None, fuse=None):
+        """Patch the external-engine and fusion-worker boundaries together."""
+        from unittest.mock import patch
+        from umi.perception import runtime
+        from umi.workflows.segment import fusion_runner
+        return (patch.object(runtime.subprocess, 'run', side_effect=run or self),
+                patch.object(fusion_runner, 'execute', side_effect=fuse or self.fuse))
+
     def write_dataset(self, output: Path) -> None:
         cam, imu = output / 'mav0/cam0', output / 'mav0/imu0'
         cam.mkdir(parents=True, exist_ok=True)
@@ -37,8 +64,8 @@ class FakeEngines:
     def __call__(self, command, **kwargs):
         command = list(map(str, command))
         output = kwargs['stdout']
-        if 'software.vision.tools.make_lens_video' in command:
-            pos = command.index('software.vision.tools.make_lens_video')
+        if 'umi.perception.tools.make_lens_video' in command:
+            pos = command.index('umi.perception.tools.make_lens_video')
             target = Path(command[pos + 3])
             self.calls.append(('video', command, kwargs))
             code = self.failures.get('video', 0)
@@ -63,29 +90,9 @@ class FakeEngines:
                 f'{k},{k*1001/30000:.9f},2,1,{k*.01:.6f},0,0,0,0,0,1\n' for k in range(self.frames)))
             output.write(f'TRACKED {self.frames} / {self.frames}\n')
             return SimpleNamespace(returncode=self.map_returncode if kind == 'map' else 0)
-        if 'software.vision.tools.merge_frames' in command:
+        if 'umi.perception.tools.merge_frames' in command:
             self.calls.append(('merge', command, kwargs))
             if self.failures.get('merge'):
                 return SimpleNamespace(returncode=self.failures['merge'])
             return REAL_RUN(command, **kwargs)
-        if 'software.trajectory.algorithms.fusion.cli' in command:
-            pos = command.index('software.trajectory.algorithms.fusion.cli')
-            directory = Path(command[pos + 6])
-            self.calls.append(('fuse', command, kwargs))
-            code = self.failures.get('fuse', 0)
-            if code:
-                output.write('NO_USABLE_LENS\n')
-                return SimpleNamespace(returncode=code)
-            directory.mkdir()
-            number = int(directory.parent.name.removeprefix('try_'))
-            chains = [[[0, self.frames-1], 'full']]
-            if number in self.bad_tries:
-                chains = [[[0, self.frames//2-1], 'full'], [[self.frames//2, self.frames-1], 'full']]
-            (directory / 'fuse_info.json').write_text(json.dumps(dict(
-                scale_consistency=scale_consistency([dict(lens='front', chain=0, sid=0,
-                    scale_initial=1., scale_final=self.scale_changes.get(number, 1.))]),
-                frames=self.frames, init_lens='front', chains=dict(front=chains))))
-            (directory / 'traj_tum.txt').write_text(''.join(
-                f'{1+k*1001/30000:.9f} {k*.01:.6f} 0 0 0 0 0 1\n' for k in range(self.frames)))
-            return SimpleNamespace(returncode=0)
         raise AssertionError(f'unexpected external command: {command}')

@@ -5,7 +5,7 @@ import unittest
 import av
 import numpy as np
 
-from software.gripper_width.detection.frames import FrameDetector, crop_gray
+from umi.perception.gripper.detection.frames import FrameDetector, crop_gray
 
 
 class ConversionTrace:

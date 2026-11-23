@@ -10,10 +10,10 @@ import unittest
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.camera.geometry import relative_pose_series
-from software.infrastructure import provenance
-from software.scene import cli
-from software.scene.pipeline.tasks.relative_pose_evaluation import evaluate
+from umi.core.geometry import relative_pose_series
+from umi.infra import provenance
+from umi.apps import scene as cli
+from umi.dataset.relative_pose_evaluation import evaluate
 
 
 class RelativeEvaluationTests(unittest.TestCase):

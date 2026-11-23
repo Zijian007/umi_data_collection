@@ -1,13 +1,13 @@
 """共享场景的数值与流程回归：已知尺度、固定坐标、双手同步、资产和失败发布。"""
 from __future__ import annotations
-from software.trajectory.algorithms.fixed_map.parameters import FixedMapParameters, MapPlacementParameters
-from software.configuration.loader import load
-from software.infrastructure import provenance as artifact_identity
-from software.infrastructure.terminal import Console
-from software.scene.pipeline.tasks import poster_independent as independent_reconstruction, scene_map as scene_reconstruction
-from software.scene.pipeline.maps import repository as map_lifecycle
-from software.scene.pipeline.maps import build as map_build
-from software.scene.pipeline.maps import repository as map_repository
+from umi.estimation.fixed_map.parameters import FixedMapParameters, MapPlacementParameters
+from umi.config.loader import load
+from umi.infra import provenance as artifact_identity
+from umi.infra.terminal import Console
+from umi.workflows.scene.tasks import poster_independent as independent_reconstruction, scene_map as scene_reconstruction
+from umi.workflows.scene.maps import repository as map_lifecycle
+from umi.workflows.scene.maps import build as map_build
+from umi.workflows.scene.maps import repository as map_repository
 
 import csv
 import io
@@ -23,31 +23,32 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
-from software.scene.result_io import pose_rows
+from umi.store.result_io import pose_rows
 from scipy.spatial.transform import Rotation
 
-from software.configuration import loader as config
-from software.configuration import user_settings
-from software.camera.geometry import imu_from_camera
-from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
-from software.scene.parameters import SceneOverrides
-from software.scene import spatial as slam, spatial as mapping
-from software.trajectory.algorithms.fixed_map import fusion, geometry
-from software.scene import models, workflow
-from software.trajectory.models import FusedTrajectory
-from software.scene.result_io import read_arm_settings, read_arm_summary
-from software.scene.pipeline import recordings as recording_checks
-from software.scene.management.camera_assets import select_camera
-from software.infrastructure.file_store import write_json, write_yaml
-from software.camera import calibration_assets
-from software.trajectory import calibration as selection
-from software.vision.models import LensVideo, RecordingData, MapAtlas
-from software.viewer.results.catalog import RecordingCatalog
-from software.viewer import ViewerDataError
-from software.camera import registry
-from software.scene import result_io as asset_identity
-from software.trajectory.algorithms.inertial import integrate_samples
+from umi.config import loader as config
+from umi.config import user_settings
+from umi.core.geometry import imu_from_camera
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
+from umi.workflows.scene.parameters import SceneOverrides
+from umi.estimation import mapping as slam, mapping
+from umi.estimation.fixed_map import fusion, geometry
+from umi.store import models
+from umi.workflows.scene import workflow
+from umi.estimation.models import FusedTrajectory
+from umi.store.result_io import read_arm_settings, read_arm_summary
+from umi.workflows.scene import recordings as recording_checks
+from umi.workflows.scene.camera_assets import select_camera
+from umi.infra.file_store import write_json, write_yaml
+from umi.devices import calibration_assets
+from umi.devices import selection
+from umi.perception.models import LensVideo, RecordingData, MapAtlas
+from umi.apps.viewer.results.catalog import RecordingCatalog
+from umi.apps.viewer import ViewerDataError
+from umi.devices import registry
+from umi.store import result_io as asset_identity
+from umi.estimation.inertial import integrate_samples
 
 
 def motion(phase=0., baseline=0.):
@@ -219,24 +220,24 @@ class SceneWorkflowTests(unittest.TestCase):
                 SimpleNamespace(parameters=self.scene.trajectory.values),
                 (LensVideo('front', encoded, asset_dir / 'settings.yaml', None),), times, imu,
                 RecordingData({}, asset_dir / 'imu.csv'))
-        self.patches = [patch('software.camera.registry.rear_path', side_effect=lambda serial, version: self.rear_files[serial]),
-            patch('software.camera.registry.pin', side_effect=lambda serial: dict(calibration='test')),
-            patch('software.scene.pipeline.recordings.check_episode', return_value=recording_checks.EpisodeCheckReport(passed=True)),
-            patch('software.scene.management.camera_assets.select_camera', side_effect=self.select_camera),
-            patch('software.scene.workflow.runtime.validate_engines', return_value=(self.root, self.root)),
+        self.patches = [patch('umi.devices.registry.rear_path', side_effect=lambda serial, version: self.rear_files[serial]),
+            patch('umi.devices.registry.pin', side_effect=lambda serial: dict(calibration='test')),
+            patch('umi.workflows.scene.recordings.check_episode', return_value=recording_checks.EpisodeCheckReport(passed=True)),
+            patch('umi.workflows.scene.camera_assets.select_camera', side_effect=self.select_camera),
+            patch('umi.workflows.scene.workflow.runtime.validate_engines', return_value=(self.root, self.root)),
             patch.object(artifact_identity, 'engine_identity', return_value=dict(orb_library='fixture')),
-            patch('software.scene.pipeline.recordings.prepare_recording', side_effect=lambda video, camera, *args, **kwargs: replace(self.prepared_recordings[video], camera=camera)),
-            patch('software.scene.spatial.build', side_effect=self.build),
-            patch('software.scene.spatial.atlas_candidates', side_effect=lambda rec, lens, *args, **kwargs: iter([(0, self.observations(rec, lens))])),
-            patch('software.scene.spatial.localize', side_effect=lambda rec, lens, *args, **kwargs: self.observations(rec, lens)),
-            patch('software.scene.spatial.export_map', return_value=dict(index=0, id=0, points=[[0., 0., 0.]], point_count=1,
+            patch('umi.workflows.scene.recordings.prepare_recording', side_effect=lambda video, camera, *args, **kwargs: replace(self.prepared_recordings[video], camera=camera)),
+            patch('umi.estimation.mapping.build', side_effect=self.build),
+            patch('umi.estimation.mapping.atlas_candidates', side_effect=lambda rec, lens, *args, **kwargs: iter([(0, self.observations(rec, lens))])),
+            patch('umi.estimation.mapping.localize', side_effect=lambda rec, lens, *args, **kwargs: self.observations(rec, lens)),
+            patch('umi.estimation.mapping.export_map', return_value=dict(index=0, id=0, points=[[0., 0., 0.]], point_count=1,
                 keyframes=[], bounds=None, coordinates='trajectory', alignment=dict(status='aligned', scale=2.3,
                 rotation=np.eye(3).tolist(), translation=[0., 0., 0.], rmse_m=0., source='fixed_scene')))]
         for item in self.patches:
             item.start(); self.addCleanup(item.stop)
 
     def select_camera(self, video, scene):
-        from software.gripper_width import calibration as width_calibration
+        from umi.perception.gripper import calibration as width_calibration
         camera = self.cameras[video]
         return replace(camera,
             selected=replace(camera.selected, geometry=selection.read_tcp_geometry(camera.files['tcp'])),
@@ -349,7 +350,7 @@ class SceneWorkflowTests(unittest.TestCase):
             localization_fraction=1., maximum_visual_gap_s=0., actual_error='not_measured'))
 
     def test_single_arm_fallback_publication_viewing_reuse_and_export_isolation(self):
-        from software.scene.management import episodes
+        from umi.workflows.scene import episodes
         self.single_arm_episode()
         self.build_scene()
         with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene',
@@ -410,8 +411,8 @@ class SceneWorkflowTests(unittest.TestCase):
             local.assert_not_called()
 
     def test_fallback_still_measures_and_rejects_invalid_tag_distance(self):
-        from software.gripper_width.distance import measurement as tag_distance
-        from software.gripper_width.distance.measurement import TagDistanceResult, TagDistanceSeries
+        from umi.perception.gripper.distance import measurement as tag_distance
+        from umi.perception.gripper.distance.measurement import TagDistanceResult, TagDistanceSeries
         self.single_arm_episode()
         self.build_scene()
         video = self.recording_paths['right']
@@ -431,7 +432,7 @@ class SceneWorkflowTests(unittest.TestCase):
                           side_effect=fusion.SceneFusionQualityError('覆盖不足')), \
                 patch.object(independent_reconstruction, 'reconstruct', return_value=self.local_fusion_result()), \
                 patch.object(tag_distance, 'process', side_effect=measure) as process, \
-                patch('software.vision.decoding.VideoDecode.run', return_value=[]):
+                patch('umi.perception.decoding.VideoDecode.run', return_value=[]):
             result = workflow.run_episode(self.episode_path)
             output = Path(result['output'])
             first = output.resolve()
@@ -486,7 +487,7 @@ class SceneWorkflowTests(unittest.TestCase):
         key = catalog.scan()['recordings'][0]['id']
         self.assertIn('camera', catalog.load(key)['tracks'])
         self.assertEqual(catalog.map_data(key)['kind'], 'umi_map_view')
-        from software.scene.management import episodes
+        from umi.workflows.scene import episodes
         episodes.review(self.episode_path, accept=True, reviewer='test')
         episodes.export([self.episode_path], self.root / 'legacy_export')
         self.assertEqual({path: path.read_bytes() for path in output.rglob('*') if path.is_file()}, before)
@@ -542,7 +543,7 @@ class SceneWorkflowTests(unittest.TestCase):
             dir=str(camera.selected.directory), id='test', source='registry', cam_time_offset_ns=0,
             measurement=camera.measurements['front'])
         scene = replace(self.scene, mode='dual', rear_calibrations={camera.serial: rear})
-        with patch('software.camera.registry.read_insv_serial', return_value=camera.serial), patch('software.camera.registry.get', return_value=record):
+        with patch('umi.devices.registry.read_insv_serial', return_value=camera.serial), patch('umi.devices.registry.get', return_value=record):
             write_json(rear, content)
             with self.assertRaisesRegex(ValueError, 'camera_serial'):
                 select_camera(self.recording_paths['left'], scene)
@@ -686,7 +687,7 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertEqual(direct.map_data(direct.scan()['recordings'][0]['id']), json.loads(shared_map.read_text()))
 
     def test_map_version_contains_build_time_and_forced_builds_are_distinct(self):
-        with patch('software.scene.pipeline.maps.build.datetime') as clock:
+        with patch('umi.workflows.scene.maps.build.datetime') as clock:
             clock.now.return_value = datetime(2026, 10, 25, 15, 30, 0)
             first = self.build_scene()
             self.assertRegex(first['version'], r'^20261025_153000-[0-9a-f]{8}$')
@@ -755,7 +756,7 @@ class SceneWorkflowTests(unittest.TestCase):
         workflow.run_episode(self.episode_path)
         output = self.task_root / 'results'
         previous = output.resolve()
-        with patch('software.trajectory.algorithms.fixed_map.fusion.fuse', side_effect=ValueError('failed fusion')):
+        with patch('umi.estimation.fixed_map.fusion.fuse', side_effect=ValueError('failed fusion')):
             with self.assertRaisesRegex(ValueError, 'failed fusion'):
                 workflow.run_episode(self.episode_path, force=True)
         self.assertEqual(output.resolve(), previous)
@@ -766,7 +767,7 @@ class SceneWorkflowTests(unittest.TestCase):
             workflow.run_episode(self.episode_path)
 
     def test_published_result_survives_attempt_state_write_failure(self):
-        from software.scene.management import episodes
+        from umi.workflows.scene import episodes
 
         self.build_scene()
         output = self.task_root / 'results'
@@ -950,7 +951,7 @@ class SceneWorkflowTests(unittest.TestCase):
                 sha256=artifact_identity.file_hash(duplicate))
         write_yaml(ep2, second)
 
-        from software.scene import cli
+        from umi.apps import scene as cli
         import io
         stdout = io.StringIO()
         with patch('sys.stdout', stdout), patch.object(workflow.console, 'write'):

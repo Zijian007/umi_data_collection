@@ -1,5 +1,5 @@
-from software.scene.management.task_configuration import read_synchronization
-from software.infrastructure.file_store import read_yaml
+from umi.workflows.scene.task_configuration import read_synchronization
+from umi.infra.file_store import read_yaml
 """指令和同步作为任务输入参与处理、验收与导出，不改变单相机求解时钟。"""
 import json
 import math
@@ -7,14 +7,14 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
-from software.scene.result_io import pose_rows
+from umi.store.result_io import pose_rows
 
-from software.scene.management import episodes
-from software.scene.management.inputs import batch as episode_inputs
-from software.scene import workflow
-from software.scene.pipeline import synchronization
-from software.sync.specialist_audio import AudioSyncEstimate
-from software.infrastructure.file_store import write_yaml
+from umi.workflows.scene import episodes
+from umi.workflows.scene.inputs import batch as episode_inputs
+from umi.workflows.scene import workflow
+from umi.workflows.scene import synchronization
+from umi.perception.audio.specialist_audio import AudioSyncEstimate
+from umi.infra.file_store import write_yaml
 from registry_fakes import write_task_configuration, read_task_configuration
 import test_scene as fixtures
 

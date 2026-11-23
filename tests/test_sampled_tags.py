@@ -1,4 +1,4 @@
-from software.scene import layout
+from umi.store import layout
 """全段快速扫描、按需补检、真实 PTS 与每手有效比例验收。"""
 
 from dataclasses import replace
@@ -13,17 +13,13 @@ import unittest
 import av
 import numpy as np
 
-from software.gripper_width.detection import markers as detection, sampling as sampled_detection
-from software.gripper_width.distance import measurement as tag_distance
-from software.gripper_width.distance.pose_estimation import TagPoseQuality
-from software.gripper_width.distance.measurement import (
-    TagDistanceRequest,
-    TagDistanceResult,
-    TagDistanceSeries,
-)
-from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
-from software.infrastructure.file_store import write_json
+from umi.perception.gripper.detection import markers as detection, sampling as sampled_detection
+from umi.perception.gripper.distance import measurement as tag_distance
+from umi.perception.gripper.distance.pose_estimation import TagPoseQuality
+from umi.perception.gripper.distance.measurement import TagDistanceRequest, TagDistanceResult, TagDistanceSeries
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
+from umi.infra.file_store import write_json
 from test_tag_distance import CAMERA, SIZES, projected
 
 
@@ -174,7 +170,7 @@ class SampledTagTests(unittest.TestCase):
         original_hash = sampled_detection.artifact_identity.source_hash
 
         def changed_hash(path):
-            return 'new-frame-clock' if str(path).endswith('camera/x3/frame.py') else original_hash(path)
+            return 'new-frame-clock' if str(path).endswith('core/frame.py') else original_hash(path)
 
         with patch.object(sampled_detection.artifact_identity, 'source_hash', side_effect=changed_hash):
             self.process()
@@ -310,7 +306,7 @@ class TagDistanceAcceptanceTests(unittest.TestCase):
                 scene_inputs.load_scene_parameters(overrides={'tag_distance_roi_px': roi})
 
     def test_cli_and_scene_share_the_requested_default_roi(self):
-        from software.calibration.cli import build_parser
+        from umi.apps.calib import build_parser
         for command in ('preview-width', 'detect-width'):
             parsed = build_parser().parse_args([command, 'raw.insv'])
             self.assertEqual(tuple(parsed.roi), (600, 980, 1350, 1250))
@@ -358,7 +354,7 @@ class TagDistanceAcceptanceTests(unittest.TestCase):
 
     def test_each_arm_must_pass_and_failure_preserves_previous_success(self):
         import test_scene
-        from software.scene import workflow
+        from umi.workflows.scene import workflow
         fixture = test_scene.SceneWorkflowTests()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
@@ -387,7 +383,7 @@ class TagDistanceAcceptanceTests(unittest.TestCase):
                                                        np.full(len(times), 'two_tags')), {})
 
         with patch.object(tag_distance, 'process', side_effect=measure), \
-                patch('software.vision.decoding.VideoDecode.run', return_value=[]), \
+                patch('umi.perception.decoding.VideoDecode.run', return_value=[]), \
                 self.assertRaisesRegex(ValueError, 'right.*40.0%.*50.0%'):
             workflow.run_episode(fixture.episode_path)
         self.assertEqual(output.resolve(), previous)

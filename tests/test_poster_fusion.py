@@ -8,16 +8,16 @@ import gtsam
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.trajectory.algorithms.fixed_map.parameters import FixedMapParameters, MapInertialParameters, MappedPosterParameters
-from software.configuration import loader as config
-from software.camera.geometry import resample_pose_series
-from software.scene.management.inputs.scene import load_scene_parameters
-from software.scene.parameters import SceneOverrides
-from software.trajectory.algorithms.fixed_map import fusion, poster
-from software.trajectory.algorithms.fixed_map.geometry import VisualObservations
-from software.vision.poster import layout as tag_board, detection as environment_tags, geometry as poster_pose
-from software.vision.poster import factors as poster_factors
-from software.scene import result_io as asset_identity
+from umi.estimation.fixed_map.parameters import FixedMapParameters, MapInertialParameters, MappedPosterParameters
+from umi.config import loader as config
+from umi.core.geometry import resample_pose_series
+from umi.workflows.scene.inputs.scene import load_scene_parameters
+from umi.workflows.scene.parameters import SceneOverrides
+from umi.estimation.fixed_map import fusion, poster
+from umi.estimation.fixed_map.geometry import VisualObservations
+from umi.perception.poster import layout as tag_board, detection as environment_tags, geometry as poster_pose
+from umi.estimation.factors import poster as poster_factors
+from umi.store import result_io as asset_identity
 tags = environment_tags
 
 
@@ -503,8 +503,8 @@ class PosterFusionTests(unittest.TestCase):
 class PosterWorkflowTests(unittest.TestCase):
     def test_configuration_requires_layout_and_valid_thresholds(self):
         import tempfile
-        from software.scene.management.inputs import scene as scene_inputs
-        from software.infrastructure.file_store import write_yaml
+        from umi.workflows.scene.inputs import scene as scene_inputs
+        from umi.infra.file_store import write_yaml
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)/'batch/collection.yaml'
             write_yaml(path, dict(kit='rig', recording=dict(arms=['left', 'right']),
@@ -532,10 +532,10 @@ class PosterWorkflowTests(unittest.TestCase):
         import json
         import shutil
         import test_scene
-        from software.scene import workflow
-        from software.infrastructure.file_store import read_yaml
-        from software.scene.result_io import read_arm_summary
-        from software.infrastructure.file_store import write_yaml
+        from umi.workflows.scene import workflow
+        from umi.infra.file_store import read_yaml
+        from umi.store.result_io import read_arm_summary
+        from umi.infra.file_store import write_yaml
         helper = test_scene.SceneWorkflowTests('runTest')
         helper.setUp()
         self.addCleanup(helper.doCleanups)
@@ -580,8 +580,8 @@ class PosterWorkflowTests(unittest.TestCase):
 
     def test_result_distinguishes_rear_localization_from_poster_fusion(self):
         import test_scene
-        from software.trajectory.models import FusedTrajectory
-        from software.scene.pipeline.tasks import trajectory_writers
+        from umi.estimation.models import FusedTrajectory
+        from umi.workflows.scene.tasks import trajectory_writers
         helper = test_scene.SceneWorkflowTests('runTest')
         helper.setUp()
         self.addCleanup(helper.doCleanups)

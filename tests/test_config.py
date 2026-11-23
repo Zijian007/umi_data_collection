@@ -7,22 +7,23 @@ import tempfile
 import unittest
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
-from software.vision.runtime import prepare_mask
+from umi.perception.runtime import prepare_mask
 from unittest.mock import patch
 
-from software.vision import runtime as visual_runtime
-from software.configuration import loader as config
-from software.camera import registry
-from software.calibration.pipeline import inputs
-from software.calibration import result_io
-from software.calibration import workflow as calibration_workflow
-from software.calibration.models import CalibrationRequest, SegmentPaths
-from software.camera import calibration_assets
-from software.trajectory import calibration as trajectory_calibration
-from software.trajectory import cli, workflow
-from software.trajectory import reconstruction, workflow as reuse, reconstruction as runtime
-from software.trajectory.reporting import artifacts as results
-from software.trajectory.models import FusionArtifacts, TrajectoryRequest
+from umi.perception import runtime as visual_runtime
+from umi.config import loader as config
+from umi.devices import registry
+from umi.workflows.calibration.pipeline import inputs
+from umi.workflows.calibration import result_io
+from umi.workflows.calibration import workflow as calibration_workflow
+from umi.workflows.calibration.models import CalibrationRequest, SegmentPaths
+from umi.devices import calibration_assets
+from umi.devices import selection as trajectory_calibration
+from umi.apps import segment as cli
+from umi.workflows.segment import workflow
+from umi.workflows.segment import reconstruction, workflow as reuse, reconstruction as runtime
+from umi.workflows.segment.reporting import artifacts as results
+from umi.estimation.models import FusionArtifacts, TrajectoryRequest
 import test_calibration_workflow as calibration_tests
 import test_trajectory_workflow as trajectory_tests
 from registry_fakes import legacy_bundle
@@ -53,8 +54,8 @@ class ConfigTests(unittest.TestCase):
             p.fusion.step = 10
 
     def test_environment_tag_defaults_have_one_shared_source(self):
-        from software.scene.management.inputs.scene import load_scene_parameters
-        from software.infrastructure.file_store import read_yaml
+        from umi.workflows.scene.inputs.scene import load_scene_parameters
+        from umi.infra.file_store import read_yaml
 
         shared = read_yaml(Path('config/algorithms/environment_tags.yaml'))
         trajectory_yaml = read_yaml(Path('config/algorithms/trajectory.yaml'))
@@ -193,7 +194,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(resolved.values.fusion.node_stride, 3)
         config.write_yaml(self.root/'child.yaml', resolved.values)
         child = config.load('trajectory', self.root/'child.yaml')
-        from software.trajectory.environment_assets import select_environment_assets
+        from umi.workflows.segment.environment_assets import select_environment_assets
         request = config.resolve_trajectory_request(TrajectoryRequest(configuration=child))
         selected_assets = select_environment_assets(None, None, request)
         self.assertIsNone(selected_assets.rear)
@@ -225,7 +226,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_slam_geometry_scales_both_lenses_without_changing_distortion(self):
         import cv2
-        from software.camera.x3.frame import scale_intrinsics
+        from umi.core.frame import scale_intrinsics
 
         camera = calibration_assets.read_basalt(calibration_assets.SAMPLE_CAMERA_JSON)
         for rear in (False, True):
@@ -267,7 +268,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(original.read_bytes(), source_bytes)
 
     def test_child_physical_check_uses_explicit_values_without_reloading_defaults(self):
-        from software.calibration.tools import imu_physical_check as physical
+        from umi.workflows.calibration.tools import imu_physical_check as physical
         argv = ['--calib', str(calibration_assets.SAMPLE_CAMERA_JSON), '--euroc', str(self.root/'dataset'),
                 '--out', str(self.root/'check'), '--window-s', '.7', '--gyro-max-dps', '3',
                 '--acc-std-max', '.06', '--min-window-samples', '25', '--gravity', '9.81',
@@ -279,7 +280,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_child_video_tool_uses_explicit_values_without_reloading_defaults(self):
         from types import SimpleNamespace
-        from software.vision.tools import make_lens_video
+        from umi.perception.tools import make_lens_video
         cam = self.root/'mav0/cam0'
         cam.mkdir(parents=True)
         (cam/'data.csv').write_text('#timestamp,filename\n1000000000,frame.png\n')
@@ -429,10 +430,10 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(calibration_workflow.run(inputs.parse_run_args(args)), 0)
             imu_command = next(command for command in commands if '--gyro-noise-std' in command)
             self.assertEqual(float(imu_command[imu_command.index('--gyro-noise-std')+1]), .0004)
-            gravity_command = next(command for command in commands if any('software.calibration.tools.imu_physical_check' in part for part in command))
+            gravity_command = next(command for command in commands if any('umi.workflows.calibration.tools.imu_physical_check' in part for part in command))
             self.assertEqual(float(gravity_command[gravity_command.index('--window-s')+1]), .7)
             self.assertEqual(float(gravity_command[gravity_command.index('--min-window-span-fraction')+1]), .9)
-            from software.calibration.pipeline import board_detection
+            from umi.workflows.calibration.pipeline import board_detection
             self.assertEqual({call.args[0].name: call.kwargs['step'] for call in board_detection.detect_all.call_args_list},
                              {'A': 7, 'C': 2})
             report = result_io.load_result(Path(args.out))

@@ -12,10 +12,10 @@ import av
 import cv2
 import numpy as np
 
-from software.calibration import cli
-from software.gripper_width.detection.markers import MarkerDetector
-from software.gripper_width import video_tools as width_video
-from software.gripper_width.detection.frames import crop_gray
+from umi.apps import calib as cli
+from umi.perception.gripper.detection.markers import MarkerDetector
+from umi.perception.gripper import video_tools as width_video
+from umi.perception.gripper.detection.frames import crop_gray
 from test_width_preview import recording
 
 ROI = (100, 700, 900, 1000)

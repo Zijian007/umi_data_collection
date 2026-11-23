@@ -6,12 +6,12 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.configuration import loader as config
-from software.camera import registry
-from software.camera.geometry import resample_pose_series
-from software.trajectory.algorithms.fusion import solver as fusion, poster as fusion_poster
-from software.trajectory.algorithms.fusion.data import FusionInputs
-from software.vision.poster import layout as tag_board, detection as environment_tags, geometry as poster_pose
+from umi.config import loader as config
+from umi.devices import registry
+from umi.core.geometry import resample_pose_series
+from umi.estimation.fusion import solver as fusion, poster as fusion_poster
+from umi.estimation.fusion.data import FusionInputs
+from umi.perception.poster import layout as tag_board, detection as environment_tags, geometry as poster_pose
 tags = environment_tags
 
 
@@ -75,7 +75,7 @@ class IndependentPosterTests(unittest.TestCase):
         self.assertEqual(empty.evidence['environment_poster']['status'],'insufficient_observations')
 
     def test_fixed_rear_rotation_and_correction_limit_use_the_shared_factors(self):
-        from software.camera.geometry import imu_from_camera
+        from umi.core.geometry import imu_from_camera
         inputs, parameters = fixture()
         fixed = replace(parameters, environment_tags=replace(parameters.environment_tags,
             tag_rear_rotation_refinement_enabled=False))
@@ -123,7 +123,7 @@ class IndependentPosterTests(unittest.TestCase):
         times = np.array([0.,.1,.2,.3,.4])
         rear = {k:(np.array([t+.013,0.,0.]),np.eye(3)) for k,t in enumerate(times)}
         inputs = replace(inputs,video_times_s=times,observations=dict(front={},rear=rear),map_ids=dict(front={},rear={0:'a',1:'a',2:'b',3:'b',4:'b'}))
-        from software.trajectory.algorithms.fusion.data import retime_rear
+        from umi.estimation.fusion.data import retime_rear
         result = retime_rear(inputs, inputs.poster.measured)
         self.assertNotIn(0,result.observations['rear'])
         self.assertNotIn(2,result.observations['rear'])
@@ -141,7 +141,7 @@ def write_camera(path, measured, *, serial='test-camera', rear=False):
 
 
 class IndependentPosterPipelineTests(unittest.TestCase):
-    def test_frozen_input_reaches_real_fusion_cli_and_detects_tampering(self):
+    def test_frozen_input_reaches_real_fusion_and_detects_tampering(self):
         import csv
         import io
         import json
@@ -149,8 +149,8 @@ class IndependentPosterPipelineTests(unittest.TestCase):
         from dataclasses import asdict
         from pathlib import Path
         import tempfile
-        from software.trajectory import environment_assets as calibration_assets
-        from software.trajectory.algorithms.fusion import cli as fusion_cli
+        from umi.workflows.segment import environment_assets as calibration_assets
+        from umi.workflows.segment import fusion_runner
         inputs,parameters = fixture()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -174,9 +174,8 @@ class IndependentPosterPipelineTests(unittest.TestCase):
             times.write_text('t_canonical_s\n'+''.join(f'{t+1:.12f}\n' for t in inputs.video_times_s))
             parameter_file=root/'parameters.json';parameter_file.write_text(json.dumps(asdict(parameters)))
             with redirect_stdout(io.StringIO()):
-                result = fusion_cli.main([str(frames),str(frames),str(imu),'17000000','0,0,0,1',str(root/'out'),
-                    '--lever_prior','0,0,0','--calibration',str(front),'--parameters',str(parameter_file),'--times',str(times),'--poster',str(manifest)])
-            self.assertEqual(result,0)
+                fusion_runner.fuse(fusion_runner.FusionRequest(frames,frames,imu,17000000,(0,0,0,1),(0,0,0),root/'out',
+                    front,parameter_file,times=times,poster=manifest))
             evidence=json.loads((root/'out/fuse_info.json').read_text())
             self.assertEqual(evidence['environment_poster']['status'],'fused')
             self.assertEqual(np.loadtxt(root/'out/traj_tum.txt').shape,(len(inputs.video_times_s),8))
@@ -188,13 +187,13 @@ class IndependentPosterPipelineTests(unittest.TestCase):
         from pathlib import Path
         from types import SimpleNamespace
         import tempfile
-        from software.trajectory.models import TrajectoryRequest
-        from software.trajectory import environment_assets as calibration_assets
+        from umi.estimation.models import TrajectoryRequest
+        from umi.workflows.segment import environment_assets as calibration_assets
         inputs,_ = fixture()
         request=TrajectoryRequest(configuration=config.load('trajectory'),tag_layout=tag_board.DEFAULT_LAYOUT)
         selected=SimpleNamespace(camera_serial='test-camera',intrinsics_source='measured',
                                  assets=SimpleNamespace(camera_json=Path('front.json')))
-        with patch('software.camera.rear_fallback.derive', side_effect=ValueError('无法读取 INSV 工厂参数')):
+        with patch('umi.devices.rear_fallback.derive', side_effect=ValueError('无法读取 INSV 工厂参数')):
             with self.assertRaisesRegex(ValueError,'工厂参数'):
                 calibration_assets.select_environment_assets(Path('raw.insv'),selected,request)
         with tempfile.TemporaryDirectory() as temporary:
@@ -209,10 +208,9 @@ class IndependentPosterPipelineTests(unittest.TestCase):
 
     def test_single_arm_fallback_carries_scene_tags_to_native_engine(self):
         import json
-        from pathlib import Path
         from types import SimpleNamespace
         import test_scene_fallback
-        from software.trajectory import environment_assets as calibration_assets, reconstruction as runtime
+        from umi.workflows.segment import environment_assets as calibration_assets, reconstruction as runtime
         helper=test_scene_fallback.SceneFallbackAdapterTests('runTest')
         helper.setUp();self.addCleanup(helper.doCleanups)
         inputs,_=fixture()
@@ -225,22 +223,23 @@ class IndependentPosterPipelineTests(unittest.TestCase):
             files=dict(helper.recording.camera.files,rear=rear),measurements=dict(rear=inputs.poster.measured)))
         def engine(command,**kwargs):
             result=helper.engines(command,**kwargs)
-            if 'software.trajectory.algorithms.fusion.cli' in command:
-                manifest=Path(command[command.index('--poster')+1]);calibration_assets.load_poster(manifest)
-                parameters=json.loads(Path(command[command.index('--parameters')+1]).read_text())
-                self.assertTrue(parameters['environment_tags']['tag_fusion_enabled'])
-                pos=command.index('software.trajectory.algorithms.fusion.cli')
-                evidence=Path(command[pos+6])/'fuse_info.json'
-                document=json.loads(evidence.read_text());document['environment_poster']=dict(status='fused',actual_error='not_measured')
-                evidence.write_text(json.dumps(document))
             return result
-        with patch.object(tags,'detect',return_value=inputs.poster.observations),patch.object(runtime.subprocess,'run',side_effect=engine):
+        from umi.workflows.segment import fusion_runner
+        def fuse(request,**kwargs):
+            helper.engines.fuse(request,**kwargs)
+            calibration_assets.load_poster(request.poster)
+            parameters=json.loads(request.parameters.read_text())
+            self.assertTrue(parameters['environment_tags']['tag_fusion_enabled'])
+            evidence=request.output/'fuse_info.json'
+            document=json.loads(evidence.read_text());document['environment_poster']=dict(status='fused',actual_error='not_measured')
+            evidence.write_text(json.dumps(document))
+        with patch.object(tags,'detect',return_value=inputs.poster.observations),patch.object(runtime.subprocess,'run',side_effect=engine),patch.object(fusion_runner,'execute',side_effect=fuse):
             result=helper.run_fallback()
         self.assertEqual(result.evidence['environment_poster']['status'],'fused')
         self.assertEqual(result.evidence['mode'],'independent')
 
     def test_dual_native_graph_uses_measured_rear_and_distinct_board_key(self):
-        from software.camera.geometry import imu_from_camera
+        from umi.core.geometry import imu_from_camera
         inputs,parameters=fixture()
         # Supply a second independent visual-map scale, in the rear camera's own clock.
         poses=np.tile(np.eye(4),(len(inputs.video_times_s),1,1))

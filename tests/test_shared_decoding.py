@@ -10,17 +10,17 @@ import unittest
 import av
 import numpy as np
 
-from software.infrastructure import provenance
-from software.infrastructure.terminal import Console
-from software.gripper_width.detection import frames as detection, sampling as sampled_detection
-from software.scene import layout
-from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
-from software.scene.models import TaskInputs
-from software.scene.pipeline.tasks import measurements
-from software.infrastructure.file_store import write_yaml
-from software.vision.poster import layout as tag_board, detection as environment_tags
-from software.vision.decoding import VideoDecode
+from umi.infra import provenance
+from umi.infra.terminal import Console
+from umi.perception.gripper.detection import frames as detection, sampling as sampled_detection
+from umi.store import layout
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
+from umi.store.models import TaskInputs
+from umi.workflows.scene.tasks import measurements
+from umi.infra.file_store import write_yaml
+from umi.perception.poster import layout as tag_board, detection as environment_tags
+from umi.perception.decoding import VideoDecode
 from test_environment_tags import poster, recording
 from test_marker_detection import bright_markers
 

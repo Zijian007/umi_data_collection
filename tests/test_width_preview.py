@@ -12,10 +12,10 @@ import av
 import cv2
 import numpy as np
 
-from software.calibration import cli
-from software.gripper_width.detection import frames as detection
-from software.gripper_width.detection.markers import FrameDetection, MarkerDetector
-from software.gripper_width import video_tools as width_video
+from umi.apps import calib as cli
+from umi.perception.gripper.detection import frames as detection
+from umi.perception.gripper.detection.markers import FrameDetection, MarkerDetector
+from umi.perception.gripper import video_tools as width_video
 
 
 def recording(path: Path, *, size=(3840, 1920)) -> None:

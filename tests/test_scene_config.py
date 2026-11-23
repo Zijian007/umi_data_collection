@@ -1,16 +1,14 @@
-from software.scene.management.task_configuration import read_synchronization
+from umi.workflows.scene.task_configuration import read_synchronization
 """场景元数据与专家算法配置的边界。"""
 from pathlib import Path
 import tempfile
 import unittest
 
-from software.scene.management.inputs import (
-    scene as scene_inputs,
-)
-from software.scene import layout
-from software.scene.parameters import SceneOverrides
-from software.scene.pipeline.maps import repository as map_lifecycle
-from software.infrastructure.file_store import write_yaml as _write_yaml
+from umi.workflows.scene.inputs import scene as scene_inputs
+from umi.store import layout
+from umi.workflows.scene.parameters import SceneOverrides
+from umi.workflows.scene.maps import repository as map_lifecycle
+from umi.infra.file_store import write_yaml as _write_yaml
 
 
 def write_yaml(path, data):
@@ -118,7 +116,7 @@ class SceneConfigurationTests(unittest.TestCase):
         self.assertEqual(parameters.tag_rear_rotation_maximum_correction_deg, 2.)
         self.assertEqual(scene_inputs.load_scene_parameters(overrides=dict(tag_maximum_cull_fraction=0.)).
                          tag_maximum_cull_fraction, 0.)
-        from software.configuration import loader as config
+        from umi.config import loader as config
         invalid = [dict(tag_maximum_cull_fraction=1.), dict(tag_maximum_cull_fraction=-.1),
             dict(tag_minimum_retained_time_fraction=1.1), dict(tag_minimum_retained_time_fraction=0.),
             dict(tag_rear_rotation_refinement_enabled=1), dict(tag_rear_rotation_prior_sigma_rad=0.),
@@ -145,7 +143,7 @@ class SceneConfigurationTests(unittest.TestCase):
 
     def test_poster_backend_quality_parameters_are_independent_and_round_trip(self):
         from dataclasses import asdict
-        from software.scene.parameters import nested_snapshot, flatten
+        from umi.workflows.scene.parameters import nested_snapshot, flatten
         parameters = scene_inputs.load_scene_parameters(overrides=dict(
             placement=dict(maximum_rotation_deg=1.), localization=dict(maximum_visual_gap_s=.1)))
         self.assertEqual(parameters.poster_maximum_gravity_difference_deg, 5.)
@@ -184,7 +182,7 @@ class SceneConfigurationTests(unittest.TestCase):
         write_yaml(batch / 'collection.yaml', dict(schema_version=1, kit='rig', scene={}))
         write_yaml(batch / 'batch.yaml', dict(kit='rig'))
         with self.assertRaisesRegex(ValueError, 'batch.yaml 已移除'):
-            from software.scene.management import batch_snapshot as batches
+            from umi.workflows.scene import batch_snapshot as batches
             batches.read_collection(batch)
         (batch / 'batch.yaml').unlink()
         task = batch / 'take_001'
@@ -209,7 +207,7 @@ class SceneConfigurationTests(unittest.TestCase):
         self.assertEqual(scene_inputs.read_scene(collection).mode, 'dual')
 
     def test_auto_layout_handles_epoch_directory_shapes(self):
-        from software.scene.management import batch_snapshot as batches
+        from umi.workflows.scene import batch_snapshot as batches
         batch = self.root / '20261115'
         (batch / 'mapping/epoch_001').mkdir(parents=True)
         (batch / 'mapping/epoch_001/map.insv').write_bytes(b'')

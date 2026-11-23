@@ -6,10 +6,11 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software.calibration.algorithms import board_pnp
-from software.camera.x3 import factory_kb4 as fit
-from software.calibration.models import Kb4
-from software.camera.x3.factory_geometry import Mei; from software.camera.x3.factory_geometry import Kb4Model
+from umi.workflows.calibration.algorithms import board_pnp
+from umi.devices.x3 import factory_kb4 as fit
+from umi.workflows.calibration.models import Kb4
+from umi.devices.x3.factory_geometry import Mei
+from umi.devices.x3.factory_geometry import Kb4Model
 
 
 class FactoryKb4Tests(unittest.TestCase):
@@ -88,7 +89,7 @@ class FactoryKb4Tests(unittest.TestCase):
         self.assertLess(validation['roundtrip_pixels']['maximum'], 1e-9)
         pixels = np.array([[0., 0.], [720., 600.], [1439., 1439.]])
         np.testing.assert_allclose(kb.unproject(pixels), kb.full_view().unproject(pixels+240), atol=1e-12)
-        from software.camera.x3.frame import scale_intrinsics
+        from umi.core.frame import scale_intrinsics
         scaled = scale_intrinsics(vars(kb), 1440, 720)
         np.testing.assert_allclose(Kb4Model(**scaled).unproject((pixels+.5)*.5-.5), kb.unproject(pixels), atol=1e-12)
 

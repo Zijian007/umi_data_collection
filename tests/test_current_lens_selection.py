@@ -1,5 +1,5 @@
-from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import scene as kit_inputs
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene.inputs import scene as kit_inputs
 """当前镜头来源、安装替换、历史冻结与混合来源的业务约定。"""
 from contextlib import redirect_stderr
 from copy import deepcopy
@@ -12,15 +12,16 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from software.camera import registry
-from software.calibration import cli, devices, inventory
-from software.camera import calibration_source
-from software.scene.management import batch_snapshot as batches
-from software.scene.management import camera_assets
-from software.scene.management.inputs import batch as batch_inputs
-from software.scene.pipeline.maps import repository as map_repository
-from software.infrastructure.file_store import write_json, write_yaml
-from software.camera import calibration_assets as assets
+from umi.devices import registry
+from umi.apps import calib as cli
+from umi.workflows.calibration import devices, inventory
+from umi.devices import calibration_source
+from umi.workflows.scene import batch_snapshot as batches
+from umi.workflows.scene import camera_assets
+from umi.workflows.scene.inputs import batch as batch_inputs
+from umi.workflows.scene.maps import repository as map_repository
+from umi.infra.file_store import write_json, write_yaml
+from umi.devices import calibration_assets as assets
 from test_intrinsics_source import factory_bundle
 
 
@@ -154,7 +155,7 @@ class CurrentLensSelectionTests(unittest.TestCase):
             parameters=SimpleNamespace(tag_fusion_enabled=False))
         with patch.object(registry, 'read_insv_serial', return_value='camera'), \
              patch.object(calibration_source, 'check_recording'), \
-             patch('software.vision.orb_environment.require_forward_kb4'):
+             patch('umi.infra.orb_install.require_forward_kb4'):
             camera = camera_assets.select_camera(Path('video.insv'), scene)
         self.assertEqual(camera.measurements['front']['intrinsics_source'], 'measured')
         self.assertEqual(camera.measurements['rear']['intrinsics_source'], 'factory')

@@ -5,9 +5,9 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 
-from software.configuration import operational_settings as settings
+from umi.config import operational_settings as settings
 
-from software.gripper_width.detection.markers import MarkerDetector, CascadeMarkerDetector, FrameDetection
+from umi.perception.gripper.detection.markers import MarkerDetector, CascadeMarkerDetector, FrameDetection
 
 FULL_SEARCH_INTERVAL = settings.values('gripper_tag_detection')['full_search_interval']
 

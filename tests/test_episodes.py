@@ -1,19 +1,21 @@
 """套件单/双手、批次配置、离线处理、验收和导出的完整业务回归。"""
 from dataclasses import replace
-from software.scene.pipeline.tasks import scene_map as scene_reconstruction
+from umi.workflows.scene.tasks import scene_map as scene_reconstruction
 import io
 import json
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
-from software.scene.management import episodes
-from software.scene import cli, layout, workflow
-from software.infrastructure.file_store import write_yaml
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
+from umi.workflows.scene import episodes
+from umi.apps import scene as cli
+from umi.store import layout
+from umi.workflows.scene import workflow
+from umi.infra.file_store import write_yaml
 from registry_fakes import write_task_configuration
-from software.viewer.results.catalog import RecordingCatalog
+from umi.apps.viewer.results.catalog import RecordingCatalog
 import test_scene as scene_fixtures
 
 
@@ -97,7 +99,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
     def test_reconstruction_failure_reuses_cached_localization_and_keeps_success(self):
         workflow.run_episode(self.f.episode_path)
         output=(self.f.task_root/'results').resolve()
-        with patch('software.trajectory.algorithms.fixed_map.fusion.fuse',side_effect=ValueError('retry fusion')):
+        with patch('umi.estimation.fixed_map.fusion.fuse',side_effect=ValueError('retry fusion')):
             with self.assertRaisesRegex(ValueError,'retry fusion'):
                 workflow.run_episode(self.f.episode_path,force=True)
         self.assertEqual((self.f.task_root/'results').resolve(),output)
@@ -107,7 +109,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
         report = self.f.task_root / state['attempt']['preflight_report']
         self.assertTrue(report.is_file())
         self.assertTrue(json.loads(report.read_text())['passed'])
-        with patch('software.scene.spatial.localize',side_effect=AssertionError('cached localization must be reused')):
+        with patch('umi.estimation.mapping.localize',side_effect=AssertionError('cached localization must be reused')):
             workflow.run_episode(self.f.episode_path,force=True)
 
     def test_damaged_localization_cache_recomputes_only_that_entry(self):
@@ -198,7 +200,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
         workflow.run_episode(self.f.episode_path)
         output = (self.f.task_root/'results').resolve()
         before = (output/'episode.json').read_bytes()
-        with patch('software.scene.pipeline.tasks.publication.write_episode_result', side_effect=OSError('report write failed')):
+        with patch('umi.workflows.scene.tasks.publication.write_episode_result', side_effect=OSError('report write failed')):
             with self.assertRaisesRegex(OSError, 'report write failed'):
                 workflow.run_episode(self.f.episode_path, force=True)
         self.assertEqual((self.f.task_root/'results').resolve(), output)

@@ -13,12 +13,13 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software.configuration import loader as config
-from software.vision.runtime import prepare_mask
-from software.camera.x3 import extraction, frame
-from software.camera.calibration_assets import SAMPLE_CAMERA_JSON, read_basalt
-from software.trajectory import calibration as assets
-from software.vision.tools import make_lens_video
+from umi.config import loader as config
+from umi.perception.runtime import prepare_mask
+from umi.devices.x3 import extraction
+from umi.core import frame
+from umi.devices.calibration_assets import SAMPLE_CAMERA_JSON, read_basalt
+from umi.devices import selection as assets
+from umi.perception.tools import make_lens_video
 
 PROJECT = Path(__file__).resolve().parents[1]
 TOOLS_PATH = str(Path(os.environ.get('UMI_DEPS', PROJECT / '.deps')) / 'env/bin') + os.pathsep + os.environ.get('PATH', '')

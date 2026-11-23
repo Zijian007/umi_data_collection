@@ -8,13 +8,13 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software.configuration import loader as config
-from software.calibration import acceptance
-from software.calibration.pipeline import inputs
-from software.calibration.solve import basalt
-from software.calibration.algorithms import board_pnp
-from software.calibration.pipeline.board_detection import GridDetector
-from software.calibration.models import IntrinsicsResult, Kb4
+from umi.config import loader as config
+from umi.workflows.calibration import acceptance
+from umi.workflows.calibration.pipeline import inputs
+from umi.workflows.calibration.solve import basalt
+from umi.workflows.calibration.algorithms import board_pnp
+from umi.workflows.calibration.pipeline.board_detection import GridDetector
+from umi.workflows.calibration.models import IntrinsicsResult, Kb4
 
 # Excerpt of a real basalt_calibrate log (IAQEB2609JPAR3, 2026-11-02); first and last optimisation steps.
 BASALT_LOG = """\
@@ -104,7 +104,7 @@ class CoverageMetricTests(unittest.TestCase):
 
 class Kb4Tests(unittest.TestCase):
     def test_named_access_and_json_list(self):
-        kb4 = board_pnp.read_kb4(Path('software/camera/assets/samples/calibration_r1440.json'))
+        kb4 = board_pnp.read_kb4(Path('umi/devices/assets/samples/calibration_r1440.json'))
         self.assertIsInstance(kb4, Kb4)
         self.assertEqual(kb4.principal_point, (kb4.cx, kb4.cy))
         self.assertEqual(json.loads(json.dumps(kb4)), list(kb4))

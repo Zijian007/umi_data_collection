@@ -1,4 +1,4 @@
-from software.infrastructure.file_store import read_yaml
+from umi.infra.file_store import read_yaml
 """批次 .pipeline/ 保留规则：取代的运行、未引用的地图版本和未用到的缓存会被删除。"""
 
 from pathlib import Path
@@ -9,11 +9,12 @@ import tempfile
 import time
 import unittest
 
-from software.scene import layout, workflow
-from software.scene.management import cleanup, batch_processing as processing
-from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
-from software.scene.pipeline.tasks import scene_map as scene_reconstruction
-from software.infrastructure.file_store import mark_used, write_yaml
+from umi.store import layout
+from umi.workflows.scene import workflow
+from umi.workflows.scene import cleanup, batch_processing as processing
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
+from umi.workflows.scene.tasks import scene_map as scene_reconstruction
+from umi.infra.file_store import mark_used, write_yaml
 import test_scene as fixtures
 
 

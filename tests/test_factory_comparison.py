@@ -1,4 +1,4 @@
-from software.infrastructure import provenance as artifact_identity
+from umi.infra import provenance as artifact_identity
 """Factory optical diagnostics: geometry, held-out evidence and workflow isolation."""
 import copy
 import json
@@ -10,12 +10,12 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from software.camera.x3 import factory_geometry as optical
-from software.calibration.algorithms import board_pnp
-from software.calibration.models import Kb4, Step
-from software.calibration.validation import factory_comparison as factory
-from software.calibration import reports, result_io, workflow
-from software.calibration.pipeline import inputs
+from umi.devices.x3 import factory_geometry as optical
+from umi.workflows.calibration.algorithms import board_pnp
+from umi.workflows.calibration.models import Kb4, Step
+from umi.workflows.calibration.validation import factory_comparison as factory
+from umi.workflows.calibration import reports, result_io, workflow
+from umi.workflows.calibration.pipeline import inputs
 
 
 def offset():

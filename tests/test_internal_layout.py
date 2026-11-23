@@ -1,4 +1,4 @@
-from software.infrastructure.file_store import read_yaml
+from umi.infra.file_store import read_yaml
 """集中存储与去重保持原片/结果身份；旧布局不再读取。"""
 import json
 from pathlib import Path
@@ -6,13 +6,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from software.scene import layout, workflow
-from software.scene.management import episodes, batch_processing as processing
-from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
-from software.infrastructure.file_store import write_json, write_yaml
-from software.viewer.results.catalog import RecordingCatalog
-from software.viewer.results.catalog import capture_status
-from software.scene.pipeline.maps import repository as map_repository
+from umi.store import layout
+from umi.workflows.scene import workflow
+from umi.workflows.scene import episodes, batch_processing as processing
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
+from umi.infra.file_store import write_json, write_yaml
+from umi.apps.viewer.results.catalog import RecordingCatalog
+from umi.apps.viewer.results.catalog import capture_status
+from umi.workflows.scene.maps import repository as map_repository
 import test_processing
 import test_scene
 from registry_fakes import write_task_configuration, read_task_configuration
@@ -109,7 +110,7 @@ class InternalLayoutTests(unittest.TestCase):
         workflow.run_episode(fixture.episode_path)
         episode = episode_inputs.read_episode(fixture.episode_path)
         success = episode.output.resolve()
-        with patch('software.trajectory.algorithms.fixed_map.fusion.fuse', side_effect=ValueError('same failure')):
+        with patch('umi.estimation.fixed_map.fusion.fuse', side_effect=ValueError('same failure')):
             for _ in range(2):
                 with self.assertRaisesRegex(ValueError, 'same failure'):
                     workflow.run_episode(fixture.episode_path, force=True)

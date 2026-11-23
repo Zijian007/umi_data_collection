@@ -1,7 +1,7 @@
-from software.infrastructure import provenance as artifact_identity
-from software.gripper_width import calibration as gripper_calibration
+from umi.infra import provenance as artifact_identity
+from umi.perception.gripper import calibration as gripper_calibration
 """真实 KB4 投影下的中心间距、拒绝条件、尺寸配置、缓存和场景输出。"""
-from software.scene.management import camera_assets
+from umi.workflows.scene import camera_assets
 import csv
 from dataclasses import replace
 import json
@@ -14,21 +14,17 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from software.camera import registry
-from software.gripper_width.detection import markers as detection
-from software.gripper_width.distance import measurement as tag_distance
-from software.gripper_width.detection import sampling as sampled_detection
-from software.gripper_width.distance.pose_estimation import TagPoseEstimator, TagPoseQuality
-from software.gripper_width.distance.measurement import (
-    TagDistanceRequest,
-    TagDistanceResult,
-    TagDistanceSeries,
-)
-from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
-from software.infrastructure.file_store import write_json
-from software.viewer.results.trajectory_reader import read_tag_distance
-from software.viewer import ViewerDataError
+from umi.devices import registry
+from umi.perception.gripper.detection import markers as detection
+from umi.perception.gripper.distance import measurement as tag_distance
+from umi.perception.gripper.detection import sampling as sampled_detection
+from umi.perception.gripper.distance.pose_estimation import TagPoseEstimator, TagPoseQuality
+from umi.perception.gripper.distance.measurement import TagDistanceRequest, TagDistanceResult, TagDistanceSeries
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
+from umi.infra.file_store import write_json
+from umi.apps.viewer.results.trajectory_reader import read_tag_distance
+from umi.apps.viewer import ViewerDataError
 
 
 CAMERA = dict(camera_type='kb4', resolution=[1440, 1440], fx=532., fy=531., cx=724., cy=725.,
@@ -156,7 +152,7 @@ class DistanceConfigurationTests(unittest.TestCase):
 
 class DistancePipelineTests(unittest.TestCase):
     def test_bimanual_viewer_crops_primary_distance_on_same_clock_as_trajectory(self):
-        from software.viewer.results import catalog as episodes
+        from umi.apps.viewer.results import catalog as episodes
         scene=dict(version='v1',frame_id='scene/v1')
         paths={arm:Path('/fixture')/arm for arm in ('left','right')}
         def data(times,values):
@@ -167,7 +163,7 @@ class DistancePipelineTests(unittest.TestCase):
         arms={episodes.recording_key(paths['left']):data([0.,.1,.2,.3],[10.,11.,None,13.]),
               episodes.recording_key(paths['right']):data([.1,.2,.3,.4],[20.,21.,22.,23.])}
         catalog=SimpleNamespace(load=lambda key:arms[key],contains=lambda path:True)
-        from software.scene.result_io import scene_map_identity
+        from umi.store.result_io import scene_map_identity
         inputs=dict(map_mode='shared_front',scene_assets={},
                     scene_map_sha256=scene_map_identity(dict(scene,mode='shared_front',assets={})))
         metadata=dict(schema_version=4,frame_id='scene/v1',scene=scene,inputs=inputs)
@@ -224,8 +220,8 @@ class DistancePipelineTests(unittest.TestCase):
 class DistanceWorkflowTests(unittest.TestCase):
     def test_scene_saves_distances_without_width_and_retains_geometry_on_export(self):
         import test_scene as fixtures
-        from software.scene import workflow
-        from software.scene.management import episodes
+        from umi.workflows.scene import workflow
+        from umi.workflows.scene import episodes
         f=fixtures.SceneWorkflowTests();f.setUp();self.addCleanup(f.doCleanups)
         f.build_scene()
         for video,camera in list(f.cameras.items()):
@@ -239,7 +235,7 @@ class DistanceWorkflowTests(unittest.TestCase):
             return TagDistanceResult(TagDistanceSeries(times+offset,values,source),
                 dict(valid_fraction=float(np.isfinite(values).mean()),tag_sizes_mm=measurement['tag_sizes_mm']))
         with patch.object(tag_distance,'process',side_effect=measure) as process, \
-                patch('software.vision.decoding.VideoDecode.run', return_value=[]):
+                patch('umi.perception.decoding.VideoDecode.run', return_value=[]):
             workflow.run_episode(f.episode_path)
             self.assertEqual(process.call_count,2)
             self.assertEqual(workflow.run_episode(f.episode_path)['status'],'skipped')

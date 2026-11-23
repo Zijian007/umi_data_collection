@@ -1,24 +1,24 @@
-from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import scene as kit_inputs
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene.inputs import scene as kit_inputs
 """全局套件复用、扁平场景批次以及原片到训练包的业务回归。"""
-from software.infrastructure import provenance as artifact_identity
+from umi.infra import provenance as artifact_identity
 import json
 from pathlib import Path
 import unittest
 from registry_fakes import write_kit, write_batch, write_task, write_task_configuration
 from unittest.mock import patch
 
-from software.camera import registry
-from software.scene import layout
-from software.dataset.export import build
-from software.dataset.reader import load_episode
-from software.scene.management import episodes, ingest
-from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
-from software.scene import workflow
-from software.infrastructure.file_store import write_yaml
-from software.viewer.results.catalog import RecordingCatalog
-from software.viewer.results.catalog import capture_status
-from software.scene.management import batch_processing as processing
+from umi.devices import registry
+from umi.store import layout
+from umi.dataset.export import build
+from umi.dataset.reader import load_episode
+from umi.workflows.scene import episodes, ingest
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
+from umi.workflows.scene import workflow
+from umi.infra.file_store import write_yaml
+from umi.apps.viewer.results.catalog import RecordingCatalog
+from umi.apps.viewer.results.catalog import capture_status
+from umi.workflows.scene import batch_processing as processing
 import shutil
 import tempfile
 import test_scene as fixtures

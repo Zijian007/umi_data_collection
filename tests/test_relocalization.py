@@ -10,11 +10,11 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.scene.management.inputs.scene import load_scene_parameters
-from software.scene import spatial as slam
-from software.trajectory.algorithms.fixed_map import geometry, geometry as relocalization
-from software.configuration import loader as config
-from software.vision import slam as visual_slam
+from umi.workflows.scene.inputs.scene import load_scene_parameters
+from umi.estimation import mapping as slam
+from umi.estimation.fixed_map import geometry, geometry as relocalization
+from umi.config import loader as config
+from umi.perception import slam as visual_slam
 
 
 def observations(indices, *, shift=0., rotation=0.):

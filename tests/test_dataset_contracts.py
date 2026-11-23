@@ -1,4 +1,4 @@
-from software.dataset import reader
+from umi.dataset import reader
 """训练质量策略、坐标契约与真实导出包的回归。"""
 
 from dataclasses import replace
@@ -8,9 +8,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software.dataset import export, sampling
-from software.dataset.schema import read_pose_series
-from software.scene import cli
+from umi.dataset import export, sampling
+from umi.dataset.schema import read_pose_series
+from umi.apps import scene as cli
 
 
 def arm_samples(mask, *, legacy=False):

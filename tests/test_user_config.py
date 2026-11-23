@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from software.configuration import user_settings as user_config
-from software.infrastructure.file_store import read_yaml, write_yaml
+from umi.config import user_settings as user_config
+from umi.infra.file_store import read_yaml, write_yaml
 
 
 class UserConfigTests(unittest.TestCase):

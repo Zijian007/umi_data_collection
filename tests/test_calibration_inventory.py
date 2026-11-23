@@ -1,4 +1,4 @@
-from software.scene.management.inputs import scene as kit_inputs
+from umi.workflows.scene.inputs import scene as kit_inputs
 """双镜头档案只读查询：损坏隔离、来源选择与套件缺项的退出语义。"""
 import contextlib
 import io
@@ -9,12 +9,13 @@ import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from software.infrastructure import provenance
-from software.camera import registry
-from software.calibration import cli, inventory
-from software.infrastructure.file_store import read_yaml
-from software.infrastructure.file_store import write_json, write_yaml
-from software.camera import calibration_assets as assets
+from umi.infra import provenance
+from umi.devices import registry
+from umi.apps import calib as cli
+from umi.workflows.calibration import inventory
+from umi.infra.file_store import read_yaml
+from umi.infra.file_store import write_json, write_yaml
+from umi.devices import calibration_assets as assets
 from test_intrinsics_source import factory_bundle
 
 
@@ -121,7 +122,7 @@ class InventoryTests(unittest.TestCase):
             self.assertEqual(result['kit']['arms']['right'][lens]['intrinsics_source'], 'factory')
 
     def test_current_kit_allows_independent_sources_and_frozen_binding_still_checks_identity(self):
-        from software.scene.management.camera_assets import select_camera
+        from umi.workflows.scene.camera_assets import select_camera
         factory_rear = self.add_rear(source='factory')
         self.kit()
         path = kit_inputs.KITS / 'test/kit.yaml'

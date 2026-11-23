@@ -1,4 +1,4 @@
-from software.dataset import reader
+from umi.dataset import reader
 """Poster independent backend: board frame, whole-task routing and publication."""
 
 from dataclasses import replace
@@ -13,21 +13,21 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.infrastructure.file_store import read_yaml, write_yaml
-from software.scene import workflow
-from software.scene.management.inputs import batch as episode_inputs
-from software.scene.management import episodes
-from software.scene.management import batch_snapshot as batches
-from software.trajectory.models import FusedTrajectory
-from software.scene.pipeline.tasks import poster_independent as independent_reconstruction, poster_independent, poster_vio, scene_map as scene_reconstruction
-from software.scene.pipeline.maps import repository as map_lifecycle
-from software.scene.pipeline.maps import repository as map_repository
-from software.scene.pipeline.tasks import measurements
-from software.scene.pipeline.tasks.backend_routing import MapSelection
-from software.scene.result_io import read_arm_summary, scene_reference
-from software.trajectory.algorithms.fixed_map.fusion import SceneFusionQualityError
-from software.scene.errors import MapUnavailableError, MapCompatibilityError, PosterVioQualityError
-from software.vision.poster import layout as tag_board
+from umi.infra.file_store import read_yaml, write_yaml
+from umi.workflows.scene import workflow
+from umi.workflows.scene.inputs import batch as episode_inputs
+from umi.workflows.scene import episodes
+from umi.workflows.scene import batch_snapshot as batches
+from umi.estimation.models import FusedTrajectory
+from umi.workflows.scene.tasks import poster_independent as independent_reconstruction, poster_independent, poster_vio, scene_map as scene_reconstruction
+from umi.workflows.scene.maps import repository as map_lifecycle
+from umi.workflows.scene.maps import repository as map_repository
+from umi.workflows.scene.tasks import measurements
+from umi.workflows.scene.tasks.backend_routing import MapSelection
+from umi.store.result_io import read_arm_summary, scene_reference
+from umi.estimation.fixed_map.fusion import SceneFusionQualityError
+from umi.workflows.scene.errors import MapUnavailableError, MapCompatibilityError, PosterVioQualityError
+from umi.perception.poster import layout as tag_board
 
 
 class MapSelectionTests(unittest.TestCase):
@@ -68,7 +68,7 @@ class AutomaticBackendChainTests(unittest.TestCase):
                 poster_vio.execute_task(inputs)
 
     def test_map_quality_then_poster_vio_quality_then_independent(self):
-        from software.scene.pipeline.tasks import backend_routing as estimation
+        from umi.workflows.scene.tasks import backend_routing as estimation
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             calls = []
@@ -170,9 +170,9 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         self.assertTrue((h.task_root / 'results/bimanual.csv').is_file())
         summary = read_arm_summary(h.task_root / 'results/left')
         self.assertEqual(summary['mode'], 'poster')
-        from software.viewer.resources import maps
+        from umi.apps.viewer.resources import maps
         self.assertEqual(maps.load(h.task_root / 'results/left', summary)['maps'], [])
-        from software.viewer.results.catalog import RecordingCatalog
+        from umi.apps.viewer.results.catalog import RecordingCatalog
         catalog = RecordingCatalog(h.root)
         entries = catalog.scan()['recordings']
         entry = next(item for item in entries if item.get('available') and item['serial'] == '任务海报轨迹')
@@ -182,11 +182,11 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         self.assertIn('imu', loaded['tracks'])
         self.assertEqual(workflow.run_episode(h.episode_path)['status'], 'skipped')
         episodes.review(h.episode_path, accept=True, reviewer='tester')
-        from software.dataset.export import read_accepted_episode
+        from umi.dataset.export import read_accepted_episode
         self.assertEqual(read_accepted_episode(h.episode_path).manifest['kind'], 'umi_poster_episode')
         exported = episodes.export([h.episode_path], h.root / 'trajectory-export')
         self.assertEqual(exported['episodes'], 1)
-        from software.dataset import export, sampling
+        from umi.dataset import export, sampling
         with patch.object(sampling, 'video_timestamps',
                           return_value=h.prepared_recordings[h.recording_paths['left']].video_times_s):
             exported = export.build([h.episode_path], h.root / 'training-export')
@@ -214,7 +214,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
     def test_unexpected_map_reader_errors_do_not_trigger_fallback(self):
         self.configure('auto')
         episode = episode_inputs.read_episode(self.helper.episode_path)
-        from software.scene.pipeline.tasks import backend_routing as estimation
+        from umi.workflows.scene.tasks import backend_routing as estimation
         for error in (ValueError('program error'), KeyError('program key'), RuntimeError('engine crash')):
             with self.subTest(error=error), patch.object(map_repository, 'load_published', side_effect=error):
                 with self.assertRaises(type(error)):
@@ -223,7 +223,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
     def test_map_compatibility_failure_preserves_category_and_error_type(self):
         self.configure('auto')
         episode = episode_inputs.read_episode(self.helper.episode_path)
-        from software.scene.pipeline.tasks import backend_routing as estimation
+        from umi.workflows.scene.tasks import backend_routing as estimation
         with patch.object(map_repository, 'load_published', side_effect=MapCompatibilityError('engine changed')):
             _, selection = estimation.select_map(episode, None)
         self.assertEqual(selection.failure['category'], 'map_incompatible')
@@ -255,7 +255,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         batches.save_record(batch)
         episode = episode_inputs.read_episode(h.episode_path)
         self.assertEqual(episode.map_version, doc['map']['selection']['version'])
-        from software.scene.pipeline.tasks import backend_routing as estimation
+        from umi.workflows.scene.tasks import backend_routing as estimation
         with patch.object(map_repository, 'load_published', side_effect=MapUnavailableError('missing')) as load:
             _, selected = estimation.select_map(episode, None)
         self.assertEqual(load.call_args.kwargs['version'],
@@ -378,7 +378,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         self.configure()
         self.run_poster()
         episodes.review(self.helper.episode_path, accept=True, reviewer='tester')
-        from software.dataset.export import read_accepted_episode
+        from umi.dataset.export import read_accepted_episode
         with self.assertRaisesRegex(ValueError, 'synchronization'):
             read_accepted_episode(self.helper.episode_path)
 
@@ -425,15 +425,15 @@ class PosterIndependentAdapterTests(unittest.TestCase):
         self.board_pose[:3, 3] = [1., 2., 3.]
 
     def execute(self, *, status='fused', times=True, sparse_visual=False, sparse_tags=False, weak_tags=False):
-        from software.trajectory import reconstruction as runtime
-        from software.vision.poster import detection as environment_tags
+        from umi.perception.poster import detection as environment_tags
         h = self.helper
 
-        def engine(command, **options):
-            result = h.engines(command, **options)
-            if 'software.trajectory.algorithms.fusion.cli' in command:
-                position = command.index('software.trajectory.algorithms.fusion.cli')
-                path = Path(command[position + 6]) / 'fuse_info.json'
+        from umi.workflows.segment import fusion_runner
+
+        def fuse(request, **options):
+            h.engines.fuse(request, **options)
+            if True:
+                path = request.output / 'fuse_info.json'
                 evidence = json.loads(path.read_text())
                 if sparse_visual:
                     evidence['chains']['front'] = [([0, 1], 'full')]
@@ -444,10 +444,9 @@ class PosterIndependentAdapterTests(unittest.TestCase):
                     position_support_video_times_s=[] if weak_tags or not times else (
                         h.recording.video_times_s[:3].tolist() if sparse_tags else h.recording.video_times_s.tolist()))
                 path.write_text(json.dumps(evidence))
-            return result
 
         with patch.object(environment_tags, 'detect', return_value=self.observations), \
-                patch.object(runtime.subprocess, 'run', side_effect=engine):
+                patch.object(fusion_runner, 'execute', side_effect=fuse):
             return independent_reconstruction.reconstruct(h.episode, 'right', h.recording,
                                         h.root / 'poster-independent', require_poster=True)
 

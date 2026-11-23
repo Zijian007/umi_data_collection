@@ -1,6 +1,6 @@
 import unittest
 
-from software.scene.management.collection_schema import normalize_collection
+from umi.config.collection_schema import normalize_collection
 
 
 class CollectionSchemaTests(unittest.TestCase):

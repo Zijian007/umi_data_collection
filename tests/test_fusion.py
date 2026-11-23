@@ -5,11 +5,12 @@ Reference: kiwi_fuse3s.py SHA256
 This bypasses random SLAM: camera observations and IMU are deterministic, GTSAM
 runs for real. Selected TUM rows were captured before moving parameter defaults.
 """
+import contextlib
+import io
+import os
 import csv
 import importlib.util
 import json
-import subprocess
-import sys
 import tempfile
 import unittest
 from dataclasses import asdict, replace
@@ -18,8 +19,8 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
-from software.configuration import loader as config
-from software.camera import calibration_assets as assets
+from umi.config import loader as config
+from umi.devices import calibration_assets as assets
 
 GOLDEN = [
     [1, -.000191196, .139494246, .000208187, .000262825, .085124379, -.000089214, .996370294],
@@ -69,13 +70,15 @@ class FusionRegressionTests(unittest.TestCase):
         path = self.root/'parameters.json'
         path.write_text(json.dumps(asdict(parameters)))
         output = self.root/'out'
-        command = [sys.executable, '-m', 'software.trajectory.algorithms.fusion.cli', str(self.frames), str(self.frames), str(self.imu),
-                   str(self.camera['cam_time_offset_ns']), '.500794,.498606,-.501155,.499441', str(output),
-                   '--lever_prior', '.0147,-.0093,-.0163', '--calibration', str(camera), '--parameters', str(path)]
-        if refine:
-            command.append('--refine-initialization')
-        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
-        self.assertEqual(result.returncode, 0, result.stderr+result.stdout[-1500:])
+        from umi.workflows.segment import fusion_runner
+        request = fusion_runner.FusionRequest(self.frames, self.frames, self.imu, self.camera['cam_time_offset_ns'],
+            (.500794, .498606, -.501155, .499441), (.0147, -.0093, -.0163), output, Path(camera), path,
+            refine_initialization=refine)
+        log = self.root/'fuse.log'
+        try:
+            fusion_runner.execute(request, log=log, environment=dict(os.environ))
+        except fusion_runner.FusionFailed as error:
+            self.fail(f'{error}\n{log.read_text()[-1500:]}')
         return np.loadtxt(output/'traj_tum.txt'), json.loads((output/'fuse_info.json').read_text())
 
     def test_explicit_refinement_reaches_graph_and_published_evidence(self):
@@ -139,8 +142,8 @@ class FusionRegressionTests(unittest.TestCase):
         np.testing.assert_allclose(info['front_lever_prior'], lever.round(4))
 
     def test_library_calls_are_isolated_and_do_not_write_outputs(self):
-        from software.trajectory.algorithms.fusion.solver import solve
-        from software.trajectory.algorithms.fusion.data import load_inputs
+        from umi.estimation.fusion.solver import solve
+        from umi.estimation.fusion.data import load_inputs
         inputs = load_inputs(front_frames=self.frames, rear_frames=self.frames, imu_csv=self.imu,
             camera_json=assets.SAMPLE_CAMERA_JSON, offset_ns=self.camera['cam_time_offset_ns'],
             rear_quaternion=[.500794,.498606,-.501155,.499441], rear_lever=[.0147,-.0093,-.0163], use_rear=False)
@@ -155,8 +158,8 @@ class FusionRegressionTests(unittest.TestCase):
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.root.iterdir()})
 
     def test_dual_mode_uses_both_physically_consistent_lens_observations(self):
-        from software.trajectory.algorithms.fusion.solver import solve
-        from software.trajectory.algorithms.fusion.data import load_inputs
+        from umi.estimation.fusion.solver import solve
+        from umi.estimation.fusion.data import load_inputs
 
         rear_quaternion = [.500794, .498606, -.501155, .499441]
         rear_rotation = Rot.from_quat(rear_quaternion).as_matrix()
@@ -181,19 +184,20 @@ class FusionRegressionTests(unittest.TestCase):
         self.assertIsNotNone(solved.evidence['rear_lever_final'])
         self.assertTrue(np.isfinite(solved.T_world_imu).all())
 
-    def test_negative_csv_vectors_are_accepted_by_fusion_cli(self):
+    def test_negative_vectors_are_accepted_by_fusion_runner(self):
+        from umi.workflows.segment import fusion_runner
         path = self.root/'parameters.json'
         path.write_text(json.dumps(asdict(config.load('trajectory').values)))
         output = self.root/'signed'
-        command = [sys.executable, '-m', 'software.trajectory.algorithms.fusion.cli', str(self.frames), str(self.frames), str(self.imu),
-                   str(self.camera['cam_time_offset_ns']), '-.500794,-.498606,.501155,-.499441', str(output),
-                   '--lever_prior', '-.0147,.0093,.0163', '--calibration', str(assets.SAMPLE_CAMERA_JSON), '--parameters', str(path)]
-        process = subprocess.run(command, capture_output=True, text=True, timeout=60)
-        self.assertEqual(process.returncode, 0, process.stderr)
+        request = fusion_runner.FusionRequest(self.frames, self.frames, self.imu, self.camera['cam_time_offset_ns'],
+            (-.500794, -.498606, .501155, -.499441), (-.0147, .0093, .0163), output,
+            Path(assets.SAMPLE_CAMERA_JSON), path)
+        with contextlib.redirect_stdout(io.StringIO()):
+            fusion_runner.fuse(request)
         self.assertTrue((output/'traj_tum.txt').is_file())
 
     def test_failed_initialization_writes_evidence_without_trajectory(self):
-        from software.trajectory.algorithms.fusion.cli import main
+        from umi.workflows.segment import fusion_runner
         with self.frames.open() as stream:
             rows = list(csv.DictReader(stream))
         with self.frames.open('w') as stream:
@@ -204,11 +208,10 @@ class FusionRegressionTests(unittest.TestCase):
         parameters = self.root/'parameters.json'
         parameters.write_text(json.dumps(asdict(config.load('trajectory').values)))
         output = self.root/'failed'
-        with self.assertRaises(SystemExit) as caught:
-            main([str(self.frames), str(self.frames), str(self.imu), str(self.camera['cam_time_offset_ns']),
-                  '0,0,0,1', str(output), '--lever_prior=0,0,0', '--calibration', str(assets.SAMPLE_CAMERA_JSON),
-                  '--parameters', str(parameters)])
-        self.assertEqual(caught.exception.code, 2)
+        request = fusion_runner.FusionRequest(self.frames, self.frames, self.imu, self.camera['cam_time_offset_ns'],
+            (0, 0, 0, 1), (0, 0, 0), output, Path(assets.SAMPLE_CAMERA_JSON), parameters)
+        with self.assertRaisesRegex(fusion_runner.FusionFailed, 'alignment_failure.json'):
+            fusion_runner.fuse(request)
         evidence = json.loads((output/'alignment_failure.json').read_text())
         self.assertEqual(evidence['code'], 'NO_USABLE_LENS')
         self.assertIn('invalid_scale', evidence['stage1']['front']['chains'][0]['rejection_reasons'])

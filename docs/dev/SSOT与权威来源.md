@@ -24,7 +24,7 @@
 `collection.yaml.recording.arms` 必填，声明批次默认使用手；`tasks.<take>.arms`
 可覆盖为其非空子集，未填写则继承批次。明确填写 `null`、空列表或批次之外的手均拒绝。
 
-使用手校验与继承由 `software/scene/arms.py` 统一处理，入库规划和任务读取共用
+使用手校验与继承由 `umi/core/arms.py` 统一处理，入库规划和任务读取共用
 `resolve_arms()`。下游消费 `Episode.expected_arms`，根据其数量判断单手/双手；
 实际录像只用于检查完整性，不反过来修改声明。
 
@@ -37,10 +37,10 @@ kit 绑定恢复默认，不查询当前 kit。任务 `episode.yaml` 仍只登�
 
 | 名称 | 载体与镜头 | 字典和 ID | 权威配置 | 代码与产物 |
 |---|---|---|---|---|
-| 夹爪标签 | 夹爪上的两枚小标签，工作镜头 `front` 观察 | `DICT_4X4_50`，固定 ID `0/1` | `kits/<kit>/kit.yaml` 的 `gripper.tag_distance`；开口宽度另用 `gripper.width` | `software/gripper_width/`；`tag_distance_*`、`gripper_width` |
-| 夹爪基座标签 | 刚性安装在夹爪基座，供双手 `poster_vio` 使用 | `DICT_4X4_100`，各手 ID 唯一，避开环境海报 ID。配置宽度或测距时避开 `0/1` | kit 的 `gripper.base_tag` 声明资产，`backend.poster_vio.base_tag.enabled` 控制使用 | `software/trajectory/algorithms/poster_vio/` |
-| 环境标签 / 环境海报 | 场地中的刚性海报，环境镜头 `rear` 观察 | `DICT_4X4_100`，布局默认 ID `12–88` | `environment_poster` 声明布局和建图用途，`backend` 声明任务中的使用方式 | `software/vision/poster/detection.py`、`poster/geometry.py` |
-| 标定板标签 | 相机标定用 AprilGrid，不属于夹爪或环境海报 | `tag36h11` 等由标定板资产声明 | `hardware/calibration_targets/aprilgrid.json` 与 `umi-calib --tag-size-mm` | `software/calibration/`；只服务相机标定和轨迹初始化 |
+| 夹爪标签 | 夹爪上的两枚小标签，工作镜头 `front` 观察 | `DICT_4X4_50`，固定 ID `0/1` | `kits/<kit>/kit.yaml` 的 `gripper.tag_distance`；开口宽度另用 `gripper.width` | `umi/perception/gripper/`；`tag_distance_*`、`gripper_width` |
+| 夹爪基座标签 | 刚性安装在夹爪基座，供双手 `poster_vio` 使用 | `DICT_4X4_100`，各手 ID 唯一，避开环境海报 ID。配置宽度或测距时避开 `0/1` | kit 的 `gripper.base_tag` 声明资产，`backend.poster_vio.base_tag.enabled` 控制使用 | `umi/estimation/poster_vio/` |
+| 环境标签 / 环境海报 | 场地中的刚性海报，环境镜头 `rear` 观察 | `DICT_4X4_100`，布局默认 ID `12–88` | `environment_poster` 声明布局和建图用途，`backend` 声明任务中的使用方式 | `umi/perception/poster/detection.py`、`poster/geometry.py` |
+| 标定板标签 | 相机标定用 AprilGrid，不属于夹爪或环境海报 | `tag36h11` 等由标定板资产声明 | `hardware/calibration_targets/aprilgrid.json` 与 `umi-calib --tag-size-mm` | `umi/workflows/calibration/`；只服务相机标定和轨迹初始化 |
 
 特别约束：`gripper.tag_distance` 的 ID 0/1 尺寸不能填环境海报的 100 mm，也不能填 AprilGrid 的 `--tag-size-mm`；环境海报布局不能作为夹爪测距资产；标定板尺寸不能参与任务标签融合。
 
@@ -63,7 +63,7 @@ kit 声明设备序列号、逐镜头 `intrinsics` 来源和 `gripper` 资产。
     > 批次 manifest.yaml 中已绑定的默认地图
 ```
 
-使用手、后端、同步与地图决策由 `software.scene.management.task_configuration.resolve_task_configuration()` 统一解析；正式读取和配置展示消费同一结果。地图决策保存到 `Episode.map_selection`，展示包含选中版本、epoch、原因和 ready/pending/unavailable 状态。未构建或无效选择可预览，但 scene_map 正式执行会拒绝，auto 则按既定回退策略处理。后续定位、报告和发布都消费这个结果，不在各阶段重新解释 `collection.yaml`、`map_epochs.yaml` 或批次地图指针。
+使用手、后端、同步与地图决策由 `umi.workflows.scene.task_configuration.resolve_task_configuration()` 统一解析；正式读取和配置展示消费同一结果。地图决策保存到 `Episode.map_selection`，展示包含选中版本、epoch、原因和 ready/pending/unavailable 状态。未构建或无效选择可预览，但 scene_map 正式执行会拒绝，auto 则按既定回退策略处理。后续定位、报告和发布都消费这个结果，不在各阶段重新解释 `collection.yaml`、`map_epochs.yaml` 或批次地图指针。
 
 `collection.yaml` 中的 `map.selection.version` 是用户声明；`.pipeline/manifest.yaml.map` 是已经发布并冻结的批次状态；地图版本目录中的 `manifest.json` 是地图资产本身的权威身份。三者不能互相覆盖：声明变化需要重新解析和校验，地图资产变化必须拒绝运行。
 

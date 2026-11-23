@@ -7,9 +7,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from software.calibration import cli
-from software.calibration.pipeline import inputs
-from software.camera import registry
+from umi.apps import calib as cli
+from umi.workflows.calibration.pipeline import inputs
+from umi.devices import registry
 
 
 class CalibrationDirectoryTests(unittest.TestCase):

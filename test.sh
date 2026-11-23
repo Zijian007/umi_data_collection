@@ -130,7 +130,7 @@ if [ "$RUN_CHECKS" -eq 1 ]; then
     ./umi-scene check
     if command -v c++ >/dev/null 2>&1; then
         KB4_TEST=$(mktemp)
-        c++ -std=c++14 -DNDEBUG -I software/trajectory/setup/orbslam3 tests/cpp/test_kb4_bearing.cpp -o "$KB4_TEST"
+        c++ -std=c++14 -DNDEBUG -I setup/trajectory/orbslam3 tests/cpp/test_kb4_bearing.cpp -o "$KB4_TEST"
         "$KB4_TEST"
         rm -f "$KB4_TEST"
     else

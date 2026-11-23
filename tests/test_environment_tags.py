@@ -11,13 +11,13 @@ import av
 import cv2
 import numpy as np
 
-from software.trajectory.algorithms.fixed_map.parameters import FixedMapParameters
-from software.configuration import loader as config
-from software.scene.cli import build_parser
-from software.scene.management.inputs.scene import load_scene_parameters
-from software.trajectory.algorithms.fixed_map import fusion
-from software.trajectory.algorithms.fixed_map.geometry import VisualObservations
-from software.vision.poster import detection as environment_tags
+from umi.estimation.fixed_map.parameters import FixedMapParameters
+from umi.config import loader as config
+from umi.apps.scene import build_parser
+from umi.workflows.scene.inputs.scene import load_scene_parameters
+from umi.estimation.fixed_map import fusion
+from umi.estimation.fixed_map.geometry import VisualObservations
+from umi.perception.poster import detection as environment_tags
 tags = environment_tags
 
 

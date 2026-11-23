@@ -11,15 +11,15 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from software.configuration import operational_settings as settings
-from software.gripper_width.detection import frames as detection
-from software.gripper_width.detection.markers import MarkerDetector
-from software.gripper_width import width_estimation
-from software.gripper_width.distance import measurement as tag_distance
-from software.scene.pipeline import recordings
-from software.infrastructure.file_store import write_yaml
-from software.viewer.resources import cache, maps, video as media
-from software.viewer import server
+from umi.config import operational_settings as settings
+from umi.perception.gripper.detection import frames as detection
+from umi.perception.gripper.detection.markers import MarkerDetector
+from umi.perception.gripper import width_estimation
+from umi.perception.gripper.distance import measurement as tag_distance
+from umi.workflows.scene import recordings
+from umi.infra.file_store import write_yaml
+from umi.apps.viewer.resources import cache, maps, video as media
+from umi.apps.viewer import server
 
 
 class OperationalSettingsTests(unittest.TestCase):
@@ -87,7 +87,7 @@ class OperationalSettingsTests(unittest.TestCase):
         self.assertIs(settings.current('runtime'), first)
         env = settings.child_environment()
         # The child uses the snapshot even though the YAML now differs.
-        code = "from software.configuration import operational_settings as settings; print(settings.values('runtime')['decode_threads'])"
+        code = "from umi.config import operational_settings as settings; print(settings.values('runtime')['decode_threads'])"
         child = subprocess.run([sys.executable, '-c', code], env=env, text=True,
                                capture_output=True, check=True)
         self.assertEqual(int(child.stdout), first.values['decode_threads'])

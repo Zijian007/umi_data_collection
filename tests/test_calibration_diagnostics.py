@@ -7,12 +7,12 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software.configuration import loader as config
-from software.calibration.algorithms import trajectory_metrics
-from software.calibration.validation import trajectory
-from software.calibration.models import ExecutionOptions, RunPaths
-from software.calibration import reports
-from software.camera.calibration_assets import SAMPLE_CAMERA_JSON
+from umi.config import loader as config
+from umi.estimation import trajectory_metrics
+from umi.workflows.calibration.validation import trajectory
+from umi.workflows.calibration.models import ExecutionOptions, RunPaths
+from umi.workflows.calibration import reports
+from umi.devices.calibration_assets import SAMPLE_CAMERA_JSON
 
 
 class DiagnosticTests(unittest.TestCase):

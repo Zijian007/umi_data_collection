@@ -7,16 +7,16 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software.configuration import loader as config
-from software.infrastructure import provenance
-from software.camera import registry
-from software.infrastructure.file_store import write_json
-from software.trajectory.algorithms.fusion import solver as fusion
-from software.camera import calibration_assets as assets
-from software.trajectory import calibration as selection
-from software.trajectory.models import TrajectoryRequest
-from software.trajectory import environment_assets as calibration_assets, workflow as reuse
-from software.trajectory import workflow
+from umi.config import loader as config
+from umi.infra import provenance
+from umi.devices import registry
+from umi.infra.file_store import write_json
+from umi.estimation.fusion import solver as fusion
+from umi.devices import calibration_assets as assets
+from umi.devices import selection
+from umi.estimation.models import TrajectoryRequest
+from umi.workflows.segment import environment_assets as calibration_assets, workflow as reuse
+from umi.workflows.segment import workflow
 from test_trajectory_workflow import RecordingFixture
 import test_trajectory_workflow as workflow_tests
 
@@ -74,16 +74,14 @@ class RearAssetsTests(RecordingFixture):
         helper = workflow_tests.WorkflowTests('test_success_skip_and_reprocess_after_calibration_change')
         helper.setUp(); self.addCleanup(helper.doCleanups)
         commands = []
-        original = helper.fake_runner
-        def run(command, **kwargs):
-            if '--lever_prior' in command:
-                manifest = Path(command[command.index('--rear-calibration')+1])
-                self.assertTrue(manifest.is_file())
-                calibration_assets.load_frozen_rear(manifest)
-                self.assertNotIn('--poster', command)
-                commands.append(command)
-            return original(command, **kwargs)
-        with patch.object(helper, 'fake_runner', side_effect=run), patch.object(calibration_assets, 'prepare_poster') as poster:
+        original = helper.fake_fusion
+        def fuse(request, **kwargs):
+            self.assertTrue(request.rear_calibration.is_file())
+            calibration_assets.load_frozen_rear(request.rear_calibration)
+            self.assertIsNone(request.poster)
+            commands.append(request)
+            return original(request, **kwargs)
+        with patch.object(helper, 'fake_fusion', side_effect=fuse), patch.object(calibration_assets, 'prepare_poster') as poster:
             result = helper.run_recording(self.request)
         self.assertEqual(result['status'], 'ok', result)
         self.assertTrue(commands)
@@ -96,7 +94,7 @@ class RearAssetsTests(RecordingFixture):
             calibration_assets.select_environment_assets(self.video, replace(self.selected, intrinsics_source='factory'), self.request)
 
     def test_poster_and_fingerprint_share_one_explicit_asset_selection(self):
-        from software.vision.poster import layout as tag_board
+        from umi.perception.poster import layout as tag_board
         request = replace(self.request, tag_layout=tag_board.DEFAULT_LAYOUT)
         with patch.object(registry, 'rear_path', wraps=registry.rear_path) as resolve_rear:
             selected_assets = calibration_assets.select_environment_assets(self.video, self.selected, request)
@@ -114,7 +112,7 @@ class RearAssetsTests(RecordingFixture):
 class RearNumericalTests(unittest.TestCase):
     def test_dual_without_poster_matches_diagnostic_only_baseline(self):
         from test_independent_poster import fixture
-        from software.camera.geometry import imu_from_camera, resample_pose_series
+        from umi.core.geometry import imu_from_camera, resample_pose_series
         inputs, parameters = fixture()
         poses = np.tile(np.eye(4), (len(inputs.video_times_s), 1, 1))
         for k, (position, rotation) in inputs.observations['front'].items():
@@ -138,7 +136,7 @@ class RearNumericalTests(unittest.TestCase):
         from contextlib import redirect_stdout
         from dataclasses import asdict
         from scipy.spatial.transform import Rotation
-        from software.trajectory.algorithms.fusion import cli as fusion_cli
+        from umi.workflows.segment import fusion_runner
         from test_independent_poster import write_camera
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -162,11 +160,9 @@ class RearNumericalTests(unittest.TestCase):
             (root/'times.csv').write_text('t_canonical_s\n'+''.join(f'{t+1:.12f}\n' for t in inputs.video_times_s))
             write_json(root/'parameters.json', asdict(parameters))
             with redirect_stdout(io.StringIO()):
-                code = fusion_cli.main([str(root/'rear.csv'), str(root/'front.csv'), str(root/'imu.csv'),
-                    '17000000', '0,0,0,1', str(root/'out'), '--lever_prior', '0,0,0',
-                    '--calibration', str(front), '--rear-calibration', str(manifest),
-                    '--parameters', str(root/'parameters.json'), '--times', str(root/'times.csv')])
-            self.assertEqual(code, 0)
+                fusion_runner.fuse(fusion_runner.FusionRequest(root/'rear.csv', root/'front.csv', root/'imu.csv',
+                    17000000, (0, 0, 0, 1), (0, 0, 0), root/'out', front, root/'parameters.json',
+                    times=root/'times.csv', rear_calibration=manifest))
             evidence = json.loads((root/'out/fuse_info.json').read_text())
             self.assertNotIn('environment_poster', evidence)
             self.assertGreater(evidence['obs']['rear'], 0)

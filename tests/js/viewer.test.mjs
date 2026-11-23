@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {nearestIndex, rotateQuaternion, formatTime, niceStep} from '../../software/viewer/static/math.mjs';
-import {TrajectoryScene} from '../../software/viewer/static/scene.mjs';
-import {CompanionVideo} from '../../software/viewer/static/paired.mjs';
-import {createPlayback} from '../../software/viewer/static/playback.mjs';
-import {tagDistanceReadout} from '../../software/viewer/static/measurements.mjs';
-import {frameQuality, qualitySegments} from '../../software/viewer/static/quality.mjs';
+import {nearestIndex, rotateQuaternion, formatTime, niceStep} from '../../umi/apps/viewer/static/math.mjs';
+import {TrajectoryScene} from '../../umi/apps/viewer/static/scene.mjs';
+import {CompanionVideo} from '../../umi/apps/viewer/static/paired.mjs';
+import {createPlayback} from '../../umi/apps/viewer/static/playback.mjs';
+import {tagDistanceReadout} from '../../umi/apps/viewer/static/measurements.mjs';
+import {frameQuality, qualitySegments} from '../../umi/apps/viewer/static/quality.mjs';
 
 test('tag distances retain missing values and follow each arm clock', () => {
   assert.deepEqual(tagDistanceReadout({times: [0]}, 0), {isVisible: false, text: '—'});
@@ -123,7 +123,7 @@ test('fitting both frames includes both origins without mixing their coordinates
   assert.deepEqual(scene.center, [101, 101, 101]);
 });
 
-import {FramePreview, VideoPreview} from '../../software/viewer/static/media.mjs';
+import {FramePreview, VideoPreview} from '../../umi/apps/viewer/static/media.mjs';
 
 test('ready browser preview is loaded without polling again', async () => {
   const urls = [];

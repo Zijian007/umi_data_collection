@@ -6,12 +6,12 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.camera.x3.factory_geometry import Kb4Model
-from software.trajectory.algorithms.poster_vio import solve_joint_poster_imu
-from software.trajectory.algorithms.poster_vio.frontend import bearing_inliers, triangulate_batch, match_revisits
-from software.trajectory.algorithms.poster_vio.frontend import subsample_observations, triangulate_track
-from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
-from software.vision.poster.geometry import project_observations
+from umi.devices.x3.factory_geometry import Kb4Model
+from umi.estimation.poster_vio import solve_joint_poster_imu
+from umi.estimation.poster_vio.frontend import bearing_inliers, triangulate_batch, match_revisits
+from umi.estimation.poster_vio.frontend import subsample_observations, triangulate_track
+from umi.workflows.scene.tasks import poster_vio as poster_vio_inputs
+from umi.perception.poster.geometry import project_observations
 
 
 class FeatureGeometryTests(unittest.TestCase):
@@ -71,8 +71,8 @@ class FeatureGeometryTests(unittest.TestCase):
         self.assertEqual(match_revisits(pixels, descriptors, bank, np.eye(4), self.model, 6., maximum_gap_s=5.), {})
 
     def test_natural_holdout_pixels_do_not_enter_landmark_initialization(self):
-        from software.trajectory.algorithms.poster_vio.frontend import _FeatureTracker, FeatureCameraInput
-        from software.scene.management.inputs.scene import load_scene_parameters
+        from umi.estimation.poster_vio.frontend import _FeatureTracker, FeatureCameraInput
+        from umi.workflows.scene.inputs.scene import load_scene_parameters
 
         poses = np.tile(np.eye(4), (10, 1, 1))
         poses[:, 0, 3] = np.arange(10) * .04
@@ -118,7 +118,7 @@ class SpecialistTaskTests(unittest.TestCase):
             np.testing.assert_array_equal(arrays['tag_initialization_mask'], arms[0].tag_initialization_mask)
 
     def test_single_tag_after_initialization_enters_graph_only_as_training_pixels(self):
-        from software.trajectory.algorithms.poster_vio.refinement import initial_selection
+        from umi.estimation.poster_vio.refinement import initial_selection
 
         detections = self.helper.detections['left']
         sample = detections.sample_indices[-1]
@@ -163,7 +163,7 @@ class SpecialistTaskTests(unittest.TestCase):
         self.assertIn('tag_count_budget', record['rounds'][0]['reasons'])
 
     def test_refinement_warm_starts_remaining_states_and_keeps_time_keys_fixed(self):
-        from software.trajectory.algorithms.poster_vio import solver
+        from umi.estimation.poster_vio import solver
         request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
         pixels = arms[0].pixels.copy()
         pixels[5] += [150., -100.]

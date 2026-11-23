@@ -5,13 +5,13 @@ import json
 import unittest
 from unittest.mock import patch
 
-from software.scene.pipeline.maps import build as map_build
-from software.scene.pipeline.maps import repository as map_repository
-from software.scene import spatial as mapping, spatial as slam
-from software.vision.models import ProcessingError
+from umi.workflows.scene.maps import build as map_build
+from umi.workflows.scene.maps import repository as map_repository
+from umi.estimation import mapping, mapping as slam
+from umi.perception.models import ProcessingError
 
 import test_scene as fixtures
-from software.scene import result_io as asset_identity
+from umi.store import result_io as asset_identity
 
 
 class MapRetryTests(unittest.TestCase):

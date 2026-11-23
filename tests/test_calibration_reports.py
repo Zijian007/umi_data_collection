@@ -5,11 +5,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from software.camera import registry
-from software.infrastructure import provenance as artifact_identity
-from software.calibration import devices
-from software.calibration import reports
-from software.camera import calibration_assets as calibration
+from umi.devices import registry
+from umi.infra import provenance as artifact_identity
+from umi.workflows.calibration import devices
+from umi.workflows.calibration import reports
+from umi.devices import calibration_assets as calibration
 
 
 class ResultReportTests(unittest.TestCase):
@@ -45,12 +45,12 @@ class ResultReportTests(unittest.TestCase):
 
 
     def test_rendering_and_reading_never_execute_or_query_devices(self):
-        from software.calibration import result_io
-        from software.calibration.pipeline.steps import StageRunner
+        from umi.workflows.calibration import result_io
+        from umi.workflows.calibration.pipeline.steps import StageRunner
         from test_calibration_workflow import FullWorkflowTests
         with tempfile.TemporaryDirectory() as tmp, FullWorkflowTests().simulation(Path(tmp)) as (args, _, _):
-            from software.calibration import workflow
-            from software.calibration.pipeline import inputs
+            from umi.workflows.calibration import workflow
+            from umi.workflows.calibration.pipeline import inputs
             self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
             out = Path(args.out)
             before = {str(p.relative_to(out)):p.read_bytes() for p in out.rglob('*') if p.is_file()}
@@ -72,8 +72,8 @@ class ResultReportTests(unittest.TestCase):
 
     def test_manual_install_copies_result_and_updates_activation_snapshot(self):
         from test_calibration_workflow import FullWorkflowTests
-        from software.calibration import workflow, result_io
-        from software.calibration.pipeline import inputs
+        from umi.workflows.calibration import workflow, result_io
+        from umi.workflows.calibration.pipeline import inputs
         with tempfile.TemporaryDirectory() as tmp, FullWorkflowTests().simulation(Path(tmp), mock_install=False) as (args, _, _):
             target = self.empty_registry(Path(tmp))
             with patch.multiple(registry, ROOT=target, INDEX=target/'index.json', CAMERAS=target/'cameras'):
@@ -89,8 +89,8 @@ class ResultReportTests(unittest.TestCase):
 
     def test_force_cannot_bypass_incomplete_or_wrong_identity_and_no_registry_write(self):
         from test_calibration_workflow import FullWorkflowTests
-        from software.calibration import workflow, result_io
-        from software.calibration.pipeline import inputs
+        from umi.workflows.calibration import workflow, result_io
+        from umi.workflows.calibration.pipeline import inputs
         for case in ('serial', 'incomplete', 'parameters', 'manifest', 'fingerprint', 'locked', 'verify'):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp, FullWorkflowTests().simulation(Path(tmp), mock_install=False) as (args, _, _):
                 self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
@@ -112,7 +112,7 @@ class ResultReportTests(unittest.TestCase):
                     doc['operation']='verify'
                     result_io.write(out, doc)
                 from contextlib import nullcontext
-                from software.infrastructure.file_store import locked
+                from umi.infra.file_store import locked
                 lock = locked(out.parent, name=f'.{out.name}.calibration.lock') if case == 'locked' else nullcontext()
                 with lock, patch.object(registry, 'register') as register:
                     self.assertEqual(devices.install_bundle(out, True, camera_serial='other' if case == 'serial' else None), 2)
@@ -120,8 +120,8 @@ class ResultReportTests(unittest.TestCase):
 
     def test_force_can_override_rejection_only_with_complete_evidence(self):
         from test_calibration_workflow import FullWorkflowTests, AcceptanceTests
-        from software.calibration import workflow
-        from software.calibration.pipeline import inputs
+        from umi.workflows.calibration import workflow
+        from umi.workflows.calibration.pipeline import inputs
         with tempfile.TemporaryDirectory() as tmp, FullWorkflowTests().simulation(Path(tmp),
                 trajectory=AcceptanceTests().trajectory(ate=40), mock_install=False) as (args, _, _):
             workflow.run(inputs.parse_run_args(args))
@@ -131,7 +131,7 @@ class ResultReportTests(unittest.TestCase):
             self.assertEqual(devices.install_bundle(Path(args.out),False),1)
 
     def test_old_layouts_and_measurement_versions_are_refused_without_writing(self):
-        from software.calibration import result_io
+        from umi.workflows.calibration import result_io
         for version in (1,2,4):
             with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
                 out=Path(tmp)

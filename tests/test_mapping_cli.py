@@ -4,7 +4,7 @@ import io
 from pathlib import Path
 import tempfile
 import unittest
-from software.scene import cli
+from umi.apps import scene as cli
 
 
 class MappingArgumentsTests(unittest.TestCase):

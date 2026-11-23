@@ -1,7 +1,7 @@
-from software.scene.management.inputs import scene as kit_inputs
+from umi.workflows.scene.inputs import scene as kit_inputs
 """一轮建图对应一个批次：延后处理、显式复用、失败保护和建图片隔离。"""
-from software.infrastructure import provenance as artifact_identity
-from software.scene.pipeline.maps import repository as map_lifecycle
+from umi.infra import provenance as artifact_identity
+from umi.workflows.scene.maps import repository as map_lifecycle
 from contextlib import redirect_stdout
 import io
 import json
@@ -10,10 +10,11 @@ import unittest
 from registry_fakes import write_kit, write_batch, write_task
 from unittest.mock import patch
 
-from software.camera import registry
-from software.scene import cli, workflow
-from software.scene.management import ingest
-from software.scene.management.inputs import scene as kit_inputs, batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
+from umi.devices import registry
+from umi.apps import scene as cli
+from umi.workflows.scene import workflow
+from umi.workflows.scene import ingest
+from umi.workflows.scene.inputs import scene as kit_inputs, batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
 import test_scene as fixtures
 
 

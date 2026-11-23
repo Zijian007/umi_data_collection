@@ -6,13 +6,13 @@ import sys
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
-from software.infrastructure.paths import python_executable
+from umi.infra.paths import python_executable
 
 
 class TrajectoryHealthTests(unittest.TestCase):
     def test_health_check_uses_current_inventory_and_reports_broken_assets(self):
-        from software.calibration import inventory
-        from software.trajectory import reconstruction as runtime
+        from umi.workflows.calibration import inventory
+        from umi.workflows.segment import reconstruction as runtime
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             trajectory = root/'trajectory'
@@ -27,7 +27,7 @@ class TrajectoryHealthTests(unittest.TestCase):
             hardware_mask.write_bytes(b'test mask')
             healthy = dict(serial='CAMERA', status='active', front_default='001', ok=True, errors=[], versions=[])
             broken = dict(healthy, ok=False, versions=[dict(ok=False, error='资产哈希不一致')])
-            with patch.object(runtime, 'HERE', trajectory), patch.object(runtime, 'REPO', root), \
+            with patch.object(runtime, 'ORB_SETTINGS_ROOT', trajectory/'assets/config'), patch.object(runtime, 'REPO', root), \
                  patch.object(runtime, 'SAMPLE_CAMERA_JSON', trajectory / 'assets/samples/calibration_r1440.json'), \
                  patch.object(runtime.trajectory_calibration, 'DEFAULT_FRONT_MASK', hardware_mask), \
                  patch.dict(os.environ, dict(ORB3_DIR=str(trajectory), ORB3_VOCAB=str(trajectory/'Vocabulary/ORBvoc.txt'))), \
@@ -45,8 +45,8 @@ class TrajectoryHealthTests(unittest.TestCase):
 
 class InterpreterSelectionTests(unittest.TestCase):
     def test_poster_vio_decode_settings_do_not_require_orb_assets(self):
-        from software.vision import runtime
-        from software.configuration.loader import load
+        from umi.perception import runtime
+        from umi.config.loader import load
 
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -77,7 +77,7 @@ class InterpreterSelectionTests(unittest.TestCase):
             env.pop('UMI_VIEW_PYTHON', None)
             result = subprocess.run([str(launcher), '--help'], env=env, text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), ['project-python', '-m', 'software.viewer', '--help'])
+        self.assertEqual(result.stdout.splitlines(), ['project-python', '-m', 'umi.apps.viewer', '--help'])
 
     def test_view_launcher_honors_explicit_interpreter(self):
         launcher = Path(__file__).resolve().parents[1] / 'umi-view'
@@ -87,5 +87,5 @@ class InterpreterSelectionTests(unittest.TestCase):
         self.assertIn('usage: umi-view', result.stdout)
 
     def test_viewer_import_does_not_load_scene_or_trajectory_solvers(self):
-        result = subprocess.run([sys.executable, '-c', "\nimport sys\nimport software.viewer.server\nassert not {'gtsam', 'software.scene.workflow', 'software.trajectory.algorithms.fixed_map.fusion',\n            'software.trajectory.workflow', 'software.trajectory.algorithms.fusion.solver'} & sys.modules.keys()\n"], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True, timeout=20)
+        result = subprocess.run([sys.executable, '-c', "\nimport sys\nimport umi.apps.viewer.server\nassert not {'gtsam', 'umi.workflows.scene.workflow', 'umi.estimation.fixed_map.fusion',\n            'umi.workflows.segment.workflow', 'umi.estimation.fusion.solver'} & sys.modules.keys()\n"], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)

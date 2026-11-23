@@ -1,7 +1,7 @@
 """Source selection must keep B, lenses, maps, and current registry assets paired."""
 from __future__ import annotations
-from software.infrastructure import provenance as artifact_identity
-from software.scene.pipeline.maps import repository as map_repository
+from umi.infra import provenance as artifact_identity
+from umi.workflows.scene.maps import repository as map_repository
 import copy
 import json
 from pathlib import Path
@@ -11,20 +11,21 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 
-from software.configuration import loader as config
-from software.camera import registry
-from software.camera import calibration_source as origin
-from software.camera.x3 import factory_geometry as optical
-from software.calibration import acceptance, cli, result_io, workflow
-from software.calibration.models import RunPaths, Step
-from software.calibration.solve import factory_intrinsics as solver, basalt
-from software.calibration.validation import factory_comparison as diagnostic
-from software.scene import cli as scene_cli
-from software.infrastructure.file_store import read_yaml
-from software.scene.management import batch_snapshot as batches
-from software.scene.management.inputs import batch as batch_inputs, scene as kit_inputs
-from software.infrastructure.file_store import write_json, write_yaml
-from software.camera import calibration_assets as assets
+from umi.config import loader as config
+from umi.devices import registry
+from umi.devices import calibration_source as origin
+from umi.devices.x3 import factory_geometry as optical
+from umi.workflows.calibration import acceptance, result_io, workflow
+from umi.apps import calib as cli
+from umi.workflows.calibration.models import RunPaths, Step
+from umi.workflows.calibration.solve import factory_intrinsics as solver, basalt
+from umi.workflows.calibration.validation import factory_comparison as diagnostic
+from umi.apps import scene as scene_cli
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene import batch_snapshot as batches
+from umi.workflows.scene.inputs import batch as batch_inputs, scene as kit_inputs
+from umi.infra.file_store import write_json, write_yaml
+from umi.devices import calibration_assets as assets
 from test_factory_comparison import offset
 import test_calibration_workflow as calibration_tests
 
@@ -147,20 +148,20 @@ class FactoryWorkflowTests(unittest.TestCase):
         helper=calibration_tests.FullWorkflowTests()
         for lens in ('front','rear'):
             with self.subTest(lens=lens),tempfile.TemporaryDirectory() as d,helper.simulation(Path(d)) as (args,commands,_):
-                from software.calibration.pipeline.inputs import parse_run_args
+                from umi.workflows.calibration.pipeline.inputs import parse_run_args
                 request=parse_run_args(args)
                 from dataclasses import replace
                 request=replace(request,lens=lens,intrinsics_source='factory',keep_work=True)
                 def solve_b(dataset,grid,initial,imu,execution,**kw):
                     raw=json.loads(initial.calibration_json.read_text());raw['value0']['cam_time_offset_ns']=1000000
                     write_json(execution.paths.calibration,raw)
-                    from software.calibration.models import CameraImuResult
+                    from umi.workflows.calibration.models import CameraImuResult
                     return CameraImuResult(execution.paths.calibration,assets.read_basalt(execution.paths.calibration),
                         dict(corners_per_frame=100,mean_reprojection_px=.3,rms_reprojection_px=.4))
                 found=dict(n_frames=10,video_time_s=np.arange(10,dtype=float),dets={i:{} for i in range(10)})
                 validation=dict(common_frames=10,heldout_pixels=dict(count=100,rms=.4),sufficient=True)
                 with patch.object(diagnostic,'sources',return_value=dict(recordings={r:native() for r in 'ABCD'},consistent=True)), \
-                     patch('software.vision.orb_environment.require_forward_kb4',return_value={}), \
+                     patch('umi.infra.orb_install.require_forward_kb4',return_value={}), \
                      patch.object(workflow,'_detect_board',return_value=(found,dict(elapsed_s=0))), \
                      patch.object(solver,'validate_images',return_value=validation), \
                      patch.object(workflow,'_compare_factory',return_value={}), \

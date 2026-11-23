@@ -11,10 +11,10 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.trajectory.reporting import map_data
-from software.vision import atlas
-from software.scene import spatial as slam
-from software.viewer.resources import maps
+from umi.workflows.segment.reporting import map_data
+from umi.perception import atlas
+from umi.estimation import mapping as slam
+from umi.apps.viewer.resources import maps
 
 
 class SharedMapTests(unittest.TestCase):

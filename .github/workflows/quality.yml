@@ -20,7 +20,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check numpy==1.26.* ruff==0.15.0
 
       - name: Compile Python sources
-        run: python -m compileall -q software tests
+        run: python -m compileall -q umi tests
 
       - name: Check portable training reader boundary
         run: PYTHONPATH=. python -m unittest -q tests.test_dataset_reader_boundary
@@ -28,25 +28,25 @@ jobs:
       - name: Run changed-source lint rules
         run: >-
           ruff check
-          software/dataset/reader.py
-          software/dataset/schema.py
-          software/dataset/sampling.py
-          software/dataset/export.py
-          software/scene/cli.py
-          software/scene/arms.py
-          software/configuration/user_settings.py
-          software/configuration/operational_settings.py
-          software/scene/management/batch_snapshot.py
-          software/scene/management/task_configuration.py
-          software/scene/management/inputs/scene.py
-          software/scene/parameters.py
-          software/viewer/server.py
-          software/scene/spatial.py
-          software/trajectory/algorithms/fusion/graph.py
-          software/trajectory/algorithms/poster_vio/models.py
-          software/trajectory/algorithms/poster_vio/initialization.py
-          software/trajectory/algorithms/poster_vio/frontend.py
-          software/trajectory/algorithms/poster_vio/solver.py
-          software/trajectory/algorithms/poster_vio/base_tags.py
-          software/trajectory/algorithms/poster_vio/refinement.py
-          software/scene/pipeline/tasks/poster_vio.py
+          umi/dataset/reader.py
+          umi/dataset/schema.py
+          umi/dataset/sampling.py
+          umi/dataset/export.py
+          umi/apps/scene.py
+          umi/core/arms.py
+          umi/config/user_settings.py
+          umi/config/operational_settings.py
+          umi/workflows/scene/batch_snapshot.py
+          umi/workflows/scene/task_configuration.py
+          umi/workflows/scene/inputs/scene.py
+          umi/workflows/scene/parameters.py
+          umi/apps/viewer/server.py
+          umi/estimation/mapping.py
+          umi/estimation/fusion/graph.py
+          umi/estimation/poster_vio/models.py
+          umi/estimation/poster_vio/initialization.py
+          umi/estimation/poster_vio/frontend.py
+          umi/estimation/poster_vio/solver.py
+          umi/estimation/poster_vio/base_tags.py
+          umi/estimation/poster_vio/refinement.py
+          umi/workflows/scene/tasks/poster_vio.py

@@ -1,4 +1,4 @@
-from software.infrastructure import provenance as artifact_identity
+from umi.infra import provenance as artifact_identity
 """Peripheral workflow regressions; no camera recordings or solver execution required."""
 import json
 import copy
@@ -10,24 +10,24 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from software.configuration import loader as config
-from software.camera import registry
-from software.calibration.pipeline import board_detection
-from software.calibration import acceptance
-from software.calibration import cli
-from software.calibration.solve import basalt
-from software.calibration import devices
-from software.calibration.pipeline import inputs
-from software.calibration.pipeline import recordings
-from software.calibration import result_io
-from software.calibration.models import Step, Decision, ROLE_STEPS
-from software.calibration.pipeline import runtime
-from software.calibration.validation import trajectory as trajectory_validation
-from software.calibration import workflow
-from software.calibration.algorithms import board_pnp
-from software.camera import calibration_assets as tcal
-from software.calibration.models import CameraImuResult, GravityResult, IntrinsicsResult, VerificationRequest
-from software.infrastructure.file_store import locked
+from umi.config import loader as config
+from umi.devices import registry
+from umi.workflows.calibration.pipeline import board_detection
+from umi.workflows.calibration import acceptance
+from umi.apps import calib as cli
+from umi.workflows.calibration.solve import basalt
+from umi.workflows.calibration import devices
+from umi.workflows.calibration.pipeline import inputs
+from umi.workflows.calibration.pipeline import recordings
+from umi.workflows.calibration import result_io
+from umi.workflows.calibration.models import Step, Decision, ROLE_STEPS
+from umi.workflows.calibration.pipeline import runtime
+from umi.workflows.calibration.validation import trajectory as trajectory_validation
+from umi.workflows.calibration import workflow
+from umi.workflows.calibration.algorithms import board_pnp
+from umi.devices import calibration_assets as tcal
+from umi.workflows.calibration.models import CameraImuResult, GravityResult, IntrinsicsResult, VerificationRequest
+from umi.infra.file_store import locked
 
 
 
@@ -199,7 +199,7 @@ class FullWorkflowTests(unittest.TestCase):
                 destination = Path(command[command.index("--result-path") + 1])
                 (destination / "calibration.json").write_bytes(tcal.SAMPLE_CAMERA_JSON.read_bytes())
                 (destination / "corners.cereal").touch()
-            if any("software.calibration.tools.imu_physical_check" in part for part in command):
+            if any("umi.workflows.calibration.tools.imu_physical_check" in part for part in command):
                 destination = Path(command[command.index("--out") + 1])
                 destination.mkdir(exist_ok=True)
                 (destination / "imu_calib_physical_check.json").write_text(json.dumps({
@@ -230,7 +230,7 @@ class FullWorkflowTests(unittest.TestCase):
                 stack.enter_context(patch.object(module, name, return_value=value))
             stack.enter_context(patch.object(runtime, "run_logged", side_effect=run_logged))
             stack.enter_context(patch.object(recordings, "build", side_effect=build))
-            install = stack.enter_context(patch("software.calibration.devices.install", return_value=0)) if mock_install else None
+            install = stack.enter_context(patch("umi.workflows.calibration.devices.install", return_value=0)) if mock_install else None
             yield args, commands, install
 
     def read_result(self, args):
@@ -516,8 +516,8 @@ class FullWorkflowTests(unittest.TestCase):
             tcal.describe(out, "registry")
             self.assertEqual(len(commands), 5)  # A bag, A solve, B bag, B solve, D check
             for command in (commands[0], commands[2]):
-                self.assertEqual(command[1:3], ['-m', 'software.calibration.tools.euroc_to_bag'])
-            self.assertEqual(commands[4][1:3], ['-m', 'software.calibration.tools.imu_physical_check'])
+                self.assertEqual(command[1:3], ['-m', 'umi.workflows.calibration.tools.euroc_to_bag'])
+            self.assertEqual(commands[4][1:3], ['-m', 'umi.workflows.calibration.tools.imu_physical_check'])
             self.assertIn("--fixed-scale-opt-offset", commands[3])
             self.assertFalse((out / "run" / "work").exists())
             self.assertEqual({p.name for p in out.iterdir()}, {"report.txt", "calibration.json", "manifest.json", "run"})

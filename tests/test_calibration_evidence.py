@@ -6,12 +6,12 @@ import unittest
 
 import numpy as np
 
-from software.configuration import loader as config
-from software.calibration import acceptance
-from software.calibration.validation import gravity
-from software.calibration.algorithms import trajectory_metrics
-from software.calibration.models import RunPaths, ExecutionOptions, TrajectoryValidation
-from software.camera.calibration_assets import SAMPLE_CAMERA_JSON
+from umi.config import loader as config
+from umi.workflows.calibration import acceptance
+from umi.workflows.calibration.validation import gravity
+from umi.estimation import trajectory_metrics
+from umi.workflows.calibration.models import RunPaths, ExecutionOptions, TrajectoryValidation
+from umi.devices.calibration_assets import SAMPLE_CAMERA_JSON
 
 
 class GravityEvidenceTests(unittest.TestCase):
@@ -104,7 +104,7 @@ class TimeValidityTests(unittest.TestCase):
             trajectory_metrics.match_times([0.],[-.0000001,.0000001],1000)
 
     def test_range_gate_uses_unrounded_values(self):
-        from software.calibration.models import Decision
+        from umi.workflows.calibration.models import Decision
         cfg=config.load('calibration').values.checks
         for extent,expected in ((.149999,Decision.INCOMPLETE),(.15,Decision.ACCEPTED)):
             rows=[]
@@ -113,7 +113,7 @@ class TimeValidityTests(unittest.TestCase):
             self.assertEqual(acceptance.decision(rows),expected)
 
     def test_scale_boundaries_are_inclusive_without_subtraction_roundoff(self):
-        from software.calibration.models import Decision
+        from umi.workflows.calibration.models import Decision
         cfg=config.load('calibration').values.checks
         for scale,expected in ((.97,Decision.ACCEPTED),(1.03,Decision.ACCEPTED),
                 (.9,Decision.WARNINGS),(1.1,Decision.WARNINGS),(.89999,Decision.REJECTED),(1.10001,Decision.REJECTED)):

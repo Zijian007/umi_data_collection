@@ -1,11 +1,11 @@
-from software.scene.management.inputs import scene as kit_inputs
+from umi.workflows.scene.inputs import scene as kit_inputs
 """在临时目录生成测试标定包，不依赖工作区里的设备登记或演示数据。"""
 import shutil
 from copy import deepcopy
 from pathlib import Path
 
-from software.infrastructure.file_store import read_yaml, write_yaml
-from software.camera import calibration_assets as calibration_assets
+from umi.infra.file_store import read_yaml, write_yaml
+from umi.devices import calibration_assets
 
 
 def legacy_bundle(path: Path) -> Path:
@@ -20,7 +20,7 @@ def device_record() -> dict:
 
 def write_kit(name: str, arms: dict, *, description='') -> dict:
     """Write an explicit test kit exactly as an operator writes kit.yaml."""
-    from software.infrastructure.file_store import write_yaml
+    from umi.infra.file_store import write_yaml
 
     arms = deepcopy(arms)
     directory = kit_inputs.KITS / name
@@ -52,8 +52,8 @@ def write_kit(name: str, arms: dict, *, description='') -> dict:
 
 def write_batch(scene: Path, name: str, *, kit: str, arms=None, map_version=None) -> Path:
     """Write a manual declaration and persist its resolved test snapshot."""
-    from software.scene.management import batch_snapshot as batches
-    from software.infrastructure.file_store import write_yaml
+    from umi.workflows.scene import batch_snapshot as batches
+    from umi.infra.file_store import write_yaml
 
     if scene.suffix in ('.yaml', '.yml'):
         root = scene.parent.parent if scene.name == 'collection.yaml' else scene.parent
@@ -119,9 +119,9 @@ def write_batch(scene: Path, name: str, *, kit: str, arms=None, map_version=None
 
 def write_task(session, name: str, recording_paths: dict, *, expected_arms=None, instruction=None) -> Path:
     """Arrange a task record for tests of readers, maps and results; no CLI behavior."""
-    from software.scene import layout
-    from software.scene.pipeline import recordings
-    from software.infrastructure.file_store import write_yaml
+    from umi.store import layout
+    from umi.workflows.scene import recordings
+    from umi.infra.file_store import write_yaml
     import os
 
     directory = session.root / name
@@ -193,6 +193,6 @@ def read_task_configuration(task: Path) -> dict:
         batch = task.parent
     else:
         batch = task
-    from software.scene.management.collection_schema import normalize_collection
+    from umi.config.collection_schema import normalize_collection
     collection = normalize_collection(read_yaml(batch / 'collection.yaml'))
     return deepcopy(collection.get('tasks', {}).get(task.name, {}))

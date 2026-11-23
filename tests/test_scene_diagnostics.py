@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from software.scene.pipeline.tasks.recording_intervals import visual_gaps
+from umi.workflows.scene.tasks.recording_intervals import visual_gaps
 
 
 class VisualGapTests(unittest.TestCase):

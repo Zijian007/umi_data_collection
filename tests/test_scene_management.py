@@ -1,7 +1,7 @@
 """跨场景交错采集、固定版本、原片导入与设备资产回归。"""
 from __future__ import annotations
-from software.infrastructure import provenance as artifact_identity
-from software.scene.pipeline.maps import repository as map_lifecycle
+from umi.infra import provenance as artifact_identity
+from umi.workflows.scene.maps import repository as map_lifecycle
 
 import json
 import tempfile
@@ -10,16 +10,18 @@ from registry_fakes import write_batch, write_task
 from pathlib import Path
 from unittest.mock import patch
 
-from software.camera import registry
-from software.calibration import inventory
-from software.scene import layout
-from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
-from software.scene import cli, models, workflow
-from software.scene.pipeline import recordings
-from software.infrastructure.file_store import write_json, write_yaml
-from software.camera import calibration_assets as calibration_assets
-from software.viewer.results.catalog import RecordingCatalog
+from umi.devices import registry
+from umi.workflows.calibration import inventory
+from umi.store import layout
+from umi.infra.file_store import read_yaml
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
+from umi.apps import scene as cli
+from umi.store import models
+from umi.workflows.scene import workflow
+from umi.workflows.scene import recordings
+from umi.infra.file_store import write_json, write_yaml
+from umi.devices import calibration_assets
+from umi.apps.viewer.results.catalog import RecordingCatalog
 import test_scene as fixtures
 from registry_fakes import legacy_bundle
 
@@ -197,7 +199,7 @@ class SessionManagementTests(unittest.TestCase):
         workflow.run_episode(t2)
         code = cli.main(['review', str(layout.owner(session)), '--accept', '--reviewer', 'tester'])
         self.assertEqual(code, 0)
-        from software.scene.management import episodes
+        from umi.workflows.scene import episodes
         self.assertEqual(episodes.task_status(t1)['review'], 'accepted')
         self.assertEqual(episodes.task_status(t2)['review'], 'accepted')
 

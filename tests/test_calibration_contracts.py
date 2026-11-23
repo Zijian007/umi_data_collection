@@ -1,4 +1,4 @@
-from software.infrastructure import provenance as artifact_identity
+from umi.infra import provenance as artifact_identity
 """Boundary tests for evidence freshness, installed identity and checkpoint dependencies."""
 import json
 import os
@@ -8,14 +8,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from software.configuration import loader as config
-from software.camera import registry
-from software.calibration import workflow, devices, result_io
-from software.calibration.models import Step, RunPaths, ExecutionOptions
-from software.calibration.pipeline import inputs, runtime
-from software.calibration.validation import gravity
-from software.camera import calibration_assets as assets
-from software.infrastructure.file_store import locked
+from umi.config import loader as config
+from umi.devices import registry
+from umi.workflows.calibration import workflow, devices, result_io
+from umi.workflows.calibration.models import Step, RunPaths, ExecutionOptions
+from umi.workflows.calibration.pipeline import inputs, runtime
+from umi.workflows.calibration.validation import gravity
+from umi.devices import calibration_assets as assets
+from umi.infra.file_store import locked
 import test_calibration_workflow as workflow_fixtures
 
 
@@ -29,7 +29,7 @@ class CheckpointContractTests(unittest.TestCase):
             commands.clear()
             self.assertEqual(workflow.run(inputs.parse_run_args(args)),0)
             self.assertEqual(len(commands),1)
-            self.assertIn('software.calibration.tools.imu_physical_check', commands[0])
+            self.assertIn('umi.workflows.calibration.tools.imu_physical_check', commands[0])
             timing=result_io.read(Path(args.out))['execution']['timings']
             for step in (Step.INTRINSICS,Step.CAMERA_IMU,Step.TRAJECTORY):
                 self.assertEqual(timing[step]['status'],'reused')
@@ -90,7 +90,7 @@ class CheckpointContractTests(unittest.TestCase):
                     result=subprocess.run([str(runtime.REPO/'umi-calib'),command,'missing.insv'],
                         env=dict(os.environ,UMI_DEPS=str(deps)),capture_output=True,text=True)
                     self.assertEqual(result.returncode,0)
-                    self.assertIn('software.calibration',result.stdout)
+                    self.assertIn('umi.apps.calib',result.stdout)
                     self.assertIn(command,result.stdout)
                     self.assertNotIn('安装',result.stderr)
                     self.assertFalse((deps/'calib_env').exists())
@@ -120,7 +120,7 @@ class GravityFailureTests(unittest.TestCase):
 
 class SolverAdapterTests(unittest.TestCase):
     def test_b_receives_exact_a_snapshot_and_solver_dirs_do_not_share_caches(self):
-        from software.calibration.solve import basalt
+        from umi.workflows.calibration.solve import basalt
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
             execution=ExecutionOptions(RunPaths(root/'out'),None,1)
@@ -146,8 +146,8 @@ class SolverAdapterTests(unittest.TestCase):
             self.assertIn('--cam-types',commands[1])
 
     def test_rear_cli_uses_explicit_exit_code_and_preserves_options(self):
-        from software.calibration import cli
-        with patch('software.calibration.rear_workflow.run',return_value=1) as run:
+        from umi.apps import calib as cli
+        with patch('umi.workflows.calibration.rear_workflow.run',return_value=1) as run:
             self.assertEqual(cli.main(['run','/data/rear','--resume','--workers','2']),1)
             self.assertTrue(run.call_args.args[0].resume)
             self.assertEqual(run.call_args.args[0].workers,2)

@@ -10,16 +10,17 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software.configuration import loader as config
-from software.scene.models import PreparedRecording
-from software.scene.pipeline.tasks import poster_independent as independent_reconstruction
-from software.scene.management.inputs import scene as scene_inputs
-from software.camera import calibration_assets as assets
-from software.trajectory import calibration as selection
-from software.trajectory import reconstruction as runtime
-from software.vision.models import LensVideo, RecordingData, RecordingPaths
+from umi.config import loader as config
+from umi.store.models import PreparedRecording
+from umi.workflows.scene.tasks import poster_independent as independent_reconstruction
+from umi.workflows.scene.inputs import scene as scene_inputs
+from umi.devices import calibration_assets as assets
+from umi.devices import selection
+from umi.workflows.segment import reconstruction as runtime
+from umi.perception.models import LensVideo, RecordingData, RecordingPaths
 from trajectory_fakes import FakeEngines
-from software.scene import result_io as asset_identity
+from umi.workflows.segment import fusion_runner
+from umi.store import result_io as asset_identity
 
 
 class SceneFallbackAdapterTests(unittest.TestCase):
@@ -46,7 +47,7 @@ class SceneFallbackAdapterTests(unittest.TestCase):
             (LensVideo('front', self.video, self.root / 'scene-settings.yaml', None),), times, np.empty((0, 7)),
             RecordingData(dict(source=dict(name='right.insv')), self.paths.dataset / 'mav0/imu0/data.csv'))
         for mocked in (patch.dict(os.environ, self.engines.environment),
-                       patch.object(runtime.subprocess, 'run', side_effect=self.engines),
+                       *self.engines.patches(),
                        patch.object(runtime.console, 'write')):
             mocked.start()
             self.addCleanup(mocked.stop)
@@ -67,11 +68,11 @@ class SceneFallbackAdapterTests(unittest.TestCase):
                 self.assertTrue(actual_video.samefile(self.video))
                 self.assertFalse(actual_video.is_symlink())
             if kind == 'fuse':
-                self.assertEqual(Path(command[command.index('--calibration') + 1]), self.camera)
-                times = np.loadtxt(command[command.index('--times') + 1], skiprows=1)
+                self.assertEqual(command.calibration, self.camera)
+                times = np.loadtxt(command.times, skiprows=1)
                 np.testing.assert_allclose(times - 1, self.recording.video_times_s, rtol=0, atol=1e-9)
-                self.assertNotIn('--refine-initialization', command)
-                parameters = json.loads(Path(command[command.index('--parameters') + 1]).read_text())
+                self.assertFalse(command.refine_initialization)
+                parameters = json.loads(command.parameters.read_text())
                 self.assertEqual(parameters['input']['mode'], 'handheld')
                 self.assertEqual(parameters['fusion']['gravity_tolerance_m_s2'],
                                  self.episode.scene.trajectory.values.fusion.gravity_tolerance_m_s2)
@@ -87,15 +88,12 @@ class SceneFallbackAdapterTests(unittest.TestCase):
         self.assertTrue(all(not attempt['usable'] for attempt in record['attempts']))
 
     def test_truncated_trajectory_cannot_silently_drop_tail_frames(self):
-        def execute(command, **options):
-            result = self.engines(command, **options)
-            if 'software.trajectory.algorithms.fusion.cli' in command:
-                position = command.index('software.trajectory.algorithms.fusion.cli')
-                tum = Path(command[position + 6]) / 'traj_tum.txt'
-                tum.write_text(''.join(tum.read_text().splitlines(keepends=True)[:-1]))
-            return result
+        def fuse(request, **options):
+            self.engines.fuse(request, **options)
+            tum = request.output / 'traj_tum.txt'
+            tum.write_text(''.join(tum.read_text().splitlines(keepends=True)[:-1]))
 
-        with patch.object(runtime.subprocess, 'run', side_effect=execute):
+        with patch.object(fusion_runner, 'execute', side_effect=fuse):
             with self.assertRaisesRegex(ValueError, '未完整覆盖原录像时间轴'):
                 self.run_fallback()
 

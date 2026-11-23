@@ -8,10 +8,10 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software.infrastructure import provenance
-from software.sync import kiwi_audio as landmark_audio
-from software.sync.specialist_audio import AudioSyncError, AudioSyncEstimate, estimate_offset
-from software.scene.pipeline.synchronization import estimate_audio_sync, load_ready_audio_sync
+from umi.infra import provenance
+from umi.perception.audio import kiwi_audio as landmark_audio
+from umi.perception.audio.specialist_audio import AudioSyncError, AudioSyncEstimate, estimate_offset
+from umi.workflows.scene.synchronization import estimate_audio_sync, load_ready_audio_sync
 
 
 def _bursts(rate: int, duration_s: float, onsets: list[float], seed: int) -> np.ndarray:
@@ -89,7 +89,7 @@ class AudioSyncTests(unittest.TestCase):
             other.write_bytes(b'right')
             fake = AudioSyncEstimate(other_started_later_s=0.25, peak_ratio=2.0, peak_value=3.0,
                                      sample_rate_hz=16000, max_offset_s=30.0)
-            with patch('software.scene.pipeline.synchronization.estimate_offset_from_files', return_value=fake) as estimate:
+            with patch('umi.workflows.scene.synchronization.estimate_offset_from_files', return_value=fake) as estimate:
                 first = estimate_audio_sync({'left': reference, 'right': other}, output=output)
                 second = estimate_audio_sync({'left': reference, 'right': other}, output=output)
 
@@ -110,7 +110,7 @@ class AudioSyncTests(unittest.TestCase):
             other.write_bytes(b'right')
             fake = AudioSyncEstimate(other_started_later_s=0.12, peak_ratio=2.0, peak_value=3.0,
                                      sample_rate_hz=16000, max_offset_s=30.0)
-            with patch('software.scene.pipeline.synchronization.estimate_offset_from_files', return_value=fake):
+            with patch('umi.workflows.scene.synchronization.estimate_offset_from_files', return_value=fake):
                 estimate_audio_sync({'left': reference, 'right': other}, output=output)
             result = load_ready_audio_sync(output, {'left': reference, 'right': other})
             self.assertEqual(result['offsets_s'], {'left': 0., 'right': -.12})
@@ -127,7 +127,7 @@ class AudioSyncTests(unittest.TestCase):
             output = root / 'sync.json'
             reference.write_bytes(b'left')
             other.write_bytes(b'right')
-            with patch('software.scene.pipeline.synchronization.estimate_offset_from_files',
+            with patch('umi.workflows.scene.synchronization.estimate_offset_from_files',
                        side_effect=AudioSyncError('no common event')):
                 with self.assertRaisesRegex(AudioSyncError, '音频同步失败'):
                     estimate_audio_sync({'left': reference, 'right': other}, output=output)

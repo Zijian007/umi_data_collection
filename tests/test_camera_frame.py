@@ -4,7 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from software.camera.x3 import extraction, frame
+from umi.devices.x3 import extraction
+from umi.core import frame
 
 
 class CameraFrameTests(unittest.TestCase):

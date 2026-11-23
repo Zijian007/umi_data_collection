@@ -1,12 +1,12 @@
-from software.infrastructure.file_store import read_yaml
+from umi.infra.file_store import read_yaml
 """套件单/双手、批次配置、离线处理、验收和导出的完整业务回归。"""
 import unittest
 from registry_fakes import write_kit, write_batch
 
-from software.camera import registry
-from software.scene.management import batch_snapshot as batches
-from software.scene.management.inputs import scene as kit_inputs, batch as batch_inputs
-from software.infrastructure.file_store import write_yaml
+from umi.devices import registry
+from umi.workflows.scene import batch_snapshot as batches
+from umi.workflows.scene.inputs import scene as kit_inputs, batch as batch_inputs
+from umi.infra.file_store import write_yaml
 import test_scene_management as registry_fixtures
 
 

@@ -11,7 +11,7 @@
 # --tag-size-mm 指标定板标签黑框边长；夹爪标签尺寸在 kit 的 tag_distance JSON 配置。
 # install 自动识别 front/rear，更新对应镜头和内参来源的固定当前目录。
 # 完整参数见 docs/命令行参数.md；详细操作见 docs/标定.md。
-# 参数与求解环境选择由 software/calibration/cli.py 负责。
+# 参数与求解环境选择由 umi/apps/calib.py 负责。
 # UMI_DEPS 覆盖依赖目录；UMI_PY 覆盖基础解释器。
 set -euo pipefail
 
@@ -25,4 +25,4 @@ fi
 source "$DEPENDENCY_ROOT/env.sh"
 export UMI_PY=${UMI_PY:-$DEPENDENCY_ROOT/env/bin/python}
 export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-exec "$UMI_PY" -m software.calibration "$@"
+exec "$UMI_PY" -m umi.apps.calib "$@"
