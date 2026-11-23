@@ -3,12 +3,17 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+from software.configuration import user_settings
 from software.infrastructure.file_store import read_yaml, write_yaml
 from software.scene import layout
-from software.scene.management.effective_config import effective_report
-from software.scene.management.inputs.episode import read_episode
+from software.scene.management.batch_snapshot import effective_report
+from software.scene.management.inputs.batch import read_episode
+from software.scene.models import ArmExecutionResult, TaskInputs
+from software.scene.parameters import SceneOverrides
 from software.scene.pipeline.maps.epoch_selection import MapEpochError
-from software.scene.workflow import _requested_map_version
+from software.scene.pipeline.tasks import backend_routing as estimation
+from software.trajectory.algorithms.fixed_map.fusion import SceneFusionQualityError
+from software.scene.workflow import requested_map_version
 
 
 class TaskConfigurationTests(unittest.TestCase):
@@ -41,7 +46,7 @@ class TaskConfigurationTests(unittest.TestCase):
             tasks=[dict(task='take_001', sequence=4)]))
 
     def preview(self):
-        with patch('software.scene.management.inputs.episode.read_recordings',
+        with patch('software.scene.management.inputs.batch.read_recordings',
                    side_effect=AssertionError('preview must not inspect recordings')):
             return effective_report([self.helper.task_root])[0]
 
@@ -58,7 +63,7 @@ class TaskConfigurationTests(unittest.TestCase):
             self.assertEqual(report['selection']['map_version'], version)
             self.assertEqual(report['effective']['map_selection'], episode.map_selection)
             self.assertEqual(episode.map_selection['reason'], reason)
-            self.assertEqual(_requested_map_version(episode, None), version)
+            self.assertEqual(requested_map_version(episode, None), version)
 
     def test_frozen_batch_default_matches_execution(self):
         self.configure(task={'instruction': 'pick'})
@@ -67,6 +72,34 @@ class TaskConfigurationTests(unittest.TestCase):
         self.assertEqual(report['selection']['map_version'], 'map_default')
         self.assertEqual(report['effective']['map_selection'], episode.map_selection)
         self.assertEqual(report['effective']['instruction'], episode.instruction)
+
+    def test_audio_sync_uses_task_then_batch_then_global_settings(self):
+        user_path = self.helper.root / 'audio-user.yaml'
+        manual = dict(mode='manual', offsets_s=dict(left=0., right=.12), confirmed=False)
+        for global_enabled, batch_enabled, task, expected in (
+            (True, None, {}, 'audio_auto'),
+            (False, None, {}, 'assumed_simultaneous'),
+            (False, True, {}, 'audio_auto'),
+            (True, False, {}, 'assumed_simultaneous'),
+            (False, True, {'synchronization': manual}, 'manual'),
+            (True, False, {'synchronization': 'audio_auto'}, 'audio_auto'),
+            (False, True, {'arms': ['right']}, 'single_camera'),
+        ):
+            with self.subTest(global_enabled=global_enabled, batch_enabled=batch_enabled, task=task):
+                write_yaml(user_path, dict(features=dict(audio_sync=dict(enabled=global_enabled))))
+                with patch.object(user_settings, 'current', return_value=user_settings.load(user_path)):
+                    document = self.configure(task=task)
+                    if batch_enabled is None:
+                        document['recording'].pop('audio_sync', None)
+                    else:
+                        document['recording']['audio_sync'] = dict(enabled=batch_enabled)
+                    write_yaml(self.collection, document)
+                    episode = read_episode(self.helper.episode_path, verify=False)
+                    self.assertEqual(episode.synchronization['method'], expected)
+                    report = self.preview()['effective']
+                    self.assertIs(report['batch_audio_sync_enabled'],
+                                  global_enabled if batch_enabled is None else batch_enabled)
+                    self.assertEqual(report['synchronization'], episode.synchronization)
 
     def test_pending_epoch_is_visible_but_blocks_scene_map_execution(self):
         self.configure()
@@ -140,3 +173,69 @@ class TaskConfigurationTests(unittest.TestCase):
         self.assertEqual(selection['status'], 'unavailable')
         with self.assertRaises(MapEpochError):
             read_episode(self.helper.episode_path, verify=False)
+
+    def test_backend_options_apply_through_batch_task_and_expert_configuration(self):
+        document = self.configure(poster=True)
+        document.pop('reconstruction')
+        document['backend'] = dict(
+            mode='auto',
+            scene_map=dict(poster_constraint=dict(enabled=True, method='joint')),
+            poster_vio=dict(base_tag=dict(enabled=False), initialization=dict(max_observation_gap_s=4.)),
+            poster_independent=dict(max_position_support_gap_s=2.5, max_gravity_difference_deg=6.),
+            poster_edge_trim=dict(enabled=True, min_missing_duration_s=1.4))
+        document['tasks']['take_001']['backend'] = dict(
+            mode='poster_independent',
+            scene_map=dict(poster_constraint=dict(enabled=False)),
+            poster_vio=dict(initialization=dict(max_observation_gap_s=4.5)),
+            poster_independent=dict(max_gravity_difference_deg=4.),
+            poster_edge_trim=dict(min_missing_duration_s=1.8))
+        write_yaml(self.collection, document)
+
+        batch = effective_report([self.helper.batch_root])[0]['effective']['backend']
+        self.assertEqual(batch['mode'], 'auto')
+        self.assertTrue(batch['poster_edge_trim']['scene_map_applies'])
+        episode = read_episode(self.helper.episode_path, verify=False)
+        task = self.preview()['effective']['backend']
+        self.assertEqual(task['mode'], episode.scene.reconstruction_mode)
+        self.assertEqual(task['scene_map']['poster_constraint'], dict(enabled=False, method='joint'))
+        self.assertFalse(task['poster_edge_trim']['scene_map_applies'])
+        self.assertTrue(task['poster_edge_trim']['enabled'])
+        self.assertEqual(task['poster_edge_trim']['min_missing_duration_s'], 1.8)
+        self.assertTrue(episode.scene.parameters.tag_fusion_enabled)
+        self.assertFalse(episode.scene.poster_vio_base_tag_enabled)
+        self.assertEqual(episode.scene.parameters.poster_vio_maximum_observation_gap_s, 4.5)
+        self.assertEqual(episode.scene.parameters.poster_maximum_position_support_gap_s, 2.5)
+        self.assertEqual(episode.scene.parameters.poster_maximum_gravity_difference_deg, 4.)
+        self.assertEqual(episode.scene.recording_trim, dict(enabled=True, minimum_missing_duration_s=1.8))
+        self.assertTrue(episode.scene.scene_map_edge_trim)
+
+        expert_path = self.helper.batch_root / 'expert.yaml'
+        write_yaml(expert_path, dict(parameters=dict(poster_vio=dict(maximum_observation_gap_s=7.))))
+        expert = SceneOverrides.load(expert_path)
+        episode = read_episode(self.helper.episode_path, verify=False, overrides=expert)
+        self.assertEqual(episode.scene.parameters.poster_vio_maximum_observation_gap_s, 7.)
+        self.assertEqual(episode.scene.parameters.poster_maximum_gravity_difference_deg, 4.)
+
+    def test_auto_map_constraint_is_independent_of_poster_fallback(self):
+        document = self.configure(poster=True)
+        document.pop('reconstruction')
+        document['backend'] = dict(mode='auto', scene_map=dict(poster_constraint=dict(enabled=False)))
+        write_yaml(self.collection, document)
+        episode = read_episode(self.helper.episode_path, verify=False)
+        inputs = TaskInputs(episode, {}, {}, self.helper.task_root, None, None, None)
+        result = ArmExecutionResult({}, {}, {}, {})
+
+        def run_map(current, **kwargs):
+            self.assertFalse(current.episode.scene.parameters.tag_fusion_enabled)
+            self.assertFalse(current.episode.scene.environment_tag_detection)
+            raise SceneFusionQualityError('map coverage')
+
+        def run_vio(current, selection):
+            self.assertTrue(current.episode.scene.parameters.tag_fusion_enabled)
+            self.assertTrue(current.episode.scene.environment_tag_detection)
+            return result
+
+        selection = estimation.MapSelection.available(self.helper.batch_root, dict(version='v1', frame_id='map:v1'))
+        with patch.object(estimation.scene_map, 'execute_task', side_effect=run_map), \
+             patch.dict(estimation.ESTIMATORS, poster_vio=run_vio):
+            self.assertIs(estimation.execute(inputs, selection), result)

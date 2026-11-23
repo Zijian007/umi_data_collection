@@ -1,20 +1,20 @@
-"""以真实捕获时间对齐 TCP 与视频帧；保留视频 PTS 供独立读取。"""
+"""按真实捕获时间对齐 TCP、夹爪宽度和视频帧，保留视频 PTS 与测量来源。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 import csv
 
 from scipy.spatial.transform import Rotation
 import numpy as np
 
 from software.camera.geometry import resample_pose_series, relative_pose_series
-from software.dataset.policy import validate_quality_policy
+from software.dataset.schema import validate_quality_policy
 from software.gripper_width import series
-from software.trajectory.io.tum import read_tum
+from software.trajectory.tum import read_tum
 from software.scene.result_io import TCP_COLUMNS, trajectory_path
-
 
 @dataclass(frozen=True)
 class ArmSamples:
@@ -226,3 +226,67 @@ def sample(arms: dict[str, ArmSamples], fps: float, max_gap_s: float, *,
     if 'left' in arms and 'right' in arms:
         arrays['T_left_tcp_right_tcp'] = relative_pose_series(arrays['left_T_scene_tcp'], arrays['right_T_scene_tcp'])
     return arrays, quality
+
+
+class GripperMeasurement(TypedDict):
+    calibration: dict
+    inputs: dict
+    valid_fraction: float
+    sources: dict[str, int]
+
+
+class GripperReadiness(TypedDict):
+    training_ready: bool
+    missing_channels: list[str]
+    not_ready_reasons: list[str]
+    measurements: dict[str, GripperMeasurement]
+
+
+def _sample_gripper(directory: Path, manifest: dict, arms: dict[str, ArmSamples],
+                    arrays: dict[str, np.ndarray], max_gap_s: float) -> GripperReadiness:
+    query = arrays['t_episode_s']
+    reasons: list[str] = []
+    measurements: dict[str, GripperMeasurement] = {}
+    missing = False
+    for arm, trajectory in arms.items():
+        report = manifest.get('gripper_width', {}).get(arm)
+        if report is None:
+            missing = True
+            reasons.append(f"{arm}: missing gripper")
+            continue
+        measured = trajectory.width_samples
+        if measured is None:  # 历史结果的宽度独立存放。
+            measured = series.read(directory / arm / 'gripper_width.csv')
+            if len(measured.times_s) != len(trajectory.times_s) or not np.allclose(measured.times_s, trajectory.times_s, atol=1e-8, rtol=0):
+                raise ValueError(f'{arm} 夹爪宽度与 TCP 不在同一时间轴')
+        calibration = report['calibration']
+        opening = calibration['open_width_mm']
+        if np.any((measured.width_mm[measured.valid] < 0) | (measured.width_mm[measured.valid] > opening)):
+            raise ValueError(f'{arm} 有效宽度超出标定范围')
+        sampled = series.resample(measured, query, max_gap_s)
+        arrays[f"{arm}_gripper_width_m"] = sampled.width_mm / 1000.0
+        arrays[f"{arm}_gripper_close_01"] = 1.0 - sampled.width_mm / opening
+        arrays[f"{arm}_gripper_valid"] = sampled.valid
+        arrays[f"{arm}_gripper_source"] = sampled.source
+        measurements[arm] = dict(
+            calibration=calibration,
+            inputs=report['inputs'],
+            valid_fraction=float(sampled.valid.mean()),
+            sources={name: int((sampled.source == code).sum()) for code, name in series.SOURCE_NAMES.items()}
+        )
+        if not sampled.valid.all():
+            reasons.append(f"{arm}: gripper contains missing or out-of-range samples")
+    return dict(training_ready=not reasons, missing_channels=['gripper'] if missing else [],
+                not_ready_reasons=reasons, measurements=measurements)
+
+
+def sample_episode(directory: Path, manifest: dict, fps: float, max_gap_s: float, *,
+                   quality_policy: str, unknown_support: str,
+                   time_window_s: tuple[float, float] | None) -> tuple[dict[str, np.ndarray], dict, GripperReadiness]:
+    """Sample the accepted episode's poses, frames, and gripper values on one timeline."""
+    offsets = manifest['synchronization']['offsets_s']
+    arms = {arm: read_arm(directory / arm, offsets[arm]) for arm in manifest['arms']}
+    arrays, quality = sample(arms, fps, max_gap_s, quality_policy=quality_policy,
+                             unknown_support=unknown_support, time_window_s=time_window_s)
+    readiness = _sample_gripper(directory, manifest, arms, arrays, max_gap_s)
+    return arrays, quality, readiness

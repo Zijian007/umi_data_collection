@@ -8,9 +8,9 @@ import numpy as np
 from scipy.optimize import least_squares
 
 import test_fusion_stability as stability_tests
-from software.trajectory.algorithms.fusion import refinement
+from software.trajectory.algorithms.fusion import alignment
 from software.trajectory.algorithms.fusion.alignment import align_lenses
-from software.trajectory.algorithms.fusion.alignment_solver import estimate_lens_alignment
+from software.trajectory.algorithms.fusion.alignment import estimate_lens_alignment
 
 
 class RefinementTests(unittest.TestCase):
@@ -24,7 +24,7 @@ class RefinementTests(unittest.TestCase):
 
     def refine(self):
         base = self.baseline()
-        result, report = refinement.refine_chain(self.lens, self.times, self.imu, np.zeros(3), self.p,
+        result, report = alignment.refine_chain(self.lens, self.times, self.imu, np.zeros(3), self.p,
                                                  base['chains'][0], base['ba'])
         json.dumps(report, allow_nan=False)
         return base, result, report
@@ -59,12 +59,12 @@ class RefinementTests(unittest.TestCase):
                                        for k in range(len(x))])
             np.testing.assert_allclose(jac(x), numeric, atol=2e-8, rtol=2e-7)
             return least_squares(fun, x0, jac=jac, **kwargs)
-        with patch.object(refinement, 'least_squares', side_effect=checked):
+        with patch.object(alignment, 'least_squares', side_effect=checked):
             self.refine()
 
     def test_degenerate_motion_cannot_be_rescued_by_fixed_gravity(self):
         self.lens['obs'] = {k: (np.zeros(3), np.eye(3)) for k in self.lens['obs']}
-        result, report = refinement.refine_chain(self.lens, self.times, self.imu, np.zeros(3), self.p,
+        result, report = alignment.refine_chain(self.lens, self.times, self.imu, np.zeros(3), self.p,
             dict(scale=.7, g_map=np.array([0., 0., -9.81])), np.zeros(3))
         self.assertIsNone(result)
         self.assertEqual(report['status'], 'unobservable')
@@ -73,7 +73,7 @@ class RefinementTests(unittest.TestCase):
         base = self.baseline()
         base['chains'][0]['good'] = False
         original = copy.deepcopy(base)
-        report = refinement.refine_initialization({'front': self.lens}, self.times, self.imu, np.zeros(3), self.p,
+        report = alignment.refine_initialization_estimates({'front': self.lens}, self.times, self.imu, np.zeros(3), self.p,
             {'front': base}, {'front': [dict(status='stable')]})
         self.assertEqual(report['front'][0]['status'], 'baseline_rejected')
         self.assertFalse(report['front'][0]['applied'])

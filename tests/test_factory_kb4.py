@@ -6,9 +6,10 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software.calibration.algorithms import board_pnp, factory_kb4 as fit
+from software.calibration.algorithms import board_pnp
+from software.camera.x3 import factory_kb4 as fit
 from software.calibration.models import Kb4
-from software.camera.x3.factory import Mei, Kb4Model
+from software.camera.x3.factory_geometry import Mei; from software.camera.x3.factory_geometry import Kb4Model
 
 
 class FactoryKb4Tests(unittest.TestCase):

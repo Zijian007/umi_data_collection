@@ -4,18 +4,9 @@ import unittest
 
 import numpy as np
 
-from software.trajectory.poster_vio import (
-    PosterVioObservation,
-    PosterVioQuality,
-    PosterVioRequest,
-    PosterVioResult,
-    validate_request,
-    validate_result,
-    PosterVioPolicy,
-    assess_observations,
-    ArmSolveInput,
-    solve_joint_poster_imu,
-)
+from software.scene.pipeline.tasks.poster_vio import PosterVioRequest
+from software.trajectory.algorithms.poster_vio.models import PosterVioParameters
+from software.trajectory.algorithms.poster_vio import PosterVioObservation, PosterVioQuality, PosterVioProblem, PosterVioResult, validate_problem, validate_result, PosterVioPolicy, assess_observations, ArmSolveInput, solve_joint_poster_imu
 
 
 def observation(arm: str) -> PosterVioObservation:
@@ -36,39 +27,39 @@ class PosterVioContractTests(unittest.TestCase):
         )
 
     def test_request_requires_task_poster_and_all_assets(self):
-        validate_request(self.request())
+        self.request().validate_assets()
         for change in (
             {'coordinate_record': {'scope': 'shared_scene', 'frame_id': 'scene/map'}},
             {'imu_assets': {'left': {}}},
-            {'observations': (observation('left'),)},
+            {'board_asset_hash': ''},
         ):
             with self.subTest(change=change):
                 values = self.request().__dict__ | change
                 with self.assertRaises(ValueError):
-                    validate_request(PosterVioRequest(**values))
+                    PosterVioRequest(**values).validate_assets()
 
-    def test_result_forbids_scene_map_and_checks_quality(self):
+        with self.assertRaisesRegex(ValueError, '观测对象'):
+            validate_problem(PosterVioProblem(('left', 'right'), (observation('left'),)))
+
+    def test_result_requires_all_numerical_trajectories(self):
         trajectory = np.tile(np.eye(4), (2, 1, 1))
         result = PosterVioResult(
             {'left': trajectory, 'right': trajectory.copy()},
-            {'scope': 'task_poster', 'frame_id': 'poster:run-1'},
             PosterVioQuality('solved', {'left': 2, 'right': 2}, 1.2, {'left': 1., 'right': 1.}),
         )
         validate_result(result, ('left', 'right'))
         with self.assertRaises(ValueError):
-            validate_result(PosterVioResult(result.trajectories, result.coordinate_record,
-                result.quality, scene_map_used=True), ('left', 'right'))
+            validate_result(result, ('left',))
 
     def test_quality_gate_rejects_sparse_or_discontinuous_observations(self):
-        request = self.request()
+        request = self.request().problem()
         quality = assess_observations(request, PosterVioPolicy(minimum_tag_frames=2,
                                                                maximum_observation_gap_s=.2,
                                                                minimum_time_span_s=.1))
         self.assertEqual(quality.status, 'ready')
-        sparse = PosterVioRequest(request.arms, request.board_asset_hash,
+        sparse = PosterVioProblem(request.arms,
             tuple(PosterVioObservation(item.arm, np.array([0., .1]), item.tag_ids[:2], item.tag_corners_px[:2])
-                  for item in request.observations), request.camera_assets, request.imu_assets,
-            request.coordinate_record)
+                  for item in request.observations))
         quality = assess_observations(sparse, PosterVioPolicy(minimum_tag_frames=3))
         self.assertEqual(quality.status, 'insufficient_observations')
 
@@ -92,18 +83,15 @@ class PosterVioContractTests(unittest.TestCase):
             natural_pixels.append(model.project(in_camera[None, ...])[0])
         natural_tracks = (dict(track_id=7, node_indices=natural_nodes,
                                pixels=np.asarray(natural_pixels), initial_point_m=world_point),)
-        request = PosterVioRequest(
-            ('left',), 'board-sha', (PosterVioObservation('left', rear_times,
-                detections.tag_ids, detections.corners_px, natural_tracks),),
-            {'left': {}}, {'left': {}}, {'scope': 'task_poster', 'frame_id': 'poster:synthetic'},
-        )
-        result = solve_joint_poster_imu(request, (ArmSolveInput(
+        problem = PosterVioProblem(('left',), (PosterVioObservation('left', rear_times,
+            detections.tag_ids, detections.corners_px, natural_tracks),))
+        validate_problem(problem)
+        result = solve_joint_poster_imu(problem, (ArmSolveInput(
             'left', node_times, imu, seed, extrinsics['rear'],
             model,
             points, detections.corners_px, tag_indices,
-            trajectory, parameters),), board_pose)
+            trajectory.fusion, parameters.for_algorithm(PosterVioParameters)),), board_pose)
         self.assertEqual(result.quality.status, 'solved')
-        self.assertFalse(result.scene_map_used)
         self.assertLess(result.quality.reprojection_rms_px, 1e-3)
 
 

@@ -13,13 +13,14 @@ import sys
 import tempfile
 import threading
 
-from software.infrastructure.runtime_environment import python_executable
 from software.scene import layout
 from software.trajectory.reporting import map_data
-from software.trajectory.reporting.results import result_path
+from software.trajectory.reporting.artifacts import result_path
 from software.configuration import operational_settings as settings
 from software.viewer.resources import cache
-from software.infrastructure.paths import deps_root
+from software.infrastructure.paths import PROJECT_ROOT, deps_root, python_executable
+from software.vision import atlas
+from software.vision.orb_environment import exporter_paths
 
 
 _export_lock = threading.Lock()
@@ -40,7 +41,7 @@ def validate(atlas_record: dict) -> dict:
                 or (item['coordinates'] == 'trajectory') != (item['alignment']['status'] == 'aligned')):
             raise ValueError('子地图信息无效')
         points, keyframes = item.get('points'), item.get('keyframes')
-        if not isinstance(points, list) or len(points) > map_data.MAX_POINTS or not all(vector(p, 3) for p in points):
+        if not isinstance(points, list) or len(points) > atlas.MAX_POINTS or not all(vector(p, 3) for p in points):
             raise ValueError('地图点数据无效')
         if not isinstance(keyframes, list) or not all(isinstance(k, dict) and vector(k.get('position'), 3)
                 and vector(k.get('quaternion'), 4) and type(k.get('time')) in (float, int)
@@ -89,7 +90,7 @@ def _export(directory: Path) -> dict:
         target = Path(temporary_atlas) / 'map.json'
         try:
             process = subprocess.run([python, '-m', 'software.trajectory.reporting.map_data', str(directory), '--output', str(target)],
-                cwd=map_data.ROOT, capture_output=True, text=True, timeout=settings.values('viewer')['map_timeout_s'],
+                cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=settings.values('viewer')['map_timeout_s'],
                 env=settings.child_environment(kinds=('runtime', 'viewer')))
         except subprocess.TimeoutExpired as error:
             raise ValueError('地图读取超时；轨迹和视频仍可正常查看') from error
@@ -129,9 +130,9 @@ def _load(directory: Path, summary: dict) -> dict:
               directory / 'debug/logs/front_loc_frames.csv', *sorted((attempt / 'front').glob('loc_m*/frames.csv'))]
     for path in inputs:
         map_data.require_local(path, directory)
-    executable, vocabulary = map_data.exporter_paths()
+    executable, vocabulary = exporter_paths()
     inputs += [executable, vocabulary, executable.parents[2]/'lib/libORB_SLAM3.so',
-               Path(map_data.__file__), Path(__file__), Path(cache.__file__)]
+               Path(map_data.__file__), Path(atlas.__file__), Path(__file__), Path(cache.__file__)]
     identity = tuple(cache.file_identity(p) for p in inputs)
     return _convert(directory.resolve(), identity)
 

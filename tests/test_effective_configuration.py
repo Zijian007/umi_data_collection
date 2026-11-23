@@ -11,12 +11,9 @@ from unittest.mock import patch
 from software.configuration import loader as config
 from software.calibration import cli as calibration_cli
 from software.scene import cli as scene_cli
-from software.scene.overrides import SceneOverrides, apply_overrides
-from software.scene.parameter_schema import nested_snapshot
-from software.scene.management.inputs import (
-    episode as episode_inputs,
-    scene as scene_inputs,
-)
+from software.scene.parameters import SceneOverrides, apply_overrides
+from software.scene.parameters import nested_snapshot
+from software.scene.management.inputs import batch as episode_inputs, scene as scene_inputs
 from software.infrastructure.file_store import write_yaml
 from software.viewer import server
 
@@ -72,9 +69,19 @@ class EffectiveConfigurationTests(unittest.TestCase):
                                     map=dict(layout='shared', reference_arm='left', selection=dict(policy='latest_prior')),
                                     reconstruction=dict(backend='scene_map')))
         before = {path: path.read_bytes() for path in self.root.rglob('*') if path.is_file()}
-        with patch.object(scene_cli.processing, 'run') as run, redirect_stdout(io.StringIO()) as output:
+        open_path = Path.open
+        collection_reads = []
+
+        def count_reads(path, *args, **kwargs):
+            if path == collection:
+                collection_reads.append(path)
+            return open_path(path, *args, **kwargs)
+
+        with patch.object(scene_cli.processing, 'run') as run, \
+             patch.object(Path, 'open', count_reads), redirect_stdout(io.StringIO()) as output:
             self.assertEqual(scene_cli.main(['run', str(collection.parent), '--show-config', '--force', '--dry-run']), 0)
         run.assert_not_called()
+        self.assertEqual(collection_reads, [collection])
         report = json.loads(output.getvalue())
         self.assertEqual(report['scope'], 'configuration_only')
         self.assertEqual(report['configuration'][0]['effective']['parameters'],
@@ -82,7 +89,7 @@ class EffectiveConfigurationTests(unittest.TestCase):
         self.assertEqual({path: path.read_bytes() for path in self.root.rglob('*') if path.is_file()}, before)
 
     def test_task_show_config_preserves_overrides_and_never_reads_recordings(self):
-        from software.scene.management import effective_config
+        from software.scene.management import batch_snapshot as effective_config
         batch = self.root / 'batch'
         task = batch / 'take_001'
         task.mkdir(parents=True)
@@ -94,7 +101,7 @@ class EffectiveConfigurationTests(unittest.TestCase):
         episode = batch / '.pipeline/tasks/take_001/episode.yaml'
         write_yaml(episode, dict(schema_version=5, recordings={}))
         before = {p: p.read_bytes() for p in batch.rglob('*') if p.is_file()}
-        with patch.object(effective_config.batches, 'read_kit',
+        with patch.object(effective_config, 'read_kit',
                           return_value=dict(id='rig', arms=dict(left={}, right={}))), \
                 patch.object(episode_inputs, 'read_recordings', side_effect=AssertionError('recording IO')):
             for target in (task, episode, episode.parent):

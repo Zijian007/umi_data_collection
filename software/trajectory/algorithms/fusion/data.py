@@ -12,7 +12,7 @@ from software.camera.geometry import imu_from_camera
 import numpy as np
 
 from software.camera.timing import canonical_to_video_seconds, euroc_ns_to_seconds, video_to_canonical_seconds
-from software.trajectory.calibration.assets import read_basalt
+from software.camera.calibration_assets import read_basalt
 
 
 @dataclass(frozen=True)
@@ -125,3 +125,14 @@ def retime_rear(inputs, measured):
             if a in maps: result_maps[k] = maps[a]
     return replace(inputs, observations=dict(inputs.observations,rear=result), map_ids=dict(inputs.map_ids,rear=result_maps),
                    rear_rotation=transform[:3,:3], rear_lever=np.linalg.inv(transform)[:3,3])
+
+
+@dataclass(frozen=True)
+class MapPlacements:
+    chains: dict
+    groups: dict
+    segments: dict
+    initial_imu_poses: dict
+    gauge_chain: int
+    dropped: list
+    gates: list

@@ -122,7 +122,7 @@ def device_inventory() -> list[DeviceStatus]:
 
 
 def kit_status(name: str, *, intrinsics_source: str | None = None, require_rear: bool = False) -> KitStatus:
-    from software.scene.management.inputs.kit import read_kit
+    from software.scene.management.inputs.scene import read_kit
 
     kit_report = dict(id=name, arms={}, errors=[], require_rear=require_rear,
                   scope='camera_calibration_bindings', combination_validation='not_checked')

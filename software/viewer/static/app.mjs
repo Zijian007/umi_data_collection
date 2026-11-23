@@ -1,45 +1,29 @@
-import {nearestIndex, formatTime, clamp} from './math.mjs';
+import {nearestIndex, formatTime} from './math.mjs';
 import {TrajectoryScene} from './scene.mjs';
 import {SpeedChart} from './chart.mjs';
-import {FramePreview, VideoPreview} from './media.mjs';
-import {CompanionVideo} from './paired.mjs';
-import {tagDistanceReadout} from './measurements.mjs';
+import {createPlayback} from './playback.mjs';
+import {api, createLibrary, recordingLabel} from './library.mjs';
+import {formatTagDistance, tagDistanceReadout} from './measurements.mjs';
+import {QualityTimeline, frameQuality, qualityLabels} from './quality.mjs';
 
 const $ = id => document.getElementById(id);
-const state = {recording: null, maps: [], catalog: [], root: '', track: 'tcp', index: 0, playing: false, loop: false, load: 0, lastTick: 0, playTime: 0, videoReady: false, frameMode: false, videoSource: null, manualFrameMode: false};
-const video = $('video');
-const companionVideo = new CompanionVideo($('companion-video'));
-const videoSeconds = time => Math.max(0, time - (state.recording.video_time_offset_s ?? state.recording.times[0]));
-const scene = new TrajectoryScene($('trajectory-canvas'), index => seek(index));
-const chart = new SpeedChart($('speed-canvas'), time => { if (state.recording) seek(nearestIndex(state.recording.times, time)); });
-const framePreview = new FramePreview($('video-frame'), index => {
-  $('video-empty').hidden = true;
-  renderFrame(index, true);
-}, error => {
-  pause(); $('video-empty').hidden = false;
-  $('video-empty').querySelector('p').textContent = `兼容播放失败：${error.message}`;
-  message(`兼容播放失败：${error.message}`, true);
+const state = {recording: null, maps: [], track: 'tcp', load: 0};
+const playback = createPlayback($, {renderFrame, message});
+const library = createLibrary({
+  search: $('search'), list: $('recording-list'), count: $('record-count'), root: $('root-path'),
+  refreshButton: $('refresh'), onSelect: load, onError: text => message(text, true),
 });
-const videoPreview = new VideoPreview(url => {
-  if (!state.manualFrameMode && url !== state.videoSource) showVideo(url, true);
-}, () => {
-  $('video-note').textContent = state.frameMode ? '兼容播放 · 流畅预览暂不可用' : '原视频播放 · 流畅预览暂不可用';
-});
-const labels = {full: '地图位置', rot: '仅朝向', imu: 'IMU 衔接', unknown: '未知'};
-const colors = {full: '#8ee3bf', rot: '#d9b67b', imu: '#e29a87', unknown: '#849597'};
+const seekTime = time => {
+  if (state.recording) playback.seek(nearestIndex(state.recording.times, time));
+};
+const qualityTimeline = new QualityTimeline($('quality-timeline'), seekTime);
+const scene = new TrajectoryScene($('trajectory-canvas'), index => playback.seek(index));
+const chart = new SpeedChart($('speed-canvas'), seekTime);
+const qualityColors = {visual: '#8ee3bf', natural: '#8ee3bf', map: '#8ee3bf',
+  visual_and_poster: '#92d8d9', poster: '#91b7f4', rot: '#d9b67b', imu: '#e29a87', unknown: '#849597'};
 
 function message(text = '', error = false) {
   $('message').textContent = text; $('message').className = `message${error ? ' error' : ''}`; $('message').hidden = !text;
-}
-async function api(url) {
-  const response = await fetch(url, {cache: 'no-store'});
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.error || `读取失败（${response.status}）`);
-  return body;
-}
-function recordingLabel(name) {
-  const match = name.match(/VID_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);
-  return match ? `${match[1]}.${match[2]}.${match[3]} · ${match[4]}:${match[5]}:${match[6]}` : name;
 }
 function renderDualHandSummary(recording) {
   const root = $('dual-hand-summary');
@@ -59,68 +43,24 @@ function renderDualHandSummary(recording) {
   }
   root.hidden = false;
 }
-function renderLibrary() {
-  const filter = $('search').value.trim().toLowerCase();
-  const entries = state.catalog.filter(entry => `${entry.name} ${entry.serial || ''} ${entry.path}`.toLowerCase().includes(filter));
-  $('record-count').textContent = state.catalog.length;
-  const list = $('recording-list'); list.replaceChildren();
-  if (!entries.length) {
-    const empty = document.createElement('p'); empty.className = 'empty-list';
-    empty.textContent = filter ? '没有匹配的录像。' : '还没有可查看的轨迹。先运行 umi-scene run 处理任务，再刷新此列表。'; list.append(empty); return;
-  }
-  for (const [index, entry] of entries.entries()) {
-    const button = document.createElement('button'); button.className = `recording-item${state.recording?.id === entry.id ? ' active' : ''}`;
-    button.setAttribute('aria-current', state.recording?.id === entry.id ? 'true' : 'false'); button.title = entry.reason || entry.path; button.disabled = entry.available === false;
-    const top = document.createElement('span'); top.className = 'record-index';
-    const title = document.createElement('span'); title.textContent = `TAKE ${String(index + 1).padStart(2, '0')}`;
-    const status = document.createElement('i'); status.className = `item-status${['failed', 'rejected_preflight', 'incomplete'].includes(entry.status) ? ' failed' : ''}`;
-    top.append(title, status);
-    const name = document.createElement('strong'); name.textContent = recordingLabel(entry.name);
-    const labels = {pending:'待处理', incomplete:'待补齐', failed:'处理失败', rejected_preflight:'原片检查未通过', ok:'已完成', skipped:'已完成', local_ok:'独立局部轨迹', local_skipped:'独立局部轨迹（复用）'};
-    const sub = document.createElement('small'); sub.textContent = `${entry.serial?.slice(-4) || '设备未知'}  /  ${Number.isFinite(entry.duration) ? entry.duration.toFixed(1) + ' s' : '时长未知'}  /  ${entry.rows ?? '—'} 帧 / ${labels[entry.status] || entry.status}${entry.review === 'accepted' ? ' · 已接收' : entry.review === 'rejected' ? ' · 已拒收' : ''}`;
-    button.append(top, name, sub); button.addEventListener('click', () => load(entry.id)); list.append(button);
-  }
-}
-async function refresh(initial = false) {
-  $('refresh').disabled = true;
-  try {
-    const catalog = await api('/api/recordings'); state.catalog = catalog.recordings; state.root = catalog.root;
-    $('root-path').textContent = catalog.root; $('root-path').title = catalog.root;
-    renderLibrary();
-    if (initial && catalog.recordings.length) {
-      const requested = new URL(location.href).searchParams.get('recording');
-      const available = catalog.recordings.filter(item => item.available !== false);
-      const entry = available.find(item => item.id === requested) || available[0];
-      if (entry) await load(entry.id);
-    }
-  } catch (error) { message(error.message, true); }
-  finally { $('refresh').disabled = false; }
-}
 async function load(id) {
   const request = ++state.load;
-  videoPreview.reset();
-  companionVideo.reset();
-  pause(); message('正在加载轨迹和视频…'); $('play').disabled = true;
+  playback.pause(); message('正在加载轨迹和视频…'); $('play').disabled = true;
   try {
-    const recording = await api(`/api/recordings/${id}`);
+    const recording = await api(`/api/recordings/${id}/playback`);
     if (request !== state.load) return;
-    state.recording = recording; state.track = 'tcp'; state.index = 0; state.videoReady = false; state.frameMode = false; state.playTime = recording.times[0]; state.manualFrameMode = false;
-    companionVideo.reset(recording.companion);
+    state.recording = recording;
+    state.track = 'tcp';
     const primaryLabel = recording.primary_arm === 'right' ? '右手' : '左手';
-    $('video-title').textContent = recording.companion ? '双手工作镜头' : `${primaryLabel}工作镜头`;
-    $('video-hand-label').textContent = recording.companion ? `${primaryLabel}工作镜头 · 主时间轴` : `${primaryLabel}工作镜头`;
-    video.closest('.video-panel').classList.toggle('paired', Boolean(recording.companion));
-    framePreview.reset(); video.hidden = false;
-    $('compatibility-mode').textContent = '兼容播放';
-    $('compatibility-mode').disabled = !recording.frame_url;
-    video.pause(); video.removeAttribute('src'); state.videoSource = null;
-    video.poster = recording.poster_url || '';
-    const readyPreview = recording.preview_video_url && video.canPlayType('video/webm; codecs="vp8"');
-    if (recording.video_url) showVideo(readyPreview ? recording.preview_video_url : recording.video_url, Boolean(readyPreview));
-    else video.load();
-    $('video-empty').hidden = Boolean(recording.poster_url);
-    $('video-empty').querySelector('p').textContent = recording.video_url ? '正在加载工作镜头画面…' : recording.video_note;
-    if (!readyPreview) $('video-note').textContent = recording.video_note;
+    $('video-title').textContent = recording.companion ? '双手视频' : '录像画面';
+    $('video-hand-label').textContent = recording.primary_arm ? primaryLabel : '镜头';
+    const paired = Boolean(recording.companion);
+    $('inspector-grid').classList.toggle('paired-layout', paired);
+    document.body.classList.toggle('paired-view', paired);
+    $('primary-readout').hidden = !paired;
+    $('video-fullscreen').textContent = paired ? '双路全屏' : '全屏';
+    $('video-fullscreen').title = paired ? '全屏查看两路视频' : '全屏视频';
+    qualityTimeline.load(recording);
     const summary = recording.summary, selection = summary.calibration_used || {};
     $('record-title').textContent = recordingLabel(recording.name); $('record-title').title = recording.name;
     $('record-meta').textContent = `${recording.name} · ${summary.scene?.frame_id || summary.mode || 'handheld'}`;
@@ -139,28 +79,21 @@ async function load(id) {
     $('total-time').textContent = formatTime(recording.times.at(-1) - recording.times[0]);
     $('scene-empty').hidden = true;
     for (const button of document.querySelectorAll('[data-track]')) { button.disabled = !recording.tracks[button.dataset.track]; button.classList.toggle('active', button.dataset.track === 'tcp'); }
-    scene.load(recording); chart.load(recording.times, recording.tracks.tcp.speed, recording.companion_tracks?.tcp?.speed); setTrack('tcp'); renderLibrary();
+    scene.load(recording);
+    playback.load(recording);
+    setTrack('tcp');
+    library.setActive(recording.id);
     loadMaps(id, request);
     const url = new URL(location.href); url.searchParams.set('recording', id); history.replaceState(null, '', url);
     const warnings = [...recording.notes];
     if (summary.status === 'failed') warnings.unshift(`此结果被标记为失败：${summary.reason || '请查看本次记录'}。轨迹仅供排查。`);
     message(warnings.join(' '), summary.status === 'failed');
-    if (!readyPreview && recording.preview_url && video.canPlayType('video/webm; codecs="vp8"')) videoPreview.reset(recording.preview_url);
-    if (!readyPreview && recording.video_url && !video.canPlayType('video/mp4; codecs="avc1.640020"')) enableFrameMode();
     document.body.dataset.loaded = 'true';
   } catch (error) {
     if (request === state.load) { message(`加载失败：${error.message}`, true); $('play').disabled = !state.recording; }
   }
 }
 function unit(text) { const element = document.createElement('small'); element.textContent = text; return element; }
-function showVideo(url, preview = false) {
-  framePreview.reset(); state.frameMode = false; state.videoReady = false; state.videoSource = url;
-  video.pause(); video.hidden = false; video.preload = preview ? 'auto' : 'metadata';
-  video.src = url; video.load();
-  $('video-empty').hidden = Boolean(state.recording.poster_url);
-  $('compatibility-mode').textContent = '兼容播放'; $('compatibility-mode').disabled = !state.recording.frame_url;
-  $('video-note').textContent = preview ? '流畅预览 · 与轨迹时间同步' : state.recording.video_note;
-}
 async function loadMaps(id, request) {
   state.maps = [];
   $('map-select').replaceChildren();
@@ -200,6 +133,7 @@ function updateMapLegend() {
   $('scene-scale').textContent = scene.rawMap ? '地图单位 · 朝向未对齐' : '单位 m · Z ↑';
   $('legend-track').parentElement.hidden = scene.rawMap;
   $('legend-current').hidden = scene.rawMap;
+  $('legend-companion').hidden = scene.rawMap || !state.recording?.companion_tracks?.[state.track];
   $('legend-map').hidden = !scene.showMap || !scene.map;
   $('show-map-axes').disabled = !scene.showMap || !scene.map;
   $('show-world-axes').disabled = !state.recording || scene.rawMap;
@@ -210,123 +144,76 @@ function setTrack(track) {
   state.track = track; scene.track = track;
   const primaryLabel = state.recording.primary_arm === 'right' ? '右手' : '左手';
   const companionLabel = state.recording.companion?.arm === 'right' ? '右手' : '左手';
-  $('legend-track').textContent = (state.recording.companion ? `${primaryLabel} · ${companionLabel}橙色 / ` : '') + {tcp: 'TCP 轨迹', camera: '相机轨迹', imu: 'IMU 轨迹'}[track];
-  $('legend-companion').hidden = !state.recording.companion;
-  $('legend-companion-text').textContent = `${companionLabel}轨迹`;
-  $('chart-hand-legend').hidden = !state.recording.companion;
-  $('chart-hand-legend').querySelector('[data-primary]').textContent = primaryLabel;
+  const paired = Boolean(state.recording.companion);
+  const referenceNames = {tcp: 'TCP', camera: '相机光心', imu: 'IMU 原点'};
+  const reference = referenceNames[track];
+  $('legend-track').textContent = `${paired ? primaryLabel + ' ' : ''}${reference} 轨迹`;
+  $('legend-companion-text').textContent = `${companionLabel} ${reference} 轨迹`;
+  const overlayNames = Object.keys(state.recording.tracks).filter(name => name !== track)
+    .map(name => referenceNames[name]);
+  $('overlay-label').textContent = paired ? `叠加${primaryLabel}其他参考点` : '叠加其他参考点';
+  $('overlay-control').title = overlayNames.length
+    ? `用虚线叠加${paired ? primaryLabel + '的' : '同一设备的'}${overlayNames.join('、')}的轨迹`
+    : '本次记录没有其他参考点轨迹';
+  const chartLegend = $('chart-hand-legend');
+  chartLegend.hidden = !state.recording.companion_tracks?.[track];
+  chartLegend.querySelector('[data-primary]').textContent = primaryLabel;
+  chartLegend.querySelector('[data-companion]').textContent = companionLabel;
   $('legend-color').style.background = state.recording.companion ? '#8ee3bf' : {tcp: '#8ee3bf', camera: '#91b7f4', imu: '#d9b67b'}[track];
   document.querySelectorAll('[data-track]').forEach(button => button.classList.toggle('active', button.dataset.track === track));
   $('stat-path').replaceChildren(document.createTextNode(state.recording.tracks[track].path_length.toFixed(2)), unit(' m'));
   $('stat-path').previousElementSibling.textContent = track === 'tcp' ? 'TCP 路程' : track === 'camera' ? '相机路程' : 'IMU 路程';
-  const coverage = state.recording.summary.constraint_fraction?.full;
+  const summary = state.recording.summary;
+  const coverage = summary.constraint_fraction?.full;
+  $('coverage-label').textContent = summary.reconstruction_backend === 'poster_vio' ? '自然特征覆盖'
+    : summary.mode === 'scene' ? '地图定位覆盖' : '视觉定位覆盖';
   $('stat-coverage').replaceChildren(document.createTextNode(Number.isFinite(coverage) ? (coverage * 100).toFixed(0) : '—'), unit(' %'));
   chart.load(state.recording.times, state.recording.tracks[track].speed,
-    state.recording.companion_tracks?.[track]?.speed || null); renderFrame(state.index);
+    state.recording.companion_tracks?.[track]?.speed || null); playback.redraw();
   updateMapLegend();
 }
-function renderFrame(index, imageReady = false) {
-  const recording = state.recording; if (!recording) return;
-  index = clamp(Math.round(index), 0, recording.times.length - 1);
-  if (state.frameMode && !imageReady && framePreview.displayed !== index) {
-    framePreview.request(index, videoSeconds(recording.times[index]));
-    return;
+function frameLabel(frame) {
+  if (frame?.source_video_frame != null) return `原片帧 ${frame.source_video_frame}`;
+  return frame?.video_frame != null ? `视频帧 ${frame.video_frame}` : '帧 —';
+}
+function renderHandReadout(root, hand, index) {
+  root.querySelector('[data-quality]').textContent = qualityLabels[frameQuality(hand.frames?.[index], hand.summary)];
+  const distance = root.querySelector('[data-distance]');
+  distance.hidden = !hand.tag_distance;
+  if (!distance.hidden) {
+    const value = formatTagDistance(hand.tag_distance, index);
+    distance.textContent = `标签中心距 ${value}${value === '—' ? '' : ' mm'}`;
   }
-  state.index = clamp(Math.round(index), 0, recording.times.length - 1);
-  const track = recording.tracks[state.track], p = track.position[state.index], q = track.quaternion[state.index], frame = recording.frames[state.index];
+}
+function renderFrame(index) {
+  const recording = state.recording;
+  const track = recording.tracks[state.track], p = track.position[index], q = track.quaternion[index], frame = recording.frames[index];
   ['x', 'y', 'z'].forEach((axis, k) => { $(`pose-${axis}`).textContent = p[k].toFixed(4); });
-  $('pose-speed').textContent = track.speed[state.index].toFixed(3);
-  $('pose-constraint').textContent = labels[frame.constraint] || '未知'; $('pose-constraint').style.color = colors[frame.constraint] || colors.unknown;
+  $('pose-speed').textContent = track.speed[index].toFixed(3);
+  const quality = frameQuality(frame, recording.summary);
+  $('pose-constraint').textContent = qualityLabels[quality];
+  $('pose-constraint').style.color = qualityColors[quality];
   $('detail-quaternion').textContent = q.map(value => value.toFixed(3)).join('  ');
-  const distanceReadout = tagDistanceReadout(recording, state.index);
-  $('tag-distance-readout').hidden = !distanceReadout.isVisible;
-  $('tag-distance-value').textContent = distanceReadout.text;
-  $('timeline').value = state.index;
-  $('frame-counter').textContent = `FRAME ${state.index + 1} / ${recording.times.length}`;
-  $('video-frame-label').textContent = `SOURCE FRAME ${frame.video_frame}`;
-  $('current-time').textContent = formatTime(recording.times[state.index] - recording.times[0]);
-  scene.index = state.index; scene.draw(); chart.index = state.index; chart.draw();
-  companionVideo.synchronize(recording.times[state.index], state.playing, Number($('rate').value));
-}
-function seek(index, stop = true) {
-  if (!state.recording) return;
-  if (stop) pause();
-  index = clamp(Math.round(index), 0, state.recording.times.length - 1);
-  state.playTime = state.recording.times[index]; renderFrame(index);
-  if (state.videoReady) video.currentTime = videoSeconds(state.playTime);
-}
-function pause() { state.playing = false; video.pause(); companionVideo.synchronize(state.playTime, false); $('play').textContent = '▶'; $('play').setAttribute('aria-label', '播放'); }
-async function play() {
-  if (!state.recording) return;
-  if (state.index >= state.recording.times.length - 1) seek(0);
-  if (!state.frameMode) state.playTime = state.recording.times[state.index];
-  state.lastTick = performance.now();
-  state.playing = true; $('play').textContent = 'Ⅱ'; $('play').setAttribute('aria-label', '暂停');
-  if (state.videoReady) {
-    video.currentTime = videoSeconds(state.playTime);
-    video.playbackRate = Number($('rate').value);
-    await resumeVideo();
+  const time = recording.times[index];
+  if (recording.companion) {
+    const otherIndex = nearestIndex(recording.companion.times, time);
+    renderHandReadout($('primary-readout'), recording, index);
+    const otherRoot = $('companion-video');
+    renderHandReadout(otherRoot, recording.companion, otherIndex);
+    otherRoot.querySelector('[data-frame-label]').textContent = frameLabel(recording.companion.frames?.[otherIndex]);
+    $('tag-distance-readout').hidden = true;
+  } else {
+    const distanceReadout = tagDistanceReadout(recording, index);
+    $('tag-distance-readout').hidden = !distanceReadout.isVisible;
+    $('tag-distance-value').textContent = distanceReadout.text;
   }
+  $('timeline').value = index;
+  $('frame-counter').textContent = `FRAME ${index + 1} / ${recording.times.length}`;
+  $('video-frame-label').textContent = frameLabel(frame);
+  $('current-time').textContent = formatTime(recording.times[index] - recording.times[0]);
+  scene.index = index; scene.draw(); chart.index = index; chart.draw();
+  qualityTimeline.select(time);
 }
-async function resumeVideo() {
-  const generation = state.load, source = state.videoSource;
-  try { await video.play(); } catch (error) {
-    if (generation === state.load && source === state.videoSource && state.playing && error.name !== 'AbortError') {
-      if (!enableFrameMode()) pause();
-    }
-  }
-}
-function tick(now) {
-  if (state.playing && state.recording) {
-    const times = state.recording.times;
-    if (state.videoReady) state.playTime = (state.recording.video_time_offset_s ?? times[0]) + video.currentTime;
-    else state.playTime += Math.min((now - state.lastTick) / 1000, .2) * Number($('rate').value);
-    if (state.playTime >= times.at(-1)) {
-      if (state.loop) { state.playTime = times[0]; if (state.videoReady) { video.currentTime = videoSeconds(times[0]); video.play().catch(() => pause()); } }
-      else { renderFrame(times.length - 1); pause(); }
-    }
-    const index = nearestIndex(times, state.playTime);
-    if (index !== state.index) renderFrame(index);
-  }
-  state.lastTick = now; requestAnimationFrame(tick);
-}
-video.addEventListener('loadedmetadata', () => {
-  if (state.frameMode || !state.videoSource || !video.currentSrc.endsWith(state.videoSource)) return;
-  state.videoReady = true; $('video-empty').hidden = true;
-  video.currentTime = videoSeconds(state.playTime);
-  renderFrame(nearestIndex(state.recording.times, state.playTime));
-  if (state.playing) resumeVideo();
-});
-function enableFrameMode() {
-  if (state.frameMode) return true;
-  if (!state.recording?.frame_url) {
-    $('video-empty').hidden = false;
-    $('video-empty').querySelector('p').textContent = '当前服务未提供兼容播放，请重启 umi-view 并刷新页面。';
-    return false;
-  }
-  state.frameMode = true; state.videoReady = false; state.videoSource = null;
-  video.pause(); video.removeAttribute('src'); video.load(); video.hidden = true;
-  framePreview.reset(state.recording.frame_url);
-  $('compatibility-mode').textContent = '兼容模式'; $('compatibility-mode').disabled = true;
-  $('video-empty').hidden = false;
-  $('video-empty').querySelector('p').textContent = '正在加载兼容画面…';
-  $('video-note').textContent = '兼容播放 · 视频画面与轨迹同步';
-  message('已启用视频兼容播放；画面按服务器可达帧率显示，轨迹与画面保持对应。');
-  renderFrame(state.index);
-  return true;
-}
-video.addEventListener('error', () => {
-  if (!state.recording?.video_url || !video.getAttribute('src') || state.frameMode) return;
-  enableFrameMode();
-});
-$('compatibility-mode').addEventListener('click', () => { state.manualFrameMode = true; enableFrameMode(); });
-video.addEventListener('ended', () => { if (!state.recording) return; if (state.loop) { seek(0); play(); } else { seek(state.recording.times.length - 1); } });
-$('play').addEventListener('click', () => state.playing ? pause() : play());
-$('timeline').addEventListener('input', event => seek(Number(event.target.value)));
-$('previous-frame').addEventListener('click', () => seek(state.index - 1));
-$('next-frame').addEventListener('click', () => seek(state.index + 1));
-$('rate').addEventListener('change', () => { video.playbackRate = Number($('rate').value); });
-$('loop').addEventListener('click', () => { state.loop = !state.loop; $('loop').setAttribute('aria-pressed', String(state.loop)); });
 $('show-pose').addEventListener('change', event => { scene.pose = event.target.checked; scene.draw(); });
 $('show-overlay').addEventListener('change', event => { scene.overlay = event.target.checked; scene.draw(); });
 $('map-select').addEventListener('change', selectMap);
@@ -339,22 +226,30 @@ $('show-world-axes').addEventListener('change', event => { scene.showWorldAxes =
 document.querySelectorAll('[data-track]').forEach(button => button.addEventListener('click', () => setTrack(button.dataset.track)));
 function setView(view) { scene.view(view); document.querySelectorAll('[data-view]').forEach(button => button.classList.toggle('active', button.dataset.view === view)); }
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => setView(button.dataset.view)));
-$('video-fullscreen').addEventListener('click', () => { const target = state.frameMode ? video.parentElement : video; if ((state.videoReady || state.frameMode) && target.requestFullscreen) target.requestFullscreen().catch(error => message(error.message, true)); });
 $('help-button').addEventListener('click', () => $('help-dialog').showModal());
-$('details-button').addEventListener('click', () => {
-  if (!state.recording) return;
-  $('details-text').textContent = JSON.stringify({directory: state.recording.path, calibration: state.recording.summary.calibration_used, extent_m: state.recording.tracks[state.track].extent, notes: state.recording.notes, summary: state.recording.summary}, null, 2);
-  $('details-dialog').showModal();
+$('details-button').addEventListener('click', async () => {
+  const recording = state.recording;
+  if (!recording) return;
+  const track = state.track;
+  const dialog = $('details-dialog');
+  const content = $('details-text');
+  content.textContent = '正在读取本次记录…';
+  dialog.showModal();
+  try {
+    const details = await api(`/api/recordings/${recording.id}/details`);
+    if (state.recording !== recording || !dialog.open) return;
+    content.textContent = JSON.stringify({...details, extent_m: recording.tracks[track].extent, notes: recording.notes}, null, 2);
+  } catch (error) {
+    if (state.recording === recording && dialog.open) content.textContent = `读取失败：${error.message}`;
+  }
 });
 document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => $(button.dataset.close).close()));
-$('refresh').addEventListener('click', () => refresh()); $('search').addEventListener('input', renderLibrary);
 document.addEventListener('keydown', event => {
   if (/INPUT|SELECT|TEXTAREA/.test(event.target.tagName) || document.querySelector('dialog[open]')) return;
-  if (event.code === 'Space') { event.preventDefault(); state.playing ? pause() : play(); }
-  else if (event.key === 'ArrowLeft') { event.preventDefault(); seek(state.index - 1); }
-  else if (event.key === 'ArrowRight') { event.preventDefault(); seek(state.index + 1); }
+  if (event.code === 'Space' && event.target.tagName !== 'BUTTON') { event.preventDefault(); playback.toggle(); }
+  else if (event.key === 'ArrowLeft') { event.preventDefault(); playback.step(-1); }
+  else if (event.key === 'ArrowRight') { event.preventDefault(); playback.step(1); }
   else if (['r', 'R', '1', '2', '3', '4'].includes(event.key)) setView({'2': 'top', '3': 'front', '4': 'side'}[event.key] || 'home');
   else if (event.key === '?') $('help-dialog').showModal();
 });
-requestAnimationFrame(tick);
-refresh(true);
+library.refresh(true);

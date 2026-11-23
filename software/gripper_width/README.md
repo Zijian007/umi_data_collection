@@ -1,10 +1,10 @@
 # 夹爪开合宽度
 
-共用检测位于 `detection/`，三维标签中心距位于 `distance/`，预览/监测位于 `tools/`；根目录的 `calibration.py`、`pipeline.py`、`series.py` 继续负责开口标定、换算和时间序列。宽度与中心距都使用 `detection/markers.py` 和 `frames.py`，不复制检测实现。各子包初始化只说明职责，调用方从实际模块导入。
+`detection/markers.py` 处理灰度图上的标签检测。`detection/frames.py` 的 `FrameDetector` 统一处理原片 ROI、灰度转换和坐标恢复，供像素开口宽度、三维标签中心距及 `video_tools.py` 中的两个调试命令使用。
 
 ## 夹爪标签中心三维间距
 
-`distance/geometry.py` 实现几何计算，`distance/pipeline.py` 编排与像素锚点宽度独立的测量：从夹爪标签 ID 0/1 的原始四角点、工作镜头 KB4 内参及各自标签边长，求两枚夹爪标签中心在相机坐标系中的位置，输出其三维欧氏距离（mm）。不使用夹持面偏置、零点或像素—毫米 anchors，不据此生成 `close_01` 或闭合状态。
+`distance/pose_estimation.py` 计算 KB4 标签位姿和三维中心距离。`distance/measurement.py` 组织采样、缓存、补检与验收。测量从夹爪标签 ID 0/1 的原始四角点、工作镜头 KB4 内参及各自标签边长，求两枚夹爪标签中心在相机坐标系中的位置，输出其三维欧氏距离（mm）。不使用夹持面偏置、零点或像素—毫米 anchors，不据此生成 `close_01` 或闭合状态。
 
 套件配置 `gripper.tag_distance: tag_distance.json`，文件包含 `{"tag_sizes_mm":{"0":6.0,"1":6.0}}`；两枚边长分别配置，必须为正数。测量黑色外框，不含白边；尺寸变化线性改变尺度，不能借用标定板尺寸。原片检测缓存保存 `[帧, ID, 角点, xy]`，重复/缺失 ID 的角点保留 NaN。标签中心距按最终轨迹时间点检测，像素锚点宽度沿用原片逐帧检测；两者分别缓存。改尺寸或内参会复用角点重算几何，有效比例不足时再补检尚未尝试的帧。
 
@@ -26,6 +26,8 @@
 
 快速角点与补检角点分别保存在批次 `.pipeline/tasks/<任务>/cache/sampled_tags/`，身份包含原片、输出时间点、ROI、解码器版本、源时钟约定和检测实现，验收阈值、尺寸、内参不进入角点身份；几何缓存绑定角点内容与当前测量。改 ROI 会重新检测；调高有效比例或收紧连续缺失上限会复用已有角点，继续补检尚未尝试的帧；放宽不会删除已得测量。日志约每 3 秒显示阶段、帧数、速度及剩余时间，补检同时显示当前有效比例。补检完成仍不满足任一要求时任务失败，`failed-*/<手>/tag_distance.json` 保存实际有效数、分母、门限、最长连续缺失、超限缺口的帧号/原片时间与原因统计；旧成功入口保留，缓存可继续使用。没有配置 `gripper.tag_distance` 的手不执行该验收。
 
+夹爪检测和测距共用 `infrastructure/file_store.py` 的 NPZ 缓存读写。裁剪后的任务先查自己的快速角点缓存，首次缺失时才从完整时间轴的检测结果复制对应帧。补检跟踪当前有效帧、仍可补检的帧和超限缺口，停下后生成完整验收报告。
+
 `episode.json` 的 `tag_distance.<手>` 唯一保存尺寸、内参及算法身份、有效比例和拒绝原因数量。`umi-view` 同步显示当前帧间距，双手分别显示；轨迹交付导出保留 CSV 新字段。当前训练包的夹爪开合通道仍需要独立宽度标定，标签间距不会自动冒充夹爪开口。重投影与双解检查是内部质量检查，实际毫米精度仍需独立测量核验。
 
 ## 像素锚点开口宽度
@@ -35,19 +37,16 @@
 ```text
 software/gripper_width/
 ├── calibration.py       开口锚点/标签边长读取、像素—毫米映射
-├── pipeline.py          开口换算、时间对齐与报告
+├── width_estimation.py  开口换算、时间对齐与报告
 ├── series.py            开口时间序列与重采样
+├── video_tools.py       预览、采样监测与标签叠加视频
 ├── detection/
-│   ├── markers.py       共用标签检测器、角点/像素数据类型、ROI 校验与原片缓存
-│   ├── frames.py        源像素裁剪、灰度转换与坐标恢复
+│   ├── markers.py       灰度图检测、角点和歧义处理
+│   ├── frames.py        源像素检测入口、逐帧像素距离缓存
 │   └── sampling.py      输出时刻采样、快速角点与有界补检缓存
-├── distance/
-│   ├── models.py        三维测距请求、质量策略、序列和结果
-│   ├── geometry.py      KB4 标签位姿和三维中心距离
-│   └── pipeline.py      几何缓存、时钟对齐与测距报告
-└── tools/
-    ├── preview.py       像素检测叠加预览
-    └── monitor.py       按时刻采样监测与 CSV/视频输出
+└── distance/
+    ├── pose_estimation.py KB4 标签位姿、中心距离与位姿质量策略
+    └── measurement.py   测距输入输出、几何缓存、时钟对齐与验收
 ```
 
 像素锚点宽度的原片提取默认也限制在 `600 980 1350 1250` 范围。通用 `MarkerDetector` 仍支持显式不指定 ROI 的自动活动区域模式；正式场景中心距及两个宽度 CLI 均提供固定 ROI，范围外的标签不参与当前检测。不把前帧位置作为当帧测量。
@@ -69,13 +68,12 @@ detect-width 的快速模式针对小标签使用 7～23 像素、步长 4 的�
 | 文件 | 场景集成职责 |
 |---|---|
 | `calibration.py` | 校验 anchors 与开口范围 |
-| `detection/markers.py` | 共享逐帧标签框、ID、中心距离检测；按原片和检测器缓存原始距离 |
-| `preview.py` | 输出叠加定位框、ID、距离和原片时间的 H.264 预览 |
-| `monitor.py` | 固定 ROI、按视频时间采样的快速检测、CSV 与采样帧 MP4 输出 |
-| `pipeline.py` | 换算毫米、邻近三帧中位数、短缺口插值、内存宽度序列与报告构造 |
+| `detection/frames.py` | 统一原片 ROI 和坐标，按原片及检测器缓存逐帧像素距离 |
+| `video_tools.py` | 标签叠加预览、按视频时间采样的快速检测及 CSV/MP4 输出 |
+| `width_estimation.py` | 换算毫米、邻近三帧中位数、短缺口插值、内存宽度序列与报告构造 |
 | `series.py` | 时间序列、缺失值、来源编码、CSV 与训练时间重采样 |
 
-宽度测量直接保存在套件目录，由 kit.yaml 各手的 gripper.width 引用相对 JSON 路径。run 在输入入口读取文件，并保存副本与内容哈希，episode.json 保留一份规范化测量与宽度报告，修改文件后重跑即可。插值上限、闭合阈值和诊断开关由 scene_parameters.yaml 管理，原片检测缓存不依赖它们或测量 JSON。pipeline 返回对齐后的 WidthSeries 和报告，由场景结果写入器与 TCP 一次合写 trajectory.csv；不单独输出宽度 CSV。开启诊断后才额外写出原片逐帧 CSV。
+宽度测量直接保存在套件目录，由 kit.yaml 各手的 gripper.width 引用相对 JSON 路径。run 在输入入口读取文件，并保存副本与内容哈希，episode.json 保留一份规范化测量与宽度报告，修改文件后重跑即可。插值上限、闭合阈值和诊断开关由 scene_parameters.yaml 管理，原片检测缓存不依赖它们或测量 JSON。width_estimation.process() 返回对齐后的 WidthSeries 和报告，由场景结果写入器与 TCP 一次合写 trajectory.csv；不单独输出宽度 CSV。开启诊断后才额外写出原片逐帧 CSV。
 
 无标定的任务继续只输出轨迹；已配置的标定缺失、格式无效或检测出错时任务失败，保留上次成功入口。没有找到标记会保存缺失值，不会当作闭合。超出最大标定开口的结果不作为有效测量，不用短缺口插值掩盖。
 
@@ -86,7 +84,7 @@ detect-width 的快速模式针对小标签使用 7～23 像素、步长 4 的�
 
 无界面检测使用 `./umi-calib detect-width INPUT.insv [--roi LEFT TOP RIGHT BOTTOM] [--hz 30] [--out OUTPUT.csv] [--video-out OUTPUT.mp4 | --no-video] [--benchmark]`，ROI 默认 `600 980 1350 1250`。默认按原片 PTS 以目标频率采样，按原速输出；落后时跳过过期采样，缺失值不沿用前帧。`--benchmark` 不等待、不丢弃计划采样，用来测量包含解码和可选编码的吞吐量。CSV 默认写标准输出，统计摘要写标准错误。
 
-CLI 默认在原片旁保存 `<原名>_width_detect.mp4`，可指定视频路径或关闭视频。MP4 与 CSV 共用同次检测，逐帧显示标签框、ID、中心距离、原片时间和蓝色 ROI 框。检测坐标恢复为原始半幅，显示单独缩小至 960×960；采样或丢样的 PTS 保留，首帧时间归零。CSV 和视频均使用临时文件，成功后发布，拒绝覆盖已有输出。Python `monitor.run()` 的 `video_output=None` 可供只需 CSV 的调用者使用。
+CLI 默认在原片旁保存 `<原名>_width_detect.mp4`，可指定视频路径或关闭视频。MP4 与 CSV 共用同次检测，逐帧显示标签框、ID、中心距离、原片时间和蓝色 ROI 框。检测坐标恢复为原始半幅，显示单独缩小至 960×960；采样或丢样的 PTS 保留，首帧时间归零。CSV 和视频均使用临时文件，成功后发布，拒绝覆盖已有输出。Python `video_tools.monitor()` 的 `video_output=None` 可供只需 CSV 的调用者使用。
 
 PreviewWriter 集中处理图像缩小、叠加、原始 PTS 和 H.264 编码，供 preview-width 与 detect-width 共用；快速监测默认使用 veryfast 预设，开启对比度增强时使用 ultrafast 为检测预留时间，两者均为两个编码线程。增强视频可能更大。CSV 的 detect_ms 不包含编码，最终吞吐统计包含编码及文件关闭。
 

@@ -5,12 +5,13 @@ import json
 import unittest
 from unittest.mock import patch
 
-from software.scene.pipeline.maps import lifecycle as map_lifecycle
-from software.scene.spatial import mapping, slam
+from software.scene.pipeline.maps import build as map_build
+from software.scene.pipeline.maps import repository as map_repository
+from software.scene import spatial as mapping, spatial as slam
 from software.vision.models import ProcessingError
 
 import test_scene as fixtures
-from software.scene import asset_identity
+from software.scene import result_io as asset_identity
 
 
 class MapRetryTests(unittest.TestCase):
@@ -42,7 +43,7 @@ class MapRetryTests(unittest.TestCase):
         self.assertEqual(second['repeat_of_attempt'], 1)
         self.assertEqual(first['category'], 'map_acceptance')
         self.assertEqual(pointer.read_bytes(), previous)
-        directory, manifest = map_lifecycle.load_published(fixture.scene)
+        directory, manifest = map_repository.load_published(fixture.scene)
         asset_identity.validate_assets(directory, manifest['assets'])
 
     def test_changed_trajectory_can_recover_on_third_attempt(self):
@@ -67,7 +68,7 @@ class MapRetryTests(unittest.TestCase):
                 patch.object(mapping, 'metric_alignment', side_effect=alignment):
             fixture.build_scene()
         self.assertEqual(len(visits), 3)
-        _, manifest = map_lifecycle.load_published(fixture.scene)
+        _, manifest = map_repository.load_published(fixture.scene)
         report = manifest['retry']
         self.assertEqual(report['stop_reason'], 'accepted')
         self.assertEqual([attempt['status'] for attempt in report['attempts']], ['failed', 'failed', 'accepted'])
@@ -88,7 +89,7 @@ class MapRetryTests(unittest.TestCase):
 
         with patch.object(mapping, 'metric_alignment', side_effect=alignment):
             fixture.build_scene()
-        _, manifest = map_lifecycle.load_published(fixture.scene)
+        _, manifest = map_repository.load_published(fixture.scene)
         first, second, accepted = manifest['retry']['attempts']
         self.assertEqual(first['maps'][0]['observations_sha256'], second['maps'][0]['observations_sha256'])
         self.assertNotEqual(first['signature'], second['signature'])
@@ -111,7 +112,7 @@ class MapRetryTests(unittest.TestCase):
         scene = replace(fixture.scene, trajectory=replace(fixture.scene.trajectory, values=parameters))
         with patch.object(mapping, 'metric_alignment', side_effect=ValueError('固定尺度不一致')):
             with self.assertRaisesRegex(ValueError, '场景地图未通过验收'):
-                map_lifecycle._build_scene(scene)
+                map_build.build_version(scene)
         report = self.failure()['retry']
         self.assertEqual(report['stop_reason'], 'attempt_limit')
         self.assertEqual(len(report['attempts']), 1)

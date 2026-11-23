@@ -1,3 +1,34 @@
+export function lensMedia(recording, lens) {
+  return lens === 'rear' ? recording?.rear : recording;
+}
+
+export function configureLensSelect(select, recording, arm) {
+  select.disabled = !recording;
+  select.querySelector('[value="rear"]').disabled = !recording?.rear;
+  select.title = recording?.rear ? '' : '此结果没有可用的环境镜头';
+  if (recording) {
+    const hand = arm === 'right' ? '右手' : arm === 'left' ? '左手' : '';
+    select.setAttribute('aria-label', `选择${hand}镜头`);
+  }
+  select.value = 'front';
+}
+
+export function videoTimeOffset(recording) {
+  return recording.video_time_offset_s ?? recording.times[0];
+}
+
+export function secondsInVideo(recording, time) {
+  return Math.max(0, time - videoTimeOffset(recording));
+}
+
+export function canPlayPreview(video) {
+  return Boolean(video.canPlayType('video/webm; codecs="vp8"'));
+}
+
+export function canPlayOriginal(video) {
+  return Boolean(video.canPlayType('video/mp4; codecs="avc1.640020"'));
+}
+
 // Prepare native browser playback without blocking the current video or frames.
 export class VideoPreview {
   constructor(onReady, onError, {fetcher = (...args) => fetch(...args)} = {}) {

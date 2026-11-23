@@ -10,9 +10,11 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from software.trajectory.algorithms.fixed_map.parameters import MapPlacementParameters
 from software.configuration import loader as config
 from software.scene.management.inputs.scene import load_scene_parameters
-from software.scene.spatial import geometry, mapping
+from software.scene import spatial as mapping
+from software.trajectory.algorithms.fixed_map import geometry
 
 
 def recording():
@@ -39,8 +41,8 @@ class SharedAlignmentTests(unittest.TestCase):
 
     def solve(self, obs=None, imu=None):
         return geometry.metric_alignment(self.obs if obs is None else obs, np.eye(4),
-            self.imu if imu is None else imu, np.zeros(3), 9.81, self.parameters,
-            trajectory_parameters=self.trajectory)
+            self.imu if imu is None else imu, np.zeros(3), 9.81, self.parameters.for_algorithm(MapPlacementParameters),
+            fusion_parameters=self.trajectory.fusion)
 
     def test_bad_rotation_segments_do_not_corrupt_shared_scale(self):
         poses = self.obs.T_reference_camera.copy()
@@ -90,7 +92,7 @@ class SharedAlignmentTests(unittest.TestCase):
                     chains=[(0, 1)], R_CI=np.eye(3), lever=np.zeros(3))
         imu = np.array([[0., 0., 0., 0., 0., 0., 9.81],
                         [1., 0., 0., 0., 0., 0., 9.81]])
-        result = geometry.fusion_alignment_solver.fixed_map_residuals(
+        result = geometry.fusion_alignment.fixed_map_residuals(
             lens, np.array([0., 1.]), imu, np.zeros(3), 1., np.array([0., 0., -9.81]),
             np.zeros(3), 1, maximum_rms_m=.05)
         self.assertEqual(result, [dict(index=0, k=[0, 1], pairs=0, rms_m=None,
@@ -119,7 +121,7 @@ class SharedAlignmentTests(unittest.TestCase):
             camera = SimpleNamespace(serial='CAMERA_TEST', measurements={'front': dict(q_xyzw=[0, 0, 0, 1], p=[0, 0, 0])})
             prepared = SimpleNamespace(camera=camera, imu=self.imu, context=SimpleNamespace(parameters=self.trajectory))
             scene = SimpleNamespace(trajectory=SimpleNamespace(values=self.trajectory), parameters=self.parameters)
-            with patch.object(mapping.slam, 'atlas_candidates', return_value=iter([(0, self.obs)])), \
+            with patch.object(mapping, 'atlas_candidates', return_value=iter([(0, self.obs)])), \
                     patch.object(mapping, 'estimate_gyro_bias', return_value=np.zeros(3)), \
                     patch.object(mapping, 'metric_alignment', side_effect=geometry.MapAlignmentError('尺度冲突', diagnostics)), \
                     self.assertRaisesRegex(ValueError, '尺度冲突'):
@@ -143,7 +145,7 @@ class SharedAlignmentTests(unittest.TestCase):
             placement_weak = dict(scale=2., evidence=dict(rms_m=.02, relative_scale_std=.1, condition=20.,
                 alignment=dict(fixed_map_validation=[dict(status='verified', rms_m=.04)])))
             observations = [self.obs, self.obs]
-            with patch.object(mapping.slam, 'atlas_candidates', return_value=iter([(0, observations[0]), (1, observations[1])])), \
+            with patch.object(mapping, 'atlas_candidates', return_value=iter([(0, observations[0]), (1, observations[1])])), \
                     patch.object(mapping, 'estimate_gyro_bias', return_value=np.zeros(3)), \
                     patch.object(mapping, 'metric_alignment', side_effect=[placement_weak, placement_good]):
                 selected, _ = mapping.choose_map(prepared, 'front', archive, root / 'localize', scene)

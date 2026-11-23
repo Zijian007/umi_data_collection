@@ -12,9 +12,10 @@ from software.infrastructure import provenance
 from software.camera import registry
 from software.infrastructure.file_store import write_json
 from software.trajectory.algorithms.fusion import solver as fusion
-from software.trajectory.calibration import assets, selection
+from software.camera import calibration_assets as assets
+from software.trajectory import calibration as selection
 from software.trajectory.models import TrajectoryRequest
-from software.trajectory.pipeline import calibration_assets, poster_assets, reuse
+from software.trajectory import environment_assets as calibration_assets, workflow as reuse
 from software.trajectory import workflow
 from test_trajectory_workflow import RecordingFixture
 import test_trajectory_workflow as workflow_tests
@@ -82,7 +83,7 @@ class RearAssetsTests(RecordingFixture):
                 self.assertNotIn('--poster', command)
                 commands.append(command)
             return original(command, **kwargs)
-        with patch.object(helper, 'fake_runner', side_effect=run), patch.object(poster_assets, 'prepare') as poster:
+        with patch.object(helper, 'fake_runner', side_effect=run), patch.object(calibration_assets, 'prepare_poster') as poster:
             result = helper.run_recording(self.request)
         self.assertEqual(result['status'], 'ok', result)
         self.assertTrue(commands)

@@ -3,7 +3,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from software.vision.poster.geometry import (
-    PosterGeometryError, residual_and_jacobians, rotation_correction_jacobian, transform)
+    PosterGeometryError, residual_and_jacobians, rotation_correction_jacobian, tag_camera_points, transform)
 from software.vision.poster.quality import corner_sigma_px
 
 
@@ -18,6 +18,11 @@ def skew(point):
     return np.array([[0., -z, y], [z, 0., -x], [-y, x, 0.]])
 
 
+def _natural_camera_point(body, point, T_camera_imu):
+    in_body = body[:3, :3].T @ (point - body[:3, 3])
+    return in_body, T_camera_imu[:3, :3] @ in_body + T_camera_imu[:3, 3]
+
+
 def natural_track_error(state, pose_key, point_key, T_camera_imu, model, observed):
     """Return one natural-feature reprojection residual and its Jacobians.
 
@@ -29,8 +34,7 @@ def natural_track_error(state, pose_key, point_key, T_camera_imu, model, observe
     """
     body = state.atPose3(pose_key).matrix()
     point = np.asarray(state.atPoint3(point_key), dtype=float)
-    in_body = body[:3, :3].T @ (point - body[:3, 3])
-    in_camera = T_camera_imu[:3, :3] @ in_body + T_camera_imu[:3, 3]
+    in_body, in_camera = _natural_camera_point(body, point, T_camera_imu)
     if (not np.isfinite(in_camera).all() or in_camera[2] <= _MIN_NATURAL_DEPTH_M):
         # Keep native LM finite while refinement removes the invalid landmark
         # observation from the graph.  This follows Specialist's cheirality
@@ -76,6 +80,16 @@ def add_natural_track_factors(graph, values, *, pose_key_fn, point_key_fn,
             def error(factor, state, jacobians, batch_pixels=batch_pixels,
                       pose_keys=pose_keys, point_key=point_key,
                       batch_size=len(batch_nodes)):
+                if jacobians is None:
+                    point = state.atPoint3(point_key)
+                    in_camera = np.array([_natural_camera_point(state.atPose3(key).matrix(), point, T_camera_imu)[1]
+                                          for key in pose_keys])
+                    valid = np.isfinite(in_camera).all(axis=1) & (in_camera[:, 2] > _MIN_NATURAL_DEPTH_M)
+                    residuals = np.zeros_like(batch_pixels)
+                    if valid.any():
+                        residuals[valid] = model.project(in_camera[valid]) - batch_pixels[valid]
+                    return residuals.ravel()
+
                 residuals = []
                 pose_derivatives = []
                 point_derivatives = []
@@ -85,12 +99,11 @@ def add_natural_track_factors(graph, values, *, pose_key_fn, point_key_fn,
                     residuals.append(residual)
                     pose_derivatives.append(pose_jacobian)
                     point_derivatives.append(point_jacobian)
-                if jacobians is not None:
-                    for index, derivative in enumerate(pose_derivatives):
-                        block = np.zeros((2 * batch_size, 6), dtype=float)
-                        block[2 * index:2 * index + 2] = derivative
-                        jacobians[index] = block
-                    jacobians[-1] = np.vstack(point_derivatives)
+                for index, derivative in enumerate(pose_derivatives):
+                    block = np.zeros((2 * batch_size, 6), dtype=float)
+                    block[2 * index:2 * index + 2] = derivative
+                    jacobians[index] = block
+                jacobians[-1] = np.vstack(point_derivatives)
                 return np.concatenate(residuals)
 
             graph.add(gtsam.CustomFactor(noise, pose_keys + [point_key], error))
@@ -119,6 +132,7 @@ def add_tag_factors(graph, *, pose_key, board_key, rear_key, base_ext, model, po
                     tag_indices, parameters):
     import gtsam
     enabled = parameters.tag_rear_rotation_refinement_enabled
+    points, pixels = np.asarray(points), np.asarray(pixels)
     # A frame usually contains several board tags.  They share one pose key,
     # so one small factor per frame batch avoids entering the Python callback
     # once per tag while retaining every corner residual and Jacobian.  Keep
@@ -137,33 +151,31 @@ def add_tag_factors(graph, *, pose_key, board_key, rear_key, base_ext, model, po
                 gtsam.noiseModel.mEstimator.Huber.Create(parameters.tag_huber),
                 gtsam.noiseModel.Diagonal.Sigmas(sigmas))
 
-            def error(factor, state, jacobians, rows=rows):
-                residuals = []
-                pose_jacobians = []
-                board_jacobians = []
-                rear_jacobians = []
-                for row in rows:
-                    corners, observed = points[row], pixels[row]
-                    if enabled:
-                        residual, *derivatives = rear_rotation_error(
-                            state, *factor.keys(), base_ext, corners, observed, model)
-                    else:
-                        residual, *derivatives = residual_and_jacobians(
-                            state.atPose3(factor.keys()[0]).matrix(), state.atPose3(board_key).matrix(),
-                            base_ext, corners, observed, model)
-                    residuals.append(residual)
-                    pose_jacobians.append(derivatives[0])
-                    board_jacobians.append(derivatives[1])
-                    if enabled:
-                        rear_jacobians.append(derivatives[2])
-                if jacobians is not None:
-                    jacobians[0] = np.vstack(pose_jacobians)
-                    jacobians[1] = np.vstack(board_jacobians)
-                    if enabled:
-                        jacobians[2] = np.vstack(rear_jacobians)
-                return np.concatenate(residuals)
+            corners = points[rows].reshape(-1, 3)
+            observed = pixels[rows].reshape(-1, 2)
+            body_key = pose_key(int(tag_indices[rows[0]]))
+            keys = [body_key, board_key] + ([rear_key] if enabled else [])
 
-            keys = [pose_key(int(tag_indices[rows[0]])), board_key] + ([rear_key] if enabled else [])
+            def error(factor, state, jacobians, corners=corners, observed=observed, body_key=body_key):
+                if enabled and jacobians is not None:
+                    residual, jacobians[0], jacobians[1], jacobians[2] = rear_rotation_error(
+                        state, body_key, board_key, rear_key, base_ext, corners, observed, model)
+                    return residual
+
+                body = state.atPose3(body_key).matrix()
+                board = state.atPose3(board_key).matrix()
+                if jacobians is None:
+                    ext = base_ext
+                    if enabled:
+                        ext = base_ext.copy()
+                        ext[:3, :3] = state.atRot3(rear_key).matrix() @ base_ext[:3, :3]
+                    _, in_camera = tag_camera_points(body, board, ext, corners)
+                    return (model.project(in_camera) - observed).ravel()
+
+                residual, jacobians[0], jacobians[1] = residual_and_jacobians(
+                    body, board, base_ext, corners, observed, model)
+                return residual
+
             graph.add(gtsam.CustomFactor(noise, keys, error))
 
 

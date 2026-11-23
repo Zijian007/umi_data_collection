@@ -14,20 +14,15 @@ import av
 import numpy as np
 
 from software.gripper_width.detection import markers as detection, sampling as sampled_detection
-from software.gripper_width.distance import pipeline as tag_distance
-from software.gripper_width.distance.models import (
+from software.gripper_width.distance import measurement as tag_distance
+from software.gripper_width.distance.pose_estimation import TagPoseQuality
+from software.gripper_width.distance.measurement import (
     TagDistanceRequest,
     TagDistanceResult,
     TagDistanceSeries,
-    TagPoseQuality,
 )
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import (
-    batch as batch_inputs,
-    episode as episode_inputs,
-    kit as kit_inputs,
-    scene as scene_inputs,
-)
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
 from software.infrastructure.file_store import write_json
 from test_tag_distance import CAMERA, SIZES, projected
 
@@ -57,9 +52,9 @@ class SampledTagTests(unittest.TestCase):
                 frame = SimpleNamespace(index=int(index))
                 yield int(index), float(times[index]), frame
 
-        def detect(frame, detector, roi, converter):
+        def detect(frame_detector, frame):
             index = frame.index
-            if detector._fast:
+            if frame_detector.detector._fast:
                 self.quick_calls.append(index)
                 return self.quick_results.get(index, EMPTY)
             self.recovery_calls.append(index)
@@ -67,7 +62,7 @@ class SampledTagTests(unittest.TestCase):
 
         self.addCleanup(patch.stopall)
         patch.object(sampled_detection, 'sampled_frames', side_effect=frames).start()
-        patch.object(sampled_detection, 'detect_frame', side_effect=detect).start()
+        patch.object(sampled_detection.FrameDetector, 'detect', autospec=True, side_effect=detect).start()
 
     def process(self, fraction=.5):
         return tag_distance.process(replace(self.request, min_valid_fraction=fraction), self.root)
@@ -142,6 +137,24 @@ class SampledTagTests(unittest.TestCase):
         self.request = replace(self.request, video_times_s=np.arange(4) / 40)
         self.process()
         self.assertEqual(len(self.quick_calls), 8)
+
+    def test_clipped_cache_only_reads_full_quick_scan_on_a_miss(self):
+        full_times = self.request.video_times_s
+        self.quick_results = {index: found_pair() for index in range(len(full_times))}
+        self.request = replace(self.request, video_times_s=full_times[1:], detection_times_s=full_times)
+        first = self.process()
+        self.assertEqual(self.quick_calls, list(range(len(full_times))))
+
+        read = sampled_detection.SampledDetectionCache._read
+
+        def read_clipped(cache, stage):
+            self.assertEqual(len(cache.query_times_s), len(full_times) - 1)
+            return read(cache, stage)
+
+        with patch.object(sampled_detection.SampledDetectionCache, '_read', read_clipped):
+            reopened = self.process()
+        np.testing.assert_array_equal(first.samples.distance_mm, reopened.samples.distance_mm)
+        self.assertEqual(first.report['acceptance'], reopened.report['acceptance'])
 
     def test_changed_roi_has_a_separate_corner_cache_and_json_safe_identity(self):
         self.process()

@@ -1,11 +1,11 @@
-from software.scene.management.inputs import kit as kit_inputs
+from software.scene.management.inputs import scene as kit_inputs
 """在临时目录生成测试标定包，不依赖工作区里的设备登记或演示数据。"""
 import shutil
 from copy import deepcopy
 from pathlib import Path
 
 from software.infrastructure.file_store import read_yaml, write_yaml
-from software.trajectory.calibration import assets as calibration_assets
+from software.camera import calibration_assets as calibration_assets
 
 
 def legacy_bundle(path: Path) -> Path:
@@ -14,7 +14,7 @@ def legacy_bundle(path: Path) -> Path:
 
 
 def device_record() -> dict:
-    record = calibration_assets.describe(calibration_assets.HERE, 'factory')
+    record = calibration_assets.describe(calibration_assets.SAMPLE_CAMERA_JSON.parent, 'factory')
     return dict(record, serial='TEST_CAMERA', status='active')
 
 
@@ -52,7 +52,7 @@ def write_kit(name: str, arms: dict, *, description='') -> dict:
 
 def write_batch(scene: Path, name: str, *, kit: str, arms=None, map_version=None) -> Path:
     """Write a manual declaration and persist its resolved test snapshot."""
-    from software.scene.management.batch import snapshot as batches
+    from software.scene.management import batch_snapshot as batches
     from software.infrastructure.file_store import write_yaml
 
     if scene.suffix in ('.yaml', '.yml'):

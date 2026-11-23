@@ -13,7 +13,8 @@ import cv2
 import numpy as np
 
 from software.calibration import cli
-from software.gripper_width.tools import monitor
+from software.gripper_width.detection.markers import MarkerDetector
+from software.gripper_width import video_tools as width_video
 from software.gripper_width.detection.frames import crop_gray
 from test_width_preview import recording
 
@@ -44,7 +45,7 @@ class WidthMonitorTests(unittest.TestCase):
         original = self.video.read_bytes()
         original_threads = cv2.getNumThreads()
         output = self.root / 'measurements.csv'
-        summary = monitor.run(self.video, ROI, output=output, benchmark=True)
+        summary = width_video.monitor(self.video, ROI, output=output, benchmark=True)
         with output.open() as stream:
             rows = list(csv.DictReader(stream))
         self.assertEqual((summary['source_frames'], summary['samples'], summary['paired_samples']), (3, 3, 1))
@@ -62,7 +63,7 @@ class WidthMonitorTests(unittest.TestCase):
 
     def test_lower_sampling_frequency_uses_video_timestamps(self):
         with redirect_stdout(io.StringIO()) as output:
-            summary = monitor.run(self.video, ROI, hz=15, benchmark=True)
+            summary = width_video.monitor(self.video, ROI, hz=15, benchmark=True)
         rows = list(csv.DictReader(io.StringIO(output.getvalue())))
         self.assertEqual(summary['samples'], 2)
         np.testing.assert_allclose([float(row['t_video_s']) for row in rows], [0., .1], atol=1e-6)
@@ -72,9 +73,9 @@ class WidthMonitorTests(unittest.TestCase):
         def advance(seconds):
             self.assertGreater(seconds, 0.)
             now[0] += seconds
-        with patch.object(monitor.time, 'perf_counter', side_effect=lambda: now[0]), \
-             patch.object(monitor.time, 'sleep', side_effect=advance) as sleep, redirect_stdout(io.StringIO()):
-            summary = monitor.run(self.video, ROI)
+        with patch.object(width_video.time, 'perf_counter', side_effect=lambda: now[0]), \
+             patch.object(width_video.time, 'sleep', side_effect=advance) as sleep, redirect_stdout(io.StringIO()):
+            summary = width_video.monitor(self.video, ROI)
         self.assertEqual((summary['samples'], summary['late_dropped']), (3, 0))
         self.assertEqual(summary['mode'], 'realtime')
         self.assertGreaterEqual(sleep.call_count, 1)
@@ -82,13 +83,13 @@ class WidthMonitorTests(unittest.TestCase):
 
     def test_late_samples_are_dropped_instead_of_accumulating(self):
         now = [0.]
-        detect = monitor.MarkerDetector.detect
+        detect = MarkerDetector.detect
         def slow_detect(detector, gray):
             now[0] += .1
             return detect(detector, gray)
-        with patch.object(monitor.time, 'perf_counter', side_effect=lambda: now[0]), \
-             patch.object(monitor.MarkerDetector, 'detect', slow_detect), redirect_stdout(io.StringIO()):
-            summary = monitor.run(self.video, ROI, video_output=self.root / 'late.mp4')
+        with patch.object(width_video.time, 'perf_counter', side_effect=lambda: now[0]), \
+             patch.object(MarkerDetector, 'detect', slow_detect), redirect_stdout(io.StringIO()):
+            summary = width_video.monitor(self.video, ROI, video_output=self.root / 'late.mp4')
         self.assertEqual(summary['late_dropped'], 1)
         self.assertEqual(summary['samples'], 2)
         with av.open(str(self.root / 'late.mp4')) as video:
@@ -110,18 +111,18 @@ class WidthMonitorTests(unittest.TestCase):
         existing = self.root / 'existing.csv'
         existing.write_text('keep')
         with self.assertRaises(FileExistsError):
-            monitor.run(self.video, ROI, output=existing)
+            width_video.monitor(self.video, ROI, output=existing)
         self.assertEqual(existing.read_text(), 'keep')
         for hz in (0., -1., float('nan'), float('inf')):
             with self.subTest(hz=hz), self.assertRaises(ValueError):
-                monitor.run(self.video, ROI, hz=hz)
+                width_video.monitor(self.video, ROI, hz=hz)
         with self.assertRaises(ValueError):
-            monitor.run(self.video, (-1, 0, 600, 1000))
+            width_video.monitor(self.video, (-1, 0, 600, 1000))
         target = self.root / 'failed.csv'
         original_threads = cv2.getNumThreads()
-        with patch.object(monitor.MarkerDetector, 'detect', side_effect=RuntimeError('failed')):
+        with patch.object(MarkerDetector, 'detect', side_effect=RuntimeError('failed')):
             with self.assertRaisesRegex(RuntimeError, 'failed'):
-                monitor.run(self.video, ROI, output=target, benchmark=True)
+                width_video.monitor(self.video, ROI, output=target, benchmark=True)
         self.assertFalse(target.exists())
         self.assertEqual(cv2.getNumThreads(), original_threads)
         self.assertEqual({path.name for path in self.root.iterdir()}, {'width.insv', 'existing.csv'})
@@ -162,14 +163,14 @@ class WidthMonitorTests(unittest.TestCase):
     def test_encoding_failure_cleans_csv_and_video_and_preserves_existing_video(self):
         csv_output, video_output = self.root / 'result.csv', self.root / 'result.mp4'
         original_threads = cv2.getNumThreads()
-        with patch.object(monitor.PreviewWriter, 'write', side_effect=RuntimeError('encode failed')):
+        with patch.object(width_video.PreviewWriter, 'write', side_effect=RuntimeError('encode failed')):
             with self.assertRaisesRegex(RuntimeError, 'encode failed'):
-                monitor.run(self.video, ROI, output=csv_output, video_output=video_output, benchmark=True)
+                width_video.monitor(self.video, ROI, output=csv_output, video_output=video_output, benchmark=True)
         self.assertEqual(list(self.root.iterdir()), [self.video])
         self.assertEqual(cv2.getNumThreads(), original_threads)
         video_output.write_bytes(b'keep')
         with self.assertRaises(FileExistsError):
-            monitor.run(self.video, ROI, output=csv_output, video_output=video_output, benchmark=True)
+            width_video.monitor(self.video, ROI, output=csv_output, video_output=video_output, benchmark=True)
         self.assertEqual(video_output.read_bytes(), b'keep')
         self.assertFalse(csv_output.exists())
 

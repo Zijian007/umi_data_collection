@@ -25,7 +25,7 @@ class CameraGeometryTests(unittest.TestCase):
         self.assertEqual(describe_tcp_frame(dict(convention='asset_defined', description='legacy axes')), 'legacy axes')
 
     def test_camera_extrinsics_do_not_require_or_invent_tcp(self):
-        from software.trajectory.reporting import metadata as run_metadata
+        from software.trajectory import trajectory_export as run_metadata
         extrinsics = run_metadata.load_extrinsics()
         self.assertIn('T_imu_cam', extrinsics)
         self.assertNotIn('T_cam_tcp', extrinsics)
@@ -78,9 +78,9 @@ class CameraGeometryTests(unittest.TestCase):
         self.assertGreater(p[0, 0], 2.)  # 换算不会把场景原点移到本段起点。
 
     def test_independent_export_records_the_selected_tcp_convention(self):
-        from software.trajectory.calibration import assets as calibration_assets
-        from software.trajectory.io.tum import write_tum
-        from software.trajectory.algorithms import postprocess
+        from software.camera import calibration_assets as calibration_assets
+        from software.trajectory.tum import write_tum
+        from software.trajectory import trajectory_export as postprocess
 
         root = Path(__file__).resolve().parents[1]
         source = root / 'tests/fixtures/grippers/handheld_v1/003/t_tcp_camera.json'
@@ -118,10 +118,10 @@ class CameraGeometryTests(unittest.TestCase):
                                        Rotation.from_quat(camera[:, 4:]).as_matrix() @ camera_from_tcp(new)[:3, :3], atol=1e-8)
 
     def test_camera_only_export_matches_camera_poses_without_tcp_artifacts(self):
-        from software.trajectory.algorithms import postprocess
-        from software.trajectory.reporting.metadata import load_extrinsics
+        from software.trajectory import trajectory_export as postprocess
+        from software.trajectory.trajectory_export import load_extrinsics
         from software.trajectory.reporting import reports
-        from software.trajectory.io.tum import write_tum, read_tum
+        from software.trajectory.tum import write_tum, read_tum
 
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

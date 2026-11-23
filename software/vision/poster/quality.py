@@ -1,9 +1,28 @@
 """共享海报噪声、异常剔除预算与条件几何质量诊断。"""
 from dataclasses import replace
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from software.vision.poster.geometry import residual_and_jacobians
+
+
+@dataclass(frozen=True)
+class PosterTagParameters:
+    tag_minimum_side_px: float
+    tag_minimum_frames: int
+    tag_corner_sigma_px: float
+    tag_sigma_per_radius_px: float
+    tag_huber: float
+    tag_maximum_reprojection_rms_px: float
+    tag_maximum_position_std_m: float
+    tag_maximum_rotation_std_deg: float
+    tag_maximum_cull_fraction: float
+    tag_minimum_retained_time_fraction: float
+    tag_rear_rotation_refinement_enabled: bool
+    tag_rear_rotation_prior_sigma_rad: float
+    tag_rear_rotation_maximum_correction_deg: float
 
 
 def corner_sigma_px(pixels, model, parameters):

@@ -7,7 +7,6 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 import json
-import math
 import os
 import re
 
@@ -23,7 +22,7 @@ from software.scene.management.inputs.batch import (
     batch_video_sources,
     task_video_sources,
 )
-from software.scene.management.inputs.episode import read_episode
+from software.scene.management.inputs.batch import read_episode
 from software.scene.arms import read_arms, resolve_arms
 
 
@@ -54,16 +53,8 @@ def parse_recording_start_unix_s(filename: str) -> float | None:
 
 
 def inspect_recording(path: Path) -> RecordingMetadata:
-    import av
     metadata = recordings.inspect(path)
-    with av.open(str(path)) as container:
-        duration = float(container.duration or 0) / 1e6
-        if duration <= 0:
-            streams = list(container.streams.video)
-            if streams and streams[0].duration is not None:
-                duration = float(streams[0].duration * streams[0].time_base)
-    if not math.isfinite(duration) or duration <= 0:
-        raise ValueError('无法确定视频时长；不使用猜测值进行配对')
+    duration = recordings.video_duration_s(path)
     return RecordingMetadata(path.resolve(), metadata['serial'], metadata['sha256'], parse_recording_start_unix_s(path.name), duration)
 
 
@@ -209,7 +200,7 @@ def register_recordings(session: Session, *, dry_run: bool = False) -> dict:
         # batch_task_directories 已按任务名校验，内部目录与隐藏目录不会出现。
         for path in (layout.manifest(task, 'episode.yaml') for task in batch_task_directories(batch)
                      if layout.manifest(task, 'episode.yaml').is_file()):
-            episode = read_episode(path, verify=False)
+            episode = read_episode(path, verify=False, allow_pending_map=True)
             for recording in episode.recording_refs.values():
                 if recording['sha256'] in recording_owners:
                     raise ValueError('同一原片已属于多个任务，请先核对任务清单')

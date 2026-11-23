@@ -7,12 +7,12 @@ import unittest
 from unittest.mock import patch
 
 from software.scene import layout, workflow
-from software.scene.management import episodes, processing
-from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs, scene as scene_inputs
+from software.scene.management import episodes, batch_processing as processing
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
 from software.infrastructure.file_store import write_json, write_yaml
 from software.viewer.results.catalog import RecordingCatalog
-from software.viewer.results.episodes import capture_status
-from software.scene.pipeline.maps import lifecycle as map_lifecycle
+from software.viewer.results.catalog import capture_status
+from software.scene.pipeline.maps import repository as map_repository
 import test_processing
 import test_scene
 from registry_fakes import write_task_configuration, read_task_configuration
@@ -109,7 +109,7 @@ class InternalLayoutTests(unittest.TestCase):
         workflow.run_episode(fixture.episode_path)
         episode = episode_inputs.read_episode(fixture.episode_path)
         success = episode.output.resolve()
-        with patch('software.scene.spatial.fusion.fuse', side_effect=ValueError('same failure')):
+        with patch('software.trajectory.algorithms.fixed_map.fusion.fuse', side_effect=ValueError('same failure')):
             for _ in range(2):
                 with self.assertRaisesRegex(ValueError, 'same failure'):
                     workflow.run_episode(fixture.episode_path, force=True)
@@ -176,4 +176,4 @@ class InternalLayoutTests(unittest.TestCase):
         versions.rename(other)
         versions.symlink_to(other, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, '越界'):
-            map_lifecycle.load_published(fixture.scene)
+            map_repository.load_published(fixture.scene)

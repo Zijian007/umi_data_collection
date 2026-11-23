@@ -1,5 +1,5 @@
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import kit as kit_inputs
+from software.scene.management.inputs import scene as kit_inputs
 from software.infrastructure import provenance as artifact_identity
 """main 宽度算法的场景集成：标定冻结、原片检测、时钟、缺失值与训练导出。"""
 from software.scene.management import camera_assets
@@ -16,9 +16,9 @@ import cv2
 import numpy as np
 
 from software.camera import registry
-from software.gripper_width import calibration, pipeline, series
-from software.gripper_width.detection import markers as detection
-from software.scene.management.batch import snapshot as batches
+from software.gripper_width import calibration, series, width_estimation
+from software.gripper_width.detection import frames as detection
+from software.scene.management import batch_snapshot as batches
 from software.scene.management.inputs import (
     batch as batch_inputs,
 )
@@ -66,7 +66,7 @@ class WidthNumericalTests(unittest.TestCase):
         widths[30:70] = np.nan
         above = np.zeros(100, bool)
         above[80] = True
-        aligned = pipeline.align(times, widths, above, times[::2], .2)
+        aligned = width_estimation.align(times, widths, above, times[::2], .2)
         self.assertEqual(aligned.source[7], series.INTERPOLATED)
         self.assertTrue(aligned.valid[7])
         self.assertFalse(aligned.valid[25])
@@ -86,9 +86,9 @@ class WidthNumericalTests(unittest.TestCase):
             times = np.arange(10)/60.
             detected = detection.DetectionSeries(times, np.full(10, 240.), np.full((10, 2, 4, 2), np.nan))
             def process(offset=-.12, *, gap=.2, threshold=3., diagnostics=False, recording='a'*64):
-                return pipeline.process(root/'raw.insv', calibration.read(path), times[::2], offset, output, root/'cache', recording,
+                return width_estimation.process(root/'raw.insv', calibration.read(path), times[::2], offset, output, root/'cache', recording,
                                         calibration_sha256=artifact_identity.file_hash(path), max_gap_s=gap, closed_threshold_mm=threshold, diagnostics=diagnostics)
-            with patch.object(detection, 'detect', return_value=detected) as detect:
+            with patch.object(detection, 'scan_width', return_value=detected) as detect:
                 process()
                 self.assertFalse((output / 'details').exists())
                 result = process(-.24)
@@ -117,11 +117,11 @@ class WidthNumericalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             measured = detection.DetectionSeries(np.array([0., .1]), np.array([240., np.nan]), np.full((2, 2, 4, 2), np.nan))
-            with patch.object(detection, 'detect', return_value=measured) as detect:
-                detection.cached(root / 'raw.insv', root, 'a'*64)
+            with patch.object(detection, 'scan_width', return_value=measured) as detect:
+                detection.cached_width(root / 'raw.insv', root, 'a'*64)
                 next(root.rglob('detections.npz')).write_bytes(b'tampered')
                 with self.assertRaisesRegex(ValueError, '缓存身份或哈希'):
-                    detection.cached(root / 'raw.insv', root, 'a'*64)
+                    detection.cached_width(root / 'raw.insv', root, 'a'*64)
                 self.assertEqual(detect.call_count, 1)
 
     def test_measurement_rejects_processing_options(self):
@@ -151,7 +151,7 @@ class WidthNumericalTests(unittest.TestCase):
                         container.mux(packet)
                 for packet in stream.encode():
                     container.mux(packet)
-            detected = detection.detect(path, roi=(0, 0, 1920, 1920))
+            detected = detection.scan_width(path, roi=(0, 0, 1920, 1920))
             np.testing.assert_allclose(detected.times_s, np.arange(3)/30., atol=1e-8)
             np.testing.assert_allclose(detected.distance_px, 300., atol=1.)
             self.assertEqual(detected.corners_px.shape, (3, 2, 4, 2))

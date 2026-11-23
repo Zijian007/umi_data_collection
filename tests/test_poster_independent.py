@@ -15,16 +15,17 @@ from scipy.spatial.transform import Rotation
 
 from software.infrastructure.file_store import read_yaml, write_yaml
 from software.scene import workflow
-from software.scene.management.inputs import episode as episode_inputs
+from software.scene.management.inputs import batch as episode_inputs
 from software.scene.management import episodes
-from software.scene.management.batch import snapshot as batches
-from software.scene.models import FusedTrajectory
-from software.scene.pipeline.tasks.backends import independent_reconstruction, poster_independent, poster_vio, scene_reconstruction
-from software.scene.pipeline.maps import lifecycle as map_lifecycle
-from software.scene.pipeline.tasks.policy import read_mode
-from software.scene.pipeline.tasks.estimation import MapSelection
+from software.scene.management import batch_snapshot as batches
+from software.trajectory.models import FusedTrajectory
+from software.scene.pipeline.tasks import poster_independent as independent_reconstruction, poster_independent, poster_vio, scene_map as scene_reconstruction
+from software.scene.pipeline.maps import repository as map_lifecycle
+from software.scene.pipeline.maps import repository as map_repository
+from software.scene.pipeline.tasks import measurements
+from software.scene.pipeline.tasks.backend_routing import MapSelection
 from software.scene.result_io import read_arm_summary, scene_reference
-from software.scene.spatial.fusion import SceneFusionQualityError
+from software.trajectory.algorithms.fixed_map.fusion import SceneFusionQualityError
 from software.scene.errors import MapUnavailableError, MapCompatibilityError, PosterVioQualityError
 from software.vision.poster import layout as tag_board
 
@@ -51,8 +52,7 @@ class AutomaticBackendChainTests(unittest.TestCase):
             scene=SimpleNamespace(environment_tag_detection=True,
                                   parameters=SimpleNamespace(tag_fusion_enabled=True),
                                   reconstruction_mode='auto'))
-        inputs = SimpleNamespace(episode=episode, poster_vio_request=None,
-                                 poster_vio_arms=None, poster_vio_board_seed=None)
+        inputs = SimpleNamespace(episode=episode)
         with patch.object(poster_vio, 'prepare_task_inputs', side_effect=ValueError('too few tags')):
             with self.assertRaises(PosterVioQualityError):
                 poster_vio.execute_task(inputs)
@@ -62,14 +62,13 @@ class AutomaticBackendChainTests(unittest.TestCase):
             scene=SimpleNamespace(environment_tag_detection=True,
                                   parameters=SimpleNamespace(tag_fusion_enabled=True),
                                   reconstruction_mode='poster_vio'))
-        inputs = SimpleNamespace(episode=episode, poster_vio_request=None,
-                                 poster_vio_arms=None, poster_vio_board_seed=None)
+        inputs = SimpleNamespace(episode=episode)
         with patch.object(poster_vio, 'prepare_task_inputs', side_effect=ValueError('bad frozen input')):
             with self.assertRaisesRegex(ValueError, 'bad frozen input'):
                 poster_vio.execute_task(inputs)
 
     def test_map_quality_then_poster_vio_quality_then_independent(self):
-        from software.scene.pipeline.tasks import estimation
+        from software.scene.pipeline.tasks import backend_routing as estimation
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             calls = []
@@ -119,6 +118,10 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         self.helper = test_scene.SceneWorkflowTests('runTest')
         self.helper.setUp()
         self.addCleanup(self.helper.doCleanups)
+        # Workflow fixtures replace the solver and use placeholder INSV files.
+        detector = patch.object(measurements, 'prepare_detections', return_value=None)
+        detector.start()
+        self.addCleanup(detector.stop)
 
     def configure(self, mode='poster_independent', *, confirmed=False):
         h = self.helper
@@ -179,7 +182,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         self.assertIn('imu', loaded['tracks'])
         self.assertEqual(workflow.run_episode(h.episode_path)['status'], 'skipped')
         episodes.review(h.episode_path, accept=True, reviewer='tester')
-        from software.dataset.source import read_accepted_episode
+        from software.dataset.export import read_accepted_episode
         self.assertEqual(read_accepted_episode(h.episode_path).manifest['kind'], 'umi_poster_episode')
         exported = episodes.export([h.episode_path], h.root / 'trajectory-export')
         self.assertEqual(exported['episodes'], 1)
@@ -211,17 +214,17 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
     def test_unexpected_map_reader_errors_do_not_trigger_fallback(self):
         self.configure('auto')
         episode = episode_inputs.read_episode(self.helper.episode_path)
-        from software.scene.pipeline.tasks import estimation
+        from software.scene.pipeline.tasks import backend_routing as estimation
         for error in (ValueError('program error'), KeyError('program key'), RuntimeError('engine crash')):
-            with self.subTest(error=error), patch.object(map_lifecycle, 'load_published', side_effect=error):
+            with self.subTest(error=error), patch.object(map_repository, 'load_published', side_effect=error):
                 with self.assertRaises(type(error)):
                     estimation.select_map(episode, None)
 
     def test_map_compatibility_failure_preserves_category_and_error_type(self):
         self.configure('auto')
         episode = episode_inputs.read_episode(self.helper.episode_path)
-        from software.scene.pipeline.tasks import estimation
-        with patch.object(map_lifecycle, 'load_published', side_effect=MapCompatibilityError('engine changed')):
+        from software.scene.pipeline.tasks import backend_routing as estimation
+        with patch.object(map_repository, 'load_published', side_effect=MapCompatibilityError('engine changed')):
             _, selection = estimation.select_map(episode, None)
         self.assertEqual(selection.failure['category'], 'map_incompatible')
         self.assertEqual(selection.failure['error_type'], 'MapCompatibilityError')
@@ -229,7 +232,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
     def test_auto_corrupt_map_falls_back_without_using_any_scene_pose(self):
         h = self.helper
         h.build_scene()
-        directory, _ = map_lifecycle.load_published(h.scene)
+        directory, _ = map_repository.load_published(h.scene)
         (directory / 'maps/shared_front/map.osa').write_bytes(b'corrupt map')
         self.configure('auto')
         with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=AssertionError('no scene poses')):
@@ -252,8 +255,8 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         batches.save_record(batch)
         episode = episode_inputs.read_episode(h.episode_path)
         self.assertEqual(episode.map_version, doc['map']['selection']['version'])
-        from software.scene.pipeline.tasks import estimation
-        with patch.object(map_lifecycle, 'load_published', side_effect=MapUnavailableError('missing')) as load:
+        from software.scene.pipeline.tasks import backend_routing as estimation
+        with patch.object(map_repository, 'load_published', side_effect=MapUnavailableError('missing')) as load:
             _, selected = estimation.select_map(episode, None)
         self.assertEqual(load.call_args.kwargs['version'],
                          doc['map']['selection']['version'])
@@ -375,7 +378,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         self.configure()
         self.run_poster()
         episodes.review(self.helper.episode_path, accept=True, reviewer='tester')
-        from software.dataset.source import read_accepted_episode
+        from software.dataset.export import read_accepted_episode
         with self.assertRaisesRegex(ValueError, 'synchronization'):
             read_accepted_episode(self.helper.episode_path)
 
@@ -394,9 +397,6 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         write_yaml(collection, doc)
         episode = episode_inputs.read_episode(h.episode_path)
         self.assertEqual(episode.scene.reconstruction_mode, 'poster_independent')
-        for record in [dict(mode=True), dict(mode='auto', extra=True), 'auto']:
-            with self.subTest(record=record), self.assertRaises(ValueError):
-                read_mode(record)
 
 
 class PosterIndependentAdapterTests(unittest.TestCase):
@@ -425,7 +425,7 @@ class PosterIndependentAdapterTests(unittest.TestCase):
         self.board_pose[:3, 3] = [1., 2., 3.]
 
     def execute(self, *, status='fused', times=True, sparse_visual=False, sparse_tags=False, weak_tags=False):
-        from software.trajectory.pipeline import runtime
+        from software.trajectory import reconstruction as runtime
         from software.vision.poster import detection as environment_tags
         h = self.helper
 

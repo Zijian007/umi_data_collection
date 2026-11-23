@@ -5,8 +5,7 @@ import unittest
 import av
 import numpy as np
 
-from software.gripper_width.detection.markers import MarkerDetector
-from software.gripper_width.detection.frames import crop_gray, detect_frame
+from software.gripper_width.detection.frames import FrameDetector, crop_gray
 
 
 class ConversionTrace:
@@ -84,8 +83,8 @@ class FrameProcessingTests(unittest.TestCase):
         frame = av.VideoFrame.from_ndarray(np.column_stack((np.zeros_like(half), half)), format='gray')
         for fast in (False, True):
             with self.subTest(fast=fast):
-                detector = MarkerDetector((0, 0, 750, 270), fast=fast)
-                detected = detect_frame(frame, detector, (600, 980, 1350, 1250), ConversionTrace())
+                detector = FrameDetector((600, 980, 1350, 1250), mode='fast' if fast else 'full')
+                detected = detector.detect(frame)
                 self.assertAlmostEqual(detected.distance_px, 300., delta=.3)
                 np.testing.assert_allclose(detected.centres[0], [719.5, 1069.5], atol=.3)
                 np.testing.assert_allclose(detected.centres[1], [1019.5, 1069.5], atol=.3)

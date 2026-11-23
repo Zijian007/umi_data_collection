@@ -19,7 +19,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
 from software.configuration import loader as config
-from software.trajectory.calibration import assets
+from software.camera import calibration_assets as assets
 
 GOLDEN = [
     [1, -.000191196, .139494246, .000208187, .000262825, .085124379, -.000089214, .996370294],

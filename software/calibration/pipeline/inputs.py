@@ -1,13 +1,21 @@
 """Resolve recordings without guessing when a stage has multiple candidates."""
 
+from __future__ import annotations
+
 from argparse import Namespace
+from dataclasses import asdict, replace
+from typing import TYPE_CHECKING
 from pathlib import Path
 import json
 import math
 
+from software.configuration import loader as config, operational_settings as settings
 from software.camera import registry
 from software.calibration.models import CalibrationInputs, CalibrationRequest, SegmentPaths, VerificationInputs, VerificationRequest
 from software.calibration.pipeline import runtime
+
+if TYPE_CHECKING:
+    from software.scene.models import SceneParameters
 
 
 def discover_recordings(folder: Path) -> dict[str, Path]:
@@ -155,3 +163,30 @@ def board_layout_problems() -> list[str]:
         except (OSError, ValueError, KeyError, TypeError) as error:
             problems.append(f"无法读取 {path.name}：{error}")
     return problems
+
+
+def rear_validation_parameters() -> SceneParameters:
+    """环境镜头 C 独立验证，不采用任务海报或建图尺度修正。"""
+    from software.scene.management.inputs.scene import load_scene_parameters
+    return replace(load_scene_parameters(), tag_fusion_enabled=False,
+                   tag_mapping_enabled=False, tag_mapping_scale_enabled=False)
+
+
+def effective_report(arguments: Namespace, request: CalibrationRequest | None = None) -> dict:
+    calibration = config.load('calibration', arguments.config)
+    trajectory = calibration.load_trajectory_validation(tag_size_m=arguments.tag_size_mm / 1000.)
+    effective = dict(calibration=calibration.snapshot(), trajectory_validation=trajectory.snapshot(),
+                     tag_size_mm=arguments.tag_size_mm)
+    if request is not None and request.lens == 'rear':
+        effective['scene_parameters'] = asdict(rear_validation_parameters())
+    if request is not None:
+        effective['output'] = str(request.output_directory)
+    return dict(program='umi-calib', operation=arguments.cmd, scope='configuration_only',
+        precedence=['project_defaults', 'config/user.yaml', '--expert-config', 'C_validation_overrides'],
+        inputs={key: str(value) if isinstance(value, Path) else value
+                for key, value in vars(arguments).items() if key in ('folder', 'video', 'out')},
+        execution={key: value for key, value in vars(arguments).items()
+                   if key in ('cores', 'workers', 'force', 'resume', 'keep_work', 'install', 'compare_sample')},
+        selection=dict(lens=request.lens if request is not None else 'front',
+                       intrinsics_source=getattr(arguments, 'intrinsics_source', 'installed_version')),
+        effective=effective, operational=settings.execution_report(cores=arguments.cores or '', workers=arguments.workers, calibration=True))

@@ -1,5 +1,5 @@
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import kit as kit_inputs
+from software.scene.management.inputs import scene as kit_inputs
 """精简清单仍保留快照、缺片语义、同步和内容校验。"""
 import unittest
 from registry_fakes import write_kit, write_batch, write_task, write_task_configuration, read_task_configuration
@@ -8,9 +8,9 @@ from unittest.mock import patch
 from software.camera import registry
 from software.scene import layout
 from software.scene.management import episodes
-from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs, scene as scene_inputs
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
 from software.infrastructure.file_store import write_yaml
-from software.viewer.results.episodes import capture_status
+from software.viewer.results.catalog import capture_status
 import test_scene as fixtures
 
 

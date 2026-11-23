@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {nearestIndex, rotateQuaternion, formatTime, niceStep} from '../../software/viewer/static/math.mjs';
 import {TrajectoryScene} from '../../software/viewer/static/scene.mjs';
 import {CompanionVideo} from '../../software/viewer/static/paired.mjs';
+import {createPlayback} from '../../software/viewer/static/playback.mjs';
 import {tagDistanceReadout} from '../../software/viewer/static/measurements.mjs';
+import {frameQuality, qualitySegments} from '../../software/viewer/static/quality.mjs';
 
 test('tag distances retain missing values and follow each arm clock', () => {
   assert.deepEqual(tagDistanceReadout({times: [0]}, 0), {isVisible: false, text: '—'});
@@ -211,4 +213,126 @@ test('companion playback keeps the explicit offset after trimming to common epis
   assert.equal(requests.at(-1).index, 1);
   assert.ok(Math.abs(requests.at(-1).seconds-.15) < 1e-10);
   preview.reset(); assert.equal(root.hidden, true); assert.equal(video.paused, true);
+});
+
+test('companion seeked event applies the most recent paused target', () => {
+  const listeners = {};
+  const video = {
+    readyState: 2, paused: true, seeking: false, time: 0,
+    get currentTime() { return this.time; },
+    set currentTime(seconds) { this.seeking = true; this.time = seconds; },
+    pause() {}, load() {}, canPlayType() { return 'probably'; }, removeAttribute() {},
+    addEventListener(name, handler) { listeners[name] = handler; },
+  };
+  const root = {querySelector(selector) {
+    if (selector === 'video') return video;
+    if (selector === 'img') return imageStub();
+    return selector === '[data-lens]' ? null : {};
+  }};
+  const player = new CompanionVideo(root);
+  player.reset({arm: 'right', times: [.2, .3, .4, .5], video_time_offset_s: .15, video_url: '/right.mp4'});
+  for (const time of [.2, .3, .5]) player.synchronize(time);
+  assert.ok(Math.abs(video.currentTime - .05) < 1e-12);
+  video.seeking = false;
+  listeners.seeked();
+  assert.ok(Math.abs(video.currentTime - .35) < 1e-12);
+});
+
+test('playback keeps the task time when either video changes lens', async context => {
+  class Element extends EventTarget {
+    constructor() {
+      super();
+      this.attributes = new Map();
+      this.children = new Map();
+      this.paused = true;
+      this.currentTime = 0;
+      this.readyState = 2;
+      this.duration = 10;
+    }
+    querySelector(selector) {
+      if (!this.children.has(selector)) this.children.set(selector, new Element());
+      return this.children.get(selector);
+    }
+    get currentSrc() { return this.getAttribute('src') || ''; }
+    set src(value) { this.setAttribute('src', value); }
+    setAttribute(name, value) { this.attributes.set(name, value); }
+    getAttribute(name) { return this.attributes.get(name); }
+    removeAttribute(name) { this.attributes.delete(name); }
+    pause() { this.paused = true; }
+    async play() { this.paused = false; }
+    load() {}
+    canPlayType() { return 'probably'; }
+  }
+
+  const originalDocument = globalThis.document, originalAnimation = globalThis.requestAnimationFrame;
+  globalThis.document = new Element();
+  let tick;
+  globalThis.requestAnimationFrame = callback => { tick = callback; };
+  context.after(() => {
+    globalThis.document = originalDocument;
+    globalThis.requestAnimationFrame = originalAnimation;
+  });
+
+  const root = new Element();
+  const element = id => root.querySelector(id);
+  element('rate').value = '2';
+  const primary = element('video');
+  const companion = element('companion-video');
+  const frames = [];
+  const playback = createPlayback(element, {renderFrame: index => frames.push(index), message: assert.fail});
+  playback.load({
+    times: [.4, .5, .6, .7], video_time_offset_s: .2, primary_arm: 'left',
+    video_url: '/left-front.mp4', rear: {video_url: '/left-rear.mp4'},
+    companion: {
+      times: [.3, .4, .5, .6, .7], video_time_offset_s: .1, arm: 'right',
+      video_url: '/right-front.mp4', rear: {video_url: '/right-rear.mp4'},
+    },
+  });
+  primary.dispatchEvent(new Event('loadedmetadata'));
+  playback.seek(1);
+  assert.equal(frames.at(-1), 1);
+  assert.ok(Math.abs(primary.currentTime - .3) < 1e-10);
+  const right = companion.querySelector('video');
+  assert.ok(Math.abs(right.currentTime - .4) < 1e-10);
+
+  await playback.toggle();
+  for (const select of [element('primary-lens'), companion.querySelector('[data-lens]')]) {
+    assert.equal(select.querySelector('[value="rear"]').disabled, false);
+    select.value = 'rear';
+    select.dispatchEvent(new Event('change'));
+  }
+  primary.dispatchEvent(new Event('loadedmetadata'));
+  right.dispatchEvent(new Event('loadedmetadata'));
+  assert.equal(primary.currentSrc, '/left-rear.mp4');
+  assert.equal(right.currentSrc, '/right-rear.mp4');
+  assert.ok(Math.abs(primary.currentTime - .3) < 1e-10);
+  assert.ok(Math.abs(right.currentTime - .4) < 1e-10);
+  assert.equal(primary.paused, false);
+  assert.equal(right.paused, false);
+  assert.equal(right.playbackRate, 2);
+
+  primary.currentTime = .4;
+  tick(performance.now());
+  assert.equal(frames.at(-1), 2);
+  playback.pause();
+  assert.equal(right.paused, true);
+});
+
+test('quality segments use each hand exposure timestamps and preserve explicit poster support', () => {
+  const summary = {mode: 'poster', reconstruction_backend: 'poster_vio'};
+  const frames = [
+    {constraint: 'full', position_source: 'visual'},
+    {constraint: 'imu', position_source: 'poster'},
+    {constraint: 'imu', position_source: 'imu'},
+    {constraint: 'imu', position_source: 'imu'},
+  ];
+  assert.deepEqual(qualitySegments([-.25, .25, .75, 1.25], frames, summary, -.125, 1), [
+    {start: -.125, end: 0, kind: 'natural'},
+    {start: 0, end: .5, kind: 'poster'},
+    {start: .5, end: 1, kind: 'imu'},
+  ]);
+  assert.equal(frameQuality({constraint: 'full'}, {mode: 'scene'}), 'map');
+  assert.equal(frameQuality({constraint: 'full'}, summary), 'natural');
+  assert.equal(frameQuality({constraint: 'rot', position_source: 'imu'}, summary), 'rot');
+  assert.equal(frameQuality(undefined, summary), 'unknown');
 });

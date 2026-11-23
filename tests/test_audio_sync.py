@@ -9,7 +9,8 @@ from unittest.mock import patch
 import numpy as np
 
 from software.infrastructure import provenance
-from software.sync.audio import AudioSyncError, AudioSyncEstimate, estimate_offset
+from software.sync import kiwi_audio as landmark_audio
+from software.sync.specialist_audio import AudioSyncError, AudioSyncEstimate, estimate_offset
 from software.scene.pipeline.synchronization import estimate_audio_sync, load_ready_audio_sync
 
 
@@ -47,6 +48,36 @@ class AudioSyncTests(unittest.TestCase):
     def test_silent_audio_is_rejected(self) -> None:
         with self.assertRaisesRegex(AudioSyncError, "silent"):
             estimate_offset(np.zeros(1024), np.zeros(1024))
+
+    def test_landmark_matching_and_refinement_recover_unequal_clips_in_both_directions(self) -> None:
+        rate = landmark_audio.SAMPLE_RATE
+        rng = np.random.default_rng(7)
+        reference = rng.normal(0, .001, 9 * rate)
+        onsets = np.cumsum(rng.uniform(.09, .18, 55))
+        frequencies = rng.uniform(400, 2600, len(onsets))
+        time = np.arange(int(.09 * rate)) / rate
+        window = .23 * np.hanning(len(time))
+        for onset, frequency in zip(onsets, frequencies):
+            start = round(onset * rate)
+            reference[start:start + len(time)] += window * np.sin(2 * np.pi * frequency * time)
+        for lag in (20177, 31 * rate + 20177):
+            other = np.pad(reference * .65, (lag, 9000))
+            other += rng.normal(0, .0005, len(other))
+            for ref, candidate, expected in ((reference, other, lag), (other, reference, -lag)):
+                with self.subTest(lag=expected):
+                    result = landmark_audio.estimate_offset(ref, candidate)
+                    self.assertAlmostEqual(result.other_started_later_s, expected / rate, delta=2 / rate)
+                    self.assertGreaterEqual(result.diagnostics['landmark_votes'], 15)
+                    self.assertIsNone(result.peak_ratio)
+                    self.assertIsNone(result.max_offset_s)
+
+    def test_kiwi_rejects_audio_with_no_distinctive_landmarks(self) -> None:
+        rate = landmark_audio.SAMPLE_RATE
+        time = np.arange(4 * rate) / rate
+        periodic = .2 * np.sin(2 * np.pi * 440 * time)
+        for signal in (periodic, np.round(32768 * periodic) / 32768):
+            with self.assertRaisesRegex(AudioSyncError, '持续单频'):
+                landmark_audio.estimate_offset(signal, signal)
 
     def test_pipeline_persists_specialist_session_clock_offset_and_reuses_matching_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

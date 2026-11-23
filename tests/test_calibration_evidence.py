@@ -11,7 +11,7 @@ from software.calibration import acceptance
 from software.calibration.validation import gravity
 from software.calibration.algorithms import trajectory_metrics
 from software.calibration.models import RunPaths, ExecutionOptions, TrajectoryValidation
-from software.trajectory.calibration.assets import SAMPLE_CAMERA_JSON
+from software.camera.calibration_assets import SAMPLE_CAMERA_JSON
 
 
 class GravityEvidenceTests(unittest.TestCase):

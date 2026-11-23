@@ -6,7 +6,7 @@ import numpy as np
 
 from software.configuration import loader as config
 from software.dataset import sampling
-from software.trajectory.reporting.quality import maximum_support_gap, position_support
+from software.trajectory.reporting.constraint_quality import maximum_support_gap, position_support
 from software.vision.poster.geometry import camera_model, transform
 from software.vision.poster.quality import position_support_metrics, cull_decision
 

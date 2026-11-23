@@ -10,11 +10,7 @@ from unittest.mock import patch
 from software.camera import registry
 from software.scene import layout
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import (
-    batch as batch_inputs,
-    episode as episode_inputs,
-    scene as scene_inputs,
-)
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
 from software.scene.management import ingest
 from software.scene.arms import read_arms
 from software.infrastructure.file_store import write_json, write_yaml
@@ -208,13 +204,13 @@ class IngestTests(unittest.TestCase):
             read_arms(['left'], session.expected_arms)
 
     def test_manual_task_names_cannot_shadow_internal_directories(self):
-        for name in scene_inputs.INTERNAL_DIRECTORIES:
+        for name in layout.INTERNAL_DIRECTORIES:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, '内部目录'):
                 scene_inputs.validate_episode_name(name)
         self.assertFalse(list(self.f.batch_root.rglob('*.insv')))
 
     def test_ingest_ignores_internal_and_hidden_directories(self):
-        for name in (*scene_inputs.INTERNAL_DIRECTORIES, '.hidden'):
+        for name in (*layout.INTERNAL_DIRECTORIES, '.hidden'):
             write_yaml(self.f.batch_root / name / 'episode.yaml', {})
         result = self.run_ingest()
         self.assertEqual([item['name'] for item in result['episodes']], ['take_001'])

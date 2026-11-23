@@ -1,6 +1,6 @@
 # 独立轨迹代码指南
 
-本模块提供内部逐段轨迹引擎：每段录像独立建图、定位并融合 IMU，不提供跨任务共享坐标。数学变量、变换方向和优化边界见[硬核算法实现约定](../../docs/算法实现约定.md)。日常共享场景和双手采集由 [scene](../scene/README.md) 编排，共用的视觉能力位于 [vision](../vision/README.md)。
+每段录像由内部逐段轨迹引擎独立建图、定位并融合 IMU，轨迹使用本段局部坐标。场景和双手任务由 [scene](../scene/README.md) 编排，共用视觉能力位于 [vision](../vision/README.md)。[算法实现约定](../../docs/dev/算法实现约定.md)
 
 各模块通过真实目录直接导入；包初始化不加载求解器、不注入旧模块别名。
 
@@ -49,33 +49,26 @@ cli.main() → workflow.run_batch() → workflow.run_recording()
 
 ```text
 software/trajectory/
-├── cli.py                     参数解析与命令行入口
-├── workflow.py                独立录像与批处理端到端编排
-├── models.py                  强类型模型、请求与上下文契约
-├── calibration/               设备规格与实测标定资产管理
-│   ├── assets.py              标定包读取、测量到 SLAM 设置与当前格式校验
-│   └── selection.py           设备注册表与处理流程的边界
-├── pipeline/                  重建调度与执行环境
-│   ├── inputs.py              独立 CLI 输入发现和默认输出目录
-│   ├── reconstruction.py      重建重试、融合调用与质量检查
-│   ├── reuse.py               输入指纹、成功结果复用与提醒重评
-│   └── runtime.py             独立融合配置和依赖诊断
-├── reporting/                 结果交付、分析与报告
-│   ├── map_data.py            图集展示导出、展示坐标对齐
-│   ├── metadata.py            所用测量资产、外参和完整配置记录
-│   ├── plots.py               轨迹预览图
-│   ├── quality.py             跟踪统计、逐帧约束和可重评的质量提醒
-│   ├── reports.py             用户报告和终端摘要
-│   └── results.py             当前结果布局、发布与清理
-├── tools/                     开发诊断工具，不参与默认运行
-│   └── initialization_review.py 复核原始与实验初始化结果
+├── cli.py / workflow.py       单段与批量处理、结果复用
+├── models.py                  请求、视觉上下文和求解结果
+├── calibration.py             相机、TCP 和 ORB 设置
+├── environment_assets.py      环境镜头与海报输入
+├── reconstruction.py          引擎设置、重建重试与融合验收
+├── trajectory_export.py       轨迹导出、逐帧证据和来源记录
+├── tum.py                     共用 TUM 读写
+├── reporting/
+│   ├── map_data.py            展示地图
+│   ├── constraint_quality.py  约束、尺度和位置质量
+│   └── artifacts.py           发布、清理、报告和预览
+├── tools/                     初始化诊断
 └── algorithms/
-    ├── inertial.py            共用陀螺仪零偏、旋转积分与惯性预积分
-    ├── postprocess.py         IMU → 相机/TCP、指标与预览
-    └── fusion/                独立融合求解器各阶段，见下表
+    ├── inertial.py            IMU 积分、预积分和共用惯性因子
+    ├── fixed_map/             固定地图几何、定位与融合
+    ├── poster_vio/            海报、自然特征与 IMU 联合求解
+    └── fusion/                独立融合求解器
 ```
 
-`ReconstructionContext.visual` 将独立请求转换成不携带业务请求的 `VisualContext`。视觉程序、错误与路径由 `software/vision` 管理；外参和逐帧位姿右乘由 `software/camera/geometry.py` 管理；公共 TUM 读写位于 `software/trajectory/io/tum.py`。
+`ReconstructionContext` 直接持有视觉阶段共用的路径、参数和 CPU 设置。独立命令和场景回退都将已解析的输入交给重建阶段。视觉程序、错误与路径由 `software/vision` 管理；外参和逐帧位姿右乘由 `software/camera/geometry.py` 管理；公共 TUM 读写位于 `software/trajectory/tum.py`。
 
 ## 融合模块
 
@@ -84,18 +77,11 @@ software/trajectory/
 ```text
 algorithms/fusion/
 ├── cli.py               参数解析 → 读取 → 求解 → 写结果
-├── data.py              FusionInputs、FusionSolution、文件读写
-├── solver.py            顺序入口 solve(inputs, parameters, log=...)
-├── alignment.py         跟踪段筛选与初始化编排 → AlignmentResult
-├── alignment_solver.py  线性尺度/重力求解、固定地图残差和对齐摘要
-├── diagnostics.py       错位采样复核；只依赖求解层
-├── refinement.py        实验初始化细化
-├── placement.py         地图段放置和分段 → MapPlacements
-├── graph.py             构建、优化因子图 → TrajectoryOptimizationResult
-├── recovery.py          恢复全帧率状态 → FusionSolution
-├── factors.py           视觉/惯性因子与解析 Jacobian，自检 selftest()
-├── poster.py            共享海报角点因子的独立图适配
-└── quality.py           尺度一致性与硬保护
+├── data.py              FusionInputs、MapPlacements、FusionSolution 与文件读写
+├── solver.py            顺序入口、地图段放置与全帧率恢复
+├── alignment.py         运动段筛选、尺度与重力求解及初值细化
+├── graph.py             视觉因子、图优化与 Jacobian 自检
+└── poster.py            共享海报角点因子的独立图适配
 ```
 
 求解器可直接导入，不解析命令行、不打开录像、不创建输出。输入和输出显式传递；尺度、跟踪段、偏置、GTSAM 图与优化结果都属于单次调用。文件边界独立，`write_solution()` 保留原轨迹、辅助 CSV 及 JSON 字段。`state.csv` 中历史兼容列仍保留，其零值不代表这些量已被估计。
@@ -236,17 +222,19 @@ umi_traj_out/VID_20261003_182246_00_067/
 python -m software.trajectory /path/to/task.insv --mode dual --rear-calibration rear_ACTUAL_HASH
 ```
 
-`pipeline/calibration_assets.py` 集中选择 rear 与可选海报布局，用不可变 `EnvironmentAssets` 传递本次选择；指纹计算只消费已选资产，不再次查询登记表。rear 身份与文件路径分别建模，正式文件冻结在结果 `devices/rear/`，成功清理 debug 后仍保留。光学参数供 rear SLAM 使用；外参和时差传入原生融合，不论是否启用海报都换算到 front 视频时钟，禁止跨丢帧或地图切换插值。版本、来源和内容进入计算身份；复用结果时再次校验冻结资产。`handheld` 下仅在指定海报时接受 rear，避免选择了标定却没有使用。
+`environment_assets.py` 集中选择 rear 与可选海报布局，用不可变 `EnvironmentAssets` 传递本次选择；指纹计算只消费已选资产，不再次查询登记表。rear 身份与文件路径分别建模，正式文件冻结在结果 `devices/rear/`，成功清理 debug 后仍保留。光学参数供 rear SLAM 使用；外参和时差传入原生融合，不论是否启用海报都换算到 front 视频时钟，禁止跨丢帧或地图切换插值。版本、来源和内容进入计算身份；复用结果时再次校验冻结资产。`handheld` 下仅在指定海报时接受 rear，避免选择了标定却没有使用。
 
 
 ## 环境海报
 
 独立 `handheld` / `dual` 支持 `--tag-layout FILE`，可加 `--rear-calibration measured` 选择本设备已登记的完整 rear 标定，要求序列号、参数来源和验收匹配。省略时按上述规则兜底，显式绑定损坏则拒绝。两种路径均冻结 rear 参数和来源到 `devices/rear/`；工厂转换不合格或元数据缺失时在预检失败，保留旧结果。指定资产默认只诊断；通过 YAML `environment_tags.tag_fusion_enabled: true` 显式启用。共享默认阈值在 `config/algorithms/environment_tags.yaml`，实验覆盖写在 `--expert-config` 的 `trajectory.environment_tags` 内。
 
-`pipeline/poster_assets.py` 冻结已选布局并缓存原始角点，不再选择镜头版本；`algorithms/fusion/poster.py` 在原生图中添加单板角点因子。原有地图分段尺度仍是变量，不把上一轮融合轨迹作为固定地图先验再平滑一次。真实 rear 观测时刻插入 IMU 节点；恢复全帧轨迹时使用这些实际时间节点。dual 地图定位也按镜头时差重采样，不跨丢帧/地图切换。没有海报观测时保持原图输出；仍需通过惯性初始化和原有质量验收。
+`environment_assets.py` 选择环境镜头标定，并冻结标定、海报布局和原始角点；`algorithms/fusion/poster.py` 在原生图中添加单板角点因子。原有地图分段尺度仍是变量，不把上一轮融合轨迹作为固定地图先验再平滑一次。真实 rear 观测时刻插入 IMU 节点；恢复全帧轨迹时使用这些实际时间节点。dual 地图定位也按镜头时差重采样，不跨丢帧/地图切换。没有海报观测时保持原图输出；仍需通过惯性初始化和原有质量验收。
 
 海报数量/时间剔除规则位于 `vision/poster/quality.py`；`vision/poster/factors.py` 从原场景实现提取旋转 seat、鲁棒角点因子及解析 Jacobian，场景与独立图共同使用。rear 修正可严格关闭，开启时检查修正角上限；单轮剔除可发生在种子或优化后，优化后重求解复用已有对齐、地图放置和基线，不重跑 SLAM。`reporting/quality.position_support_summary()` 将真实观测时刻的共同支持缺口传给重试；证据不全时保留原视觉覆盖规则，尺度硬保护继续生效。
 
 输出 `environment_poster/` 保存布局、rear 标定、角点和哈希清单，默认清理 debug 后仍保留。结果的 `fusion.environment_poster` 记录初始/最终像素残差、板位姿和状态，`actual_error` 仍为 `not_measured`。单手共享失败回退自动继承场景中的海报参数及冻结资产，结果仍使用独立局部坐标。
 
-实验性无预建地图的任务海报联合图见 [poster_vio 模块指南](poster_vio/README.md)，通过场景任务后端接入，不作为旧独立融合的初值方法。
+实验性无预建地图的任务海报联合图见 [poster_vio 模块指南](algorithms/poster_vio/README.md)，通过场景任务后端接入，不作为旧独立融合的初值方法。
+
+固定地图的尺度对齐、定位合并与视觉惯性融合位于 `algorithms/fixed_map/`。单独调用时显式传入观测、标定和数值参数。地图文件的读写与业务状态由场景流水线处理。

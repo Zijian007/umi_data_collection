@@ -11,11 +11,12 @@ import av
 import cv2
 import numpy as np
 
+from software.trajectory.algorithms.fixed_map.parameters import FixedMapParameters
 from software.configuration import loader as config
 from software.scene.cli import build_parser
 from software.scene.management.inputs.scene import load_scene_parameters
-from software.scene.spatial import fusion
-from software.scene.spatial.geometry import VisualObservations
+from software.trajectory.algorithms.fixed_map import fusion
+from software.trajectory.algorithms.fixed_map.geometry import VisualObservations
 from software.vision.poster import detection as environment_tags
 tags = environment_tags
 
@@ -164,7 +165,7 @@ class FusionBeforeTagsTests(unittest.TestCase):
             times, poses, imu, expected = (data[key] for key in ('times', 'poses', 'imu', 'expected'))
         observation = VisualObservations(times, poses, np.arange(len(times)), 'scene')
         result = fusion.fuse(times, imu, {'front': observation}, {'front': np.eye(4)},
-                             config.load('trajectory').values, load_scene_parameters(None))
+                             config.load('trajectory').values.fusion, config.load('trajectory').values.zupt, load_scene_parameters(None).for_algorithm(FixedMapParameters))
         np.testing.assert_allclose(result.T_reference_imu, expected, rtol=0, atol=1e-10)
         self.assertTrue(result.tracked.all())
         self.assertEqual(result.evidence['actual_error'], 'not_measured')

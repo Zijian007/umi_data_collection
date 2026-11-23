@@ -23,3 +23,12 @@ def deps_root(environment: Mapping[str, str] | None = None) -> Path:
     environment = os.environ if environment is None else environment
     return Path(environment.get('UMI_DEPS') or PROJECT_ROOT / '.deps').expanduser()
 
+
+def python_executable(environment: Mapping[str, str], *, tools: bool = False, default: str | None = None) -> str:
+    names = ('UMI_PY_TOOLS', 'UMI_PY') if tools else ('UMI_PY',)
+    for name in names:
+        if environment.get(name):
+            return environment[name]
+    if default is not None:
+        return default
+    raise ValueError('缺少环境变量 UMI_PY；请通过项目命令入口启动')

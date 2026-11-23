@@ -6,11 +6,11 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.camera.x3.factory import Kb4Model
-from software.trajectory.poster_vio import solve_joint_poster_imu
-from software.trajectory.poster_vio.feature_geometry import bearing_inliers, triangulate_batch, match_revisits
-from software.trajectory.poster_vio.frontend import subsample_observations, triangulate_track
-from software.scene.pipeline.tasks.backends import poster_vio_inputs
+from software.camera.x3.factory_geometry import Kb4Model
+from software.trajectory.algorithms.poster_vio import solve_joint_poster_imu
+from software.trajectory.algorithms.poster_vio.frontend import bearing_inliers, triangulate_batch, match_revisits
+from software.trajectory.algorithms.poster_vio.frontend import subsample_observations, triangulate_track
+from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
 from software.vision.poster.geometry import project_observations
 
 
@@ -71,7 +71,7 @@ class FeatureGeometryTests(unittest.TestCase):
         self.assertEqual(match_revisits(pixels, descriptors, bank, np.eye(4), self.model, 6., maximum_gap_s=5.), {})
 
     def test_natural_holdout_pixels_do_not_enter_landmark_initialization(self):
-        from software.trajectory.poster_vio.frontend import _FeatureTracker, FeatureCameraInput
+        from software.trajectory.algorithms.poster_vio.frontend import _FeatureTracker, FeatureCameraInput
         from software.scene.management.inputs.scene import load_scene_parameters
 
         poses = np.tile(np.eye(4), (10, 1, 1))
@@ -108,7 +108,7 @@ class SpecialistTaskTests(unittest.TestCase):
         self.helper.detections['left'] = replace(detections, corners_half_px=pixels)
         request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
         self.assertFalse(arms[0].tag_initialization_mask[5])
-        result = solve_joint_poster_imu(request, arms, seed)
+        result = solve_joint_poster_imu(request.problem(), arms, seed)
         self.assertEqual(result.quality.status, 'solved')
         self.assertEqual(result.arm_evidence['left']['refinement']['initialization_removed'], 1)
         expected = np.linalg.inv(self.helper.board_pose) @ self.helper.poses('left', arms[0].times_s)
@@ -116,6 +116,25 @@ class SpecialistTaskTests(unittest.TestCase):
         with np.load(self.inputs.directory / 'poster_vio/left/numerical_inputs.npz') as arrays:
             np.testing.assert_array_equal(arrays['pixels'], arms[0].pixels)
             np.testing.assert_array_equal(arrays['tag_initialization_mask'], arms[0].tag_initialization_mask)
+
+    def test_single_tag_after_initialization_enters_graph_only_as_training_pixels(self):
+        from software.trajectory.algorithms.poster_vio.refinement import initial_selection
+
+        detections = self.helper.detections['left']
+        sample = detections.sample_indices[-1]
+        rows = np.flatnonzero(detections.sample_indices == sample)
+        usable = detections.usable.copy()
+        usable[rows[1:]] = False
+        self.helper.detections['left'] = replace(detections, usable=usable)
+        request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
+        item = arms[0]
+        single = item.single_tag_factor_mask
+        self.assertEqual(int(single.sum()), 1)
+        self.assertFalse(item.tag_initialization_mask[single].any())
+        self.assertFalse(item.tag_holdout_mask[single].any())
+        self.assertTrue(initial_selection(item)['tags'][single].all())
+        result = solve_joint_poster_imu(request.problem(), arms, seed)
+        self.assertEqual(result.quality.status, 'solved')
 
     def test_initializer_rejects_widespread_outliers_without_relaxing_budget(self):
         detections = self.helper.detections['left']
@@ -132,19 +151,19 @@ class SpecialistTaskTests(unittest.TestCase):
         self.helper.detections['left'] = replace(detections, corners_half_px=pixels)
         request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
         item = arms[0]
-        budget = int(np.ceil(item.scene_parameters.tag_maximum_cull_fraction * np.count_nonzero(~item.tag_holdout_mask)))
+        budget = int(np.ceil(item.parameters.tag_maximum_cull_fraction * np.count_nonzero(~item.tag_holdout_mask)))
         indices = np.flatnonzero(~item.tag_holdout_mask & item.tag_initialization_mask)[::3][:budget]
         pixels = item.pixels.copy()
         pixels[indices] += [150., -100.]
         request = replace(request, observations=(replace(request.observations[0], tag_corners_px=pixels), request.observations[1]))
-        result = solve_joint_poster_imu(request, (replace(item, pixels=pixels), arms[1]), seed)
+        result = solve_joint_poster_imu(request.problem(), (replace(item, pixels=pixels), arms[1]), seed)
         self.assertEqual(result.quality.status, 'rejected')
         record = result.arm_evidence['left']['refinement']
         self.assertEqual(record['cumulative_tag_removed'], 1)
         self.assertIn('tag_count_budget', record['rounds'][0]['reasons'])
 
     def test_refinement_warm_starts_remaining_states_and_keeps_time_keys_fixed(self):
-        from software.trajectory.poster_vio import solver
+        from software.trajectory.algorithms.poster_vio import solver
         request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
         pixels = arms[0].pixels.copy()
         pixels[5] += [150., -100.]
@@ -156,7 +175,7 @@ class SpecialistTaskTests(unittest.TestCase):
             calls.append((kwargs['warm'] is not None, {name: nodes.copy() for name, nodes in kwargs['graph_nodes'].items()}))
             return original(*args, **kwargs)
         with patch.object(solver, '_solve_once', side_effect=capture):
-            solved = solve_joint_poster_imu(request, arms, seed)
+            solved = solve_joint_poster_imu(request.problem(), arms, seed)
         self.assertEqual(solved.quality.status, 'solved')
         self.assertFalse(calls[0][0])
         self.assertTrue(all(warm for warm, _ in calls[1:]))
@@ -170,9 +189,9 @@ class SpecialistTaskTests(unittest.TestCase):
         for item in arms:
             poses = item.seed_poses.copy()
             poses[:, 0, 3] += .01
-            changed.append(replace(item, seed_poses=poses, scene_parameters=replace(
-                item.scene_parameters, poster_vio_precull_iterations=1)))
-        result = solve_joint_poster_imu(request, tuple(changed), seed)
+            changed.append(replace(item, seed_poses=poses, parameters=replace(
+                item.parameters, poster_vio_precull_iterations=1)))
+        result = solve_joint_poster_imu(request.problem(), tuple(changed), seed)
         self.assertEqual(result.quality.status, 'solved')
         records = result.arm_evidence['left']['refinement']['rounds']
         self.assertEqual([record['stage'] for record in records], ['precull', 'full'])
@@ -182,12 +201,12 @@ class SpecialistTaskTests(unittest.TestCase):
 
     def test_short_precull_budget_matches_long_precull_solution(self):
         request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
-        long_arms = tuple(replace(item, scene_parameters=replace(
-            item.scene_parameters, poster_vio_precull_iterations=8)) for item in arms)
-        short_arms = tuple(replace(item, scene_parameters=replace(
-            item.scene_parameters, poster_vio_precull_iterations=3)) for item in arms)
-        long = solve_joint_poster_imu(request, long_arms, seed)
-        short = solve_joint_poster_imu(request, short_arms, seed)
+        long_arms = tuple(replace(item, parameters=replace(
+            item.parameters, poster_vio_precull_iterations=8)) for item in arms)
+        short_arms = tuple(replace(item, parameters=replace(
+            item.parameters, poster_vio_precull_iterations=3)) for item in arms)
+        long = solve_joint_poster_imu(request.problem(), long_arms, seed)
+        short = solve_joint_poster_imu(request.problem(), short_arms, seed)
         self.assertEqual(long.quality.status, 'solved')
         self.assertEqual(short.quality.status, 'solved')
         self.assertAlmostEqual(long.quality.reprojection_rms_px,
@@ -203,7 +222,7 @@ class SpecialistTaskTests(unittest.TestCase):
             tracks = tuple(dict(track, holdout_mask=np.arange(len(track['pixels'])) % 4 == 2)
                            for track in item.natural_tracks)
             changed.append(replace(item, natural_tracks=tracks))
-        good = solve_joint_poster_imu(request, tuple(changed), seed)
+        good = solve_joint_poster_imu(request.problem(), tuple(changed), seed)
         self.assertEqual(good.quality.status, 'solved')
         self.assertEqual(good.arm_evidence['left']['natural_holdout']['status'], 'passed')
         tracks = []
@@ -212,7 +231,7 @@ class SpecialistTaskTests(unittest.TestCase):
             pixels[track['holdout_mask']] += [60., -40.]
             tracks.append(dict(track, pixels=pixels))
         changed[0] = replace(changed[0], natural_tracks=tuple(tracks))
-        bad = solve_joint_poster_imu(request, tuple(changed), seed)
+        bad = solve_joint_poster_imu(request.problem(), tuple(changed), seed)
         self.assertEqual(bad.quality.status, 'rejected')
         self.assertEqual(bad.arm_evidence['left']['natural_holdout']['status'], 'rejected')
         for arm in request.arms:
@@ -230,8 +249,8 @@ class SpecialistTaskTests(unittest.TestCase):
             capped_arms.append(replace(arm, natural_tracks=tuple(tracks)))
             capped_observations.append(replace(observation, natural_tracks=tuple(tracks)))
         capped_request = replace(request, observations=tuple(capped_observations))
-        full = solve_joint_poster_imu(request, arms, seed)
-        capped = solve_joint_poster_imu(capped_request, tuple(capped_arms), seed)
+        full = solve_joint_poster_imu(request.problem(), arms, seed)
+        capped = solve_joint_poster_imu(capped_request.problem(), tuple(capped_arms), seed)
         self.assertEqual(full.quality.status, 'solved')
         self.assertEqual(capped.quality.status, 'solved')
         self.assertLess(
@@ -264,10 +283,10 @@ class SpecialistTaskTests(unittest.TestCase):
             observations.append(replace(observation, tag_corners_px=pixels))
             truths[item.arm] = body
         request = replace(request, observations=tuple(observations))
-        sparse = solve_joint_poster_imu(request, tuple(changed), seed)
-        dense_arms = tuple(replace(item, scene_parameters=replace(item.scene_parameters,
+        sparse = solve_joint_poster_imu(request.problem(), tuple(changed), seed)
+        dense_arms = tuple(replace(item, parameters=replace(item.parameters,
             poster_vio_keyframe_maximum_dt_s=0.)) for item in changed)
-        dense = solve_joint_poster_imu(request, dense_arms, seed)
+        dense = solve_joint_poster_imu(request.problem(), dense_arms, seed)
         self.assertEqual(sparse.quality.status, 'solved')
         for item in changed:
             recovery = sparse.arm_evidence[item.arm]['keyframes']

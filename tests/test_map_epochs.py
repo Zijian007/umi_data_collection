@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 import tempfile
 
-from software.scene.pipeline.maps.epoch_planning import draft_plan
+from software.scene.pipeline.maps.epoch_selection import draft_plan
 from software.scene.pipeline.maps.epoch_selection import (
     MapEpoch,
     MapEpochError,

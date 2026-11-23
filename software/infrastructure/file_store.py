@@ -29,6 +29,32 @@ def write_json(path: Path, document: dict) -> None:
         temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False)+'\n', encoding='utf-8')
 
 
+def read_npz_cache(path: Path, marker: Path, inputs: dict, *, mismatch: str) -> tuple[dict, str] | None:
+    """读取已发布的数组缓存，并核对输入身份与文件内容。"""
+    if not marker.is_file():
+        return None
+    import numpy as np
+    from software.infrastructure.provenance import file_hash
+
+    record = json.loads(marker.read_text(encoding='utf-8'))
+    if record['inputs'] != inputs or file_hash(path) != record['sha256']:
+        raise ValueError(mismatch)
+    with np.load(path, allow_pickle=False) as arrays:
+        return dict(arrays), record['sha256']
+
+
+def write_npz_cache(path: Path, marker: Path, inputs: dict, **arrays) -> str:
+    """先原子保存数组，再发布包含内容哈希的完成标记。"""
+    import numpy as np
+    from software.infrastructure.provenance import file_hash
+
+    with atomic_file(path) as temporary, temporary.open('wb') as stream:
+        np.savez_compressed(stream, **arrays)
+    digest = file_hash(path)
+    write_json(marker, dict(inputs=inputs, sha256=digest))
+    return digest
+
+
 def write_yaml(path: Path, document: dict) -> None:
     writer = YAML()
     writer.default_flow_style = False

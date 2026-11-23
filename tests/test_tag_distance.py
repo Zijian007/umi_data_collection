@@ -16,25 +16,19 @@ import numpy as np
 
 from software.camera import registry
 from software.gripper_width.detection import markers as detection
-from software.gripper_width.distance import pipeline as tag_distance
+from software.gripper_width.distance import measurement as tag_distance
 from software.gripper_width.detection import sampling as sampled_detection
-from software.gripper_width.distance.geometry import TagPoseEstimator
-from software.gripper_width.distance.models import (
+from software.gripper_width.distance.pose_estimation import TagPoseEstimator, TagPoseQuality
+from software.gripper_width.distance.measurement import (
     TagDistanceRequest,
     TagDistanceResult,
     TagDistanceSeries,
-    TagPoseQuality,
 )
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import (
-    batch as batch_inputs,
-    episode as episode_inputs,
-    kit as kit_inputs,
-    scene as scene_inputs,
-)
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
 from software.infrastructure.file_store import write_json
-from software.viewer.results.readers import read_tag_distance
-from software.viewer.errors import ViewerDataError
+from software.viewer.results.trajectory_reader import read_tag_distance
+from software.viewer import ViewerDataError
 
 
 CAMERA = dict(camera_type='kb4', resolution=[1440, 1440], fx=532., fy=531., cx=724., cy=725.,
@@ -162,7 +156,7 @@ class DistanceConfigurationTests(unittest.TestCase):
 
 class DistancePipelineTests(unittest.TestCase):
     def test_bimanual_viewer_crops_primary_distance_on_same_clock_as_trajectory(self):
-        from software.viewer.results import episodes
+        from software.viewer.results import catalog as episodes
         scene=dict(version='v1',frame_id='scene/v1')
         paths={arm:Path('/fixture')/arm for arm in ('left','right')}
         def data(times,values):
@@ -200,7 +194,7 @@ class DistancePipelineTests(unittest.TestCase):
             def frames(video,times,indices):
                 return iter((int(index),float(times[index]),frame) for index in indices)
             with patch.object(sampled_detection,'sampled_frames',side_effect=frames) as decode, \
-                    patch.object(sampled_detection,'detect_frame',return_value=found):
+                    patch.object(sampled_detection.FrameDetector, 'detect', return_value=found):
                 first=process()
                 again=process()
                 doubled=process(dict(tag_sizes_mm={'0':12.,'1':12.}))

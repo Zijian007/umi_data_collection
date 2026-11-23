@@ -6,7 +6,9 @@ import unittest
 from unittest.mock import patch
 
 from software.scene.errors import MapUnavailableError, MapCompatibilityError, fallback_record
-from software.scene.pipeline.maps import lifecycle, repository
+from software.scene.pipeline.maps import repository as lifecycle
+from software.scene.pipeline.maps import repository
+from software.scene.pipeline.maps import repository as map_repository
 
 
 class MapManifestValidationTests(unittest.TestCase):
@@ -49,7 +51,7 @@ class MapReadErrorTests(unittest.TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.fixture.build_scene()
-        self.directory, self.manifest = lifecycle.load_published(self.fixture.scene)
+        self.directory, self.manifest = map_repository.load_published(self.fixture.scene)
 
     def load(self):
         return repository.load_published(self.fixture.scene, version=self.manifest['version'])

@@ -12,9 +12,10 @@ import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from software.scene import layout
 from software.scene.models import TaskInputs
-from software.scene.pipeline.tasks.backends import poster_vio, poster_vio_inputs
-from software.trajectory.poster_vio import solve_joint_poster_imu
+from software.scene.pipeline.tasks import poster_vio, poster_vio as poster_vio_inputs
+from software.trajectory.algorithms.poster_vio import solve_joint_poster_imu
 from software.vision.poster import geometry, layout as tag_board
 
 
@@ -66,7 +67,7 @@ class PosterVioWorkflowTests(unittest.TestCase):
         self.inputs = TaskInputs(episode, recordings, dict(left=0., right=.12), self.root / 'run',
                                 None, None, SimpleNamespace(write=lambda *a, **k: None))
         self.inputs.directory.mkdir()
-        self.patch_prepare = patch.object(poster_vio_inputs.measurements, 'prepare_detections')
+        self.patch_prepare = patch.object(poster_vio_inputs.measurements, 'prepare_detections', side_effect=self.prepare_detections)
         self.patch_detection = patch.object(poster_vio_inputs.detection, 'cached', side_effect=self.detect)
         self.patch_frontend = patch.object(poster_vio_inputs, 'track_cameras', return_value={'front': (), 'rear': ()})
         for patched in (self.patch_prepare, self.patch_detection, self.patch_frontend):
@@ -78,6 +79,12 @@ class PosterVioWorkflowTests(unittest.TestCase):
         poses[:, 0, 3] = .12 * times if arm == 'left' else .3 - .08 * times
         return poses
 
+    def prepare_detections(self, episode, arm, recording, **kwargs):
+        cache = layout.metadata(episode.root, 'cache/environment_tags') / arm
+        report = self.detect(episode.recordings[arm], cache)
+        board = tag_board.load(episode.scene.tag_layout)
+        return poster_vio_inputs.detection.DetectionSnapshot(cache, board, self.detections[arm], report)
+
     def detect(self, video, cache, *args, **kwargs):
         observations = self.detections[video.stem]
         cache.mkdir(parents=True, exist_ok=True)
@@ -86,9 +93,8 @@ class PosterVioWorkflowTests(unittest.TestCase):
 
     def test_two_arms_arbitrary_poster_and_front_time_offset_recover_metric_poses(self):
         request, arms, board_seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
-        result = solve_joint_poster_imu(request, arms, board_seed)
+        result = solve_joint_poster_imu(request.problem(), arms, board_seed)
         self.assertEqual(result.quality.status, 'solved')
-        self.assertFalse(result.scene_map_used)
         expected_gravity = self.board_pose[:3, :3].T @ [0., 0., -9.81]
         for item in arms:
             np.testing.assert_allclose(item.gravity_m_s2, expected_gravity, atol=1e-6)
@@ -115,7 +121,7 @@ class PosterVioWorkflowTests(unittest.TestCase):
             written[arm] = trajectory
             return object(), None, None
 
-        with patch.object(poster_vio.arm_writer, 'write_arm_result', side_effect=write):
+        with patch.object(poster_vio.trajectory_writers, 'write_arm_result', side_effect=write):
             result = poster_vio.execute_task(self.inputs)
         self.assertEqual(set(result.tracks), {'left', 'right'})
         self.assertEqual(result.coordinate_record['reconstruction_backend'], 'poster_vio')
@@ -129,13 +135,12 @@ class PosterVioWorkflowTests(unittest.TestCase):
             self.assertEqual(trajectory.evidence['environment_poster']['status'], 'fused')
 
     def test_route_rejects_partial_replay_and_bad_second_arm_before_writing(self):
-        with self.assertRaisesRegex(ValueError, '一起提供'):
-            poster_vio.execute_task(replace(self.inputs, poster_vio_board_seed=np.eye(4)))
         request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
+        with self.assertRaisesRegex(ValueError, '一起提供'):
+            poster_vio.replay_task(self.inputs, request=None, arms=arms, board_seed=seed)
         bad_arm = replace(arms[1], times_s=arms[1].times_s + .1)
-        with patch.object(poster_vio.arm_writer, 'write_arm_result') as write, self.assertRaises(ValueError):
-            poster_vio.execute_task(replace(self.inputs, poster_vio_request=request,
-                poster_vio_arms=(arms[0], bad_arm), poster_vio_board_seed=seed))
+        with patch.object(poster_vio.trajectory_writers, 'write_arm_result') as write, self.assertRaises(ValueError):
+            poster_vio.replay_task(self.inputs, request=request, arms=(arms[0], bad_arm), board_seed=seed)
         write.assert_not_called()
 
     def test_invalid_imu_cannot_be_hidden_by_clipping_observations(self):
@@ -163,7 +168,7 @@ class PosterVioWorkflowTests(unittest.TestCase):
     def test_arm_and_camera_landmarks_with_identical_ids_stay_in_separate_namespaces(self):
         with patch.object(poster_vio_inputs, 'track_cameras', side_effect=self.feature_tracks):
             request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
-        solved = solve_joint_poster_imu(request, arms, seed)
+        solved = solve_joint_poster_imu(request.problem(), arms, seed)
         self.assertEqual(solved.quality.status, 'solved')
         for arm in request.arms:
             evidence = solved.arm_evidence[arm]
@@ -183,7 +188,7 @@ class PosterVioWorkflowTests(unittest.TestCase):
             written[arm] = trajectory
             return object(), None, None
         with patch.object(poster_vio_inputs, 'track_cameras', side_effect=self.feature_tracks), \
-                patch.object(poster_vio.arm_writer, 'write_arm_result', side_effect=write):
+                patch.object(poster_vio.trajectory_writers, 'write_arm_result', side_effect=write):
             poster_vio.execute_task(self.inputs)
         for arm, trajectory in written.items():
             self.assertTrue(trajectory.front_tracked.any())
@@ -205,7 +210,7 @@ class PosterVioWorkflowTests(unittest.TestCase):
             return object(), None, None
 
         with patch.object(poster_vio_inputs, 'track_cameras', side_effect=rear_only), \
-                patch.object(poster_vio.arm_writer, 'write_arm_result', side_effect=write):
+                patch.object(poster_vio.trajectory_writers, 'write_arm_result', side_effect=write):
             poster_vio.execute_task(self.inputs)
         for trajectory in written.values():
             self.assertTrue(trajectory.tracked.any())
@@ -222,8 +227,7 @@ class PosterVioWorkflowTests(unittest.TestCase):
         cameras['front'] = replace(cameras['front'], T_cam_imu=changed_ext)
         bad_arm = replace(arms[0], natural_cameras=cameras)
         with self.assertRaisesRegex(ValueError, 'front.*标定'):
-            poster_vio.execute_task(replace(self.inputs, poster_vio_request=request,
-                poster_vio_arms=(bad_arm, arms[1]), poster_vio_board_seed=seed))
+            poster_vio.replay_task(self.inputs, request=request, arms=(bad_arm, arms[1]), board_seed=seed)
 
     def test_request_natural_tracks_are_validated_even_when_not_on_arm_input(self):
         request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
@@ -236,13 +240,13 @@ class PosterVioWorkflowTests(unittest.TestCase):
             changed = replace(request, observations=(replace(request.observations[0], natural_tracks=(track,)),
                                                      request.observations[1]))
             with self.subTest(track=track), self.assertRaises(ValueError):
-                solve_joint_poster_imu(changed, arms, seed)
+                solve_joint_poster_imu(changed.problem(), arms, seed)
 
     def test_gyro_and_bad_imu_contracts_fail_before_gtsam(self):
         request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
         for imu in (np.empty((0, 7)), np.full_like(arms[0].imu, np.nan), arms[0].imu[::-1]):
             with self.subTest(imu_shape=imu.shape), self.assertRaisesRegex(ValueError, 'IMU'):
-                solve_joint_poster_imu(request, (replace(arms[0], imu=imu), arms[1]), seed)
+                solve_joint_poster_imu(request.problem(), (replace(arms[0], imu=imu), arms[1]), seed)
 
     def test_biased_second_arm_gravity_fails_before_joint_graph(self):
         recording = self.inputs.recordings['right']
@@ -256,11 +260,11 @@ class PosterVioWorkflowTests(unittest.TestCase):
         request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
         pixels = arms[0].pixels.copy()
         pixels[5] += [150., -100.]
-        changed_arm = replace(arms[0], pixels=pixels, scene_parameters=replace(
-            arms[0].scene_parameters, poster_vio_maximum_cull_rounds=0))
+        changed_arm = replace(arms[0], pixels=pixels, parameters=replace(
+            arms[0].parameters, poster_vio_maximum_cull_rounds=0))
         changed_request = replace(request, observations=(replace(request.observations[0], tag_corners_px=pixels),
                                                          request.observations[1]))
-        solved = solve_joint_poster_imu(changed_request, (changed_arm, arms[1]), seed)
+        solved = solve_joint_poster_imu(changed_request.problem(), (changed_arm, arms[1]), seed)
         self.assertEqual(solved.quality.status, 'rejected')
         self.assertTrue(np.isfinite(solved.trajectories['left']).all())
 
@@ -269,7 +273,7 @@ class PosterVioPublicationTests(unittest.TestCase):
     def test_no_map_workflow_publication_reuse_viewer_and_atomic_failure(self):
         from test_poster_independent import PosterIndependentWorkflowTests
         from software.scene import workflow
-        from software.scene.pipeline.maps import lifecycle
+        from software.scene.pipeline.maps import repository as lifecycle
         from software.scene.result_io import read_arm_summary
         from software.viewer.resources import maps
 

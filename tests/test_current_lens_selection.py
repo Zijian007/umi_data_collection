@@ -1,5 +1,5 @@
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import kit as kit_inputs
+from software.scene.management.inputs import scene as kit_inputs
 """当前镜头来源、安装替换、历史冻结与混合来源的业务约定。"""
 from contextlib import redirect_stderr
 from copy import deepcopy
@@ -15,12 +15,12 @@ from unittest.mock import patch
 from software.camera import registry
 from software.calibration import cli, devices, inventory
 from software.camera import calibration_source
-from software.scene.management.batch import snapshot as batches
+from software.scene.management import batch_snapshot as batches
 from software.scene.management import camera_assets
 from software.scene.management.inputs import batch as batch_inputs
-from software.scene.pipeline.maps import lifecycle as map_lifecycle
+from software.scene.pipeline.maps import repository as map_repository
 from software.infrastructure.file_store import write_json, write_yaml
-from software.trajectory.calibration import assets
+from software.camera import calibration_assets as assets
 from test_intrinsics_source import factory_bundle
 
 
@@ -154,7 +154,7 @@ class CurrentLensSelectionTests(unittest.TestCase):
             parameters=SimpleNamespace(tag_fusion_enabled=False))
         with patch.object(registry, 'read_insv_serial', return_value='camera'), \
              patch.object(calibration_source, 'check_recording'), \
-             patch('software.vision.capabilities.require_forward_kb4'):
+             patch('software.vision.orb_environment.require_forward_kb4'):
             camera = camera_assets.select_camera(Path('video.insv'), scene)
         self.assertEqual(camera.measurements['front']['intrinsics_source'], 'measured')
         self.assertEqual(camera.measurements['rear']['intrinsics_source'], 'factory')
@@ -178,11 +178,11 @@ class CurrentLensSelectionTests(unittest.TestCase):
         manifest = dict(inputs=dict(cameras=dict(right=dict(serial='camera', intrinsics_source='measured',
             calibration_version=self.measured['calibration_version'], assets=dict(rear='old-hash')))))
         with self.assertRaisesRegex(ValueError, '环境镜头'):
-            map_lifecycle.validate_map_bindings(selected, manifest)
+            map_repository.validate_map_bindings(selected, manifest)
         manifest['inputs']['cameras']['right']['serial'] = 'another_camera'
         manifest['inputs']['cameras']['right']['intrinsics_source'] = 'factory'
-        map_lifecycle.validate_map_bindings(selected, manifest)
-        map_lifecycle.validate_map_calibrations({'right': SimpleNamespace(serial='camera',
+        map_repository.validate_map_bindings(selected, manifest)
+        map_repository.validate_map_calibrations({'right': SimpleNamespace(serial='camera',
             selected=SimpleNamespace(intrinsics_source='measured'))}, manifest)
 
     def test_new_and_old_selection_fields_cannot_be_mixed(self):

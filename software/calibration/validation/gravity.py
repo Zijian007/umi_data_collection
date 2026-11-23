@@ -23,7 +23,7 @@ def validate_gravity(dataset: Path, calibration_json: Path, parameters, executio
     calibration_hash = artifact_identity.file_hash(calibration_json)
     imu_csv = dataset / 'mav0/imu0/data.csv'
     input_hash = artifact_identity.file_hash(imu_csv)
-    return_code = runtime.run_logged([sys.executable, '-m', 'software.calibration.tools.imu_calib_physical_check', '--calib', calibration_json,
+    return_code = runtime.run_logged([sys.executable, '-m', 'software.calibration.tools.imu_physical_check', '--calib', calibration_json,
                 '--euroc', dataset,
                 '--window-s', str(p.window_s), '--gyro-max-dps', str(p.maximum_gyro_deg_s),
                 '--acc-std-max', str(p.maximum_acc_norm_std_m_s2), '--min-window-samples', str(p.minimum_samples),

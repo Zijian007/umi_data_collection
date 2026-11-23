@@ -149,7 +149,7 @@ class IndependentPosterPipelineTests(unittest.TestCase):
         from dataclasses import asdict
         from pathlib import Path
         import tempfile
-        from software.trajectory.pipeline import poster_assets
+        from software.trajectory import environment_assets as calibration_assets
         from software.trajectory.algorithms.fusion import cli as fusion_cli
         inputs,parameters = fixture()
         with tempfile.TemporaryDirectory() as temporary:
@@ -159,8 +159,8 @@ class IndependentPosterPipelineTests(unittest.TestCase):
             write_camera(front,inputs.camera)
             write_camera(rear,inputs.poster.measured,rear=True)
             with patch.object(tags,'detect',return_value=inputs.poster.observations):
-                manifest = poster_assets.prepare(video,root/'poster',tag_board.DEFAULT_LAYOUT,rear,parameters.environment_tags)
-            loaded = poster_assets.load(manifest)
+                manifest = calibration_assets.prepare_poster(video,root/'poster',tag_board.DEFAULT_LAYOUT,rear,parameters.environment_tags)
+            loaded = calibration_assets.load_poster(manifest)
             self.assertEqual(loaded.measured['cam_time_offset_ns'],30000000)
             frames,imu,times = root/'frames.csv',root/'imu.csv',root/'times.csv'
             with frames.open('w') as stream:
@@ -182,14 +182,14 @@ class IndependentPosterPipelineTests(unittest.TestCase):
             self.assertEqual(np.loadtxt(root/'out/traj_tum.txt').shape,(len(inputs.video_times_s),8))
             (manifest.parent/'rear.json').write_text('{}')
             with self.assertRaisesRegex(ValueError,'哈希'):
-                poster_assets.load(manifest)
+                calibration_assets.load_poster(manifest)
 
     def test_preflight_requires_registered_matching_rear(self):
         from pathlib import Path
         from types import SimpleNamespace
         import tempfile
         from software.trajectory.models import TrajectoryRequest
-        from software.trajectory.pipeline import calibration_assets
+        from software.trajectory import environment_assets as calibration_assets
         inputs,_ = fixture()
         request=TrajectoryRequest(configuration=config.load('trajectory'),tag_layout=tag_board.DEFAULT_LAYOUT)
         selected=SimpleNamespace(camera_serial='test-camera',intrinsics_source='measured',
@@ -212,7 +212,7 @@ class IndependentPosterPipelineTests(unittest.TestCase):
         from pathlib import Path
         from types import SimpleNamespace
         import test_scene_fallback
-        from software.trajectory.pipeline import runtime,poster_assets
+        from software.trajectory import environment_assets as calibration_assets, reconstruction as runtime
         helper=test_scene_fallback.SceneFallbackAdapterTests('runTest')
         helper.setUp();self.addCleanup(helper.doCleanups)
         inputs,_=fixture()
@@ -226,7 +226,7 @@ class IndependentPosterPipelineTests(unittest.TestCase):
         def engine(command,**kwargs):
             result=helper.engines(command,**kwargs)
             if 'software.trajectory.algorithms.fusion.cli' in command:
-                manifest=Path(command[command.index('--poster')+1]);poster_assets.load(manifest)
+                manifest=Path(command[command.index('--poster')+1]);calibration_assets.load_poster(manifest)
                 parameters=json.loads(Path(command[command.index('--parameters')+1]).read_text())
                 self.assertTrue(parameters['environment_tags']['tag_fusion_enabled'])
                 pos=command.index('software.trajectory.algorithms.fusion.cli')

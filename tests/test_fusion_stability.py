@@ -7,10 +7,10 @@ from dataclasses import replace
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from software.trajectory.algorithms.fusion.alignment_solver import estimate_lens_alignment
+from software.trajectory.algorithms.fusion.alignment import estimate_lens_alignment
 from software.configuration import loader as config
 from software.trajectory.algorithms.fusion.alignment import AlignmentError, align_lenses
-from software.trajectory.algorithms.fusion.diagnostics import sampling_stability
+from software.trajectory.algorithms.fusion.alignment import sampling_stability
 
 
 class SamplingStabilityTests(unittest.TestCase):

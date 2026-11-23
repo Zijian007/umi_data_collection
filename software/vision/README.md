@@ -7,8 +7,7 @@
 | `models.py` | 视觉路径、设置、上下文、录像数据与地图阶段结果 |
 | `recordings.py` | 原片提取、丢帧策略、镜头视频准备 |
 | `runtime.py` | 显式镜头设置写入、遮手图准备、外部进程与引擎检查 |
-| `paths.py` | ORB 可执行文件及地图导出器的安装路径 |
-| `capabilities.py` | 探测实际 ORB 二进制的前向 KB4 能力，供工厂来源入口校验 |
+| `orb_environment.py` | ORB 可执行文件和地图导出器路径、工厂内参所需的前向 KB4 探测 |
 | `slam.py` | 纯视觉建图、固定地图定位、逐图定位合并及产物验收 |
 | `decoding.py` | 多检测器共用一次 PyAV 顺序解码，全部检测完成校验后各自保存缓存 |
 | `poster/detection.py` | 环境镜头 ArUco `DICT_4X4_100` 海报角点、真实 PTS、检测缓存与采样可见性报告；不求海报位姿 |
@@ -22,7 +21,7 @@
 
 `VisualContext` 直接包含已解析参数、核心设置、路径、帧数及 CPU 设置，不携带 `TrajectoryRequest`。独立流程通过 `ReconstructionContext.visual` 提供视觉上下文；场景直接构造 `VisualContext`。
 
-调用方明确选择镜头及其参数文本，`visual_settings()` 只负责生成运行资产，不自动回退样例标定。相机–IMU–TCP 共用几何位于 `software/camera/geometry.py`，遮手图裁切和缩放位于 `software/camera/images.py`。
+调用方明确选择镜头及其参数文本，`visual_settings()` 只负责生成运行资产，不自动回退样例标定。相机–IMU–TCP 共用几何位于 `software/camera/geometry.py`，遮手图裁切和缩放由 `software/vision/runtime.py` 使用 X3 的镜头裁切规则完成。
 
 环境海报目前可独立检测，无需环境镜头标定。默认使用已从用户 PDF 核对的 [77 标签布局](../../hardware/calibration_targets/environment_poster.json)：
 
@@ -36,7 +35,7 @@
 
 `poster.detection.load_observations(path)` 是原始角点 NPZ 的统一读取入口：禁用 pickle，恢复全部数组并验证时间、索引、角点与有效性契约。检测缓存、建图快照、场景融合和独立引擎共用该入口；来源身份与哈希仍由各自调用方核对。
 
-可见率按采样帧计算，同一帧多个 ID 不重复计为多个时刻；最长缺口也是采样统计，不能推断跳过的帧。`usable` 仅表示像素与标定裁切筛选通过，不是海报位姿可观测性或轨迹验收。报告记录当前布局和 PDF 来源哈希，角点缓存与物理几何分开；更正尺寸时可复用像素观测。布局是 `pdf_design`，不代表已测量打印成品。独立检测命令不修改轨迹；场景通过批次 `collection.yaml.environment_poster` 配置 `layout_path`、`mapping.enabled`、`mapping.scale_correction.enabled` 和 `task_constraint.enabled`，详见[实施范围](../../docs/dev/环境标签与自适应融合重构计划.md#当前代码的使用与边界2026-11-11)。
+可见率按采样帧计算，同一帧多个 ID 不重复计为多个时刻；最长缺口也是采样统计，不能推断跳过的帧。`usable` 仅表示像素与标定裁切筛选通过，不是海报位姿可观测性或轨迹验收。报告记录当前布局和 PDF 来源哈希，角点缓存与物理几何分开；更正尺寸时可复用像素观测。布局是 `pdf_design`，不代表已测量打印成品。独立检测命令输出角点和可见性报告。场景的海报布局、裁剪和融合开关见[后端配置](../../docs/场景处理.md#选择轨迹估计后端)。
 
 `VideoDecode` 向宽度、采样中心距和环境海报检测器交付同一原始帧，各自保留 ROI、采样规则和检测状态。场景同时启用两类以上检测时预先填充各自缓存；缓存命中的检测器不注册，全部命中时不打开视频。像素宽度逐源帧检测，中心距按最近真实 PTS 选择输出帧，海报按源帧号采样。角点缓存身份保持独立，并各自包含共用解码实现；检测器专用参数变化只重跑受影响的检测。ffmpeg 镜头视频生成与按需补检仍单独解码。
 
@@ -52,4 +51,4 @@
 
 `logs/tracking.json` 记录各镜头各阶段的覆盖统计；文本日志供排障，结构化记录供结果生成。独立重建另写 `logs/run.json` 记录运行身份和完成状态。
 
-第三方仍安装在其原有 `Examples/Monocular-Inertial` 路径，实际使用纯视觉模式，Python 代码通过 `paths.py` 访问。当前构建默认启用修复后的前向 KB4，限制单射线角度 ≤85°，不支持完整 >180° 视野。`capabilities.require_forward_kb4()` 检查实际二进制的 `--capabilities`；工厂来源遇到旧引擎时明确报错，需要重编译。实测与工厂来源共用同一几何，引擎改变后须使用匹配地图，不能复用原 atlas。
+第三方仍安装在其原有 `Examples/Monocular-Inertial` 路径，实际使用纯视觉模式，Python 代码通过 `orb_environment.py` 访问。当前构建默认启用修复后的前向 KB4，限制单射线角度 ≤85°，不支持完整 >180° 视野。`orb_environment.require_forward_kb4()` 检查实际二进制的 `--capabilities`；工厂来源遇到旧引擎时明确报错，需要重编译。实测与工厂来源共用同一几何，引擎改变后须使用匹配地图，不能复用原 atlas。

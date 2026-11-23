@@ -1,9 +1,9 @@
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import kit as kit_inputs
+from software.scene.management.inputs import scene as kit_inputs
 """三入口的配置驱动流程：原片到地图和结果、只读预览、补片与快照重跑。"""
 from software.scene import layout
 from software.infrastructure import provenance as artifact_identity
-from software.scene.pipeline.maps import lifecycle as map_lifecycle
+from software.scene.pipeline.maps import repository as map_lifecycle
 from contextlib import redirect_stdout, redirect_stderr
 import io
 import json
@@ -14,9 +14,9 @@ from unittest.mock import patch
 
 from software.camera import registry
 from software.scene import cli, workflow
-from software.scene.management.batch import snapshot as batches
-from software.scene.management import episodes, ingest, processing
-from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs
+from software.scene.management import batch_snapshot as batches
+from software.scene.management import episodes, ingest, batch_processing as processing
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs
 from software.infrastructure.file_store import write_yaml as _write_yaml
 import test_scene as fixtures
 
@@ -121,8 +121,8 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(prepared.scene.mode, 'shared_front')
 
     def test_runtime_overrides_survive_map_binding_and_preserve_reuse(self):
-        from software.scene.overrides import SceneOverrides
-        from software.scene.management.effective_config import effective_report
+        from software.scene.parameters import SceneOverrides
+        from software.scene.management.batch_snapshot import effective_report
         override_path = self.f.root/'override.yaml'
         write_yaml(override_path, dict(parameters=dict(
             mapping=dict(alignment=dict(maximum_scale_relative_std=.2)),
@@ -397,6 +397,26 @@ class ProcessingTests(unittest.TestCase):
         manifest = json.loads((self.batch / '.pipeline/maps/versions' / version / 'manifest.json').read_text())
         self.assertEqual(manifest['map_epoch'], 'epoch_001')
 
+    def test_epoch_pipeline_prepares_once_and_uses_the_built_map(self):
+        plan_path = self.batch / '.pipeline/map_epochs.yaml'
+        write_yaml(plan_path, dict(schema_version=1,
+            maps=[dict(epoch='epoch_001', map_version=None, sequence=0, recording='mapping/map.INSV')],
+            tasks=[dict(task='take_001', sequence=1)]))
+        initial_plan = plan_path.read_bytes()
+        with patch.object(ingest, 'register_recordings', wraps=ingest.register_recordings) as register:
+            preview = processing.run_epoch_pipeline(self.batch, dry_run=True)
+            self.assertEqual(register.call_count, 1)
+            self.assertEqual(preview['run'][0]['status'], 'planned')
+            self.assertEqual(plan_path.read_bytes(), initial_plan)
+            self.assertFalse((self.batch / '.pipeline/manifest.yaml').exists())
+            register.reset_mock()
+            result = processing.run_epoch_pipeline(self.batch)
+            self.assertEqual(register.call_count, 1)
+        self.assertEqual(result['status'], 'ok')
+        version = result['build']['epochs'][0]['version']
+        self.assertEqual(read_yaml(plan_path)['maps'][0]['map_version'], version)
+        self.assertEqual(result['run'][0]['frame_id'], result['build']['epochs'][0]['frame_id'])
+
     def test_inspect_reports_unbound_default_map_and_pending_epochs(self):
         processing.prepare_batch(self.batch)
         write_yaml(self.batch / '.pipeline/map_epochs.yaml', dict(
@@ -550,7 +570,7 @@ class ProcessingTests(unittest.TestCase):
 
     def test_rear_calibration_belongs_to_calibration_entry(self):
         from software.calibration import cli as calibration_cli
-        with patch('software.scene.spatial.rear_calibration.run', return_value=0) as run, redirect_stdout(io.StringIO()):
+        with patch('software.calibration.rear_workflow.run', return_value=0) as run, redirect_stdout(io.StringIO()):
             code = calibration_cli.main(['run', str(self.f.source/'rear'), '--dry-run', '--tag-size-mm', '36'])
         self.assertEqual(code, 0)
         self.assertEqual(run.call_args.args[0].folder, self.f.source/'rear')

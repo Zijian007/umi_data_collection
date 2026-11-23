@@ -6,21 +6,17 @@ import unittest
 
 import numpy as np
 
+from software.trajectory.algorithms.fixed_map.parameters import FixedMapParameters
 from software.configuration import loader as config
 from software.camera.timing import (
     canonical_to_video_seconds, euroc_ns_to_seconds,
     video_to_canonical_seconds, video_to_imu_seconds,
 )
-from software.scene.spatial import fusion
+from software.trajectory.algorithms.fixed_map import fusion
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import (
-    batch as batch_inputs,
-    episode as episode_inputs,
-    kit as kit_inputs,
-    scene as scene_inputs,
-)
-from software.scene.pipeline.tasks.results import trajectory_writers
-from software.scene.spatial.geometry import VisualObservations
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
+from software.scene.pipeline.tasks import trajectory_writers
+from software.trajectory.algorithms.fixed_map.geometry import VisualObservations
 from software.scene.models import ArmTrajectory
 
 
@@ -51,7 +47,7 @@ class CoordinateContractTests(unittest.TestCase):
         obs = VisualObservations(times, np.tile(np.eye(4), (3, 1, 1)), np.arange(3), 'visual_map')
         with self.assertRaisesRegex(ValueError, '场景坐标'):
             fusion.fuse(times, np.zeros((3, 7)), dict(front=obs), dict(front=np.eye(4)),
-                        config.load('trajectory').values, scene_inputs.load_scene_parameters(None))
+                        config.load('trajectory').values.fusion, config.load('trajectory').values.zupt, scene_inputs.load_scene_parameters(None).for_algorithm(FixedMapParameters))
 
     def test_bimanual_export_rejects_two_different_scene_frames(self):
         track = ArmTrajectory(np.arange(3.), np.tile(np.eye(4), (3, 1, 1)), 'scene:first', {})

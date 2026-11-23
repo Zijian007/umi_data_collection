@@ -9,8 +9,9 @@ from unittest.mock import patch
 
 from software.vision import recordings as visual_recordings, runtime as visual_runtime, slam as visual_slam
 from software.configuration import loader as config
-from software.trajectory.calibration import assets as calibration_assets, selection
-from software.trajectory.pipeline import reconstruction, runtime
+from software.camera import calibration_assets
+from software.trajectory import calibration as trajectory_calibration
+from software.trajectory import reconstruction, reconstruction as runtime
 from software.trajectory.models import FusionArtifacts, RecordingPaths, ReconstructionContext, TrajectoryRequest
 from software.vision.models import RecordingData, ProcessingError
 from trajectory_fakes import FakeEngines
@@ -26,9 +27,9 @@ class ReconstructionTests(unittest.TestCase):
         self.paths.logs.mkdir(parents=True)
         environment = dict(os.environ, **self.engines.environment)
         self.settings = runtime.reconstruction_settings(environment, camera_json=calibration_assets.SAMPLE_CAMERA_JSON,
-                                                        front_mask=selection.DEFAULT_FRONT_MASK,
+                                                        front_mask=trajectory_calibration.DEFAULT_FRONT_MASK,
                                                         output=self.paths.debug / "settings", parameters=config.load("trajectory").values)
-        self.context = ReconstructionContext(self.paths, config.resolve_trajectory_request(TrajectoryRequest()), self.settings, 100)
+        self.context = ReconstructionContext(self.paths, self.settings, config.load('trajectory').values, 100)
         self.engines.write_dataset(self.paths.dataset)
         self.data = RecordingData(dict(source={'name': 'VID.insv'}), self.paths.dataset / 'mav0/imu0/data.csv')
         self.video = self.root / 'VID.insv'
@@ -42,7 +43,7 @@ class ReconstructionTests(unittest.TestCase):
 
     def run_stages(self, context=None, data=None):
         context = context or self.context
-        videos = visual_recordings.prepare_lens_videos(self.video, context.visual, lenses=('front', 'rear') if context.request.mode == 'dual' else ('front',))
+        videos = visual_recordings.prepare_lens_videos(self.video, context, lenses=('front', 'rear') if context.parameters.input.mode == 'dual' else ('front',))
         return reconstruction.run_attempts(videos, data or self.data, context, recording_name=self.video.name)
 
     def test_explicit_stage_order_and_forwarded_data(self):
@@ -62,7 +63,7 @@ class ReconstructionTests(unittest.TestCase):
         self.assertIn('software.trajectory.algorithms.fusion.cli', (result.directory / 'logs/run.txt').read_text())
 
     def test_retry_uses_exact_qualified_poster_events_without_hiding_other_failures(self):
-        from software.trajectory.algorithms.fusion.quality import scale_consistency
+        from software.trajectory.reporting.constraint_quality import scale_consistency
         directory = self.root/'poster-quality'
         directory.mkdir()
         trajectory = directory/'traj_tum.txt'
@@ -87,7 +88,7 @@ class ReconstructionTests(unittest.TestCase):
                 info.write_text(json.dumps(evidence))
                 configuration = config.load('trajectory', inline=dict(environment_tags=dict(tag_fusion_enabled=True),
                     retry=dict(use_poster_position_support=case != 'disabled')))
-                context = replace(self.context, request=replace(self.context.request, configuration=configuration))
+                context = replace(self.context, parameters=configuration.values)
                 with patch.object(reconstruction, 'run_attempt', return_value=FusionArtifacts(trajectory, info)):
                     result = self.run_stages(context)
                 self.assertEqual(len(result.attempts), 1 if case in ('good', 'sparse_good') else 3)
@@ -109,11 +110,11 @@ class ReconstructionTests(unittest.TestCase):
     def test_measured_lens_settings_are_preserved_without_sample_rear_fallback(self):
         front = calibration_assets.read_basalt(calibration_assets.SAMPLE_CAMERA_JSON)
         rear = dict(front, fx=front['fx']+40., p=[.01, .02, .03])
-        texts = {lens: calibration_assets.slam_settings_text(camera, self.context.parameters)
+        texts = {lens: trajectory_calibration.slam_settings_text(camera, self.context.parameters)
                  for lens, camera in dict(front=front, rear=rear).items()}
         output = self.root/'measured-settings'
         settings = visual_runtime.visual_settings({**os.environ, **self.engines.environment, 'UMI_PY_TOOLS': '/tools/python'},
-            lens_settings=texts, front_mask=selection.DEFAULT_FRONT_MASK,
+            lens_settings=texts, front_mask=trajectory_calibration.DEFAULT_FRONT_MASK,
             output=output, parameters=self.context.parameters)
         self.assertEqual(settings.front_settings.read_text(), texts['front'])
         self.assertEqual(settings.rear_settings.read_text(), texts['rear'])
@@ -124,17 +125,16 @@ class ReconstructionTests(unittest.TestCase):
 
     def test_output_size_reaches_video_slam_mask_and_run_record(self):
         import cv2
-        from software.trajectory.reporting import metadata as run_metadata
+        from software.trajectory import trajectory_export as run_metadata
         from software.trajectory.reporting import reports
 
         configuration = config.load('trajectory', overrides={'video': {'size_px': 960}})
-        request = config.resolve_trajectory_request(TrajectoryRequest(configuration=configuration, mode='handheld'))
         settings = runtime.reconstruction_settings(dict(os.environ, **self.engines.environment),
             camera_json=calibration_assets.SAMPLE_CAMERA_JSON,
-            front_mask=selection.DEFAULT_FRONT_MASK,
+            front_mask=trajectory_calibration.DEFAULT_FRONT_MASK,
             output=self.paths.debug / 'settings-960', parameters=configuration.values)
-        context = replace(self.context, request=request, settings=settings)
-        videos = visual_recordings.prepare_lens_videos(self.video, context.visual, lenses=('front', 'rear') if context.request.mode == 'dual' else ('front',))
+        context = replace(self.context, parameters=configuration.values, settings=settings)
+        videos = visual_recordings.prepare_lens_videos(self.video, context, lenses=('front', 'rear') if context.parameters.input.mode == 'dual' else ('front',))
         video_command = self.engines.calls[0][1]
         video_config = Path(video_command[video_command.index('--config')+1])
         self.assertEqual(config.load('trajectory', video_config).values.video.size_px, 960)
@@ -144,7 +144,7 @@ class ReconstructionTests(unittest.TestCase):
         record = run_metadata.collect_run_settings(self.paths.output, {}, 'handheld', 'VID.insv',
             calib=dict(yaml=str(settings.front_settings), mask=str(settings.front_mask),
                        tcp_json=str(Path(__file__).parent / 'fixtures/tcp_camera.json'),
-                       source_mask=str(selection.DEFAULT_FRONT_MASK)),
+                       source_mask=str(trajectory_calibration.DEFAULT_FRONT_MASK)),
             command=dict(parameters={'configuration': configuration.snapshot()}))
         self.assertEqual(record['frame_geometry']['slam_video_px'], [960, 960])
         self.assertEqual(record['assets']['orbslam3_front_settings']['scalars']['Camera.width'], '960')
@@ -158,7 +158,7 @@ class ReconstructionTests(unittest.TestCase):
     def test_dual_lenses_visit_every_map_and_use_mapping_mask_only(self):
         self.engines.map_count = 2
         request = TrajectoryRequest(mode='dual')
-        context = replace(self.context, request=config.resolve_trajectory_request(request))
+        context = replace(self.context, parameters=config.resolve_trajectory_request(request).configuration.values)
         result = self.run_stages(context)
         kinds = [kind for kind, *_ in self.engines.calls]
         self.assertEqual(kinds, ['video', 'video', 'map', 'map', 'localize', 'localize', 'merge', 'localize', 'localize', 'merge', 'fuse'])
@@ -170,7 +170,7 @@ class ReconstructionTests(unittest.TestCase):
                 self.assertNotIn('--mask_img', command)
                 self.assertIn(options['env']['ORB_MAP_INDEX'], ('0', '1'))
             elif kind == 'fuse':
-                self.assertEqual(context.request.mode, 'dual')
+                self.assertEqual(context.parameters.input.mode, 'dual')
                 self.assertIn(str(result.directory / 'rear/loc/frames.csv'), command)
         # 第 1 张图关键帧更多，原合并算法应优先使用 m1。
         self.assertTrue((result.directory / 'front/loc/frames.csv').read_text().splitlines()[1].endswith(',m1'))
@@ -281,7 +281,7 @@ class ReconstructionTests(unittest.TestCase):
 
     def test_timeout_with_written_artifacts_is_rejected(self):
         self.engines.map_returncode = 124
-        result = self.run_stages(replace(self.context, request=config.resolve_trajectory_request(TrajectoryRequest(max_tries=1))))
+        result = self.run_stages(replace(self.context, parameters=config.load('trajectory', overrides={'retry': {'max_tries': 1}}).values))
         self.assertIsNone(result.chosen)
         self.assertEqual(result.attempts[0]['rc'], 124)
         record = json.loads((self.paths.attempt(1)/'front/map/execution.json').read_text())
@@ -299,7 +299,7 @@ class ReconstructionTests(unittest.TestCase):
 
         with patch.object(runtime.subprocess, 'run', side_effect=execute):
             result = self.run_stages(replace(self.context,
-                request=config.resolve_trajectory_request(TrajectoryRequest(max_tries=1))))
+                parameters=config.load('trajectory', overrides={'retry': {'max_tries': 1}}).values))
         self.assertIsNone(result.chosen)
         self.assertEqual(result.attempts[0]['rc'], 255)
         self.assertIn(cause, result.reason)
@@ -309,7 +309,7 @@ class ReconstructionTests(unittest.TestCase):
 
     def test_partial_frame_table_is_rejected_even_with_a_zero_exit(self):
         self.engines.frames = 50  # 上下文预期 100 帧，模拟视频提前结束。
-        result = self.run_stages(replace(self.context, request=config.resolve_trajectory_request(TrajectoryRequest(max_tries=1))))
+        result = self.run_stages(replace(self.context, parameters=config.load('trajectory', overrides={'retry': {'max_tries': 1}}).values))
         self.assertIsNone(result.chosen)
         self.assertIn('完整帧数', result.reason)
 
@@ -329,7 +329,7 @@ class ReconstructionTests(unittest.TestCase):
                 self.engines.write_dataset(paths.dataset)
                 self.engines.failures = {kind: 9}
                 self.engines.calls.clear()
-                context = replace(self.context, paths=paths, request=config.resolve_trajectory_request(TrajectoryRequest(max_tries=2)))
+                context = replace(self.context, paths=paths, parameters=config.load('trajectory', overrides={'retry': {'max_tries': 2}}).values)
                 data = replace(self.data, imu_csv=paths.dataset / 'mav0/imu0/data.csv')
                 result = self.run_stages(context, data)
                 self.assertIsNone(result.chosen)
@@ -343,7 +343,7 @@ class ReconstructionTests(unittest.TestCase):
 
     def test_missing_atlas_metadata_is_localization_failure(self):
         self.engines.map_count = 0
-        result = self.run_stages(replace(self.context, request=config.resolve_trajectory_request(TrajectoryRequest(max_tries=1))))
+        result = self.run_stages(replace(self.context, parameters=config.load('trajectory', overrides={'retry': {'max_tries': 1}}).values))
         self.assertIsNone(result.chosen)
         self.assertIn('定位', result.failed_stage)
         self.assertIn('无法读取图集中的地图列表', result.reason)
@@ -370,7 +370,7 @@ class ReconstructionTests(unittest.TestCase):
 
     def test_irregular_times_cpu_pinning_and_fusion_parameters_are_preserved(self):
         settings = replace(self.settings, environment=dict(self.settings.environment, ORB3_EXTRA_LD='/engine/extra'))
-        context = replace(self.context, request=config.resolve_trajectory_request(TrajectoryRequest(cores='0-3', allow_irregular=True)), settings=settings)
+        context = replace(self.context, cores='0-3', settings=settings)
         times = self.paths.debug / 'times.csv'
         times.write_text('t_canonical_s\n1\n1.1\n')
         self.run_stages(context, replace(self.data, times_csv=times))

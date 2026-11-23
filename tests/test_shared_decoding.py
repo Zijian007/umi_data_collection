@@ -11,15 +11,12 @@ import av
 import numpy as np
 
 from software.infrastructure import provenance
-from software.gripper_width.detection import markers as detection, sampling as sampled_detection
+from software.infrastructure.terminal import Console
+from software.gripper_width.detection import frames as detection, sampling as sampled_detection
 from software.scene import layout
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import (
-    batch as batch_inputs,
-    episode as episode_inputs,
-    kit as kit_inputs,
-    scene as scene_inputs,
-)
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
+from software.scene.models import TaskInputs
 from software.scene.pipeline.tasks import measurements
 from software.infrastructure.file_store import write_yaml
 from software.vision.poster import layout as tag_board, detection as environment_tags
@@ -45,7 +42,7 @@ class SharedDecodingTests(unittest.TestCase):
 
     def prepare(self, cache, *, settings=None, queries=None):
         decoder = VideoDecode(self.video)
-        detection.cached(self.video, cache / 'width', self.digest, decoder=decoder)
+        detection.cached_width(self.video, cache / 'width', self.digest, decoder=decoder)
         sampled = sampled_detection.SampledDetectionCache(
             self.video, cache, self.digest, self.queries if queries is None else queries, None)
         sampled.load(decoder=decoder)
@@ -59,7 +56,7 @@ class SharedDecodingTests(unittest.TestCase):
             decoder.run()
         self.assertEqual(opened.call_count, 1)
         independent = self.root / 'independent'
-        detection.cached(self.video, independent / 'width', self.digest)
+        detection.cached_width(self.video, independent / 'width', self.digest)
         reference = sampled_detection.SampledDetectionCache(self.video, independent, self.digest, self.queries, None)
         reference.load()
         environment_tags.cached(self.video, independent / 'poster', self.settings)
@@ -139,6 +136,15 @@ class SharedDecodingTests(unittest.TestCase):
             decoder.run()
         self.assertFalse(list(cache.rglob('*.npz')))
 
+    def test_background_detection_failure_does_not_publish_other_caches(self):
+        cache = self.root / 'background-failed'
+        decoder, _ = self.prepare(cache)
+        with patch.object(environment_tags.PosterDetection, 'consume', side_effect=ValueError('worker failed')), \
+                self.assertRaisesRegex(ValueError, 'worker failed'):
+            decoder.run()
+        self.assertFalse(list(cache.rglob('*.npz')))
+        self.assertFalse(list(cache.rglob('*.json')))
+
     def test_scene_prepares_all_caches_then_consumers_need_no_more_decode(self):
         batch = self.root / 'shelf/batch_001'
         write_yaml(batch / 'collection.yaml', dict(
@@ -152,16 +158,55 @@ class SharedDecodingTests(unittest.TestCase):
                                   parameters=scene_inputs.load_scene_parameters()))
         prepared = SimpleNamespace(camera=SimpleNamespace(files=dict(width=Path('width.json'), tag_distance=Path('tags.json'))),
                                    video_times_s=self.queries)
+        output = []
+        inputs = TaskInputs(episode, {'left': prepared}, {'left': 0.}, batch, None, None,
+                            Console('场景', line_sink=output.append))
         with patch('av.open', wraps=av.open) as opened:
-            measurements.prepare_detections(episode, 'left', prepared)
+            snapshot, = measurements.prepare_detection_group(inputs, ('left',), parallel=True)
+        self.assertEqual(sum('检测完成' in line for line in output), 1)
+        self.assertIn('左 3/3 帧（海报 6 次）', output[-1])
+        self.assertFalse(any('快速检测' in line for line in output))
+        output.clear()
+        with patch('av.open', side_effect=AssertionError('already prepared')):
+            cached_snapshot, = measurements.prepare_detection_group(
+                replace(inputs, detections={}), ('left',), parallel=True)
+        self.assertIn('左 3/3 帧（海报 6 次，缓存）', output[-1])
+        self.assertTrue(cached_snapshot.report['cache_reused'])
         self.assertEqual(opened.call_count, 1)
+        self.assertTrue(len(snapshot.observations.video_times_s))
         cache = layout.metadata(episode.root, 'cache')
+        full = sampled_detection.SampledDetectionCache(self.video, cache, self.digest, self.queries, None)
+        clipped = sampled_detection.SampledDetectionCache(self.video, cache, self.digest, self.queries[1:], None)
+        with patch('av.open', side_effect=AssertionError('clipped quick scan should reuse source corners')), \
+             patch.object(measurements, 'prepare_detections', side_effect=AssertionError('duplicate stage')):
+            self.assertIs(measurements.prepare_task_detections(replace(inputs, directory=batch / 'fallback'), 'left'),
+                          snapshot)
+            full.load()
+            clipped.load(quick_source=full)
+        np.testing.assert_array_equal(clipped.quick_corners, full.quick_corners[1:])
+        np.testing.assert_array_equal(clipped.native_times_s, full.native_times_s[1:])
         with patch('av.open', side_effect=AssertionError('already prepared')):
             measurements.prepare_detections(episode, 'left', prepared)
-            self.assertIsNotNone(detection.cached(self.video, cache / 'gripper_width', self.digest))
+            self.assertIsNotNone(detection.cached_width(self.video, cache / 'gripper_width', self.digest))
             sampled_detection.SampledDetectionCache(self.video, cache, self.digest, self.queries, None).load()
             board = tag_board.load(tag_board.DEFAULT_LAYOUT)
             result = environment_tags.cached(self.video, cache / 'environment_tags/left',
                 environment_tags.DetectionSettings(border_bits=board.border_bits, ids=board.ids, dictionary=board.dictionary,
                                        minimum_side_px=episode.scene.parameters.tag_minimum_side_px), layout=board)
         self.assertTrue(result['cache_reused'])
+
+    def test_scene_map_without_poster_does_not_decode_tags_before_fallback(self):
+        scene = SimpleNamespace(tag_layout=tag_board.DEFAULT_LAYOUT, environment_tag_detection=False,
+                                parameters=scene_inputs.load_scene_parameters())
+        episode = SimpleNamespace(root=self.root / 'take_001', recordings={'left': self.video},
+                                  recording_refs={'left': {'sha256': self.digest}}, scene=scene)
+        recording = SimpleNamespace(camera=SimpleNamespace(files={}), video_times_s=self.times)
+        inputs = TaskInputs(episode, {'left': recording}, {'left': 0.}, self.root, None, None, None)
+        with patch('av.open', side_effect=AssertionError('map without poster should not decode')):
+            self.assertIsNone(measurements.prepare_task_detections(inputs, 'left'))
+        scene.environment_tag_detection = True
+        with patch('av.open', wraps=av.open) as opened:
+            snapshot = measurements.prepare_task_detections(inputs, 'left')
+            self.assertIs(measurements.prepare_task_detections(inputs, 'left'), snapshot)
+        self.assertEqual(opened.call_count, 1)
+        self.assertGreater(len(snapshot.observations.tag_ids), 0)

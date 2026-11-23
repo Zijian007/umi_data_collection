@@ -14,9 +14,10 @@ from unittest.mock import patch
 import numpy as np
 
 from software.configuration import loader as config
-from software.camera.images import prepare_mask
+from software.vision.runtime import prepare_mask
 from software.camera.x3 import extraction, frame
-from software.trajectory.calibration import assets
+from software.camera.calibration_assets import SAMPLE_CAMERA_JSON, read_basalt
+from software.trajectory import calibration as assets
 from software.vision.tools import make_lens_video
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -36,7 +37,7 @@ class VideoParametersTests(unittest.TestCase):
     def test_crop_resize_preserves_camera_rays_for_both_templates(self):
         import cv2
         video = self.video(crop=dict(size_px=1200, offset_x_px=-37, offset_y_px=51), size_px=600, frame_step=4)
-        camera = assets.read_basalt(assets.SAMPLE_CAMERA_JSON)
+        camera = read_basalt(SAMPLE_CAMERA_JSON)
         parameters = config.load('trajectory', overrides={'video': {'crop': dict(size_px=1200, offset_x_px=-37, offset_y_px=51), 'size_px': 600, 'frame_step': 4}}).values
         native_pixel = [875., 413.]
         x, y, size, _ = frame.calibrated_crop_xywh(video.crop)
@@ -57,7 +58,7 @@ class VideoParametersTests(unittest.TestCase):
 
     def test_orb_requires_integer_nominal_fps_while_frame_clock_stays_exact(self):
         import cv2
-        camera = assets.read_basalt(assets.SAMPLE_CAMERA_JSON)
+        camera = read_basalt(SAMPLE_CAMERA_JSON)
         for step, expected in ((1, 60), (2, 30), (4, 15), (120, 1)):
             parameters = config.load('trajectory', overrides={'video': {'frame_step': step}}).values
             for rear in (False, True):

@@ -1,8 +1,10 @@
-"""Trajectory generation and common video-time board comparison."""
+"""同一视频时间轴上的轨迹验收、标定板参考比较和重建诊断。"""
 
 from __future__ import annotations
 
 from pathlib import Path
+import csv
+import json
 import os
 import sys
 
@@ -11,10 +13,9 @@ import numpy as np
 from software.infrastructure import provenance as artifact_identity
 from software.calibration.algorithms import board_pnp, trajectory_metrics
 from software.calibration.pipeline import runtime
-from software.calibration.validation import trajectory_diagnostics
-from software.infrastructure.runtime_environment import python_executable
-from software.trajectory.calibration.selection import DEFAULT_FRONT_MASK
-from software.trajectory.reporting import results as trajectory_results
+from software.infrastructure.paths import python_executable
+from software.trajectory.calibration import DEFAULT_FRONT_MASK
+from software.trajectory.reporting import artifacts as trajectory_results
 
 
 def trajectory_assets() -> dict:
@@ -70,8 +71,53 @@ def trajectory_check(video, detections, execution, *, grid, board, trajectory_co
     output = metadata.pop('diagnostic_output', None)
     if output is not None:
         with runtime.timed(execution.timings, tag + '.diagnostics'):
-            metadata['diagnostics'] = trajectory_diagnostics.read_attempts(output, metadata.pop('engine_summary'), reference, board)
+            metadata['diagnostics'] = read_attempts(output, metadata.pop('engine_summary'), reference, board)
     if 'engine_failure' in metadata:
         return dict(metadata, status='trajectory_failed', validity='invalid', reason=metadata.pop('engine_failure'))
     return dict(metadata, frames=reference['n_frames'],
                 **trajectory_metrics.compare(reference, times, positions, parameters=board))
+
+
+def visual_comparisons(path, reference, parameters):
+    """Different maps have independent coordinates; compare them separately."""
+    with Path(path).open() as stream:
+        rows = [row for row in csv.DictReader(stream) if row['ok'] == '1']
+    groups = {}
+    for row in rows:
+        groups.setdefault(row['map'], []).append(row)
+    return {name: trajectory_metrics.compare_visual(reference, np.array([float(r['t']) for r in group]),
+                np.array([[float(r[k]) for k in ('tx', 'ty', 'tz')] for r in group]), parameters=parameters)
+            for name, group in groups.items()}
+
+
+def read_attempts(output, summary, reference, parameters):
+    """Return durable numeric diagnostics, including rejected attempts; never persist debug paths."""
+    output = Path(output)
+    attempts = []
+    # Logs of the selected attempt are published even if its large working files were cleaned.
+    records = summary.get('tries') or [{'try': summary.get('chosen_try', 1)}]
+    for record in records:
+        number = record['try']
+        selected = number == summary.get('chosen_try')
+        directory = output / 'debug/reconstruction' / f'try_{number}'
+        info_path = directory / 'fuse/fuse_info.json'
+        visual_path = directory / 'front/loc/frames.csv'
+        if selected:
+            if not info_path.is_file():
+                info_path = output / 'debug/logs/fuse_info.json'
+            if not visual_path.is_file():
+                visual_path = output / 'debug/logs/front_loc_frames.csv'
+        evidence = dict(attempt=number, selected=selected, quality=record)
+        try:
+            attempt_diagnostics = json.loads(info_path.read_text())
+            evidence['alignment'] = attempt_diagnostics.get('stage1', {})
+            evidence['scale_consistency'] = attempt_diagnostics.get('scale_consistency')
+            evidence['final_scale_range'] = attempt_diagnostics.get('seg_scale_range', {})
+        except (OSError, ValueError, TypeError, AttributeError) as error:
+            evidence['fusion_unavailable'] = str(error)
+        try:
+            evidence['visual_by_map'] = visual_comparisons(visual_path, reference, parameters)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            evidence['visual_unavailable'] = str(error)
+        attempts.append(evidence)
+    return attempts

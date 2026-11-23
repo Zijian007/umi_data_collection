@@ -6,24 +6,17 @@ from software.configuration import operational_settings as settings
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
-import json
 import time
 
 import numpy as np
 
 from software.infrastructure import provenance as artifact_identity
 from software.camera.x3.frame import FPS_SRC, SRC_H, SRC_W
-from software.gripper_width.detection.markers import (
-    DEFAULT_TAG_ROI,
-    FrameDetection,
-    MarkerDetector,
-    identity,
-    reconcile_detections,
-    validate_roi,
-)
-from software.gripper_width.detection.frames import detect_frame
-from software.infrastructure.file_store import atomic_file, mark_used, write_json
-from software.vision.decoding import VideoDecode
+from software.gripper_width import DEFAULT_TAG_ROI
+from software.gripper_width.detection.frames import FrameDetector, identity
+from software.gripper_width.detection.markers import FrameDetection, reconcile_detections, validate_roi
+from software.infrastructure.file_store import mark_used, read_npz_cache, write_npz_cache
+from software.vision.decoding import ScanProgress, VideoDecode, configure_decoder
 
 
 ProgressCallback = Callable[[str], None]
@@ -110,7 +103,7 @@ def sampled_frames(video: Path, query_times_s: np.ndarray,
         stream = container.streams.video[0]
         if (stream.codec_context.width, stream.codec_context.height) != (SRC_W, SRC_H):
             raise ValueError('夹爪标签检测需要 X3 原始 3840×1920 工作镜头画面')
-        stream.codec_context.thread_count = settings.values('runtime')['decode_threads']
+        configure_decoder(stream)
         seek_time_s = float(query_times_s[selection.ordered[0]]) - 2 / FPS_SRC
         if seek_time_s > 0:
             container.seek(int(seek_time_s / stream.time_base), stream=stream, backward=True)
@@ -125,12 +118,8 @@ class QuickDetection:
     """中心距快速检测消费者；每个查询时刻独立检测所选原帧。"""
 
     def __init__(self, cache: SampledDetectionCache):
-        import av
-
         self.cache = cache
-        left, top, right, bottom = cache.roi_px
-        self.detector = MarkerDetector((0, 0, right - left, bottom - top), fast=True)
-        self.converter = av.video.reformatter.VideoReformatter()
+        self.detector = FrameDetector(cache.roi_px, mode='fast')
         self.selection = NearestFrames(cache.query_times_s, np.arange(len(cache.query_times_s)))
         self.progress = DetectionProgress('快速检测', len(cache.query_times_s), cache.progress)
         self.completed = 0
@@ -143,10 +132,12 @@ class QuickDetection:
     def accept(self, index: int, native_time: float, frame) -> None:
         self.cache.native_times_s[index] = native_time
         if frame is not None:
-            detected = detect_frame(frame, self.detector, self.cache.roi_px, self.converter)
+            detected = self.detector.detect(frame)
             self.cache.quick_corners[index] = detected.target_corners()
             self.cache.blocked[index] = detected.has_duplicate_targets
         self.completed += 1
+        if self.cache.on_progress is not None:
+            self.cache.on_progress(ScanProgress(self.completed, len(self.cache.query_times_s)))
         self.progress.update(self.completed)
 
     def consume(self, index: int, frame) -> None:
@@ -184,10 +175,11 @@ def recovery_order(indices: np.ndarray, corners: np.ndarray) -> np.ndarray:
 class SampledDetectionCache:
     def __init__(self, video: Path, cache: Path, recording_sha256: str,
                  query_times_s: np.ndarray, progress: ProgressCallback | None, *,
-                 roi_px: tuple[int, int, int, int] = DEFAULT_TAG_ROI):
+                 roi_px: tuple[int, int, int, int] = DEFAULT_TAG_ROI,
+                 on_progress: Callable[[ScanProgress], None] | None = None):
         import av
 
-        self.video, self.progress = video, progress
+        self.video, self.progress, self.on_progress = video, progress, on_progress
         self.roi_px = validate_roi(roi_px)
         self.query_times_s = np.asarray(query_times_s, dtype=float)
         if (self.query_times_s.ndim != 1 or not len(self.query_times_s)
@@ -209,47 +201,59 @@ class SampledDetectionCache:
         self.hashes: dict[str, str] = {}
 
     def _read(self, stage: str) -> dict | None:
-        marker = self.directory / f'{stage}.json'
-        if not marker.is_file():
+        saved = read_npz_cache(self.directory / f'{stage}.npz', self.directory / f'{stage}.json', self.inputs,
+                               mismatch='标签角点缓存身份或哈希变化')
+        if saved is None:
             return None
-        record = json.loads(marker.read_text())
-        arrays_path = self.directory / f'{stage}.npz'
-        if record['inputs'] != self.inputs or artifact_identity.file_hash(arrays_path) != record['sha256']:
-            raise ValueError('标签角点缓存身份或哈希变化')
-        self.hashes[stage] = record['sha256']
-        with np.load(arrays_path, allow_pickle=False) as arrays:
-            return {name: arrays[name] for name in arrays.files}
+        arrays, self.hashes[stage] = saved
+        return arrays
 
     def _save(self, stage: str, **arrays) -> None:
-        self.directory.mkdir(parents=True, exist_ok=True)
-        path = self.directory / f'{stage}.npz'
-        with atomic_file(path) as temporary, temporary.open('wb') as stream:
-            np.savez_compressed(stream, **arrays)
-        self.hashes[stage] = artifact_identity.file_hash(path)
-        write_json(self.directory / f'{stage}.json', dict(inputs=self.inputs, sha256=self.hashes[stage]))
+        self.hashes[stage] = write_npz_cache(self.directory / f'{stage}.npz', self.directory / f'{stage}.json',
+                                             self.inputs, **arrays)
 
-    def load(self, *, decoder: VideoDecode | None = None) -> None:
+    def _save_quick(self, _=None) -> None:
+        self._save('quick', native_times_s=self.native_times_s, corners_px=self.quick_corners, blocked=self.blocked)
+
+    def load(self, *, decoder: VideoDecode | None = None,
+             quick_source: SampledDetectionCache | None = None) -> None:
         saved = self._read('quick')
         if saved is not None:
             self.native_times_s, self.quick_corners, self.blocked = (
                 saved['native_times_s'], saved['corners_px'], saved['blocked'])
-            if self.progress:
-                self.progress(f'复用快速检测：{len(self.query_times_s)} 帧')
+            cached_scan = '复用快速检测'
+        elif quick_source is not None:
+            # The full and clipped queries address the same original exposures.
+            # Keep recovery scoped to the clipped job so its ROI and budget are unchanged.
+            start = int(np.searchsorted(quick_source.query_times_s, self.query_times_s[0]))
+            window = slice(start, start + len(self.query_times_s))
+            if (dict(quick_source.inputs, query_times_s=self.inputs['query_times_s']) != self.inputs
+                    or not np.array_equal(quick_source.query_times_s[window], self.query_times_s)):
+                raise ValueError('裁剪测距帧与原片检测缓存不一致')
+            if 'quick' not in quick_source.hashes:
+                quick_source.load()
+            self.native_times_s = quick_source.native_times_s[window].copy()
+            self.quick_corners = quick_source.quick_corners[window].copy()
+            self.blocked = quick_source.blocked[window].copy()
+            self._save_quick()
+            cached_scan = '复用原片快速检测'
         else:
+            cached_scan = None
             consumer = QuickDetection(self)
-
-            def save(_):
-                self._save('quick', native_times_s=self.native_times_s,
-                           corners_px=self.quick_corners, blocked=self.blocked)
-
             if decoder is not None:
-                decoder.add(consumer, save)
+                decoder.add(consumer, self._save_quick)
             else:
                 for selected in sampled_frames(self.video, self.query_times_s, np.arange(len(self.query_times_s))):
                     consumer.accept(*selected)
                 # sampled_frames 已处理末尾缺失；这里只完成进度报告。
                 consumer.progress.update(len(self.query_times_s), force=True)
-                save(None)
+                self._save_quick()
+        if cached_scan is not None:
+            frames = len(self.query_times_s)
+            if self.progress:
+                self.progress(f'{cached_scan}：{frames} 帧')
+            if self.on_progress is not None:
+                self.on_progress(ScanProgress(frames, frames, cached=True))
         recovered = self._read('recovery')
         if recovered is not None:
             self.recovered_corners, self.attempted = recovered['corners_px'], recovered['attempted']
@@ -260,8 +264,6 @@ class SampledDetectionCache:
 
     def recover(self, indices: np.ndarray, *,
                 is_needed: Callable[[int], bool]) -> Iterator[tuple[int, np.ndarray]]:
-        import av
-
         visible = self.quick_corners[np.isfinite(self.quick_corners).all(axis=(2, 3))]
         bounds = self.roi_px
         if len(visible):
@@ -271,19 +273,19 @@ class SampledDetectionCache:
             left, top, right, bottom = self.roi_px
             bounds = (max(left, int(minimum[0]) - padding), max(top, int(minimum[1]) - padding),
                       min(right, int(maximum[0]) + padding + 1), min(bottom, int(maximum[1]) + padding + 1))
-        local = MarkerDetector((0, 0, bounds[2] - bounds[0], bounds[3] - bounds[1]),
-                               candidate_limit=settings.values('gripper_tag_detection')['recovery_candidate_limit'])
-        full = MarkerDetector((0, 0, self.roi_px[2] - self.roi_px[0], self.roi_px[3] - self.roi_px[1]),
-                              candidate_limit=settings.values('gripper_tag_detection')['recovery_candidate_limit'])
-        converter = av.video.reformatter.VideoReformatter()
+        parameters = settings.values('gripper_tag_detection')
+        candidate_limit = parameters['recovery_candidate_limit']
+        search_interval = parameters['full_search_interval']
+        local = FrameDetector(bounds, candidate_limit=candidate_limit)
+        full = FrameDetector(self.roi_px, candidate_limit=candidate_limit) if bounds != self.roi_px else local
         try:
             for index, native_time, frame in sampled_frames(self.video, self.query_times_s, indices):
                 if not is_needed(index):
                     continue
                 if frame is None or abs(native_time - self.native_times_s[index]) > 1e-8:
                     raise ValueError('标签补检与快速检测的原片时间戳不一致')
-                detected = (detect_frame(frame, full, self.roi_px, converter) if index % settings.values('gripper_tag_detection')['full_search_interval'] == 0
-                            else detect_frame(frame, local, bounds, converter))
+                detector = full if index % search_interval == 0 else local
+                detected = detector.detect(frame)
                 reconciled = reconcile_detections(_frame_detection(self.quick_corners[index]), detected)
                 self.recovered_corners[index] = reconciled.target_corners()
                 self.attempted[index] = True

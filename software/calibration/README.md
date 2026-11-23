@@ -28,9 +28,9 @@ flowchart LR
 - D：原始 IMU 选择静止窗口，校准后加速度计算重力残差；仅诊断，不修改参数。
 - C：候选标定生成独立轨迹，板 PnP 提供相机位置参考。两组位置先按视频时间匹配，再比较 SE(3) ATE 和 Sim(3) 尺度。
 
-工作镜头 `run` 在 B 后自动执行 `validation/factory.py` 的工厂 MEI 对照：`camera/x3/factory.py` 解析两组 v3 镜头参数并提供 MEI/KB4 投影和反投影。对照复用 C 板角点，另按同一捕获时刻读取完整 Y 平面；1440 标定视野与 1920 外推诊断分别统计，留出标签按所有模型共同成功帧计分。保留原始编号：lens1 为工作镜头，lens0 为环境镜头。`algorithms/factory_kb4.py` 分别拟合两镜头的 1440 光学 KB4，再用独立密集网格和边界探针验证，不读取实拍角点求内参。
+工作镜头 `run` 在 B 后自动执行 `validation/factory_comparison.py` 的工厂 MEI 对照：`camera/x3/factory_geometry.py` 解析两组 v3 镜头参数并提供 MEI/KB4 投影和反投影。对照复用 C 板角点，另按同一捕获时刻读取完整 Y 平面；1440 标定视野与 1920 外推诊断分别统计，留出标签按所有模型共同成功帧计分。保留原始编号：lens1 为工作镜头，lens0 为环境镜头。`camera/x3/factory_kb4.py` 分别拟合两镜头的 1440 光学 KB4，再用独立密集网格和边界探针验证，不读取实拍角点求内参。
 
-实拍对照使用本次所选镜头的当前 KB4、原始 MEI、诊断拟合 KB4；当前参数明确标记 measured/factory。工作镜头两种模式都自动对照；环境镜头 factory 模式对自身镜头做实拍对照，另一镜头只做数值诊断。方法版本 4 不复用旧诊断，成功后清除旧版错误镜头的射线图。`factory/kb4_fit.json` 是不可单独安装的光学诊断，不改本次参数；正式工厂候选由 `solve/factory.py` 生成并另行验收。自动对照失败转为诊断状态，中断仍传播。
+实拍对照使用本次所选镜头的当前 KB4、原始 MEI、诊断拟合 KB4；当前参数明确标记 measured/factory。工作镜头两种模式都自动对照；环境镜头 factory 模式对自身镜头做实拍对照，另一镜头只做数值诊断。方法版本 4 不复用旧诊断，成功后清除旧版错误镜头的射线图。`factory/kb4_fit.json` 是不可单独安装的光学诊断，不改本次参数；正式工厂候选由 `solve/factory_intrinsics.py` 生成并另行验收。自动对照失败转为诊断状态，中断仍传播。
 
 `compare_insv_factory` 检查点包含原片、标定、板配置和方法身份，并核对 `factory/` 数值与图片哈希。失败不复用；成功诊断在 work 清理后仍可读取，报告渲染不执行计算。`verify` 不触发这一对照；环境镜头的 factory 模式会针对环境镜头运行自身对照。使用方法和结果解释见[标定指南](../../docs/标定.md)。
 
@@ -41,17 +41,15 @@ A/B 只求解和返回测量；验收策略决定是否可用；安装是独立�
 | [`models.py`](models.py) | 请求、路径、结果类型、稳定 `Step`、`Decision`；执行选项含路径、资源与本轮计时 |
 | [`pipeline/inputs.py`](pipeline/inputs.py) | 录像发现、同机身份、板几何、CLI 请求转换 |
 | [`pipeline/recordings.py`](pipeline/recordings.py) | INSV → 时间戳、IMU、镜头图像；准备缓存 |
-| [`pipeline/board_detection.py`](pipeline/board_detection.py) | 读图、并行检测、取消与原始角点缓存 |
+| [`pipeline/board_detection.py`](pipeline/board_detection.py) | 单帧检测、上采样还原、并行调度与原始角点缓存 |
 | [`pipeline/steps.py`](pipeline/steps.py) | 步骤指纹、依赖失效、产物校验、计时、中断 |
 | [`pipeline/runtime.py`](pipeline/runtime.py) | 子进程、锁、输出目录、依赖预检、CPU |
 | [`solve/basalt.py`](solve/basalt.py) | A/B 适配：bag、板文件、B 初始化、命令、缓存、日志解析 |
-| [`solve/factory.py`](solve/factory.py) | 工厂固定内参生成、转换与原片一致性约束、独立 A 留出验证 |
-| [`validation/factory.py`](validation/factory.py) | C 工厂光学与留出标签自动对照；结果仅供诊断 |
-| [`algorithms/factory_kb4.py`](algorithms/factory_kb4.py) | MEI 射线拟合 KB4、独立数值与边界诊断 |
+| [`solve/factory_intrinsics.py`](solve/factory_intrinsics.py) | 工厂固定内参生成、转换与原片一致性约束、独立 A 留出验证 |
+| [`validation/factory_comparison.py`](validation/factory_comparison.py) | C 工厂光学与留出标签自动对照；结果仅供诊断 |
+| [`camera/x3/factory_kb4.py`](../camera/x3/factory_kb4.py) | MEI 射线拟合 KB4、独立数值与边界诊断 |
 | [`validation/gravity.py`](validation/gravity.py) | D 的独立工作目录、退出码/来源/参数校验、原始证据 |
-| [`validation/trajectory.py`](validation/trajectory.py) | 工作镜头轨迹子进程，以及两镜头共用的板参考比较 |
-| [`validation/trajectory_diagnostics.py`](validation/trajectory_diagnostics.py) | 每轮重建的视觉板参考比较、初始化残差和融合尺度变化 |
-| [`algorithms/aprilgrid_detect.py`](algorithms/aprilgrid_detect.py) | 单帧 AprilGrid 检测、上采样与原像素坐标还原 |
+| [`validation/trajectory.py`](validation/trajectory.py) | 工作镜头轨迹子进程、两镜头共用的板参考比较、每轮重建的初始化与融合诊断 |
 | [`algorithms/board_pnp.py`](algorithms/board_pnp.py) | KB4 PnP、覆盖度、带视频时间的板参考 |
 | [`algorithms/trajectory_metrics.py`](algorithms/trajectory_metrics.py) | 一对一时间匹配、非有限位置过滤、退化检查、ATE/尺度 |
 | [`acceptance.py`](acceptance.py) | 纯策略：测量 → 检查项 → 验收结论 |
@@ -59,7 +57,7 @@ A/B 只求解和返回测量；验收策略决定是否可用；安装是独立�
 | [`reports.py`](reports.py) | 只展示，不读取 registry、不实例化执行器、不恢复工作目录 |
 | [`devices.py`](devices.py) | 安装与设备命令；启用状态快照；调用现有 registry |
 | [`inventory.py`](inventory.py) | 只读检查 front/rear 版本与套件固定绑定，返回带类型的报告结构；显示由 reports 负责，不代替实拍组合验收 |
-| [`scene/spatial/rear_calibration.py`](../scene/spatial/rear_calibration.py) | 环境镜头 scene 数值后端，调用共享 workflow |
+| [`rear_workflow.py`](rear_workflow.py) | 环境镜头 scene 数值后端，调用共享 workflow |
 
 函数显式接收所需的板、IMU、重力或轨迹参数组。A/B 的两个公开入口共用一个内部执行函数，执行器统一记录异常所属步骤。
 
@@ -139,7 +137,7 @@ Basalt 保留 bag 输入、KB4、噪声先验和 `--fixed-scale-opt-offset`。�
 
 测试覆盖真实 D 工具、时间匹配、灰度像素、数值环境镜头后端、恢复/中断、安装边界和只读报告。真实回归状态见 [架构与验证](../../docs/dev/标定架构与验证.md)，不能用模拟替代工作镜头与环境镜头整套实测。操作见 [标定指南](../../docs/标定.md)，配置见 [参数说明](../../config/README.md)。
 
-宽度测量辅助入口 `preview-width` 调用 [gripper_width/tools/preview.py](../gripper_width/tools/preview.py) 输出标签视频；`detect-width` 调用 [gripper_width/tools/monitor.py](../gripper_width/tools/monitor.py) 在固定 ROI 内进行无界面采样检测，输出 CSV 并默认保存带标签和 ROI 框的 MP4。两者均使用基础环境，不进入相机标定求解或设备登记流程。
+宽度测量辅助入口由 [gripper_width/video_tools.py](../gripper_width/video_tools.py) 共用原片读取与标签叠加编码。`preview-width` 输出逐帧标签视频。`detect-width` 在固定 ROI 内采样，输出 CSV 并默认保存带标签和 ROI 框的 MP4。两者均使用基础环境。
 
 ## 内参来源选择
 

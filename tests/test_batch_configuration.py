@@ -4,11 +4,8 @@ import unittest
 from registry_fakes import write_kit, write_batch
 
 from software.camera import registry
-from software.scene.management.batch import snapshot as batches
-from software.scene.management.inputs import (
-    kit as kit_inputs,
-    batch as batch_inputs,
-)
+from software.scene.management import batch_snapshot as batches
+from software.scene.management.inputs import scene as kit_inputs, batch as batch_inputs
 from software.infrastructure.file_store import write_yaml
 import test_scene_management as registry_fixtures
 

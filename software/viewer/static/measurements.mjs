@@ -1,6 +1,6 @@
 import {nearestIndex} from './math.mjs';
 
-function formatTagDistance(measurement, frameIndex) {
+export function formatTagDistance(measurement, frameIndex) {
   const distanceMm = measurement?.distance_mm[frameIndex];
   return measurement?.valid[frameIndex] && Number.isFinite(distanceMm) ? distanceMm.toFixed(2) : '—';
 }

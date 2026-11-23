@@ -2,7 +2,7 @@
 
 import unittest
 
-from software.scene.parameter_schema import flatten, nested_snapshot
+from software.scene.parameters import flatten, nested_snapshot
 
 
 class SceneParameterSchemaTests(unittest.TestCase):

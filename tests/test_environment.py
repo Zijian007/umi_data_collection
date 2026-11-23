@@ -6,13 +6,13 @@ import sys
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
-from software.infrastructure.runtime_environment import python_executable
+from software.infrastructure.paths import python_executable
 
 
 class TrajectoryHealthTests(unittest.TestCase):
     def test_health_check_uses_current_inventory_and_reports_broken_assets(self):
         from software.calibration import inventory
-        from software.trajectory.pipeline import runtime
+        from software.trajectory import reconstruction as runtime
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             trajectory = root/'trajectory'
@@ -28,7 +28,8 @@ class TrajectoryHealthTests(unittest.TestCase):
             healthy = dict(serial='CAMERA', status='active', front_default='001', ok=True, errors=[], versions=[])
             broken = dict(healthy, ok=False, versions=[dict(ok=False, error='资产哈希不一致')])
             with patch.object(runtime, 'HERE', trajectory), patch.object(runtime, 'REPO', root), \
-                 patch.object(runtime.selection, 'DEFAULT_FRONT_MASK', hardware_mask), \
+                 patch.object(runtime, 'SAMPLE_CAMERA_JSON', trajectory / 'assets/samples/calibration_r1440.json'), \
+                 patch.object(runtime.trajectory_calibration, 'DEFAULT_FRONT_MASK', hardware_mask), \
                  patch.dict(os.environ, dict(ORB3_DIR=str(trajectory), ORB3_VOCAB=str(trajectory/'Vocabulary/ORBvoc.txt'))), \
                  patch.object(runtime.shutil, 'which', return_value='test-tool'), \
                  patch.object(runtime.visual_runtime, 'orb_executable',
@@ -86,5 +87,5 @@ class InterpreterSelectionTests(unittest.TestCase):
         self.assertIn('usage: umi-view', result.stdout)
 
     def test_viewer_import_does_not_load_scene_or_trajectory_solvers(self):
-        result = subprocess.run([sys.executable, '-c', "\nimport sys\nimport software.viewer.server\nassert not {'gtsam', 'software.scene.workflow', 'software.scene.spatial.fusion',\n            'software.trajectory.workflow', 'software.trajectory.algorithms.fusion.solver'} & sys.modules.keys()\n"], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True, timeout=20)
+        result = subprocess.run([sys.executable, '-c', "\nimport sys\nimport software.viewer.server\nassert not {'gtsam', 'software.scene.workflow', 'software.trajectory.algorithms.fixed_map.fusion',\n            'software.trajectory.workflow', 'software.trajectory.algorithms.fusion.solver'} & sys.modules.keys()\n"], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)

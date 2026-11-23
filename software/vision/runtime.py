@@ -9,11 +9,10 @@ import subprocess
 import traceback
 
 from software.configuration import parameter_models
-from software.camera.images import prepare_mask
-from software.infrastructure.runtime_environment import python_executable
-from software.infrastructure.paths import PROJECT_ROOT
+from software.camera.x3.frame import CROP, calibrated_crop_xywh
+from software.infrastructure.paths import PROJECT_ROOT, python_executable
 from software.vision.models import VisualContext, VisualSettings, ProcessingError
-from software.vision.paths import orb_executable, orb_directory
+from software.vision.orb_environment import orb_executable, orb_directory
 
 
 HERE = Path(__file__).resolve().parent
@@ -23,6 +22,27 @@ REPO = PROJECT_ROOT
 
 def write_error_log(path: Path, error: BaseException) -> None:
     path.write_text(''.join(traceback.format_exception(error)), encoding='utf-8')
+
+
+def prepare_mask(source: Path, output: Path, size_px: int, *, crop=None) -> Path:
+    """按同一视野缩放遮手图；最近邻保留遮挡类别，原始设备资产只读。"""
+    import cv2
+
+    mask = cv2.imread(str(source), cv2.IMREAD_GRAYSCALE)
+    if mask is None or mask.shape[0] != mask.shape[1]:
+        raise ValueError(f'遮手图必须是可读取的正方形图像：{source}')
+    x, y, size, _ = calibrated_crop_xywh(crop)
+    cropped = (x, y, size) != (0, 0, CROP)
+    if cropped:
+        native = cv2.resize(mask, (CROP, CROP), interpolation=cv2.INTER_NEAREST)
+        mask = native[y:y+size, x:x+size]
+    if not cropped and mask.shape == (size_px, size_px):
+        return source
+    resized = cv2.resize(mask, (size_px, size_px), interpolation=cv2.INTER_NEAREST)
+    if not cv2.imwrite(str(output), resized):
+        raise ValueError(f'无法写入本次运行的遮手图：{output}')
+    return output
+
 
 def visual_settings(environment: dict[str, str], *, lens_settings: dict[str, str], front_mask: Path,
                     output: Path, parameters: parameter_models.TrajectoryParameters,

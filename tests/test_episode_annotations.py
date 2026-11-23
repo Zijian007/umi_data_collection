@@ -10,8 +10,10 @@ import numpy as np
 from software.scene.result_io import pose_rows
 
 from software.scene.management import episodes
-from software.scene.management.inputs import episode as episode_inputs
+from software.scene.management.inputs import batch as episode_inputs
 from software.scene import workflow
+from software.scene.pipeline import synchronization
+from software.sync.specialist_audio import AudioSyncEstimate
 from software.infrastructure.file_store import write_yaml
 from registry_fakes import write_task_configuration, read_task_configuration
 import test_scene as fixtures
@@ -98,13 +100,14 @@ class EpisodeAnnotationTests(unittest.TestCase):
     def test_audio_auto_uses_specialist_offset_as_video_and_imu_shift(self):
         write_task_configuration(self.f.task_root, dict(synchronization=dict(
             mode='audio_auto', confirmed=False)))
+        collection_path = self.f.batch_root / 'collection.yaml'
+        collection = read_yaml(collection_path)
+        collection['recording']['audio_sync'] = dict(enabled=True, algorithm='specialist')
+        write_yaml(collection_path, collection)
         self.f.build_scene()
-        raw = dict(raw_audio_offset_s={'left': 0., 'right': .42},
-                   offsets_s={'left': 0., 'right': -.42},
-                   peak_ratio=2.4,
-                   video_offset_status='specialist_assumed_video_clock',
-                   note='specialist session-clock sync')
-        with patch.object(workflow.synchronization, 'estimate_audio_sync', return_value=raw) as estimate:
+        audio = AudioSyncEstimate(other_started_later_s=.42, peak_ratio=2.4, peak_value=.8,
+                                  sample_rate_hz=8000, max_offset_s=60.)
+        with patch.object(synchronization, 'estimate_offset_from_files', return_value=audio) as estimate:
             run_result = workflow.run_episode(self.f.episode_path)
         estimate.assert_called_once()
         self.assertEqual(run_result['synchronization']['offsets_s']['right'], -.42)

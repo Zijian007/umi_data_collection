@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
-from software.camera.images import prepare_mask
+from software.vision.runtime import prepare_mask
 from unittest.mock import patch
 
 from software.vision import runtime as visual_runtime
@@ -17,10 +17,11 @@ from software.calibration.pipeline import inputs
 from software.calibration import result_io
 from software.calibration import workflow as calibration_workflow
 from software.calibration.models import CalibrationRequest, SegmentPaths
-from software.trajectory.calibration import assets as calibration_assets, selection
+from software.camera import calibration_assets
+from software.trajectory import calibration as trajectory_calibration
 from software.trajectory import cli, workflow
-from software.trajectory.pipeline import reconstruction, reuse, runtime
-from software.trajectory.reporting import results
+from software.trajectory import reconstruction, workflow as reuse, reconstruction as runtime
+from software.trajectory.reporting import artifacts as results
 from software.trajectory.models import FusionArtifacts, TrajectoryRequest
 import test_calibration_workflow as calibration_tests
 import test_trajectory_workflow as trajectory_tests
@@ -192,7 +193,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(resolved.values.fusion.node_stride, 3)
         config.write_yaml(self.root/'child.yaml', resolved.values)
         child = config.load('trajectory', self.root/'child.yaml')
-        from software.trajectory.pipeline.calibration_assets import select_environment_assets
+        from software.trajectory.environment_assets import select_environment_assets
         request = config.resolve_trajectory_request(TrajectoryRequest(configuration=child))
         selected_assets = select_environment_assets(None, None, request)
         self.assertIsNone(selected_assets.rear)
@@ -216,7 +217,7 @@ class ConfigTests(unittest.TestCase):
     def test_slam_generation_uses_both_measurement_and_algorithm_config(self):
         p = config.load('trajectory', self.overlay("orb:\n  features: 777\n  initial_fast: 21")).values
         camera = calibration_assets.read_basalt(calibration_assets.SAMPLE_CAMERA_JSON)
-        yaml = calibration_assets.slam_settings_text(camera, p)
+        yaml = trajectory_calibration.slam_settings_text(camera, p)
         self.assertIn('ORBextractor.nFeatures: 777', yaml)
         self.assertIn('ORBextractor.iniThFAST: 21', yaml)
         self.assertIn('Camera1.fx: %.12f' % (camera['fx']/2), yaml)
@@ -228,7 +229,7 @@ class ConfigTests(unittest.TestCase):
 
         camera = calibration_assets.read_basalt(calibration_assets.SAMPLE_CAMERA_JSON)
         for rear in (False, True):
-            baseline = cv2.FileStorage(calibration_assets.slam_settings_text(
+            baseline = cv2.FileStorage(trajectory_calibration.slam_settings_text(
                 camera, config.load('trajectory').values, rear=rear), cv2.FILE_STORAGE_READ | cv2.FILE_STORAGE_MEMORY)
             original = {key: baseline.getNode(f'Camera1.{key}').real() for key in ('fx', 'fy', 'cx', 'cy')}
             distortion = [baseline.getNode(f'Camera1.k{k}').real() for k in range(1, 5)]
@@ -236,7 +237,7 @@ class ConfigTests(unittest.TestCase):
             for size in (360, 960, 1440):
                 with self.subTest(rear=rear, size=size):
                     p = config.load('trajectory', overrides={'video': {'size_px': size}}).values
-                    generated = cv2.FileStorage(calibration_assets.slam_settings_text(camera, p, rear=rear),
+                    generated = cv2.FileStorage(trajectory_calibration.slam_settings_text(camera, p, rear=rear),
                                                 cv2.FILE_STORAGE_READ | cv2.FILE_STORAGE_MEMORY)
                     self.assertEqual(generated.getNode('Camera.width').real(), size)
                     self.assertEqual(generated.getNode('Camera.height').real(), size)
@@ -266,7 +267,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(original.read_bytes(), source_bytes)
 
     def test_child_physical_check_uses_explicit_values_without_reloading_defaults(self):
-        from software.calibration.tools import imu_calib_physical_check as physical
+        from software.calibration.tools import imu_physical_check as physical
         argv = ['--calib', str(calibration_assets.SAMPLE_CAMERA_JSON), '--euroc', str(self.root/'dataset'),
                 '--out', str(self.root/'check'), '--window-s', '.7', '--gyro-max-dps', '3',
                 '--acc-std-max', '.06', '--min-window-samples', '25', '--gravity', '9.81',
@@ -299,7 +300,7 @@ class ConfigTests(unittest.TestCase):
         description = calibration_assets.make_bundle(calibration_assets.SAMPLE_CAMERA_JSON, bundle)
         self.assertEqual({p.name for p in bundle.iterdir()}, {'calibration_r1440.json', 'bundle.json'})
         self.assertEqual(description['bundle_schema_version'], 2)
-        self.assertEqual(Path(description['fuser']), calibration_assets.FUSION_SCRIPT)
+        self.assertNotIn('fuser', description)
         camera = bundle / 'calibration_r1440.json'
         camera.write_text(camera.read_text()+' ')
         with self.assertRaises(calibration_assets.CalibrationError):
@@ -325,21 +326,21 @@ class SafetyTests(trajectory_tests.RecordingFixture):
         before = self.tree_snapshot(self.output)
         path = self.root / 'bad.yaml'
         path.write_text("fusion:\n  acc_noise: -1")
-        with patch.object(selection, 'select_calibration') as select, patch.object(runtime.console, 'write'):
+        with patch.object(trajectory_calibration, 'select_calibration') as select, patch.object(runtime.console, 'write'):
             self.assertEqual(workflow.run_batch([str(self.video)], self.output.parent,
                              TrajectoryRequest(config=path, force=True)), 1)
         select.assert_not_called()
         self.assertEqual(before, self.tree_snapshot(self.output))
 
     def test_dry_run_with_force_creates_no_output_and_does_not_run_engines(self):
-        with patch.object(selection, 'select_calibration', return_value=self.selected), patch.object(visual_runtime, 'run_logged') as execute, contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(trajectory_calibration, 'select_calibration', return_value=self.selected), patch.object(visual_runtime, 'run_logged') as execute, contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(workflow.run_batch([str(self.video)], self.output.parent,
                              TrajectoryRequest(force=True, dry_run=True)), 0)
         execute.assert_not_called()
         self.assertFalse(self.output.parent.exists())
         self.successful_result()
         before = self.tree_snapshot(self.output)
-        with patch.object(selection, 'select_calibration', return_value=self.selected), contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(trajectory_calibration, 'select_calibration', return_value=self.selected), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(workflow.run_batch([str(self.video)], self.output.parent,
                              TrajectoryRequest(force=True, dry_run=True)), 0)
         self.assertEqual(before, self.tree_snapshot(self.output))
@@ -348,7 +349,7 @@ class SafetyTests(trajectory_tests.RecordingFixture):
         self.successful_result()
         marker = self.output / 'details/summary.json'
         before = marker.read_bytes()
-        with patch.object(selection, 'select_calibration', return_value=self.selected), patch.dict(os.environ, {'ORB3_DIR':'/missing/engine'}), patch.object(runtime.console, 'write'):
+        with patch.object(trajectory_calibration, 'select_calibration', return_value=self.selected), patch.dict(os.environ, {'ORB3_DIR':'/missing/engine'}), patch.object(runtime.console, 'write'):
             summary = workflow.run_recording(self.video, self.output.parent, TrajectoryRequest(force=True))
         self.assertEqual(summary['status'], 'failed')
         self.assertEqual(marker.read_bytes(), before)
@@ -428,7 +429,7 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(calibration_workflow.run(inputs.parse_run_args(args)), 0)
             imu_command = next(command for command in commands if '--gyro-noise-std' in command)
             self.assertEqual(float(imu_command[imu_command.index('--gyro-noise-std')+1]), .0004)
-            gravity_command = next(command for command in commands if any('software.calibration.tools.imu_calib_physical_check' in part for part in command))
+            gravity_command = next(command for command in commands if any('software.calibration.tools.imu_physical_check' in part for part in command))
             self.assertEqual(float(gravity_command[gravity_command.index('--window-s')+1]), .7)
             self.assertEqual(float(gravity_command[gravity_command.index('--min-window-span-fraction')+1]), .9)
             from software.calibration.pipeline import board_detection

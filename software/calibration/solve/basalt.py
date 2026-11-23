@@ -12,7 +12,7 @@ import sys
 from software.calibration.algorithms import board_pnp
 from software.calibration.models import IntrinsicsResult, CameraImuResult
 from software.calibration.pipeline import runtime
-from software.trajectory.calibration import assets
+from software.camera import calibration_assets as assets
 
 
 SOLVER_MARKER = '=== UMI_SOLVER_START '
@@ -95,7 +95,7 @@ def prepare_bag(dataset, execution, *, name, log_name, cancelled=None):
     bag = execution.paths.work / (name + '.bag')
     bag.unlink(missing_ok=True)
     log = execution.paths.logs / log_name
-    to_bag = [sys.executable, '-m', 'software.calibration.tools.calib_folder_to_bag', '--euroc', dataset, '--out', bag,
+    to_bag = [sys.executable, '-m', 'software.calibration.tools.euroc_to_bag', '--euroc', dataset, '--out', bag,
               '--workers', min(settings.values('runtime')['calibration_bag_threads'], execution.workers)]
     role = 'A' if name == 'camera_intrinsics' else 'B'
     label = f'{role} 求解数据准备' + ('（后台，与 A 并行）' if cancelled is not None else '')

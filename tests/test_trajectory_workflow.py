@@ -10,17 +10,17 @@ from unittest.mock import patch
 from software.vision import recordings as visual_recordings
 from software.configuration import loader as config
 from software.camera import registry
-from software.trajectory.calibration import assets as calibration_assets
+from software.camera import calibration_assets as calibration_assets
 from software.trajectory import cli, workflow
-from software.trajectory.pipeline import reconstruction, runtime
-from software.trajectory.reporting import results
-from software.trajectory.calibration import selection
+from software.trajectory import reconstruction, reconstruction as runtime
+from software.trajectory.reporting import artifacts as results
+from software.trajectory import calibration as selection
 from software.camera.x3 import extraction
 from software.trajectory.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
 from software.vision.models import RecordingData
-from software.trajectory.pipeline.reuse import REQUIRED_OUTPUTS, reuse_decision, run_fingerprint
-from software.trajectory.pipeline.calibration_assets import select_environment_assets
-from software.trajectory.calibration.selection import CalibrationAssets, SelectedCalibration
+from software.trajectory.workflow import REQUIRED_OUTPUTS, reuse_decision, run_fingerprint
+from software.trajectory.environment_assets import select_environment_assets
+from software.trajectory.calibration import CalibrationAssets, SelectedCalibration
 from trajectory_fakes import FakeEngines
 from registry_fakes import device_record
 
@@ -166,13 +166,13 @@ class WorkflowTests(RecordingFixture):
     def fake_runner(self, command, **kwargs):
         return self.engines(command, **kwargs)
 
-    def fake_postprocess(self, kd, manifest, output, mode, name, calibration, command):
+    def fake_postprocess(self, kd, manifest, output, mode, name, calibration, command, *, parameters=None):
         for filename in REQUIRED_OUTPUTS:
             (output / filename).write_text('processed output')
         return dict(tcp_path_length_m=1.2, constraint_fraction={'full': 1.0}, notes=[])
 
     def run_recording(self, request=TrajectoryRequest(), *, extraction_error=None, manifest=None):
-        from software.trajectory.algorithms import postprocess
+        from software.trajectory import trajectory_export as postprocess
         manifest = manifest or {'frames': dict(regular=True, n_frames_used=100, duration_s=3.3)}
         def extract(video, output, **kwargs):
             self.engines.write_dataset(output)
@@ -229,13 +229,13 @@ class WorkflowTests(RecordingFixture):
 
     def test_reuse_reads_summary_once(self):
         self.assertEqual(self.run_recording()['status'], 'ok')
-        with patch('software.trajectory.pipeline.reuse.load_summary', wraps=results.load_summary) as load:
+        with patch('software.trajectory.workflow.load_summary', wraps=results.load_summary) as load:
             self.assertEqual(self.run_recording()['status'], 'skipped')
         load.assert_called_once_with(self.output)
 
     def test_force_does_not_read_previous_summary(self):
         self.successful_result()
-        with patch('software.trajectory.pipeline.reuse.load_summary', side_effect=AssertionError('unexpected reuse check')) as load:
+        with patch('software.trajectory.workflow.load_summary', side_effect=AssertionError('unexpected reuse check')) as load:
             self.assertEqual(self.run_recording(TrajectoryRequest(force=True))['status'], 'ok')
         load.assert_not_called()
 
@@ -326,12 +326,12 @@ class WorkflowTests(RecordingFixture):
         settings = runtime.reconstruction_settings(dict(os.environ), camera_json=self.selected.assets.camera_json,
                                                    front_mask=self.selected.assets.front_mask,
                                                    output=paths.debug / "settings", parameters=config.resolve_trajectory_request(request).configuration.values)
-        context = ReconstructionContext(paths, config.resolve_trajectory_request(request), settings, 100)
+        context = ReconstructionContext(paths, settings, config.resolve_trajectory_request(request).configuration.values, 100, request.cores)
         self.engines.write_dataset(paths.dataset)
         times = paths.debug / 'times.csv'
         times.write_text('t_canonical_s\n1.0\n')
         with patch.object(runtime.subprocess, 'run', side_effect=self.fake_runner), patch.object(reconstruction, 'assess_try', side_effect=qualities), patch.object(runtime.console, 'write'):
-            videos = visual_recordings.prepare_lens_videos(self.video, context.visual, lenses=('front', 'rear') if context.request.mode == 'dual' else ('front',))
+            videos = visual_recordings.prepare_lens_videos(self.video, context, lenses=('front', 'rear') if context.parameters.input.mode == 'dual' else ('front',))
             result = reconstruction.run_attempts(videos, RecordingData({}, paths.dataset / 'mav0/imu0/data.csv', times), context, recording_name=self.video.name)
         self.assertEqual(result.chosen, 2)
         self.assertEqual(result.directory.name, 'try_2')

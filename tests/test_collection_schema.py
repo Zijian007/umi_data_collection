@@ -57,6 +57,17 @@ class CollectionSchemaTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 normalize_collection(document)
 
+    def test_batch_audio_sync_requires_a_boolean_when_specified(self):
+        document = self.base()
+        self.assertNotIn('audio_sync_enabled', normalize_collection(document))
+        for enabled in (True, False):
+            document['recording']['audio_sync'] = dict(enabled=enabled)
+            self.assertIs(normalize_collection(document)['audio_sync_enabled'], enabled)
+        for enabled in (None, 1, 'false'):
+            document['recording']['audio_sync'] = dict(enabled=enabled)
+            with self.subTest(enabled=enabled), self.assertRaisesRegex(ValueError, r'recording\.audio_sync\.enabled'):
+                normalize_collection(document)
+
     def test_rejects_old_schema_and_conflicting_task_map_selectors(self):
         with self.assertRaisesRegex(ValueError, '当前字段布局'):
             normalize_collection(dict(schema_version=1))
@@ -64,6 +75,38 @@ class CollectionSchemaTests(unittest.TestCase):
         document['tasks'] = dict(take_001=dict(map=dict(epoch='e', version='v')))
         with self.assertRaisesRegex(ValueError, '不能同时'):
             normalize_collection(document)
+
+    def test_rejects_duplicate_backend_formats_at_the_same_scope(self):
+        document = self.base()
+        document['backend'] = dict(mode='auto')
+        with self.assertRaisesRegex(ValueError, 'backend 与 reconstruction 不能同时'):
+            normalize_collection(document)
+        document.pop('backend')
+        document['tasks'] = dict(take_001=dict(backend={}, reconstruction={}))
+        with self.assertRaisesRegex(ValueError, r'tasks\.take_001\.backend'):
+            normalize_collection(document)
+
+    def test_backend_reports_invalid_options_at_the_public_paths(self):
+        document = dict(kit='kit_001', recording=dict(arms=['right']), scene={})
+        for section, options, field in (
+            ('scene_map', dict(poster_constraint=dict(method='other')), 'poster_constraint.method'),
+            ('poster_vio', dict(base_tag=dict(enabled=None)), 'base_tag.enabled'),
+            ('poster_vio', dict(initialization=dict(max_observation_gap_s=float('inf'))), 'max_observation_gap_s'),
+            ('poster_independent', dict(max_position_support_gap_s=False), 'max_position_support_gap_s'),
+            ('poster_independent', dict(max_gravity_difference_deg=181), 'max_gravity_difference_deg'),
+            ('poster_edge_trim', dict(min_missing_duration_s=0), 'min_missing_duration_s'),
+        ):
+            document['backend'] = {'mode': 'auto', section: options}
+            with self.subTest(section=section, field=field), self.assertRaisesRegex(ValueError, field):
+                normalize_collection(document)
+
+    def test_rejects_invalid_backend_declarations(self):
+        for field in ('backend', 'reconstruction'):
+            for record in (dict(mode=True), dict(mode='auto', extra=True), 'auto'):
+                document = dict(kit='kit_001', recording=dict(arms=['right']), scene={})
+                document[field] = record
+                with self.subTest(field=field, record=record), self.assertRaisesRegex(ValueError, field):
+                    normalize_collection(document)
 
 
 if __name__ == '__main__':

@@ -13,11 +13,12 @@ import numpy as np
 
 from software.configuration import loader as config
 from software.infrastructure import provenance
-from software.scene.cache.storage import StageCache
-from software.scene.cache.identity import preparation_inputs
-from software.scene.cache.identity import source_identity
-from software.scene.pipeline.maps import lifecycle as map_lifecycle
-from software.scene.spatial import slam
+from software.scene.cache import StageCache
+from software.scene.cache import preparation_inputs
+from software.scene.cache import source_identity
+from software.scene.pipeline.maps import build as map_build
+from software.scene.pipeline.maps import repository as map_repository
+from software.scene import spatial as slam
 from software.vision.models import LensVideo, MapAtlas
 import test_scene as fixtures
 
@@ -118,10 +119,10 @@ class MapReuseTests(unittest.TestCase):
         self.fixture.cameras[copied] = self.fixture.cameras[source]
         moved_scene = replace(self.fixture.scene, recordings={'left': copied})
         with patch.object(slam, 'build', side_effect=AssertionError('same content rebuilt')):
-            second = map_lifecycle._build_scene(moved_scene)
+            second = map_build.build_version(moved_scene)
         self.assertEqual(second['status'], 'skipped')
         self.assertEqual(second['version'], first['version'])
-        _, manifest = map_lifecycle.load_published(moved_scene)
+        _, manifest = map_repository.load_published(moved_scene)
         self.assertEqual(manifest['inputs']['recordings']['left']['path'], str(source))
         self.assertEqual(manifest['inputs']['recordings']['left']['sha256'], provenance.file_hash(copied))
 
@@ -132,22 +133,23 @@ class MapReuseTests(unittest.TestCase):
         before = source.stat()
         source.write_bytes(b'LEFT')
         os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
-        second = map_lifecycle._build_scene(self.fixture.scene)
+        second = map_build.build_version(self.fixture.scene)
         self.assertNotEqual(first['version'], second['version'])
 
     def test_map_identity_excludes_cli_and_task_only_changes_but_tracks_algorithm_sources(self):
         sources = source_identity('map')
         self.assertNotIn('software/scene/cli.py', sources)
-        self.assertNotIn('software/scene/pipeline/tasks/backends/scene_reconstruction.py', sources)
+        self.assertNotIn('software/scene/pipeline/tasks/scene_map.py', sources)
         self.assertNotIn('software/viewer/server.py', sources)
         for dependency in ('software/vision/slam.py', 'software/camera/x3/extraction.py',
-                           'software/trajectory/calibration/assets.py',
+                           'software/vision/atlas.py', 'software/camera/calibration_assets.py',
+                           'software/camera/x3/factory_kb4.py', 'software/scene/pipeline/maps/build.py',
+                           'software/trajectory/calibration.py',
                            'software/trajectory/algorithms/fusion/alignment.py',
-                           'software/trajectory/algorithms/fusion/alignment_solver.py',
                            'software/trajectory/algorithms/inertial.py', 'software/vision/decoding.py'):
             self.assertIn(dependency, sources)
         original_hash = provenance.source_hash
-        for module in ('alignment.py', 'alignment_solver.py', 'inertial.py', 'decoding.py', 'quality.py'):
+        for module in ('alignment.py', 'inertial.py', 'decoding.py', 'quality.py'):
             with self.subTest(module=module):
                 def changed_hash(path):
                     return 'changed' if path.name == module else original_hash(path)
@@ -163,7 +165,7 @@ class MapReuseTests(unittest.TestCase):
         self.assertEqual(self.fixture.build_scene()['version'], first['version'])
         tuned = replace(self.fixture.scene, parameters=replace(self.fixture.scene.parameters,
             maximum_alignment_condition=self.fixture.scene.parameters.maximum_alignment_condition * 2))
-        self.assertNotEqual(map_lifecycle._build_scene(tuned)['version'], first['version'])
+        self.assertNotEqual(map_build.build_version(tuned)['version'], first['version'])
         camera = self.fixture.cameras[self.fixture.recording_paths['left']]
         self.fixture.cameras[self.fixture.recording_paths['left']] = replace(camera,
             selected=replace(camera.selected, calibration_id='new-calibration'))
@@ -193,8 +195,8 @@ class MapReuseTests(unittest.TestCase):
         self.assertEqual(original['engines'], {'ffmpeg': 'one'})
         sources = source_identity('prepare')
         for unrelated in ('software/registry.py', 'software/camera/calibration_source.py',
-                          'software/trajectory/calibration/assets.py', 'software/scene/cache/storage.py',
-                          'software/scene/cache/identity.py', 'software/scene/pipeline/maps/identity.py'):
+                          'software/trajectory/calibration.py', 'software/scene/cache.py',
+                          'software/scene/cache.py'):
             self.assertNotIn(unrelated, sources)
         for decoder in ('software/camera/x3/extraction.py', 'software/vision/tools/make_lens_video.py'):
             self.assertIn(decoder, sources)

@@ -1,11 +1,12 @@
-"""文字报告与终端展示；不决定重试、复用或清理策略。"""
+"""轨迹的文字报告、终端摘要和预览图。"""
 
 from pathlib import Path
 import json
 
 from software.camera.geometry import describe_tcp_frame
-from software.trajectory.calibration.selection import SelectedCalibration
-from software.trajectory.pipeline import runtime
+from software.trajectory.calibration import SelectedCalibration
+from software.trajectory.reconstruction import console
+from software.trajectory.reporting.constraint_quality import runs
 
 
 STATUS_LABELS = {"ok": "完成", "skipped": "跳过", "failed": "失败", "planned": "预检通过"}
@@ -81,7 +82,7 @@ def show_batch(summaries: list[dict]) -> None:
 
 def show_calibration(selected: SelectedCalibration, *, recording: str) -> None:
     source = SELECTION_LABELS.get(selected.selection, selected.selection)
-    runtime.console.write(f"相机 {selected.camera_serial or '未知'}；标定 {selected.calibration_id}；"
+    console.write(f"相机 {selected.camera_serial or '未知'}；标定 {selected.calibration_id}；"
                           f"来源：{source}（{selected.directory}）", recording=recording)
 
 
@@ -93,17 +94,58 @@ def show_recording(summary: dict) -> None:
     if summary["status"] == "ok":
         pose = summary.get('pose_frame', 'tcp')
         label = 'TCP' if pose == 'tcp' else '相机'
-        runtime.console.write(f"耗时 {summary['wall_s']:.0f} 秒；{label}路径 {summary[pose + '_path_length_m']:.2f} m；"
+        console.write(f"耗时 {summary['wall_s']:.0f} 秒；{label}路径 {summary[pose + '_path_length_m']:.2f} m；"
                               f"地图位置约束覆盖 {summary['constraint_fraction']['full']:.0%} 的帧",
                               recording=name, state=state)
         if len(summary.get("tries", [])) > 1:
-            runtime.console.write(f"重建尝试 {len(summary['tries'])} 次；采用第 {summary['chosen_try']} 次", recording=name)
+            console.write(f"重建尝试 {len(summary['tries'])} 次；采用第 {summary['chosen_try']} 次", recording=name)
         for note in summary.get("notes", []):
-            runtime.console.write(note, recording=name, state="提醒")
+            console.write(note, recording=name, state="提醒")
     elif summary["status"] == "skipped":
-        runtime.console.write("输入、标定与处理配置一致，复用已有结果；--force 可重新处理", recording=name, state=state)
+        console.write("输入、标定与处理配置一致，复用已有结果；--force 可重新处理", recording=name, state=state)
     else:
-        runtime.console.write(f"阶段：{summary.get('failed_stage', '未知')}；原因：{summary.get('reason')}",
+        console.write(f"阶段：{summary.get('failed_stage', '未知')}；原因：{summary.get('reason')}",
                               recording=name, state=state)
     if "wall_s" in summary or summary["status"] == "skipped":
-        runtime.console.write(f"报告：{output / 'report.txt'}；日志：{output / 'debug/logs'}", recording=name)
+        console.write(f"报告：{output / 'report.txt'}；日志：{output / 'debug/logs'}", recording=name)
+
+
+def plot(path: Path, t, p_tcp, kind, title: str) -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    col = {"full": "#1f77b4", "rot": "#ff7f0e", "imu": "#d62728"}
+    lab = {"full": "camera map: position", "rot": "camera map: orientation only", "imu": "IMU bridge"}
+    fig = plt.figure(figsize=(14, 8))
+    gs = fig.add_gridspec(2, 2, height_ratios=[3, 2])
+    for idx, (a, b, name) in enumerate(((0, 1, "top view (x-y)"), (0, 2, "side view (x-z)"))):
+        ax = fig.add_subplot(gs[0, idx])
+        ax.plot(p_tcp[:, a], p_tcp[:, b], color="0.75", lw=0.8, zorder=1)
+        for kd in ("full", "rot", "imu"):
+            m = kind == kd
+            if m.any():
+                ax.scatter(p_tcp[m, a], p_tcp[m, b], s=3, color=col[kd], label=lab[kd], zorder=2)
+        ax.plot(p_tcp[0, a], p_tcp[0, b], "k^", ms=8, label="start", zorder=3)
+        ax.plot(p_tcp[-1, a], p_tcp[-1, b], "ks", ms=7, label="end", zorder=3)
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.set_xlabel("xyz"[a] + " [m]")
+        ax.set_ylabel("xyz"[b] + " [m]")
+        ax.set_title("TCP " + name)
+        ax.grid(alpha=0.3)
+        if idx == 0:
+            ax.legend(fontsize=8, loc="best")
+    ax = fig.add_subplot(gs[1, :])
+    for j, c in enumerate("xyz"):
+        ax.plot(t, p_tcp[:, j] - p_tcp[0, j], lw=1, label=c + " - " + c + "0")
+    for k0, k1 in runs(kind != "full"):
+        ax.axvspan(t[k0], t[k1], color=col["imu"] if (kind[k0:k1 + 1] == "imu").all() else col["rot"], alpha=0.12, lw=0)
+    ax.set_xlabel("video time [s]")
+    ax.set_ylabel("TCP position [m]")
+    ax.set_title("TCP position over time (shaded: no position from the camera map)")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8, ncol=3)
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(path, dpi=110)
+    plt.close(fig)

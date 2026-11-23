@@ -11,7 +11,7 @@ from pathlib import Path
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv == ['--selftest']:
-        from software.trajectory.algorithms.fusion.factors import selftest
+        from software.trajectory.algorithms.fusion.graph import selftest
         return 0 if selftest() else 1
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('rear_frames', type=Path)
@@ -49,13 +49,12 @@ def main(argv=None) -> int:
             camera_json=args.calibration, offset_ns=args.offset_ns,
             rear_quaternion=[float(x) for x in args.rear_quaternion.removeprefix('vector:').split(',')],
             rear_lever=[float(x) for x in args.lever_prior.split(',')], use_rear=parameters.input.mode == 'dual', times_csv=args.times)
+        if args.poster is not None or args.rear_calibration is not None:
+            from dataclasses import replace
+            from software.trajectory.environment_assets import load_frozen_rear, load_poster
         if args.poster is not None:
-            from dataclasses import replace
-            from software.trajectory.pipeline.poster_assets import load
-            inputs = replace(inputs,poster=load(args.poster))
+            inputs = replace(inputs, poster=load_poster(args.poster))
         if args.rear_calibration is not None:
-            from dataclasses import replace
-            from software.trajectory.pipeline.calibration_assets import load_frozen_rear
             inputs = replace(inputs, rear_camera=load_frozen_rear(args.rear_calibration))
         result = solve(inputs, parameters, refine_initialization=args.refine_initialization)
         write_solution(result, args.output)

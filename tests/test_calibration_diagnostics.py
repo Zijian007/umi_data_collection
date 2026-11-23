@@ -9,10 +9,10 @@ import numpy as np
 
 from software.configuration import loader as config
 from software.calibration.algorithms import trajectory_metrics
-from software.calibration.validation import trajectory_diagnostics, trajectory
+from software.calibration.validation import trajectory
 from software.calibration.models import ExecutionOptions, RunPaths
 from software.calibration import reports
-from software.trajectory.calibration.assets import SAMPLE_CAMERA_JSON
+from software.camera.calibration_assets import SAMPLE_CAMERA_JSON
 
 
 class DiagnosticTests(unittest.TestCase):
@@ -49,7 +49,7 @@ class DiagnosticTests(unittest.TestCase):
             output = Path(tmp)
             self.write_visual(output/'debug/reconstruction/try_1/front/loc/frames.csv')
             summary = dict(tries=[{'try': 1, 'usable': False, 'reason': 'scale divergence'}])
-            result = trajectory_diagnostics.read_attempts(output, summary, self.reference, self.board)
+            result = trajectory.read_attempts(output, summary, self.reference, self.board)
             self.assertFalse(result[0]['selected'])
             self.assertIn('fusion_unavailable', result[0])
             self.assertEqual(set(result[0]['visual_by_map']), {'m0', 'm1'})

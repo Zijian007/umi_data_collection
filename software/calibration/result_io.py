@@ -9,7 +9,7 @@ import json
 from software.infrastructure import provenance as artifact_identity
 from software.calibration.models import RunPaths, Step, IntrinsicsResult, CameraImuResult, Kb4
 from software.infrastructure.file_store import atomic_file
-from software.trajectory.calibration import assets
+from software.camera import calibration_assets as assets
 
 
 SCHEMA_VERSION = 3
@@ -126,10 +126,15 @@ def load_result(output, *, complete=False):
     return doc
 
 
-def commit_evaluation(output, doc, evaluation):
+def archive_evaluation(doc):
     old = doc.get('evaluation')
     if old:
         doc.setdefault('evaluation_history', []).append(old)
+    doc['evaluation'] = None
+
+
+def commit_evaluation(output, doc, evaluation):
+    archive_evaluation(doc)
     doc['evaluation'] = dict(evaluation, evidence_fingerprint=fingerprint(doc),
                              evaluated_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
     write(output, doc)

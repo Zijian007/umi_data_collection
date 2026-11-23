@@ -1,8 +1,8 @@
-from software.scene.management.inputs import kit as kit_inputs
+from software.scene.management.inputs import scene as kit_inputs
 from software.infrastructure import provenance as artifact_identity
-from software.scene.spatial import mapping
+from software.scene import spatial as mapping
 """当前配置是运行输入；内部记录不覆盖配置，历史成果保持原内容。"""
-from software.scene.pipeline.tasks.backends import scene_reconstruction
+from software.scene.pipeline.tasks import scene_map as scene_reconstruction
 import json
 import unittest
 from unittest.mock import patch
@@ -11,8 +11,8 @@ from software.infrastructure.file_store import read_yaml
 from software.scene.management.inputs import (
     batch as batch_inputs,
 )
-from software.scene.management import processing
-from software.scene.overrides import SceneOverrides
+from software.scene.management import batch_processing as processing
+from software.scene.parameters import SceneOverrides
 from software.infrastructure.file_store import write_json, write_yaml
 import test_processing
 

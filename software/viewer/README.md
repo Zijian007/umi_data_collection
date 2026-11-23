@@ -4,7 +4,7 @@
 
 ## 阅读顺序
 
-`server.main()` 创建 `RecordingCatalog` 并启动 HTTP 服务；`results/catalog.py` 负责目录发现与结果装配，`results/readers.py` 解析轨迹、逐帧约束和标签间距，`errors.py` 定义输入错误。浏览器的 `app.mjs` 管理选择与播放状态，三维、视频、曲线共用轨迹时间轴。
+`server.main()` 创建 `RecordingCatalog` 并启动 HTTP 服务；`results/catalog.py` 负责目录发现与结果装配，`results/trajectory_reader.py` 解析轨迹、逐帧约束和标签间距，`errors.py` 定义输入错误。浏览器的 `app.mjs` 装配页面数据和图表，`library.mjs` 管理录像列表，`playback.mjs` 驱动两路视频和轨迹图表共用的任务时间轴。
 
 ## 文件职责
 
@@ -15,17 +15,21 @@ software/viewer/
 ├── results/
 │   ├── catalog.py     目录发现、访问边界与结果装配
 │   ├── readers.py     TUM / CSV、逐帧约束和标签测距协议解析
-│   ├── episodes.py    场景任务状态、双手共同区间与显示采样
-│   └── poses.py       TCP 到相机/IMU 的只读显示轨迹转换
+│   ├── poses.py       TCP 到相机/IMU 的只读显示轨迹转换
+│   └── rear.py        环境镜头的来源校验与媒体描述
 ├── resources/
 │   ├── video.py       限并发 FFmpeg 解码、预览与视频资源
 │   ├── cache.py       磁盘缓存、文件身份、跨进程锁与原子发布
 │   └── maps.py        地图校验、旧图集按需转换与缓存
 └── static/
-    app.mjs          录像选择与统一播放状态
+    app.mjs          结果加载、图表与页面装配
+    library.mjs      录像列表、搜索与刷新
+    playback.mjs     主时间轴、镜头切换与播放控件
+    paired.mjs       第二路镜头与任务时间同步
+    quality.mjs      逐帧质量与时间轴色带
     scene.mjs        三维点云、关键帧、轨迹和姿态轴、鼠标操作
     chart.mjs        速度曲线与点击定位
-    media.mjs        兼容画面请求合并、解码及与位姿同步
+    media.mjs        镜头选择、两路时钟换算、预览与兼容画面请求
     math.mjs         时间定位与四元数运算
     measurements.mjs 标签间距格式化和双手时间选择
     viewer.css       自适应布局
@@ -41,15 +45,15 @@ software/viewer/
 
 ## 地图读取
 
-共享场景任务由 `software/scene/management/episodes.py` 适配：通过 ruamel.yaml 读取采集清单以展示待处理或缺片任务，处理和验收状态从 state.json 读取，不加载算法环境。已有结果只读当前 `results` 指针、校验两只手的场景版本/坐标身份，裁出共同时间区间，再对另一只手的位置和四元数插值。浏览器的 `paired.mjs` 跟随主时间同步第二路视频；两路各自使用 `video_time_offset_s`，不把共同区间起点误当成视频起点。
+共享场景任务由 `results/catalog.py` 适配：通过 ruamel.yaml 读取采集清单以展示待处理或缺片任务，处理和验收状态从 state.json 读取，不加载算法环境。已有结果只读当前 `results` 指针、校验两只手的场景版本/坐标身份，裁出共同时间区间，再对另一只手的位置和四元数插值。浏览器的 `paired.mjs` 跟随主时间同步第二路视频；两路各自使用 `video_time_offset_s`，不把共同区间起点误当成视频起点。
 
-场景结果默认仅保存 TCP 主轨迹；缺少相机/IMU TUM 时，`results/poses.py` 以已记录的固定外参按需重建这两条显示轨迹。该路径只用标准库，不引入 NumPy、SciPy 或求解器依赖；已保存的历史辅助轨迹仍优先使用。
+场景结果默认仅保存 TCP 主轨迹；缺少相机/IMU TUM 时，`results/trajectory_reader.py` 以已记录的固定外参按需重建这两条显示轨迹。该路径只用标准库，不引入 NumPy、SciPy 或求解器依赖；已保存的历史辅助轨迹仍优先使用。
 
 `GET /api/recordings/<id>/map` 独立加载地图，不阻塞轨迹与视频。新场景任务通过 `software.scene.result_io` 从根 `episode.json` 读取各手指标和共享 `map` 引用，历史结果继续读取每手摘要。查看器校验相对路径、本场景范围、版本、坐标系与 SHA256，不在每只手的结果里复制地图。单独查看原位置的任务结果也使用同一共享文件。
 
 独立 内部逐段轨迹引擎 结果优先读取 `details/map.json`；旧结果从摘要选中轮次的 `.osa` 转换。转换结果在查看器缓存目录持久保存，内存保留最近 4 份；服务重启后不必再次加载 ORB 词典。输入地图、选中轮次、轨迹、定位文件或转换代码/引擎发生变化时使用新缓存身份，不写回录像目录。真正转换时串行加载词典，读取其他已有磁盘缓存不排队。
 
-`software/trajectory/reporting/map_data.py` 用独立的 `umi_export_atlas` 读取图集，再将逐帧定位与最终相机轨迹拟合为 Sim(3) 展示变换。退化或残差过大时保留原始地图坐标，浏览器隐藏轨迹叠加并更换单位提示；不合并不同子地图。
+`software/vision/atlas.py` 共用 `umi_export_atlas` 转换和绘制数据准备。`software/trajectory/reporting/map_data.py` 选择已有结果的图集，将逐帧定位与最终相机轨迹拟合为 Sim(3) 展示变换。退化或残差过大时保留原始地图坐标，浏览器隐藏轨迹叠加并更换单位提示；不合并不同子地图。
 
 每张子地图默认最多展示 50000 点（`viewer.map_max_points` 可降低，仅抽样响应，不修改已发布地图），关键帧保留时间、位置和姿态，原始 `.osa` 不改变。展示拟合不修改融合算法，残差不能解释为真实轨迹精度。环境镜头地图暂不展示。
 

@@ -18,7 +18,7 @@ from software.viewer.resources.cache import root as cache_root
 from software.infrastructure.paths import SCENES_ROOT
 
 from software.viewer.results.catalog import RecordingCatalog
-from software.viewer.errors import ViewerDataError
+from software.viewer import ViewerDataError
 from software.viewer.resources.video import decode_frame, preview_file, preview_status, video_version
 
 
@@ -110,19 +110,35 @@ def make_handler(catalog: RecordingCatalog):
             if media_path == '/map':
                 self.json(catalog.map_data(key))
                 return
-            path = catalog.video_path(key)
-            if path is None:
-                self.json({'error': '未找到工作镜头视频'}, 404)
-            elif media_path == '/preview':
-                status = preview_status(path)
+            rear = media_path.startswith('/rear/')
+            if rear:
+                source = catalog.rear_source(key)
+                if source is None:
+                    self.json({'error': '没有可用的环境镜头原片或成片'}, 404)
+                    return
+                path, clip = source
+                media_path = media_path.removeprefix('/rear')
+            else:
+                path, clip = catalog.video_path(key), None
+                if path is None:
+                    self.json({'error': '未找到工作镜头视频'}, 404)
+                    return
+
+            clip_args = (clip,) if rear else ()
+            prefix = f'/api/recordings/{key}' + ('/rear' if rear else '')
+            if media_path == '/preview':
+                status = preview_status(path, *clip_args)
                 if status['status'] == 'ready':
-                    status['url'] = f'/api/recordings/{key}/preview/video?v={status["version"]}'
+                    status['url'] = f'{prefix}/preview/video?v={status["version"]}'
                 self.json(status)
-            elif media_path == '/preview/video':
-                query = parse_qs(urlsplit(self.path).query)
-                self.file(preview_file(path, query.get('v', [''])[0]), video=True, immutable=True)
+                return
+            query = parse_qs(urlsplit(self.path).query)
+            if media_path == '/preview/video':
+                self.file(preview_file(path, query.get('v', [''])[0], *clip_args), video=True, immutable=True)
             elif media_path == '/frame':
-                query = parse_qs(urlsplit(self.path).query)
+                # A crop of an INSV is addressable as soon as the aligned preview exists.
+                if clip is not None:
+                    path = preview_file(path, None, clip)
                 seconds = float(query.get('t', ['0'])[0])
                 version = query.get('v', [None])[0]
                 if version is not None and version != video_version(path):
@@ -132,8 +148,10 @@ def make_handler(catalog: RecordingCatalog):
                 self.send_content_headers(200, 'image/jpeg', len(image), headers)
                 if self.command != 'HEAD':
                     self.wfile.write(image)
-            else:
+            elif clip is None:
                 self.file(path, video=True)
+            else:
+                self.json({'error': '环境镜头请通过预览播放'}, 404)
 
         def serve_static(self, route):
             relative = 'index.html' if route == '/' else route.lstrip('/')
@@ -148,9 +166,16 @@ def make_handler(catalog: RecordingCatalog):
                 route = unquote(urlsplit(self.path).path)
                 if route == '/api/recordings':
                     self.json(catalog.scan())
-                elif match := re.fullmatch(r'/api/recordings/([0-9a-f]{20})(/video|/frame|/map|/preview|/preview/video)?', route):
+                elif match := re.fullmatch(r'/api/recordings/([0-9a-f]{20})(/playback|/details|/video|/frame|/map|/preview|/preview/video|/rear/(?:video|frame|preview|preview/video))?', route):
                     key, media_path = match.groups()
-                    self.json(catalog.load(key)) if media_path is None else self.serve_recording(key, media_path)
+                    if media_path == '/playback':
+                        self.json(catalog.playback(key))
+                    elif media_path == '/details':
+                        self.json(catalog.details(key))
+                    elif media_path is None:
+                        self.json(catalog.load(key))
+                    else:
+                        self.serve_recording(key, media_path)
                 else:
                     self.serve_static(route)
             except (ViewerDataError, ValueError) as error:

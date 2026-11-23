@@ -8,26 +8,49 @@
 from __future__ import annotations
 
 from functools import partial
-from dataclasses import asdict, replace
+from dataclasses import asdict, replace, dataclass
 from pathlib import Path
 import concurrent.futures as cf
 import json
 import os
 import shutil
 import time
-
-from software.configuration import loader as config
+from software.configuration import loader as config, parameter_models
 from software.camera import registry
-from software.infrastructure import provenance as artifact_identity
-from software.trajectory.algorithms import postprocess
-from software.trajectory.calibration import selection
+from software.trajectory import trajectory_export as postprocess, calibration as selection, environment_assets as calibration_assets, reconstruction
 from software.trajectory.models import RecordingPaths, ReconstructionContext, TrajectoryRequest
-from software.trajectory.pipeline import calibration_assets, poster_assets, inputs as recording_data, reconstruction, reuse, runtime
-from software.trajectory.reporting import map_data, reports, results
-from software.trajectory.reporting.quality import evaluate_notes
+from software.trajectory.reporting import map_data, reports, artifacts as results
+from software.trajectory.reporting.constraint_quality import evaluate_notes
 from software.vision import recordings as visual_recordings, runtime as visual_runtime
 from software.vision.models import ProcessingError
 from software.vision.runtime import write_error_log
+from software.infrastructure import provenance as artifact_identity
+from software.trajectory.calibration import SelectedCalibration
+from software.trajectory.environment_assets import EnvironmentAssets, load_frozen_rear, load_poster
+from software.trajectory.reporting.artifacts import load_summary, result_path
+
+
+def _find_inputs(paths: list[str]) -> list[Path]:
+    videos: list[Path] = []
+    for path in map(Path, paths):
+        if path.is_dir():
+            videos += sorted(file for file in path.iterdir() if file.is_file() and file.suffix.lower() == ".insv")
+        elif path.is_file():
+            videos.append(path)
+        else:
+            raise FileNotFoundError(f"录像路径不存在：{path}")
+    seen, unique = set(), []
+    for video in videos:
+        resolved = video.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(video)
+    return unique
+
+
+def _default_output(paths: list[str]) -> Path:
+    first = Path(paths[0])
+    return (first if first.is_dir() else first.parent) / "umi_traj_out"
 
 
 def run_batch(input_paths: list[str], output: Path | None, request: TrajectoryRequest, *, jobs: int = 1) -> int:
@@ -36,21 +59,21 @@ def run_batch(input_paths: list[str], output: Path | None, request: TrajectoryRe
         request = config.resolve_trajectory_request(request)
         if jobs < 1:
             raise ValueError("--jobs 必须 >= 1")
-        videos = recording_data.find_inputs(input_paths)
+        videos = _find_inputs(input_paths)
     except (OSError, ValueError) as error:
-        runtime.console.write(f"准备轨迹抽取失败：{error}", state="失败")
+        reconstruction.console.write(f"准备轨迹抽取失败：{error}", state="失败")
         return 1
     if not videos:
-        runtime.console.write("未找到 .insv 录像：" + "，".join(input_paths), state="失败")
+        reconstruction.console.write("未找到 .insv 录像：" + "，".join(input_paths), state="失败")
         return 1
     # 输出以文件 stem 命名；同名输入必须在启动前拒绝，避免并发覆盖同一份结果。
     names = [video.stem for video in videos]
     if len(set(names)) != len(names):
-        runtime.console.write("录像名称重复；请分批处理，并用 --out 指定不同输出目录", state="失败")
+        reconstruction.console.write("录像名称重复；请分批处理，并用 --out 指定不同输出目录", state="失败")
         return 1
-    output_root = (output or recording_data.default_output(input_paths)).resolve()
+    output_root = (output or _default_output(input_paths)).resolve()
     workers = jobs
-    runtime.console.write(f"共 {len(videos)} 段录像；模式 {request.mode}；并行数 {workers}；输出：{output_root}")
+    reconstruction.console.write(f"共 {len(videos)} 段录像；模式 {request.mode}；并行数 {workers}；输出：{output_root}")
     with cf.ThreadPoolExecutor(max_workers=workers) as executor:
         summaries = list(executor.map(partial(run_recording, output_root=output_root, request=request), videos))
     reports.show_batch(summaries)
@@ -72,15 +95,15 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
         environment_assets = calibration_assets.select_environment_assets(video, selected, request)
         if not request.dry_run:
             visual_runtime.validate_engines(dict(os.environ))
-        fingerprint = reuse.run_fingerprint(video, selected, request, environment_assets=environment_assets)
-        previous = None if request.force or request.dry_run else reuse.reuse_decision(paths.output, fingerprint, notes=request.configuration.values.notes)
+        fingerprint = run_fingerprint(video, selected, request, environment_assets=environment_assets)
+        previous = None if request.force or request.dry_run else reuse_decision(paths.output, fingerprint, notes=request.configuration.values.notes)
     except (registry.RegistryError, ProcessingError, OSError, ValueError, KeyError, TypeError) as error:
         summary.update(reason=str(error), failed_stage="选择标定与检查复用")
         reports.show_recording(summary)
         return summary
     reports.show_calibration(selected, recording=recording_name)
-    provenance = dict(configuration=request.configuration.snapshot(), code=artifact_identity.code_identity('trajectory'),
-                      engines=artifact_identity.engine_identity('trajectory'), computation_hash=fingerprint['computation_hash'])
+    provenance = dict(configuration=request.configuration.snapshot(), code=fingerprint['code'],
+                      engines=fingerprint['engines'], computation_hash=fingerprint['computation_hash'])
     if request.dry_run:
         print(json.dumps(dict(video=str(video), output=str(paths.output), calibration=selected.summary(),
                               rear_calibration=asdict(environment_assets.rear.identity) if environment_assets.rear else None,
@@ -106,7 +129,7 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
     # 确定要重算后再准备目录。准备失败时不往旧目录写失败报告。
     try:
         if paths.output.exists():
-            runtime.console.write(f"重新处理：{'指定 --force' if request.force else previous.reason}", recording=recording_name)
+            reconstruction.console.write(f"重新处理：{'指定 --force' if request.force else previous.reason}", recording=recording_name)
             shutil.rmtree(paths.output)
         paths.logs.mkdir(parents=True)
     except OSError as error:
@@ -121,38 +144,38 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
     stage = "读取录像"
     try:
         # 1. 读取容器帧时间和尾部 IMU，不解码图像；此处检查丢帧策略。
-        runtime.console.write("读取录像时间戳和 IMU", recording=recording_name, step=(1, 4))
+        reconstruction.console.write("读取录像时间戳和 IMU", recording=recording_name, step=(1, 4))
         run_inputs = visual_recordings.prepare(video, paths, allow_irregular=request.allow_irregular,
             frame_step=request.configuration.values.video.frame_step)
         frames = run_inputs.manifest["frames"]
-        runtime.console.write(f"{frames['n_frames_used']} 帧；时长 {frames['duration_s']:.1f} 秒", recording=recording_name)
+        reconstruction.console.write(f"{frames['n_frames_used']} 帧；时长 {frames['duration_s']:.1f} 秒", recording=recording_name)
 
         # 2. 原片只裁切一次，所有建图与定位尝试复用相同镜头视频。
         stage = "准备镜头视频"
-        runtime.console.write("准备镜头视频，供所有重建尝试共用", recording=recording_name, step=(2, 4))
+        reconstruction.console.write("准备镜头视频，供所有重建尝试共用", recording=recording_name, step=(2, 4))
         rear_manifest = (calibration_assets.freeze_rear_calibration(environment_assets.rear, paths.output/'devices/rear')
                          if environment_assets.rear else None)
         rear_measured = calibration_assets.load_frozen_rear(rear_manifest) if rear_manifest else None
-        settings = runtime.reconstruction_settings(dict(os.environ), camera_json=selected.assets.camera_json,
+        settings = reconstruction.reconstruction_settings(dict(os.environ), camera_json=selected.assets.camera_json,
                                                     front_mask=selected.assets.front_mask,
                                                     output=paths.debug / "settings", parameters=request.configuration.values,
                                                     **(dict(rear_measurement=rear_measured) if rear_measured is not None else {}))
         settings = replace(settings, rear_manifest=rear_manifest)
         if environment_assets.poster is not None:
-            expected_poster_hashes = poster_assets.PosterAssetHashes(
+            expected_poster_hashes = calibration_assets.PosterAssetHashes(
                 layout_sha256=environment_assets.poster.board.asset_hash,
                 rear_sha256=environment_assets.rear.identity.sha256)
-            poster_manifest = poster_assets.prepare(
+            poster_manifest = calibration_assets.prepare_poster(
                 video, paths.output/'environment_poster', environment_assets.poster.path,
                 rear_manifest.parent/'calibration.json', request.configuration.values.environment_tags,
-                expected=expected_poster_hashes, progress=runtime.console.write)
+                expected=expected_poster_hashes, progress=reconstruction.console.write)
             settings = replace(settings, poster_manifest=poster_manifest)
-        context = ReconstructionContext(paths, request, settings, frames['n_frames_used'])
-        videos = visual_recordings.prepare_lens_videos(video, context.visual, lenses=('front', 'rear') if request.mode == 'dual' else ('front',))
+        context = ReconstructionContext(paths, settings, request.configuration.values, frames['n_frames_used'], request.cores)
+        videos = visual_recordings.prepare_lens_videos(video, context, lenses=('front', 'rear') if request.mode == 'dual' else ('front',))
 
         # 3. 重试一整轮“建图 → 定位 → 融合”，依据融合质量选择最佳尝试。
         stage = "轨迹重建"
-        runtime.console.write("重建轨迹：建图 → 逐图定位与合并 → IMU 融合", recording=recording_name, step=(3, 4))
+        reconstruction.console.write("重建轨迹：建图 → 逐图定位与合并 → IMU 融合", recording=recording_name, step=(3, 4))
         attempt = reconstruction.run_attempts(videos, run_inputs, context, recording_name=video.name)
         summary["tries"] = attempt.attempts
         if attempt.reason:
@@ -162,7 +185,7 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
 
         # 4. 用本次选中的相机与夹爪几何，将融合结果转换为相机/TCP 轨迹。
         stage = "生成轨迹产物"
-        runtime.console.write("生成轨迹、地图、视频与报告", recording=recording_name, step=(4, 4))
+        reconstruction.console.write("生成轨迹、地图、视频与报告", recording=recording_name, step=(4, 4))
         calibration_record = selected.postprocess_record(fingerprint["calibration"]["assets"])
         calibration_record.update(yaml=str(settings.front_settings), rear_yaml=str(settings.rear_settings),
                                   mask=str(settings.front_mask), source_mask=str(selected.assets.front_mask))
@@ -171,7 +194,7 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
         if settings.poster_manifest is not None:
             calibration_record['environment_poster_manifest'] = str(settings.poster_manifest)
         metrics = postprocess.export_trajectories(attempt.directory, run_inputs.manifest, paths.output, request.mode, video.name,
-                                         calibration_record, command={
+                                         calibration_record, parameters=context.parameters, command={
             "parameters": provenance, "max_tries": request.max_tries, "chosen_try": attempt.chosen, "tries": attempt.attempts,
             "allow_irregular": request.allow_irregular, "keep_work": request.keep_work, "force": request.force, "cores": request.cores or None,
             "UMI_TRAJ_CALIB": os.environ.get("UMI_TRAJ_CALIB") or None,
@@ -211,3 +234,88 @@ def run_recording(video: Path, output_root: Path, request: TrajectoryRequest) ->
             results.finalize_result(paths.output, summary)
     reports.show_recording(summary)
     return summary
+
+
+REQUIRED_OUTPUTS = ('traj_tcp.txt', 'traj_camera.txt', 'traj_imu.txt', 'frames.csv', 'run_settings.json')
+
+
+def run_fingerprint(video: Path, selected: SelectedCalibration, request: TrajectoryRequest, *, environment_assets: EnvironmentAssets) -> dict:
+    request = config.resolve_trajectory_request(request)
+    stat = video.stat()
+    assets = selected.assets.hashes()
+    assets.update(environment_assets.fingerprint_assets())
+    fingerprint = {
+        'version': 2,
+        'recording': dict(path=str(video.resolve()), bytes=stat.st_size, mtime_ns=stat.st_mtime_ns),
+        'calibration': dict(serial=selected.camera_serial, assets=assets,
+                            version=selected.calibration_id, intrinsics_source=selected.intrinsics_source),
+        'options': dict(mode=request.mode, allow_irregular=request.allow_irregular,
+                        max_tries=request.max_tries),
+        'algorithm_parameters': request.configuration.computation_hash,
+        'code': artifact_identity.code_identity('trajectory'),
+        'engines': artifact_identity.engine_identity('trajectory'),
+    }
+    fingerprint['computation_hash'] = artifact_identity.canonical_hash(fingerprint)
+    fingerprint['evaluation_hash'] = request.configuration.evaluation_hash
+    return fingerprint
+
+
+@dataclass(frozen=True)
+class ReuseDecision:
+    summary: dict | None
+    reason: str
+
+
+def reuse_decision(output: Path, fingerprint: dict, *, notes: parameter_models.NoteParameters) -> ReuseDecision:
+    try:
+        summary = load_summary(output)
+    except (OSError, ValueError):
+        return ReuseDecision(None, '未找到可读取的成功摘要')
+    if not isinstance(summary, dict) or summary.get('status') != 'ok':
+        return ReuseDecision(None, '上次处理未成功')
+    previous = summary.get('run_fingerprint')
+    if not isinstance(previous, dict) or previous.get('version') != 2 or fingerprint.get('version') != 2:
+        return ReuseDecision(None, '结果缺少当前输入指纹')
+    for key, reason in (
+        ('recording', '录像信息已变化'),
+        ('calibration', '标定或夹爪配置已变化'),
+        ('options', '处理选项已变化'),
+        ('algorithm_parameters', '算法参数已变化'),
+        ('code', '算法代码已变化'),
+        ('engines', '外部引擎或依赖已变化'),
+    ):
+        if previous.get(key) != fingerprint[key]:
+            return ReuseDecision(None, reason)
+    required = REQUIRED_OUTPUTS if 'tcp_geometry' in fingerprint['calibration']['assets'] else tuple(
+        name for name in REQUIRED_OUTPUTS if name != 'traj_tcp.txt')
+    if 'rear_calibration' in fingerprint['calibration']['assets']:
+        try:
+            load_frozen_rear(output/'devices/rear/manifest.json',
+                 expected_hash=fingerprint['calibration']['assets']['rear_calibration'],
+                 expected_identity=fingerprint['calibration']['assets']['rear_identity'])
+        except (OSError, ValueError, KeyError, TypeError):
+            return ReuseDecision(None, 'rear 冻结标定缺失或发生变化')
+    if 'environment_poster' in fingerprint['calibration']['assets']:
+        try:
+            load_poster(output/'environment_poster/input.json')
+        except (OSError,ValueError,KeyError):
+            return ReuseDecision(None,'海报冻结资产缺失或发生变化')
+    for name in required:
+        path = result_path(output, name)
+        if not path.is_file() or path.stat().st_size == 0:
+            return ReuseDecision(None, '轨迹产物缺失或为空')
+    if previous.get('evaluation_hash') != fingerprint['evaluation_hash']:
+        if not all(key in summary for key in ('quality_evidence', 'quality_notes', 'constraint_fraction', 'camera_map_chains', 'map_position_starts_at_s', 'frames', 'tracking')):
+            return ReuseDecision(None, '缺少按新提醒规则重新评估的指标')
+        try:
+            import json
+            settings = json.loads(result_path(output, 'run_settings.json').read_text())
+            from software.trajectory.reporting.constraint_quality import evaluate_notes
+            # Validate the full evidence shape before accepting reuse; missing raw
+            # measurements must trigger a rerun rather than a partial report.
+            evaluate_notes(summary, notes)
+            if not isinstance(settings, dict):
+                raise ValueError('invalid run settings')
+        except (OSError, ValueError, KeyError, TypeError):
+            return ReuseDecision(None, '缺少可更新的参数记录或提醒指标')
+    return ReuseDecision(summary, '录像、标定与处理选项一致')

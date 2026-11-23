@@ -17,7 +17,6 @@ import numpy as np
 from software.calibration.pipeline import board_detection
 from software.calibration.pipeline import recordings
 from software.calibration.pipeline import runtime
-from software.calibration.algorithms import aprilgrid_detect
 from software.calibration.pipeline.steps import StageRunner
 from software.calibration.models import Step
 from software.calibration import result_io
@@ -156,7 +155,7 @@ class BoardCacheTests(unittest.TestCase):
             with patch.object(board_detection, 'detect_all', return_value=found) as detect:
                 dataset = Mock(return_value=root)
                 def run(step=2):
-                    return board_detection.detect_cached(dataset, aprilgrid_detect.GridDetector, cache=root / 'board.npz',
+                    return board_detection.detect_cached(dataset, cache=root / 'board.npz',
                         source_identity='same', step=step, workers=3, up=2.)
                 run()
                 cached = run()
@@ -196,7 +195,7 @@ class BoardCacheTests(unittest.TestCase):
             def stop_after_frame(gray, detector, up):
                 cancelled.set()
                 return detector.detect(gray)
-            with patch.object(aprilgrid_detect, 'detect_up', side_effect=stop_after_frame) as detect:
+            with patch.object(board_detection, 'detect_up', side_effect=stop_after_frame) as detect:
                 with self.assertRaises(CancelledError):
                     board_detection.detect_cached(root, Detector, cache=root/'cancelled.npz', source_identity='same',
                         step=1, workers=1, up=1., cancelled=cancelled)

@@ -2,26 +2,15 @@
 
 from __future__ import annotations
 
-from software.configuration import operational_settings as settings
-
 from pathlib import Path
 import argparse
 import csv
 import json
-import subprocess
 import tempfile
 
-from .results import attempt_paths, load_summary, result_path
-from software.vision.paths import exporter_paths
-from software.infrastructure.paths import PROJECT_ROOT
-
-
-ROOT = PROJECT_ROOT
-MAX_POINTS = 50000  # 每张子地图的浏览器绘制预算；完整点云仍在 .osa 中。
-
-
-class MapDataError(ValueError):
-    pass
+from software.trajectory.reporting.artifacts import attempt_paths, load_summary, result_path
+from software.vision import atlas
+from software.vision.atlas import MapDataError
 
 
 def attempt_directory(output: Path, summary: dict) -> Path | None:
@@ -104,48 +93,12 @@ def _correspondences(csv_path: Path, camera_path: Path, index: int):
     return source, target
 
 
-def prepare_display_map(raw: dict, alignment: dict) -> dict:
-    import numpy as np
-    from scipy.spatial.transform import Rotation
-
-    points = np.asarray(raw['points'], float).reshape(-1, 3)
-    points = points[np.isfinite(points).all(axis=1)]
-    count = len(points)
-    points = points[::max(1, (count+MAX_POINTS-1)//MAX_POINTS)]
-    keyframes = sorted(raw['keyframes'], key=lambda frame: frame['time'])
-    if alignment['status'] == 'aligned':
-        rotation = np.asarray(alignment['rotation'])
-        translation = np.asarray(alignment['translation'])
-        scale = alignment['scale']
-        points = scale*points @ rotation.T+translation
-        keyframes = [dict(frame,
-            position=(scale*rotation @ frame['position']+translation).tolist(),
-            quaternion=(Rotation.from_matrix(rotation)*Rotation.from_quat(frame['quaternion'])).as_quat().tolist())
-            for frame in keyframes]
-    bounds = np.quantile(points, [.02, .98], axis=0).tolist() if len(points) else None
-    return dict(index=raw['index'], id=raw['id'], lens='front', points=points.round(7).tolist(),
-                point_count=count, keyframes=keyframes, bounds=bounds, alignment=alignment,
-                coordinates='trajectory' if alignment['status'] == 'aligned' else 'map')
-
-
 def export_attempt(attempt: Path, output: Path) -> dict:
     """仅导出工作镜头图集；原片、地图、相机轨迹和设备档案均只读。"""
     archive = attempt / 'front/map/map.osa'
     require_local(archive, output)
-    executable, vocabulary = exporter_paths()
-    for path in (archive, executable, vocabulary):
-        if not path.is_file():
-            raise MapDataError(f'地图读取缺少 {path.name}；导出器可通过 install.sh 安装')
     with tempfile.TemporaryDirectory(prefix='umi-map-export-') as temporary_atlas:
-        raw_path = Path(temporary_atlas) / 'atlas.json'
-        try:
-            result = subprocess.run([str(executable), str(archive), str(vocabulary), str(raw_path)],
-                                    capture_output=True, text=True, timeout=settings.values('runtime')['map_export_timeout_s'])
-        except subprocess.TimeoutExpired as error:
-            raise MapDataError('地图读取超时') from error
-        if result.returncode:
-            raise MapDataError('地图读取失败：'+(result.stderr or result.stdout)[-500:])
-        raw = json.loads(raw_path.read_text())
+        raw = atlas.read_atlas(archive, Path(temporary_atlas) / 'atlas.json')
     camera = result_path(output, 'traj_camera.txt')
     require_local(camera, output)
     maps = []
@@ -161,7 +114,7 @@ def export_attempt(attempt: Path, output: Path) -> dict:
                 alignment = fit_similarity(*_correspondences(locations, camera, index))
             except (ValueError, KeyError, OSError) as error:
                 alignment = dict(status='unaligned', reason=f'地图对齐失败：{error}')
-        maps.append(prepare_display_map(item, alignment))
+        maps.append(atlas.prepare_display_map(item, alignment))
     return dict(kind='umi_map_view', schema_version=1, maps=maps,
                 source=dict(archive=str(archive.relative_to(output)), bytes=archive.stat().st_size),
                 note='工作镜头稀疏地图；相似变换拟合仅供展示，拟合残差不代表真实轨迹精度。')

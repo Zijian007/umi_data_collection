@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import unittest
 
 import numpy as np
 
-from software.trajectory.poster_vio.initialization import select_observations, seed_poses, robust_seed_poses
-from software.trajectory.poster_vio.initialization import align_inertial
-from software.trajectory.poster_vio.frontend import triangulate_track
+from software.trajectory.algorithms.poster_vio.initialization import select_observations, seed_poses, robust_seed_poses
+from software.trajectory.algorithms.poster_vio.initialization import align_inertial, inertial_tail_seed, single_tag_geometry
+from software.trajectory.algorithms.poster_vio.frontend import triangulate_track
 from software.vision.poster.geometry import camera_model
 
 
@@ -38,6 +39,29 @@ class PosterVioInitializationTests(unittest.TestCase):
                        points[tag_indices < 2], pixels[tag_indices < 2],
                        extrinsics['rear'], camera_model(measured))
 
+    def test_each_frame_unprojects_once_with_or_without_the_shared_pnp_cache(self):
+        from unittest.mock import patch
+        from test_poster_fusion import fixture
+        from software.vision.poster.pnp import FrameCandidateCache, solve_frame_candidates
+
+        _, _, _, _, extrinsics, _, parameters, detections, board, measured, _, _ = fixture()
+        times, indices, _, points, pixels, _ = select_observations(detections, board, measured, parameters)
+        model = camera_model(measured)
+        args = times, indices, points, pixels, extrinsics['rear'], model, parameters
+
+        def reference_solver(points, pixels, camera, rms):
+            return solve_frame_candidates(points, pixels, camera, rms)
+
+        reference = robust_seed_poses(*args, solve_candidates=reference_solver)
+        for solver in (None, FrameCandidateCache()):
+            with self.subTest(cached=solver is not None), patch.object(type(model), 'unproject',
+                    autospec=True, side_effect=type(model).unproject) as unproject:
+                result = robust_seed_poses(*args, solve_candidates=solver)
+                self.assertEqual(unproject.call_count, len(times))
+                for actual, expected in zip(result[:4], reference[:4]):
+                    np.testing.assert_array_equal(actual, expected)
+                self.assertEqual(result[4], reference[4])
+
     def test_robust_initializer_never_seeds_from_single_tag_frames(self):
         from test_poster_fusion import fixture
 
@@ -52,6 +76,67 @@ class PosterVioInitializationTests(unittest.TestCase):
             robust_seed_poses(
                 node_times, np.arange(len(node_times)), points[selected], pixels[selected],
                 extrinsics['rear'], camera_model(measured), parameters)
+
+    def test_robust_initializer_skips_isolated_single_tag_frame_within_budget(self):
+        from test_poster_fusion import fixture
+
+        _, _, _, _, extrinsics, _, parameters, detections, board, measured, _, _ = fixture()
+        times, indices, _, points, pixels, _ = select_observations(detections, board, measured, parameters)
+        weak_frame = len(times) // 2
+        selected = indices != weak_frame
+        selected[np.flatnonzero(~selected)[0]] = True
+        args = (times, indices[selected], points[selected], pixels[selected],
+                extrinsics['rear'], camera_model(measured))
+
+        retained, _, _, keep, diagnostics = robust_seed_poses(*args, parameters)
+
+        np.testing.assert_array_equal(retained, np.delete(times, weak_frame))
+        np.testing.assert_array_equal(keep, indices[selected] != weak_frame)
+        self.assertEqual(diagnostics['removed'][0]['reason'], 'insufficient_tags')
+        self.assertTrue(diagnostics['removed'][0]['single_tag_candidate'])
+        self.assertTrue(diagnostics['budget']['allowed'])
+        with self.assertRaisesRegex(ValueError, 'count_budget'):
+            robust_seed_poses(*args, replace(parameters, tag_maximum_cull_fraction=0.))
+
+    def test_single_tag_checks_orientation_while_leaving_camera_position_free(self):
+        from test_poster_fusion import fixture
+
+        measured = fixture()[9]
+        model = camera_model(measured)
+        points = np.array([[-.04, -.04, 0.], [.04, -.04, 0.], [.04, .04, 0.], [-.04, .04, 0.]])
+        pixels = model.project(points + [.4, -.2, 1.2])
+        self.assertIsNone(single_tag_geometry(points, pixels, np.eye(3), model, 3.))
+        reversed_orientation = np.diag([-1., -1., 1.])
+        self.assertEqual(single_tag_geometry(points, pixels, reversed_orientation, model, 3.),
+                         'invalid_depth_or_rank')
+
+    def test_tail_preintegration_uses_board_gravity_bias_and_last_seed_velocity(self):
+        from scipy.spatial.transform import Rotation
+
+        poses = np.tile(np.eye(4), (2, 1, 1))
+        orientation = Rotation.from_euler('y', 30, degrees=True).as_matrix()
+        poses[:, :3, :3] = orientation
+        speeds = np.array([[-.2, -.3, .1], [.2, -.3, .1]])
+        poses[1, :3, 3] = speeds.mean(axis=0)
+        gravity = np.array([0., -9.81, 0.])
+        acceleration = np.array([.4, 0., 0.])
+        acc_bias, gyro_bias = np.array([.01, -.02, .03]), np.array([.1, .02, -.03])
+        imu = np.zeros((31, 7))
+        imu[:, 0] = np.linspace(0, 3, len(imu))
+        imu[:, 1:4] = gyro_bias
+        imu[:, 4:7] = orientation.T @ (acceleration - gravity) + acc_bias
+        times = np.array([0., 1., 1.02, 1.73, 3.])
+        from software.configuration import loader
+        from software.scene.management.inputs.scene import load_scene_parameters
+        seed, velocities, evidence = inertial_tail_seed(np.array([0., 1.]), poses, speeds, times,
+            imu, gravity, gyro_bias, acc_bias, parameters=load_scene_parameters(), fusion=loader.load('trajectory').values.fusion)
+        self.assertEqual(evidence['method'], 'smoothed_endpoint_preintegration')
+        np.testing.assert_allclose(seed[:2], poses, atol=1e-12)
+        dt = times[2:, None] - 1.
+        np.testing.assert_allclose(seed[2:, :3, 3], poses[-1, :3, 3] + speeds[-1] * dt
+                                   + 0.5 * acceleration * dt**2, atol=1e-12)
+        np.testing.assert_allclose(velocities[2:], speeds[-1] + acceleration * dt, atol=1e-12)
+        np.testing.assert_allclose(seed[-1, :3, :3], orientation, atol=1e-12)
 
     def test_triangulation_uses_task_poster_seed_without_map_state(self):
         from test_poster_fusion import fixture
@@ -118,7 +203,7 @@ class PosterVioInitializationTests(unittest.TestCase):
     def test_vio_frontend_refinement_and_holdout_settings_validate_and_snapshot(self):
         from dataclasses import asdict
         from software.scene.management.inputs.scene import load_scene_parameters
-        from software.scene.parameter_schema import nested_snapshot
+        from software.scene.parameters import nested_snapshot
 
         values = load_scene_parameters(overrides=dict(poster_vio=dict(
             frontend=dict(maximum_tracks=120, maximum_track_length=20),
@@ -138,7 +223,7 @@ class PosterVioInitializationTests(unittest.TestCase):
     def test_specialist_inspired_options_validate_in_expert_namespace(self):
         from dataclasses import asdict
         from software.scene.management.inputs.scene import load_scene_parameters
-        from software.scene.parameter_schema import nested_snapshot
+        from software.scene.parameters import nested_snapshot
 
         values = load_scene_parameters(overrides=dict(poster_vio=dict(keyframes=dict(maximum_dt_s=0.),
             frontend=dict(revisit=dict(enabled=False)), holdout=dict(natural_stride=0))))

@@ -19,7 +19,7 @@ from software.camera.x3.frame import output_frame_rate
 from software.trajectory.algorithms.fusion.alignment import AlignmentError, align_recording
 from software.trajectory.algorithms.inertial import integrate_gyro_rotation
 from software.trajectory.algorithms.fusion.data import load_inputs
-from software.trajectory.calibration.assets import read_basalt
+from software.camera.calibration_assets import read_basalt
 
 
 def rotation_residuals(inputs, parameters):

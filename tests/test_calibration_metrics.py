@@ -13,7 +13,7 @@ from software.calibration import acceptance
 from software.calibration.pipeline import inputs
 from software.calibration.solve import basalt
 from software.calibration.algorithms import board_pnp
-from software.calibration.algorithms.aprilgrid_detect import GridDetector
+from software.calibration.pipeline.board_detection import GridDetector
 from software.calibration.models import IntrinsicsResult, Kb4
 
 # Excerpt of a real basalt_calibrate log (IAQEB2609JPAR3, 2026-11-02); first and last optimisation steps.
@@ -104,7 +104,7 @@ class CoverageMetricTests(unittest.TestCase):
 
 class Kb4Tests(unittest.TestCase):
     def test_named_access_and_json_list(self):
-        kb4 = board_pnp.read_kb4(Path('software/trajectory/assets/samples/calibration_r1440.json'))
+        kb4 = board_pnp.read_kb4(Path('software/camera/assets/samples/calibration_r1440.json'))
         self.assertIsInstance(kb4, Kb4)
         self.assertEqual(kb4.principal_point, (kb4.cx, kb4.cy))
         self.assertEqual(json.loads(json.dumps(kb4)), list(kb4))

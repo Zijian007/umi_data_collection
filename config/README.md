@@ -1,6 +1,6 @@
 # 命令行、配置与测量资产
 
-配置层在整体业务中的位置见[业务心智模型](../docs/业务心智模型.md)；本页说明各配置文件的权威范围和覆盖顺序。
+本页按设备、批次、用户选项和算法参数说明配置位置与覆盖顺序。[从设备到结果](../docs/安装与日常使用.md#从设备到结果)
 
 ## 配置心智模型
 
@@ -10,14 +10,14 @@
 |---|---|---|---|
 | 用户意图 | `config/user.yaml` | 音频同步、factory 内参、并发和查看器是否启用 | 日常用户 |
 | 采集声明 | 批次 `collection.yaml`、套件 `kits/<kit>/kit.yaml` | 场景、任务、使用手、环境标签布局、设备和实测资产 | 数据采集者 |
-| 算法默认值 | `algorithms/trajectory.yaml`、`algorithms/scene_parameters.yaml`、`algorithms/calibration.yaml`、`algorithms/environment_tags.yaml` | 视觉、惯性、建图、定位、海报几何和验收门限 | 算法维护者 |
+| 算法默认值 | `algorithms/*.yaml`、`algorithm/kiwi.yaml`、`algorithm/specialist.yaml` | 视觉、惯性、建图、定位、海报几何、验收门限和音频同步 | 算法维护者 |
 | 执行与诊断 | `operations/runtime.yaml`、`operations/viewer.yaml`、`operations/gripper_tag_detection.yaml` | 线程、超时、查看器缓存和夹爪标签检测预算 | 工程维护者 |
 
 `config/` 中的 YAML 是项目默认值和用户入口；批次/套件中的声明才是具体数据的权威来源；`--expert-config` 只覆盖本次算法实验。运行结果会冻结本次实际配置和来源，不能通过修改默认 YAML 追溯或改写历史结果。
 
 ## 用户日常配置
 
-日常采集维护批次 `collection.yaml`；设备或夹爪变化时维护 `kit.yaml`；本机通用偏好写入 `config/user.yaml`。用户偏好的唯一默认值在 `config/user.defaults.yaml`，`user.yaml` 只填需要覆盖的字段。用户偏好使用 `schema_version: 2`；`collection.yaml` 不填写 schema_version。
+日常采集维护批次 `collection.yaml`，设备或夹爪变化时维护 `kit.yaml`，本机通用设置直接编辑 `config/user.yaml`。全部用户设置都在这份文件中列出，格式版本为 `schema_version: 2`。
 
 ```yaml
 schema_version: 2
@@ -36,7 +36,7 @@ viewer:
   port: null
 ```
 
-`features.audio_sync.enabled` 只影响没有任务级同步声明的双手 take；`features.factory_intrinsics.enabled` 为 true 时全局优先选择 factory 内参，否则沿用 kit.yaml。`runtime.parallel_tasks.enabled` 为 false 时强制任务并发为 1；为 true 时使用 `jobs`。`null` 表示沿用 `config/operations/viewer.yaml` 的默认值。`config/algorithms/` 保存算法参数，`config/operations/` 保存机器、查看器和检测预算；这些文件属于内部/专家配置，日常用户无需修改算法与操作默认文件。
+`features.audio_sync.enabled` 是双手任务的全局默认值。批次可在 `collection.yaml.recording.audio_sync.enabled` 覆盖，任务显式声明优先，单手任务使用本机时钟。`features.factory_intrinsics.enabled` 为 true 时全局优先选择 factory 内参，否则沿用 kit.yaml。`runtime.parallel_tasks.enabled` 为 false 时强制任务并发为 1，为 true 时使用 `jobs`。`null` 表示沿用 `config/operations/viewer.yaml` 的默认值。`config/algorithms/` 保存算法参数，`config/operations/` 保存机器、查看器和检测预算。
 
 日常运行先选输入目录；算法调参写 YAML；设备和实测几何写入各自的资产声明。三个程序的分工如下：
 
@@ -97,6 +97,17 @@ map_max_points: 20000
 ## 算法参数归属
 
 标定和单段轨迹抽取共用 [software/configuration/loader.py](../software/configuration/loader.py) 加载配置。场景流程由 `software/scene/management/inputs/scene.py` 加载场景参数，并复用轨迹配置。数值默认值集中在下面的 YAML 中。
+
+### 双手音频同步
+
+批次通过 `collection.yaml` 的 `recording.audio_sync.algorithm` 选择算法。两个文件是项目级设置，作用于所有使用对应算法的批次。
+
+- `kiwi.yaml` 包含指纹提取、投票门槛、GCC-PHAT 精对齐和长录制漂移参数。项目采用 48 kHz 音频、4096 点频谱窗、1024 点步长，每个锚峰最多配对 16 个指纹。 [Kiwi 参数](algorithm/kiwi.yaml)
+- `specialist.yaml` 包含采样率、包络低通、降采样、搜索范围和峰值比参数。 [Specialist 参数](algorithm/specialist.yaml)
+
+`umi-scene sync` 和 `umi-scene run` 都读取所选算法的文件。省略的键使用该算法的默认值。用 `run --show-config` 查看来源和实际参数，用 `sync --dry-run --json` 查看同步预览。同步记录在 `sync.json` 的 `inputs.parameters` 保存实际参数，数值变化后会重新估计偏移。
+
+### 轨迹与标定
 
 | 内容 | 管理位置 | 生效范围 |
 |---|---|---|
@@ -385,19 +396,18 @@ recording:
   arms: [left, right]
 scene:
   description: 海报采集
-reconstruction:
-  backend: scene_map
+backend:
+  mode: scene_map
+  scene_map:
+    poster_constraint:
+      enabled: true
+      method: staged
 environment_poster:
   layout_path: ../../hardware/calibration_targets/environment_poster.json
-  task_constraint:
-    enabled: true
-    method: staged
 ```
 
-`detection.enabled` 控制环境标签检测；`mapping.enabled`、`mapping.scale_correction.enabled`
-和 `task_constraint.enabled` 声明建图诊断、尺度修正和任务融合用途，统一由 collection 决定。
-检测开关省略时随用途自动开启；显式关闭检测与已开启用途冲突。尺度修正还要求 mapping，专家配置只调整数值参数。
-`poster_vio`、`poster_independent` 和 `auto` 只需声明后端及海报 layout_path，不必重复填写检测和任务融合开关；显式关闭这些能力会报配置冲突。`task_constraint.method` 的 staged/joint 只作用于 scene_map。旧的 `scene.tags` 不能作为当前用户配置。
+`environment_poster.detection.enabled` 控制环境标签检测。`environment_poster.mapping` 声明建图诊断与尺度修正，`backend.scene_map.poster_constraint` 声明地图定位的海报融合与初值选择。检测开关省略时随用途开启。显式关闭检测与已开启用途冲突。尺度修正要求开启建图海报用途。
+`poster_vio`、`poster_independent` 和 `auto` 从后端模式推导海报能力，配置中需提供 `environment_poster.layout_path`。
 
 `tag_minimum_side_px` / `tag_minimum_frames` 筛选像素尺寸和独立观测时刻；`tag_corner_sigma_px` / `tag_sigma_per_radius_px` 设置角点噪声；`tag_huber` 是每 ID 四角点共同的鲁棒核阈值；`tag_maximum_reprojection_rms_px` 检查初始化和最终像素残差。默认值只经合成数据验证。无足够观测保留基线，启用后的几何冲突明确失败。每段录像独立求解海报位姿，海报在录像内须静止、平整；任务融合本身不会改变已发布地图尺度；建图修正由下述开关单独控制。打印尺寸状态仍为 PDF 设计值，需核对成品尺寸后评估实拍效果。
 
@@ -410,7 +420,7 @@ rear 旋转修正改为共享因子实现：`tag_rear_rotation_refinement_enable
 
 ### 建图海报尺度
 
-任务估计后端由 `collection.yaml.reconstruction.backend` 选择，可由 `tasks.<take>.reconstruction.backend` 覆盖：`scene_map`（默认）沿用场景地图流程；`poster_independent` 用本录像独立重建并持续融合海报，统一为任务海报坐标；`poster_vio` 从本任务海报角点建立 PnP 种子，并在无预建地图的联合图中优化海报、IMU 和自然特征；`auto` 在批次有 `mapping/` 建图原片时先构建或复用场景地图，再按 `scene_map → poster_vio → poster_independent` 处理；没有 mapping 原片且没有可用地图时从 `poster_vio` 开始。`reconstruction.base_tag.enabled` 控制 `poster_vio` 是否使用 kit 中声明的夹爪基座标签，默认 true，也可在 `tasks.<take>.reconstruction.base_tag.enabled` 覆盖。无地图后端要求 `environment_poster.detection.enabled`、布局和 `task_constraint.enabled`。`task_constraint.method: staged|joint` 仍只选择场景地图后端的海报图初值；`map.layout: auto` 只推断地图布局，与后端自动回退不同。具体边界见[估计后端说明](../docs/场景处理.md#选择轨迹估计后端)。
+任务估计后端由 `collection.yaml.backend.mode` 选择。每个 take 可在 `tasks.<take>.backend` 覆盖个别字段。数值门槛的优先级由低到高为算法默认值、批次、任务和显式 `--expert-config`。后端顺序、字段与默认值见[估计后端说明](../docs/场景处理.md#选择轨迹估计后端)。
 
 `parameters.poster_vio` 的 `initialization` 管理整板/标签子集假设上限；`keyframes` 管理时间、位移和旋转选帧，间隔为 0 时保留逐帧对照；`frontend` 管理活动点、轨迹预算、长度、几何筛选及有界重关联；`culling` 管理短求解迭代、热启动重求解轮数和累计剔除预算；`holdout` 管理标签/自然像素留出及验收 RMS。默认值见 `algorithms/scene_parameters.yaml`，完整覆盖示例及证据边界见[场景处理](../docs/场景处理.md#选择轨迹估计后端)。
 
@@ -423,4 +433,4 @@ rear 旋转修正改为共享因子实现：`tag_rear_rotation_refinement_enable
 
 内部独立引擎用 `--tag-layout` 指定布局，`--rear-calibration measured|factory` 选择本设备 rear 来源，省略时尝试工厂兜底；环境海报数值默认来自 `environment_tags.yaml`，实验覆盖通过 `--config` 文件的 `environment_tags` 映射传入。默认只诊断，启用需要本设备可用的 rear 参数（正式标定或工厂兜底）；这些参数不自动开启标定 C 验证或共享场景的标签约束。
 
-共享任务的日常开关使用 `collection.yaml.environment_poster.detection.enabled`、`mapping.enabled`、`mapping.scale_correction.enabled` 和 `task_constraint.enabled`；`task_constraint.method` 可选 `staged` 或 `joint`，默认 `staged`。`staged` 先完成地图+IMU 基线，再进行海报优化；`joint` 用视觉种子直接构建包含地图先验、IMU 和海报角点的最终图。环境海报几何数值统一来自 `environment_tags.yaml`，场景专属建图参数仍由 `scene_parameters.yaml` 提供。单手质量失败后的独立回退显式沿用同一套标签策略，避免回退时悄悄丢掉已启用的海报约束。
+地图定位的海报配置位于 `backend.scene_map.poster_constraint`。`staged` 先完成地图与 IMU 基线，再进行海报优化。`joint` 用视觉种子构建包含地图先验、IMU 和海报角点的最终图。默认采用 `staged`。环境海报几何参数来自 `environment_tags.yaml`，场景建图参数来自 `scene_parameters.yaml`。单手地图定位失败后的独立回退沿用地图任务的海报开关。

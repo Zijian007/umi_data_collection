@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Callable, TypeVar, TypedDict
 
 import numpy as np
 
@@ -13,17 +13,19 @@ from software.configuration import loader as config
 from software.infrastructure import provenance as artifact_identity
 from software.scene import layout
 from software.scene.arms import ARMS
-from software.trajectory.calibration import selection
-from software.vision.models import LensVideo, VisualContext
+from software.trajectory import calibration as selection
+from software.vision.models import LensVideo, RecordingData, VisualContext
 
 
 if TYPE_CHECKING:
-    from software.trajectory.poster_vio.models import PosterVioRequest
-    from software.trajectory.poster_vio.solver import ArmSolveInput
     from software.camera.rear_fallback import FactoryRearCalibration
     from software.infrastructure.terminal import Console
-    from software.scene.overrides import SceneOverrides
-    from software.scene.pipeline.cache_audit import CacheAudit
+    from software.scene.parameters import SceneOverrides
+    from software.scene.cache import CacheAudit
+    from software.vision.poster.detection import DetectionSnapshot
+
+
+_AlgorithmParameters = TypeVar('_AlgorithmParameters')
 
 
 @dataclass(frozen=True)
@@ -131,6 +133,10 @@ class SceneParameters:
     recording_max_shutter_s: float
     recording_max_exposure_cv: float
 
+    def for_algorithm(self, parameter_type: type[_AlgorithmParameters]) -> _AlgorithmParameters:
+        """Project the resolved configuration onto the algorithm's declared fields."""
+        return parameter_type(**{field.name: getattr(self, field.name) for field in fields(parameter_type)})
+
 
 @dataclass(frozen=True)
 class Scene:
@@ -150,6 +156,10 @@ class Scene:
     environment_tags_enabled: bool = False
     reconstruction_mode: str = 'scene_map'
     poster_vio_base_tag_enabled: bool = True
+    recording_trim: dict = field(default_factory=dict)
+    scene_map_poster_constraint_enabled: bool | None = None
+    scene_map_tag_detection_enabled: bool | None = None
+    scene_map_edge_trim: bool = False
 
     @property
     def root(self) -> Path:
@@ -257,16 +267,6 @@ class Episode:
 
 
 @dataclass(frozen=True)
-class FusedTrajectory:
-    """IMU 位姿位于调用方声明的参考系；可为固定场景或单次局部坐标。"""
-    T_reference_imu: np.ndarray
-    tracked: np.ndarray
-    front_tracked: np.ndarray
-    evidence: dict
-
-
-
-@dataclass(frozen=True)
 class ArmTrajectory:
     """可供双手对齐与元数据写入直接使用的单手结果。"""
     episode_times_s: np.ndarray
@@ -274,6 +274,7 @@ class ArmTrajectory:
     frame_id: str
     tcp_frame: dict
     metadata: dict = field(default_factory=dict)
+    frame_rows: list[dict[str, str]] | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -304,9 +305,19 @@ class PreparedRecording:
     lens_videos: tuple[LensVideo, ...]
     video_times_s: np.ndarray  # 原始视频时钟，第一帧约为 0；不含 EuRoC 的人工 +1 s。
     imu: np.ndarray  # 本机 IMU 时间、gyro xyz、acc xyz。
+    data: RecordingData
 
-    def lens_video(self, lens: str):
-        return next(video for video in self.lens_videos if video.lens == lens)
+    source_frame_start: int = 0  # 裁剪首帧在原始 INSV 中的帧号。
+    full_video_times_s: np.ndarray | None = None
+    render_lens: Callable[[str, VisualContext, int], LensVideo] | None = field(default=None, repr=False)
+
+    def lens_video(self, lens: str) -> LensVideo:
+        for video in self.lens_videos:
+            if video.lens == lens:
+                return video
+        if self.render_lens is None or lens not in self.camera.measurements:
+            raise ValueError(f'录像没有可用的 {lens} 镜头')
+        return self.render_lens(lens, self.context, self.source_frame_start)
 
 
 @dataclass(frozen=True)
@@ -319,11 +330,8 @@ class TaskInputs:
     arm_cpu_sets: dict[str, str] | None
     cache_audit: CacheAudit | None
     console: Console
-    # Optional frozen numerical replay. Normal poster-VIO runs prepare these
-    # from task recordings; replay callers must supply all three together.
-    poster_vio_request: PosterVioRequest | None = None
-    poster_vio_arms: tuple[ArmSolveInput, ...] | None = None
-    poster_vio_board_seed: np.ndarray | None = None
+    detections: dict[str, DetectionSnapshot | None] = field(default_factory=dict)
+    poster_pnp_candidates: dict[str, Callable] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

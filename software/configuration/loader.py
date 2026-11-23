@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from pathlib import Path
-from typing import get_type_hints
+from typing import get_args, get_origin, get_type_hints
 import json
 import math
 
@@ -57,7 +57,7 @@ def merge_overrides(base: dict, overlay: dict, prefix: str = '') -> dict:
     return result
 
 
-def _decode_dataclass(cls, configuration_values: dict, prefix: str = ''):
+def decode_dataclass(cls, configuration_values: dict, prefix: str = ''):
     if not isinstance(configuration_values, dict):
         raise ValueError(f"{prefix or cls.__name__} 必须是配置表")
     hints = get_type_hints(cls)
@@ -70,9 +70,15 @@ def _decode_dataclass(cls, configuration_values: dict, prefix: str = ''):
         if is_dataclass(typ):
             if not isinstance(value, dict):
                 raise ValueError(f'{key} 必须是配置表')
-            result[name] = _decode_dataclass(typ, value, key + '.')
+            result[name] = decode_dataclass(typ, value, key + '.')
             continue
-        if typ is float and type(value) in (float, int):
+        if get_origin(typ) is tuple:
+            item_types = get_args(typ)
+            if (not isinstance(value, (list, tuple)) or len(value) != len(item_types)
+                    or any(type(item) is not item_type for item, item_type in zip(value, item_types))):
+                raise ValueError(f'{key} 必须包含 {len(item_types)} 个指定类型的值')
+            value = tuple(value)
+        elif typ is float and type(value) in (float, int):
             value = float(value)
         elif type(value) is not typ:
             raise ValueError(f'{key} 类型错误：需要 {typ.__name__}')
@@ -145,7 +151,7 @@ def _validate_parameters(values) -> None:
 def decode_parameters(kind: str, configuration_values: dict):
     """Decode a complete snapshot, including child-process boundaries; no defaults."""
     cls = {'calibration': CalibrationParameters, 'trajectory': TrajectoryParameters}[kind]
-    values = _decode_dataclass(cls, configuration_values)
+    values = decode_dataclass(cls, configuration_values)
     _validate_parameters(values)
     return values
 

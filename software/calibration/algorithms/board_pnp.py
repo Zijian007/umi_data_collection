@@ -16,7 +16,7 @@ import numpy as np
 from software.configuration import loader as config
 from software.configuration import parameter_models
 from software.calibration.models import Kb4
-from software.camera.x3.factory import Kb4Model
+from software.camera.x3.factory_geometry import Kb4Model
 from software.camera.x3.frame import SRC_H
 
 

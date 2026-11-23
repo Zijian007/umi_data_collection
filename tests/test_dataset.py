@@ -15,7 +15,7 @@ from software.scene import cli
 from software.dataset.export import build
 from software.dataset.reader import load_episode
 from software.scene.management import episodes
-from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs, scene as scene_inputs
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
 from software.scene import workflow
 from software.infrastructure.file_store import write_yaml
 from registry_fakes import write_task_configuration, read_task_configuration
@@ -78,7 +78,7 @@ class DatasetTests(unittest.TestCase):
         entry = manifest['episodes'][0]
         # Removing source files/registries from the reader's reach is unnecessary:
         # these imports must never be consulted when reading an exported package.
-        with patch('software.dataset.source.read_accepted_episode', side_effect=AssertionError('source accessed')):
+        with patch('software.dataset.export.read_accepted_episode', side_effect=AssertionError('source accessed')):
             metadata, arrays = load_episode(self.output, entry['path'])
         self.assertEqual(metadata['instruction'], '双手把盒子放入托盘')
         self.assertEqual(metadata['missing_channels'], ['gripper'])
@@ -128,7 +128,7 @@ class DatasetTests(unittest.TestCase):
             build([self.f.episode_path], self.output)
 
     def test_corrupt_video_or_source_change_never_publishes_partial_package(self):
-        with patch('software.dataset.source.verify_accepted_episode_unchanged', side_effect=ValueError('源结果发生变化')):
+        with patch('software.dataset.export.verify_accepted_episode_unchanged', side_effect=ValueError('源结果发生变化')):
             with self.assertRaisesRegex(ValueError, '发生变化'):
                 build([self.f.episode_path], self.output)
         self.assertFalse(self.output.exists())
@@ -142,7 +142,7 @@ class DatasetTests(unittest.TestCase):
         from dataclasses import replace
         from software.dataset import export
 
-        first = export.source.read_accepted_episode(self.f.episode_path)
+        first = export.read_accepted_episode(self.f.episode_path)
         second = replace(first, name=first.name.with_name('take_002'))
         copy_video = export.shutil.copy2
 
@@ -151,7 +151,7 @@ class DatasetTests(unittest.TestCase):
                 raise OSError('第二集视频复制失败')
             return copy_video(source, target)
 
-        with patch.object(export.source, 'select_accepted_episodes', return_value=[first, second]), \
+        with patch.object(export, 'select_accepted_episodes', return_value=[first, second]), \
                 patch.object(export.shutil, 'copy2', side_effect=fail_second_video):
             with self.assertRaisesRegex(OSError, '第二集视频复制失败'):
                 build([self.f.episode_path], self.output)

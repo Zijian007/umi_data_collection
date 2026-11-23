@@ -1,0 +1,7 @@
+# 双手音频同步 · 音量包络互相关
+sample_rate_hz: 16000  # 单声道 PCM 采样率
+envelope_cutoff_hz: 50.0  # 包络低通截止频率
+decimation: 16  # 互相关使用每 16 个样本中的一个
+max_offset_s: 30.0  # 搜索范围为正负 30 秒
+min_peak_ratio: 1.3  # 主峰相对次峰的最低倍数
+lobe_half_width_s: 0.25  # 计算次峰时排除主峰左右各 0.25 秒

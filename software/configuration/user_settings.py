@@ -16,19 +16,25 @@ from software.infrastructure.paths import CONFIG_ROOT
 
 
 DEFAULT_PATH = CONFIG_ROOT / 'user.yaml'
-DEFAULTS_PATH = CONFIG_ROOT / 'user.defaults.yaml'
+_DEFAULTS = {
+    'schema_version': 2,
+    'features': {
+        'audio_sync': {'enabled': False},
+        'factory_intrinsics': {'enabled': False},
+    },
+    'runtime': {'parallel_tasks': {'enabled': False, 'jobs': 1}, 'cores': 'auto'},
+    'viewer': {'host': None, 'port': None},
+}
 
 
 def _validate(values: dict) -> dict:
-    """Merge v2 user preferences with their single YAML default source."""
+    """Validate user preferences, including older files with omitted fields."""
     from software.configuration.loader import merge_overrides
     if not isinstance(values, dict):
         raise ValueError('config/user.yaml 顶层必须是配置表')
-    if 'schema_version' in values and (type(values['schema_version']) is not int or values['schema_version'] != 2):
-        raise ValueError('config/user.yaml 需要 schema_version: 2；旧格式请改为 features/runtime/viewer')
-    values = merge_overrides(read_yaml(DEFAULTS_PATH), values, 'user.')
+    values = merge_overrides(_DEFAULTS, values, 'user.')
     if type(values['schema_version']) is not int or values['schema_version'] != 2:
-        raise ValueError('user.defaults.yaml 需要 schema_version: 2')
+        raise ValueError('config/user.yaml 需要 schema_version: 2；旧格式请改为 features/runtime/viewer')
     features, runtime, viewer = values['features'], values['runtime'], values['viewer']
     for name, group in features.items():
         if type(group['enabled']) is not bool:
@@ -60,7 +66,7 @@ class UserConfig:
     values: MappingProxyType
 
     def report(self) -> dict:
-        return dict(path=str(self.path), defaults=str(DEFAULTS_PATH), values=dict(self.values), scope='user_common')
+        return dict(path=str(self.path), values=dict(self.values), scope='user_common')
 
 
 def load(path: Path | None = None) -> UserConfig:

@@ -15,7 +15,7 @@ from software.calibration import result_io
 from software.calibration.models import Decision, Step
 from software.calibration.pipeline import runtime
 from software.infrastructure.file_store import locked
-from software.trajectory.calibration import assets as trajectory_calibration
+from software.camera import calibration_assets as camera_assets
 
 
 def activation_status(doc):
@@ -71,7 +71,7 @@ def install_bundle(output: Path, force: bool, camera_serial: str | None = None) 
     except RejectedResult as error:
         runtime.console.write(str(error), state='失败')
         return 1
-    except (OSError, ValueError, KeyError, RuntimeError, trajectory_calibration.CalibrationError) as error:
+    except (OSError, ValueError, KeyError, RuntimeError, camera_assets.CalibrationError) as error:
         runtime.console.write(f'不能安装标定：{error}', state='失败')
         return 2
     runtime.console.write(f"已更新当前标定：相机 {device['serial']}；front / {device['intrinsics_source']}", state='完成')
@@ -98,7 +98,7 @@ def _install_rear_asset(measurement: Path, *, force: bool = False, camera_serial
             if raw != expected or metadata['C'] != result_io.measurement(doc, Step.TRAJECTORY) or metadata['D'] != result_io.measurement(doc, Step.GRAVITY):
                 raise ValueError('环境镜头文件与当前参数或证据不一致')
             result = registry.register_rear(measurement)
-    except (OSError, ValueError, KeyError, RuntimeError, trajectory_calibration.CalibrationError) as error:
+    except (OSError, ValueError, KeyError, RuntimeError, camera_assets.CalibrationError) as error:
         runtime.console.write(str(error), state='失败')
         return 2
     runtime.console.write(f"已更新当前标定：相机 {result['serial']}；rear", state='完成')

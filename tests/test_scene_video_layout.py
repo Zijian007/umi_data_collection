@@ -8,14 +8,10 @@ from unittest.mock import patch
 
 from software.camera import registry
 from software.scene import layout
-from software.scene.management.batch import snapshot as batches
-from software.scene.management import ingest, processing
-from software.scene.management.inputs import (
-    kit as kit_inputs,
-    batch as batch_inputs,
-    episode as episode_inputs,
-    scene as scene_inputs,
-)
+from software.scene.management import batch_snapshot as batches
+from software.scene.management import ingest, batch_processing as processing
+from software.scene.management.collection_schema import normalize_collection
+from software.scene.management.inputs import scene as kit_inputs, batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
 from software.scene.pipeline import recordings
 from software.infrastructure.file_store import write_yaml
 import test_scene as fixtures
@@ -41,20 +37,13 @@ class SceneVideoLayoutTests(unittest.TestCase):
         mapping = batch / 'mapping/map.insv'
         mapping.parent.mkdir(parents=True)
         mapping.write_text('mapping')
-        collection = dict(kit='rig', recording=dict(arms=['left']), scene=dict(description=''),
-                          reconstruction=dict(backend='auto'))
-        required, scene_map, has_mapping = batches.mapping_requirements(
-            batch, collection)
-        self.assertTrue(required)
-        self.assertFalse(scene_map)
-        self.assertTrue(has_mapping)
-
-        empty = self.f.scene.root / 'auto_without_mapping'
-        required, scene_map, has_mapping = batches.mapping_requirements(
-            empty, collection)
-        self.assertFalse(required)
-        self.assertFalse(scene_map)
-        self.assertFalse(has_mapping)
+        collection = normalize_collection(dict(kit='rig', recording=dict(arms=['left']),
+                                               scene={}, reconstruction=dict(backend='auto')))
+        for directory, expected in ((batch, True), (self.f.scene.root / 'auto_without_mapping', False)):
+            with self.subTest(directory=directory):
+                has_mapping = bool(recordings.insv_files(directory / 'mapping'))
+                self.assertEqual(batches.mapping_requirements(collection, has_mapping=has_mapping),
+                                 (expected, False))
 
     def test_prepared_scene_and_batch_are_discovered_without_copying_local_videos(self):
         scene = self.f.root / 'scenes/shelf'

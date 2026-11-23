@@ -1,7 +1,7 @@
-from software.scene.management.inputs import kit as kit_inputs
+from software.scene.management.inputs import scene as kit_inputs
 """一轮建图对应一个批次：延后处理、显式复用、失败保护和建图片隔离。"""
 from software.infrastructure import provenance as artifact_identity
-from software.scene.pipeline.maps import lifecycle as map_lifecycle
+from software.scene.pipeline.maps import repository as map_lifecycle
 from contextlib import redirect_stdout
 import io
 import json
@@ -13,12 +13,7 @@ from unittest.mock import patch
 from software.camera import registry
 from software.scene import cli, workflow
 from software.scene.management import ingest
-from software.scene.management.inputs import (
-    kit as kit_inputs,
-    batch as batch_inputs,
-    episode as episode_inputs,
-    scene as scene_inputs,
-)
+from software.scene.management.inputs import scene as kit_inputs, batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
 import test_scene as fixtures
 
 

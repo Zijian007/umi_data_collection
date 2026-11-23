@@ -1,5 +1,6 @@
 """套件单/双手、批次配置、离线处理、验收和导出的完整业务回归。"""
-from software.scene.pipeline.tasks.backends import scene_reconstruction
+from dataclasses import replace
+from software.scene.pipeline.tasks import scene_map as scene_reconstruction
 import io
 import json
 import unittest
@@ -7,12 +8,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import (
-    batch as batch_inputs,
-    episode as episode_inputs,
-    kit as kit_inputs,
-    scene as scene_inputs,
-)
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
 from software.scene.management import episodes
 from software.scene import cli, layout, workflow
 from software.infrastructure.file_store import write_yaml
@@ -101,7 +97,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
     def test_reconstruction_failure_reuses_cached_localization_and_keeps_success(self):
         workflow.run_episode(self.f.episode_path)
         output=(self.f.task_root/'results').resolve()
-        with patch('software.scene.spatial.fusion.fuse',side_effect=ValueError('retry fusion')):
+        with patch('software.trajectory.algorithms.fixed_map.fusion.fuse',side_effect=ValueError('retry fusion')):
             with self.assertRaisesRegex(ValueError,'retry fusion'):
                 workflow.run_episode(self.f.episode_path,force=True)
         self.assertEqual((self.f.task_root/'results').resolve(),output)
@@ -111,7 +107,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
         report = self.f.task_root / state['attempt']['preflight_report']
         self.assertTrue(report.is_file())
         self.assertTrue(json.loads(report.read_text())['passed'])
-        with patch('software.scene.spatial.slam.localize',side_effect=AssertionError('cached localization must be reused')):
+        with patch('software.scene.spatial.localize',side_effect=AssertionError('cached localization must be reused')):
             workflow.run_episode(self.f.episode_path,force=True)
 
     def test_damaged_localization_cache_recomputes_only_that_entry(self):
@@ -132,6 +128,33 @@ class EpisodeLifecycleTests(unittest.TestCase):
                 statuses = [item['status'] for item in audit if item['stage'] == 'localize']
                 self.assertEqual(statuses.count('invalidated'), 1)
                 self.assertEqual(statuses.count('computed'), 1)
+
+    def test_map_localization_cache_is_specific_to_the_recording_window(self):
+        episode = episode_inputs.read_episode(self.f.episode_path, verify=False)
+        original = self.f.prepared_recordings[episode.recordings['right']]
+        times = original.video_times_s
+        first = replace(original, full_video_times_s=times, video_times_s=times[5:45], source_frame_start=5)
+        second = replace(original, full_video_times_s=times, video_times_s=times[10:50], source_frame_start=10)
+        manifest = dict(version='fixture', maps={'shared_front': dict(placement=dict(scale=2.3))})
+
+        def localize(recording):
+            return scene_reconstruction.localize_with_cache(
+                episode, 'right', recording, 'front', self.f.root / 'map.osa', 0, manifest)
+
+        def observations(recording, lens, *args, **kwargs):
+            raw = self.f.observations(recording, lens)
+            start = recording.source_frame_start
+            stop = start + len(recording.video_times_s)
+            return replace(raw, imu_times_s=raw.imu_times_s[start:stop],
+                           T_reference_camera=raw.T_reference_camera[start:stop],
+                           indices=raw.indices[start:stop] - start)
+
+        with patch.object(scene_reconstruction.slam, 'localize_with_recovery',
+                          wraps=scene_reconstruction.slam.localize_with_recovery) as compute, \
+             patch.object(scene_reconstruction.slam, 'localize', side_effect=observations):
+            for recording in (original, first, second, first):
+                localize(recording)
+        self.assertEqual([call.args[0].source_frame_start for call in compute.call_args_list], [0, 5, 10])
 
     def test_failed_localization_retains_engine_logs_and_previous_result(self):
         workflow.run_episode(self.f.episode_path)
@@ -175,7 +198,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
         workflow.run_episode(self.f.episode_path)
         output = (self.f.task_root/'results').resolve()
         before = (output/'episode.json').read_bytes()
-        with patch('software.scene.pipeline.tasks.results.result_writer.write_episode_result', side_effect=OSError('report write failed')):
+        with patch('software.scene.pipeline.tasks.publication.write_episode_result', side_effect=OSError('report write failed')):
             with self.assertRaisesRegex(OSError, 'report write failed'):
                 workflow.run_episode(self.f.episode_path, force=True)
         self.assertEqual((self.f.task_root/'results').resolve(), output)

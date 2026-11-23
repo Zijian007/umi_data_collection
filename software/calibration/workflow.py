@@ -7,7 +7,7 @@ Rear calibration supplies only a trajectory generator and its pinned input ident
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 import json
@@ -18,15 +18,15 @@ import threading
 from software.configuration import loader as config
 from software.infrastructure import provenance as artifact_identity
 from software.calibration import acceptance, devices, reports, result_io
-from software.calibration.algorithms import aprilgrid_detect, board_pnp
+from software.calibration.algorithms import board_pnp
 from software.calibration.models import CalibrationRequest, VerificationRequest, RunPaths, ExecutionOptions, Step, ROLE_STEPS, Decision
 from software.calibration.pipeline import board_detection, inputs, recordings, runtime
 from software.calibration.pipeline.steps import StageRunner
-from software.calibration.solve import basalt, factory as factory_solver
-from software.calibration.validation import factory, gravity, trajectory
+from software.calibration.solve import basalt, factory_intrinsics as factory_solver
+from software.calibration.validation import factory_comparison as factory, gravity, trajectory
 from software.camera.calibration_source import validate as validate_source
 from software.infrastructure.file_store import atomic_file, locked
-from software.trajectory.calibration import assets
+from software.camera import calibration_assets as assets
 from software.vision.runtime import write_error_log
 
 
@@ -36,8 +36,7 @@ def parameter_record(configuration, trajectory_configuration):
         trajectory_code=artifact_identity.code_identity('trajectory'), trajectory_engines=artifact_identity.engine_identity('trajectory'))
 
 
-def _document(paths, subject, sources, provenance, *, operation, resume):
-    previous = result_io.read(paths.output) if resume else {}
+def _document(paths, subject, sources, provenance, *, operation, previous):
     if previous and (previous['operation'] != operation or
             any(previous['subject'][k] != subject[k] for k in ('serial', 'lens'))):
         raise ValueError('恢复目录的操作、设备或镜头不一致，请选择新输出目录')
@@ -45,9 +44,7 @@ def _document(paths, subject, sources, provenance, *, operation, resume):
         raise ValueError('恢复目录的内参来源不一致，请为另一来源使用独立结果目录')
     doc = previous or dict(measurements={}, execution=dict(steps={}), evaluation=None, evaluation_history=[])
     if previous and any(doc[k] != value for k, value in (('inputs', sources), ('computation', provenance), ('subject', subject))):
-        if doc.get('evaluation'):
-            doc['evaluation_history'].append(doc['evaluation'])
-        doc['evaluation'] = None
+        result_io.archive_evaluation(doc)
     doc.update(operation=operation, subject=subject, inputs=sources, computation=provenance, output=str(paths.output))
     doc['execution'].update(status='running', error=None, details={})
     result_io.write(paths.output, doc)
@@ -81,7 +78,7 @@ def _detect_board(dataset, execution, board, role, source_identity, *, cancelled
     if background:
         label += '（后台，与 A 求解并行）' if role == 'A' else '（后台，与 A/B 并行）'
     with runtime.timed(timings, 'detect', label=label):
-        found = board_detection.detect_cached(dataset, aprilgrid_detect.GridDetector,
+        found = board_detection.detect_cached(dataset,
             cache=execution.paths.work/f'{role}_board.npz', source_identity=source_identity,
             step=step, workers=execution.workers, up=board.detection_upscale, cancelled=cancelled)
     return found, dict(timings['detect'], background=background, workers=execution.workers)
@@ -96,15 +93,20 @@ def _coverage(directory, path, execution, grid, board, *, role, source_identity,
         return board_pnp.measure_board_coverage(found, board_pnp.read_kb4(path), grid, parameters=board)
 
 
+def _validation_detections(dataset, execution, board, identity, detection):
+    found, timing = (detection.result() if detection is not None else
+                     _detect_board(dataset, execution, board, 'C', identity))
+    execution.timings.setdefault('C.detect', timing)
+    return found
+
+
 def _validate(video, dataset, execution, runner, identity, parameter_file, bundle, *,
               grid, board, trajectory_configuration, generator=None, is_sample=False, detection=None):
     step = Step.SAMPLE if is_sample else Step.TRAJECTORY
     def measure():
         try:
             with runtime.timed(execution.timings, ('sample' if is_sample else 'candidate') + '.detect_wait'):
-                found, timing = (detection.result() if detection is not None else
-                    _detect_board(dataset, execution, board, 'C', identity['source']))
-            execution.timings.setdefault('C.detect', timing)
+                found = _validation_detections(dataset, execution, board, identity['source'], detection)
             return trajectory.trajectory_check(video, found, execution, grid=grid, board=board,
                 trajectory_configuration=trajectory_configuration, calibration_json=parameter_file,
                 bundle=bundle, tag='sample' if is_sample else 'candidate', generator=generator)
@@ -128,9 +130,8 @@ def _finish(paths, doc, configuration, *, keep_work):
         write_error_log(paths.logs/'stage_error.log', error)
         assessment = dict(decision=Decision.INCOMPLETE.value, checks=[], policy_version=acceptance.POLICY_VERSION)
     assessment.update(configuration=configuration.snapshot())
-    result_io.commit_evaluation(paths.output, doc, assessment)
     doc['activation'] = devices.activation_status(doc)
-    result_io.write(paths.output, doc)
+    result_io.commit_evaluation(paths.output, doc, assessment)
     reports.write_report(paths.output, doc)
     accepted = Decision(assessment['decision']).installable
     if doc['subject']['lens'] == 'rear':
@@ -144,15 +145,13 @@ def _finish(paths, doc, configuration, *, keep_work):
     return 0 if accepted else 1
 
 
-def _compare_factory(source, comparison_metrics, execution, runner, identity, board, detection, *, lens='front', intrinsics_source='measured'):
+def _compare_factory(source, dataset, execution, runner, identity, board, detection, *, lens='front', intrinsics_source='measured'):
     """Optional evidence runs automatically; optical failures do not fail calibration."""
     def measure():
         native = None
         try:
             native = factory.sources(source.recordings, source.camera_serial)
-            found, timing = (detection.result() if detection is not None else
-                _detect_board(comparison_metrics['C'], execution, board, 'C', identity['recordings']['C']))
-            execution.timings.setdefault('C.detect', timing)
+            found = _validation_detections(dataset, execution, board, identity['recordings']['C'], detection)
             return factory.compare(source.recordings.c, native, execution.paths.calibration,
                 found, source.grid, board, execution.paths.output, lens=lens, intrinsics_source=intrinsics_source)
         except Exception as error:
@@ -162,6 +161,23 @@ def _compare_factory(source, comparison_metrics, execution, runner, identity, bo
                         method_version=factory.METHOD_VERSION, native=native)
     return runner.run(Step.FACTORY, identity, measure,
         reusable=lambda result: factory.reusable(execution.paths.output, result))
+
+
+@contextmanager
+def _record_execution(paths, doc, configuration):
+    try:
+        yield
+    except BaseException as error:
+        execution = doc['execution']
+        execution['status'] = 'interrupted' if isinstance(error, KeyboardInterrupt) else 'failed'
+        if not execution.get('error'):
+            execution['error'] = dict(step='workflow', reason=str(error))
+        write_error_log(paths.logs/'stage_error.log', error)
+        if not isinstance(error, Exception):
+            _finish(paths, doc, configuration, keep_work=True)
+            raise
+    else:
+        doc['execution'].update(status='complete', error=None)
 
 
 def run(request: CalibrationRequest, *, trajectory_generator=None, backend_identity=None) -> int:
@@ -177,7 +193,7 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
         factory_native = None
         if request.intrinsics_source == 'factory':
             factory_native = factory.sources(source.recordings, source.camera_serial)
-            from software.vision.capabilities import require_forward_kb4
+            from software.vision.orb_environment import require_forward_kb4
             require_forward_kb4()
         trajectory_configuration = configuration.load_trajectory_validation(tag_size_m=source.grid['tagSize'])
         paths = RunPaths(request.output_directory)
@@ -200,10 +216,9 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
         resources.enter_context(runtime.output_directory(paths, force=request.force, resume=request.resume))
         subject = dict(serial=source.camera_serial, lens=request.lens, parameter_file='calibration.json', parameter_sha256=None)
         subject['intrinsics_source'] = request.intrinsics_source
-        if request.resume:
-            previous = result_io.read(paths.output)
-            subject['parameter_sha256'] = previous.get('subject', {}).get('parameter_sha256')
-        doc = _document(paths, subject, sources, provenance, operation='calibrate', resume=request.resume)
+        previous = result_io.read(paths.output) if request.resume else {}
+        subject['parameter_sha256'] = previous.get('subject', {}).get('parameter_sha256')
+        doc = _document(paths, subject, sources, provenance, operation='calibrate', previous=previous)
         execution = ExecutionOptions(paths, request.cores, workers, doc['execution']['details'])
         runner = StageRunner(paths.output, doc)
     except (OSError, ValueError, RuntimeError) as error:
@@ -211,7 +226,7 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
         runtime.console.write(f'准备标定失败：{error}', state='失败')
         return 2
     try:
-        try:
+        with _record_execution(paths, doc, configuration):
             identities = {role: recordings.preparation_identity(video, role != 'D', request.lens)
                           for role, video in source.recordings.items()}
             recording_preparers = {role: _prepare(role, video, execution, runner, identities[role], request.lens)
@@ -290,7 +305,7 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
             digest = artifact_identity.file_hash(paths.calibration)
             doc['subject']['parameter_sha256'] = digest
             if request.lens == 'front' or request.intrinsics_source == 'factory':
-                _compare_factory(source, recording_preparers, execution, runner,
+                _compare_factory(source, recording_preparers['C'], execution, runner,
                     dict(common, recordings=identities, calibration=digest,
                          board=board_identity('validation_step'), method=factory.METHOD_VERSION),
                     configuration.values.board, detection, lens=request.lens, intrinsics_source=request.intrinsics_source)
@@ -309,15 +324,6 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
                     trajectory_configuration=trajectory_configuration, is_sample=True, detection=detection)
             else:
                 runner.invalidate(Step.SAMPLE)
-            doc['execution'].update(status='complete', error=None)
-        except BaseException as error:
-            doc['execution'].update(status='interrupted' if isinstance(error, KeyboardInterrupt) else 'failed')
-            if not doc['execution'].get('error'):
-                doc['execution']['error'] = dict(step='workflow', reason=str(error))
-            write_error_log(paths.logs/'stage_error.log', error)
-            if not isinstance(error, Exception):
-                _finish(paths, doc, configuration, keep_work=True)
-                raise
         code = _finish(paths, doc, configuration, keep_work=request.keep_work)
     finally:
         resources.close()
@@ -348,7 +354,8 @@ def verify(request: VerificationRequest) -> int:
             return 2
         workers = recordings.n_workers(request.workers)
         resources.enter_context(runtime.output_directory(paths, force=request.force, resume=request.resume))
-        doc = _document(paths, subject, sources, provenance, operation='verify', resume=request.resume)
+        previous = result_io.read(paths.output) if request.resume else {}
+        doc = _document(paths, subject, sources, provenance, operation='verify', previous=previous)
         execution = ExecutionOptions(paths, request.cores, workers, doc['execution']['details'])
         runner = StageRunner(paths.output, doc)
     except (OSError, ValueError, RuntimeError) as error:
@@ -356,7 +363,7 @@ def verify(request: VerificationRequest) -> int:
         runtime.console.write(f'准备验证失败：{error}', state='失败')
         return 2
     try:
-        try:
+        with _record_execution(paths, doc, configuration):
             identity = recordings.preparation_identity(source.video, True, 'front')
             dataset = _prepare('C', source.video, execution, runner, identity, 'front')
             _validate(source.video, dataset, execution, runner, dict(source=identity, calibration=subject['parameter_sha256'],
@@ -364,15 +371,6 @@ def verify(request: VerificationRequest) -> int:
                 code=provenance['code'], trajectory_code=provenance['trajectory_code'],
                 engines=provenance['trajectory_engines'], assets=trajectory.trajectory_assets()), parameter_file, str(source.calibration['dir']), grid=source.grid, board=configuration.values.board,
                 trajectory_configuration=trajectory_configuration)
-            doc['execution'].update(status='complete', error=None)
-        except BaseException as error:
-            doc['execution'].update(status='interrupted' if isinstance(error, KeyboardInterrupt) else 'failed')
-            if not doc['execution'].get('error'):
-                doc['execution']['error'] = dict(step='workflow', reason=str(error))
-            write_error_log(paths.logs/'stage_error.log', error)
-            if not isinstance(error, Exception):
-                _finish(paths, doc, configuration, keep_work=True)
-                raise
         return _finish(paths, doc, configuration, keep_work=request.keep_work)
     finally:
         resources.close()

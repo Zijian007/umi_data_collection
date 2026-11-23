@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from software.trajectory.algorithms.fusion.quality import scale_consistency
+from software.trajectory.reporting.constraint_quality import scale_consistency
 
 REAL_RUN = subprocess.run
 

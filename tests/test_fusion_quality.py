@@ -2,7 +2,7 @@
 import json
 import unittest
 from software.configuration import loader as config
-from software.trajectory.algorithms.fusion.quality import scale_consistency, scale_failure
+from software.trajectory.reporting.constraint_quality import scale_consistency, scale_failure
 
 
 class FusionQualityTests(unittest.TestCase):

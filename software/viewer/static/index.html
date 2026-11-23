@@ -23,12 +23,12 @@
 <main>
   <section class="recording-heading">
     <div class="recording-title"><span class="eyebrow">TRAJECTORY INSPECTOR</span><h1 id="record-title">选择一段录像，开始查看</h1><div class="recording-subtitle"><span class="status-badge" id="status-badge">等待加载</span><span id="record-meta">从左侧选择已抽取的 UMI 轨迹</span></div></div>
-    <div class="summary-stats"><div><span>时长</span><strong id="stat-duration">—<small> s</small></strong></div><div><span>TCP 路程</span><strong id="stat-path">—<small> m</small></strong></div><div><span>地图位置约束</span><strong id="stat-coverage">—<small> %</small></strong></div></div>
+    <div class="summary-stats"><div><span>时长</span><strong id="stat-duration">—<small> s</small></strong></div><div><span>TCP 路程</span><strong id="stat-path">—<small> m</small></strong></div><div><span id="coverage-label">视觉约束</span><strong id="stat-coverage">—<small> %</small></strong></div></div>
   </section>
   <div id="message" class="message" role="status" aria-live="polite" hidden></div>
-  <div class="inspector-grid">
+  <div class="inspector-grid" id="inspector-grid">
     <section class="panel trajectory-panel">
-      <div class="panel-header"><div class="panel-title"><span class="panel-dot"></span><h2>空间轨迹</h2><span class="muted">3D</span></div><div class="segmented" id="track-buttons" role="group" aria-label="显示的轨迹"><button class="active" data-track="tcp">TCP</button><button data-track="camera">相机</button><button data-track="imu">IMU</button></div></div>
+      <div class="panel-header"><div class="panel-title"><span class="panel-dot"></span><h2>空间轨迹</h2><span class="muted">3D</span></div><div class="segmented" id="track-buttons" role="group" aria-label="显示的轨迹"><button class="active" data-track="tcp" title="工具中心点的轨迹">TCP</button><button data-track="camera" title="工作镜头光心的轨迹">相机</button><button data-track="imu" title="IMU 坐标原点的轨迹">IMU</button></div></div>
       <div class="map-controls">
         <label><input id="show-map" type="checkbox" checked disabled> 环境地图</label>
         <select id="map-select" aria-label="工作镜头子地图" disabled><option>尚未加载</option></select>
@@ -38,17 +38,31 @@
         <span class="axes-note">世界轴：虚线 · 米　地图轴：实线 · 地图单位</span>
         <span id="map-status" role="status">选择录像后加载地图</span>
       </div>
-      <div class="scene" id="scene"><canvas id="trajectory-canvas" tabindex="0" aria-label="三维轨迹，左键旋转、右键平移、滚轮缩放，点击轨迹定位时间"></canvas><div class="scene-empty" id="scene-empty"><span>↗</span><strong>运动，在空间中展开</strong><p>加载轨迹，查看每一帧的位置与朝向</p></div><div class="scene-toolbar" role="group" aria-label="三维视角"><button class="active" data-view="home" title="复位视角（R）">透视</button><button data-view="top" title="俯视（2）">俯视</button><button data-view="front" title="正视（3）">正视</button><button data-view="side" title="侧视（4）">侧视</button></div><div class="scene-top-right"><label><input id="show-pose" type="checkbox" checked> 姿态轴</label><label><input id="show-overlay" type="checkbox"> 对照轨迹</label></div><div class="scene-legend"><span><i id="legend-color" class="legend-dot mint"></i><span id="legend-track">TCP 轨迹</span></span><span id="legend-companion" hidden><i class="legend-dot orange"></i><span id="legend-companion-text">右手</span></span><span id="legend-current"><i class="legend-dot white"></i>当前位置</span><span id="legend-map" hidden><i class="legend-dot map-point"></i>环境特征点</span><span id="scene-scale">单位 m · Z ↑</span></div><div class="scene-hint">左键旋转 · 右键平移 · 滚轮缩放 · 点击轨迹定位</div></div>
+      <div class="scene" id="scene"><canvas id="trajectory-canvas" tabindex="0" aria-label="三维轨迹，左键旋转、右键平移、滚轮缩放，点击轨迹定位时间"></canvas><div class="scene-empty" id="scene-empty"><span>↗</span><strong>运动，在空间中展开</strong><p>加载轨迹，查看每一帧的位置与朝向</p></div><div class="scene-toolbar" role="group" aria-label="三维视角"><button class="active" data-view="home" title="复位视角（R）">透视</button><button data-view="top" title="俯视（2）">俯视</button><button data-view="front" title="正视（3）">正视</button><button data-view="side" title="侧视（4）">侧视</button></div><div class="scene-top-right"><label><input id="show-pose" type="checkbox" checked> 姿态轴</label><label id="overlay-control" title="用虚线叠加同一设备上其他参考点的轨迹"><input id="show-overlay" type="checkbox"> <span id="overlay-label">叠加其他参考点</span></label></div><div class="scene-legend"><span><i id="legend-color" class="legend-dot mint"></i><span id="legend-track">TCP 轨迹</span></span><span id="legend-companion" hidden><i class="legend-dot orange"></i><span id="legend-companion-text">右手 TCP 轨迹</span></span><span id="legend-current"><i class="legend-dot white"></i>当前位置</span><span id="legend-map" hidden><i class="legend-dot map-point"></i>环境特征点</span><span id="scene-scale">单位 m · Z ↑</span></div><div class="scene-hint">左键旋转 · 右键平移 · 滚轮缩放 · 点击轨迹定位</div></div>
       <div class="pose-readout"><div><span>X <small>m</small></span><strong id="pose-x">—</strong></div><div><span>Y <small>m</small></span><strong id="pose-y">—</strong></div><div><span>Z <small>m</small></span><strong id="pose-z">—</strong></div><div><span>速度 <small>m/s</small></span><strong id="pose-speed">—</strong></div><div class="constraint-readout"><span>当前帧约束</span><strong id="pose-constraint">—</strong></div></div>
     </section>
     <section class="panel video-panel">
-      <div class="panel-header"><div class="panel-title"><span class="panel-dot blue"></span><h2 id="video-title">工作镜头</h2><span class="muted">VIDEO</span></div><span class="sync-label"><i></i> 时间同步</span></div>
+      <div class="panel-header"><div class="panel-title"><span class="panel-dot blue"></span><h2 id="video-title">工作镜头</h2><span class="muted">VIDEO</span></div><div class="video-actions"><span class="sync-label"><i></i> 共用时间轴</span><button class="quiet-button" id="video-fullscreen" title="全屏视频">全屏</button></div></div>
       <div class="video-pair">
         <div class="video-feed primary-feed">
-          <div class="video-stage"><video id="video" playsinline muted preload="metadata" aria-label="同步工作镜头视频"></video><img id="video-frame" alt="与轨迹当前帧同步的工作镜头画面" hidden><div id="video-empty" class="video-empty"><span>▣</span><p>选择录像后显示同步画面</p></div><span class="video-frame-label" id="video-frame-label">FRAME —</span></div>
-          <div class="video-caption"><strong id="video-hand-label">工作镜头</strong><span id="video-note">工作镜头裁切 · 原始鱼眼画面</span><button class="quiet-button" id="compatibility-mode" title="当前浏览器无法播放视频时使用" disabled>兼容播放</button><button class="quiet-button" id="video-fullscreen" title="全屏视频">⛶</button></div>
+          <div class="video-caption"><strong id="video-hand-label">镜头</strong><select id="primary-lens" class="lens-select" aria-label="选择主画面镜头" disabled><option value="front">工作镜头</option><option value="rear" disabled>环境镜头</option></select><span id="video-note"></span><button class="quiet-button" id="compatibility-mode" title="当前浏览器无法播放视频时使用" disabled>兼容播放</button></div>
+          <div class="video-stage">
+            <video id="video" playsinline muted preload="metadata" aria-label="同步工作镜头视频"></video>
+            <img id="video-frame" alt="与轨迹当前帧同步的工作镜头画面" hidden>
+            <div id="video-empty" class="video-empty"><span>▣</span><p>选择录像后显示同步画面</p></div>
+            <span class="video-frame-label" id="video-frame-label">帧 —</span>
+          </div>
+          <div class="feed-readout" id="primary-readout" hidden><span data-quality></span><span data-distance hidden></span></div>
         </div>
-        <div id="companion-video" class="video-feed companion-video" hidden><div class="video-caption"><strong data-arm>右手工作镜头</strong><span data-note></span></div><div class="video-stage"><video playsinline muted preload="metadata" aria-label="另一只手的同步工作镜头视频"></video><img alt="另一只手的同步兼容画面" hidden></div></div>
+        <div id="companion-video" class="video-feed companion-video" hidden>
+          <div class="video-caption"><strong data-arm>右手</strong><select class="lens-select" data-lens aria-label="选择副画面镜头" disabled><option value="front">工作镜头</option><option value="rear" disabled>环境镜头</option></select><span data-note></span></div>
+          <div class="video-stage">
+            <video playsinline muted preload="metadata" aria-label="另一只手的同步工作镜头视频"></video>
+            <img alt="另一只手的同步兼容画面" hidden>
+            <span class="video-frame-label" data-frame-label>帧 —</span>
+          </div>
+          <div class="feed-readout"><span data-quality></span><span data-distance hidden></span></div>
+        </div>
       </div>
       <div id="dual-hand-summary" class="dual-hand-summary" hidden>
         <div class="hand-card" data-hand-summary="left"><div><strong>左手</strong><span data-hand-time>—</span></div><b data-hand-path>—</b><small>TCP 路程 · 共同时间区间</small></div>
@@ -56,7 +70,7 @@
       </div>
       <div class="record-details"><div><span>相机序列号</span><code id="detail-serial">—</code></div><div><span>标定 ID</span><code id="detail-calibration">—</code></div><div><span>轨迹点数</span><code id="detail-rows">—</code></div><div><span>姿态四元数 <small>xyzw</small></span><code id="detail-quaternion">—</code></div><div id="tag-distance-readout" hidden><span>标签中心间距 <small>mm</small></span><code id="tag-distance-value">—</code></div></div>
     </section>
-    <section class="panel speed-panel"><div class="panel-header"><div class="panel-title"><span class="panel-dot amber"></span><h2>运动速度</h2><span class="muted">m/s</span></div><div class="chart-tools"><span id="chart-hand-legend" class="chart-hand-legend" hidden><i class="legend-dot mint"></i><span data-primary>主手</span><i class="legend-dot orange"></i><span>副手</span></span><span class="chart-hint">点击曲线跳转 · 与三维和视频联动</span></div></div><div class="speed-stage"><canvas id="speed-canvas" aria-label="速度随时间变化曲线，点击定位时间"></canvas></div></section>
+    <section class="panel speed-panel"><div class="panel-header"><div class="panel-title"><span class="panel-dot amber"></span><h2>运动速度</h2><span class="muted">m/s</span></div><div class="chart-tools"><span id="chart-hand-legend" class="chart-hand-legend" hidden><i class="legend-dot mint"></i><span data-primary>左手</span><i class="legend-dot orange"></i><span data-companion>右手</span></span><span class="chart-hint">点击曲线跳转 · 与三维和视频联动</span></div></div><div class="speed-stage"><canvas id="speed-canvas" aria-label="速度随时间变化曲线，点击定位时间"></canvas></div></section>
   </div>
   <footer class="inspection-footer"><span><i class="local-dot"></i> 本地世界坐标 · Z 轴朝上</span><span>跟踪完整度不等于真实精度 · TCP 使用 CAD 名义几何</span><button id="details-button" class="text-button">查看本次记录 ↗</button></footer>
 </main>
@@ -64,7 +78,16 @@
 <section class="playback-bar" aria-label="轨迹回放控制">
   <div class="transport"><button id="previous-frame" class="icon-button" aria-label="上一帧" title="上一帧（←）">Ⅰ‹</button><button id="play" class="play-button" aria-label="播放" disabled>▶</button><button id="next-frame" class="icon-button" aria-label="下一帧" title="下一帧（→）">›Ⅰ</button></div>
   <div class="time-display"><strong id="current-time">00:00.00</strong><span>/ <span id="total-time">00:00.00</span></span></div>
-  <div class="timeline-wrap"><input id="timeline" type="range" min="0" max="1" step="1" value="0" disabled aria-label="轨迹播放进度"><div class="timeline-labels"><span id="frame-counter">FRAME 0 / 0</span><span>空格播放 / 暂停</span></div></div>
+  <div class="timeline-wrap">
+    <input id="timeline" type="range" min="0" max="1" step="1" value="0" disabled aria-label="轨迹播放进度">
+    <div class="timeline-labels"><span id="frame-counter">FRAME 0 / 0</span><span>空格播放 / 暂停</span></div>
+      <section class="quality-timeline" id="quality-timeline" aria-label="双手轨迹约束" hidden>
+        <div class="quality-heading"><h3>轨迹约束</h3><div data-quality-legend class="quality-legend"></div></div>
+        <div class="quality-row" data-quality-arm="left"><span>左手</span><button type="button" aria-label="左手轨迹约束。方向键选择区间，回车跳转"></button></div>
+        <div class="quality-row" data-quality-arm="right"><span>右手</span><button type="button" aria-label="右手轨迹约束。方向键选择区间，回车跳转"></button></div>
+        <div class="quality-readout" data-quality-readout aria-live="polite"></div>
+      </section>
+  </div>
   <div class="playback-options"><label for="rate">倍速</label><select id="rate"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select><button id="loop" class="icon-button" aria-pressed="false" title="循环播放" aria-label="循环播放">↻</button></div>
 </section>
 <dialog id="help-dialog"><div class="dialog-heading"><h2>回放与检查</h2><button data-close="help-dialog" class="icon-button" aria-label="关闭说明">×</button></div><p>同步查看 UMI 的三维轨迹、位姿、工作镜头视频和速度。所有数据从本机读取。</p><p>环境地图显示工作镜头的稀疏特征点与关键帧，可切换子地图。可靠对齐的地图与轨迹叠加，其余地图按原始坐标单独显示。展示拟合残差不代表真实轨迹精度。</p><dl class="shortcuts"><dt>空格</dt><dd>播放 / 暂停</dd><dt>← / →</dt><dd>上一帧 / 下一帧</dd><dt>R / 1</dt><dd>恢复透视视角</dd><dt>2 / 3 / 4</dt><dd>俯视 / 正视 / 侧视</dd><dt>左键拖动</dt><dd>绕轨迹旋转</dd><dt>右键或 Shift 拖动</dt><dd>平移视图</dd><dt>滚轮 / 双指</dt><dd>缩放</dd><dt>点击轨迹或速度图</dt><dd>定位到对应帧</dd></dl><p class="dialog-note">红、绿、蓝姿态轴分别表示局部 X、Y、Z。场景任务在同一地图版本内共享坐标；不同地图版本不保证坐标一致。不同批次重新建图后，不能直接拼接轨迹。</p></dialog>

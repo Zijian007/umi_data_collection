@@ -1,7 +1,5 @@
 # 设备套件
 
-套件在整体业务中的位置见[业务心智模型](../docs/业务心智模型.md)；本页只说明 `kit.yaml` 和夹爪资产字段。
-
 每个套件的 `kit.yaml` 指定左右相机序列号、前后镜头的内参来源和当前安装的夹爪文件，可跨场景复用。仅需手动维护，不需要安装或登记夹爪。
 
 ```yaml
@@ -54,7 +52,7 @@ base tag 固定在不随开合运动的夹爪基座上，配置写在 kit 内，
 同一套件的 base tag ID 必须唯一，且不能与场景海报 ID 冲突；默认海报为 12–88，
 示例使用 2/3。已配置宽度或测距时也不能占用 0/1。尺寸为黑框实测边长，白边不计。
 安装变换会在任务图内带先验联合细化，修正量和自身/跨相机残差保存在质量证据中。
-参数与验收边界见 [poster_vio](../software/trajectory/poster_vio/README.md)。
+参数与验收边界见 [poster_vio](../software/trajectory/algorithms/poster_vio/README.md)。
 
 左右安装几何相同时，可以共同引用一个共享 `tcp_camera.json`；不同时分别填写。没有实测开口关系时省略 `width`，不要填写示例数值。TCP 格式与方向见[设备与坐标](../docs/设备与坐标.md#几何资产)，宽度格式与测量方法见[训练数据指南](../docs/训练数据.md#夹爪宽度标定与接入)。
 
@@ -114,4 +112,4 @@ kit 使用 `intrinsics.front/rear` 选择来源和当前登记版本；不再接
 
 ## 海报采集
 
-需要独立验收的环境镜头时，按[双镜头标定](../docs/标定.md#双镜头标定与海报接入)完成 rear 求解与登记，再将 `intrinsics.rear` 设为对应来源。海报布局和开关写在批次 `collection.yaml.environment_poster`，不写入 kit 或 registry。共享单手回退继续使用本次冻结的相机参数与布局。
+需要独立验收的环境镜头时，按[双镜头标定](../docs/标定.md#双镜头标定与海报接入)完成 rear 求解与登记，再将 `intrinsics.rear` 设为对应来源。布局填写在 `environment_poster.layout_path`，任务的海报开关写在批次的 `backend` 下。[场景后端配置](../docs/场景处理.md#选择轨迹估计后端)

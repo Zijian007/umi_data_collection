@@ -1,7 +1,7 @@
 """跨场景交错采集、固定版本、原片导入与设备资产回归。"""
 from __future__ import annotations
 from software.infrastructure import provenance as artifact_identity
-from software.scene.pipeline.maps import lifecycle as map_lifecycle
+from software.scene.pipeline.maps import repository as map_lifecycle
 
 import json
 import tempfile
@@ -14,16 +14,11 @@ from software.camera import registry
 from software.calibration import inventory
 from software.scene import layout
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import (
-    batch as batch_inputs,
-    episode as episode_inputs,
-    kit as kit_inputs,
-    scene as scene_inputs,
-)
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
 from software.scene import cli, models, workflow
 from software.scene.pipeline import recordings
 from software.infrastructure.file_store import write_json, write_yaml
-from software.trajectory.calibration import assets as calibration_assets
+from software.camera import calibration_assets as calibration_assets
 from software.viewer.results.catalog import RecordingCatalog
 import test_scene as fixtures
 from registry_fakes import legacy_bundle
@@ -187,7 +182,7 @@ class SessionManagementTests(unittest.TestCase):
             scene_inputs.read_scene(self.f.scene_path)
 
     def test_discovery_skips_internal_and_archived_tasks(self):
-        for name in (*scene_inputs.INTERNAL_DIRECTORIES, '.hidden'):
+        for name in (*layout.INTERNAL_DIRECTORIES, '.hidden'):
             write_yaml(self.f.scene.root / name / 'nested/episode.yaml', {})
         self.assertEqual(cli.episode_paths([self.f.scene.root]), [self.f.episode_path])
         unrelated = self.f.scene.root / 'notes.txt'

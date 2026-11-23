@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
+from functools import lru_cache
+import csv
+import json
 import math
 import os
 import shutil
 import subprocess
 import threading
 
+from software.camera.x3.frame import LENS_HALF, PROFILE, SRC_H, SRC_W, crop_xywh, output_frame_rate
 from software.configuration import operational_settings as settings
 from software.viewer.resources import cache
-from software.viewer.errors import ViewerDataError
+from software.viewer import ViewerDataError
 from software.infrastructure.paths import PROJECT_ROOT, deps_root
+from software.trajectory.reporting.artifacts import result_path
 
 
 REPO = PROJECT_ROOT
@@ -46,9 +52,25 @@ def shutdown():
         _jobs.clear()
 
 
-def _preview_options() -> tuple:
+@dataclass(frozen=True)
+class RearClip:
+    crop: tuple[int, int, int, int]
+    first_frame: int
+    frame_step: int
+    frames: int
+
+    def filter(self):
+        x, y, width, height = self.crop
+        rate = output_frame_rate(self.frame_step)
+        trim = f'trim=start_frame={self.first_frame},' if self.first_frame else ''
+        sample = f"select='not(mod(n\\,{self.frame_step}))'," if self.frame_step > 1 else ''
+        return trim + sample + f'setpts=N/({rate})/TB,crop={width}:{height}:{x}:{y}:exact=1,'
+
+
+def _preview_options(clip: RearClip | None = None) -> tuple:
     config = settings.values('viewer')
-    return ('-vf', f"scale=w='min({config['preview_width']},iw)':h=-2,setpts=PTS-STARTPTS",
+    prefix = clip.filter() if clip is not None else ''
+    return ('-vf', f"{prefix}scale=w='min({config['preview_width']},iw)':h=-2,setpts=PTS-STARTPTS",
             '-c:v', 'libvpx', '-deadline', 'realtime', '-cpu-used', '12', '-lag-in-frames', '0',
             '-b:v', f"{config['preview_bitrate_kbps']}k", '-crf', str(config['preview_crf']),
             '-g', str(config['preview_gop']), '-pix_fmt', 'yuv420p')
@@ -119,8 +141,10 @@ def _decode(video: Path, seconds: float) -> bytes:
         decoders.release()
 
 
-def _preview_target(video: Path) -> Path:
-    identity = (cache.file_identity(video), cache.file_identity(Path(find_ffmpeg())), _preview_options())
+def _preview_target(video: Path, clip: RearClip | None = None) -> Path:
+    identity = (cache.file_identity(video), cache.file_identity(Path(find_ffmpeg())), _preview_options(clip))
+    if clip is not None:
+        identity += (clip.frames,)
     return cache.path('previews', identity, '.webm')
 
 
@@ -132,19 +156,21 @@ def _valid_preview(path: Path) -> bool:
         return False
 
 
-def _encode_preview(video: Path, target: Path) -> None:
+def _encode_preview(video: Path, target: Path, clip: RearClip | None = None) -> None:
     config = settings.values('viewer')
     with cache.locked(target):
         if _valid_preview(target):
             return
-        if target != _preview_target(video):
+        if target != _preview_target(video, clip):
             raise ViewerDataError('原视频已变化，请重新选择录像。')
         before = cache.file_identity(video)
         with cache.atomic_output(target) as temporary:
             # 预览限制到 720 宽，不放大小图；保持原视频帧率，短 GOP 便于拖动。
+            clip_options = ('-frames:v', str(clip.frames), '-r', str(output_frame_rate(clip.frame_step))) if clip else ()
             command = [find_ffmpeg(), '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+                       *(['-xerror'] if clip else []),
                        '-threads', str(config['preview_decode_threads']), '-i', str(video), '-map', '0:v:0', '-an',
-                       *_preview_options(), '-threads', str(config['preview_encode_threads']), str(temporary)]
+                       *_preview_options(clip), *clip_options, '-threads', str(config['preview_encode_threads']), str(temporary)]
             try:
                 process = subprocess.run(command, capture_output=True, timeout=config['preview_timeout_s'])
             except subprocess.TimeoutExpired as error:
@@ -156,9 +182,9 @@ def _encode_preview(video: Path, target: Path) -> None:
                 raise ViewerDataError('原视频已变化，请重新选择录像。')
 
 
-def preview_status(video: Path) -> dict:
+def preview_status(video: Path, clip: RearClip | None = None) -> dict:
     """立即返回状态；同一视频只启动一份任务，后台并发与排队总数由 viewer.yaml 限制。"""
-    target = _preview_target(video)
+    target = _preview_target(video, clip)
     if _valid_preview(target):
         return dict(status='ready', version=target.stem)
     with _jobs_lock:
@@ -169,7 +195,8 @@ def preview_status(video: Path) -> dict:
             for old, job in list(_jobs.items()):
                 if job.done() and old != target:
                     del _jobs[old]
-            future = _resources()[1].submit(_encode_preview, video.resolve(), target)
+            args = (video.resolve(), target) + ((clip,) if clip is not None else ())
+            future = _resources()[1].submit(_encode_preview, *args)
             _jobs[target] = future
         if future.done() and future.exception() is not None:
             return dict(status='failed', note=str(future.exception()))
@@ -185,8 +212,72 @@ def cached_preview(video: Path) -> Path | None:
         return None
 
 
-def preview_file(video: Path, version: str) -> Path:
-    target = _preview_target(video)
-    if target.stem != version or not _valid_preview(target):
+def preview_file(video: Path, version: str | None, clip: RearClip | None = None) -> Path:
+    target = _preview_target(video, clip)
+    if (version is not None and target.stem != version) or not _valid_preview(target):
         raise ViewerDataError('预览视频不存在或已更新，请重新选择录像。')
     return target
+
+
+@lru_cache(maxsize=64)
+def _clip_inputs(arm: str, manifest_identity: tuple, frames_identity: tuple):
+    manifest = json.loads(Path(manifest_identity[0]).read_bytes())
+    if manifest.get('schema_version') != 4:
+        return None
+    metadata = manifest['arm_results'][arm]
+    identity = manifest['inputs']['recordings'][arm]
+    geometry = metadata['frame_geometry']
+    if geometry['profile'] != PROFILE or geometry['source_px'] != [SRC_W, SRC_H]:
+        return None
+    crop = tuple(geometry['rear_lens']['crop_xywh'])
+    x, y, width, height = crop
+    left, top, size, _ = crop_xywh(LENS_HALF['rear'])
+    if (any(type(value) is not int for value in crop) or width != height or width < 2 or width % 2
+            or x < left or y < top or x + width > left + size or y + height > top + size):
+        return None
+    step, count = geometry['frame_step'], metadata['rows']
+    if type(step) is not int or step < 1 or type(count) is not int or count < 1:
+        return None
+    with Path(frames_identity[0]).open(encoding='utf-8', newline='') as stream:
+        first = None
+        rows = 0
+        for rows, row in enumerate(csv.DictReader(stream), 1):
+            frame = int(row['source_video_frame'])
+            if first is None:
+                first = frame
+                if frame < 0 or frame % step:
+                    return None
+            if int(row['video_frame']) != rows - 1 or frame != first + step * (rows - 1):
+                return None
+    if rows != count:
+        return None
+    return identity, RearClip(crop, first, step, count)
+
+
+def rear_source(directory: Path, contains, *, contains_raw=None) -> tuple[Path, RearClip | None] | None:
+    # A self-contained saved rear video already shares the result's video clock.
+    saved = directory / 'rear.mp4'
+    if contains(saved) and saved.is_file():
+        return saved.resolve(), None
+    if directory.name not in ('left', 'right'):
+        return None
+    manifest = directory.parent / 'episode.json'
+    frames = result_path(directory, 'frames.csv')
+    if not all(contains(path) and path.is_file() for path in (manifest, frames)):
+        return None
+    contains_raw = contains_raw or contains
+    try:
+        info = _clip_inputs(directory.name, cache.file_identity(manifest), cache.file_identity(frames))
+        if info is None:
+            return None
+        identity, clip = info
+        raw = Path(identity['path'])
+        if not raw.is_absolute() or raw.suffix.lower() != '.insv' or not contains_raw(raw) or not raw.is_file():
+            return None
+        raw = raw.resolve()
+        stat = raw.stat()
+        if stat.st_size != identity['bytes'] or stat.st_mtime_ns != identity['mtime_ns']:
+            return None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return raw, clip

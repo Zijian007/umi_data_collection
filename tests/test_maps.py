@@ -12,7 +12,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from software.trajectory.reporting import map_data
-from software.scene.spatial import slam
+from software.vision import atlas
+from software.scene import spatial as slam
 from software.viewer.resources import maps
 
 
@@ -120,8 +121,8 @@ class MapExportTests(unittest.TestCase):
         def run(command, **kwargs):
             Path(command[-1]).write_text(json.dumps(self.raw))
             return SimpleNamespace(returncode=0)
-        with patch.object(map_data, 'exporter_paths', return_value=(self.executable, self.vocabulary)), \
-                patch.object(map_data.subprocess, 'run', side_effect=run):
+        with patch.object(atlas, 'exporter_paths', return_value=(self.executable, self.vocabulary)), \
+                patch.object(atlas.subprocess, 'run', side_effect=run):
             return map_data.export_attempt(self.attempt, self.output)
 
     def test_export_aligns_points_and_keeps_original_archive_unchanged(self):
@@ -147,8 +148,8 @@ class MapExportTests(unittest.TestCase):
                 def run(command, log, **kwargs):
                     Path(command[-1]).write_text(json.dumps(self.raw))
                     log.write_text(message)
-                with patch.object(map_data, 'exporter_paths', return_value=(self.executable, self.vocabulary)), \
-                        patch.object(slam.runtime, 'run_logged', side_effect=run):
+                with patch.object(atlas, 'exporter_paths', return_value=(self.executable, self.vocabulary)), \
+                        patch.object(atlas.runtime, 'run_logged', side_effect=run):
                     exported = slam.export_map(self.archive, 0, placement, directory)
                 np.testing.assert_allclose(exported['points'], self.points*2, atol=1e-7)
                 self.assertFalse((directory / 'raw_atlas.json').exists())
@@ -161,8 +162,8 @@ class MapExportTests(unittest.TestCase):
         def run(command, log, **kwargs):
             log.write_text('export failed\n')
             raise RuntimeError('export failed')
-        with patch.object(map_data, 'exporter_paths', return_value=(self.executable, self.vocabulary)), \
-                patch.object(slam.runtime, 'run_logged', side_effect=run), self.assertRaisesRegex(RuntimeError, 'export failed'):
+        with patch.object(atlas, 'exporter_paths', return_value=(self.executable, self.vocabulary)), \
+                patch.object(atlas.runtime, 'run_logged', side_effect=run), self.assertRaisesRegex(RuntimeError, 'export failed'):
             slam.export_map(self.archive, 0, {}, self.root)
         self.assertEqual((self.root / 'export.log').read_text(), 'export failed\n')
 
@@ -175,7 +176,7 @@ class MapExportTests(unittest.TestCase):
         outside = self.root/'outside.osa'
         outside.write_bytes(b'outside')
         self.archive.symlink_to(outside)
-        with patch.object(map_data.subprocess, 'run') as execute, self.assertRaises(map_data.MapDataError):
+        with patch.object(atlas.subprocess, 'run') as execute, self.assertRaises(map_data.MapDataError):
             map_data.export_attempt(self.attempt, self.output)
         execute.assert_not_called()
 

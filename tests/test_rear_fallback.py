@@ -9,16 +9,16 @@ import numpy as np
 from software.configuration import loader as config
 from software.infrastructure import provenance
 from software.camera import registry
-from software.calibration.algorithms import factory_kb4
+from software.camera.x3 import factory_kb4
 from software.camera import calibration_source, rear_fallback
 from software.camera.geometry import imu_from_camera
-from software.camera.x3 import factory
+from software.camera.x3 import factory_geometry as factory
 from software.scene.management import camera_assets
 from software.scene.models import Scene
 from software.infrastructure.file_store import write_json
-from software.trajectory.calibration import assets
+from software.camera import calibration_assets as assets
 from software.trajectory.models import TrajectoryRequest
-from software.trajectory.pipeline import calibration_assets, reuse
+from software.trajectory import environment_assets as calibration_assets, workflow as reuse
 from software.vision.poster import layout as tag_board
 from test_intrinsics_source import native
 from test_trajectory_workflow import RecordingFixture
@@ -92,7 +92,7 @@ class RearFallbackTests(RecordingFixture):
 
     def test_fallback_result_reuse_verifies_the_frozen_snapshot(self):
         request = config.resolve_trajectory_request(TrajectoryRequest(mode='dual'))
-        with patch('software.vision.capabilities.require_forward_kb4'):
+        with patch('software.vision.orb_environment.require_forward_kb4'):
             selected = calibration_assets.select_environment_assets(self.video, self.selected, request)
         fingerprint = reuse.run_fingerprint(self.video, self.selected, request, environment_assets=selected)
         self.successful_result()
@@ -120,7 +120,7 @@ class RearFallbackTests(RecordingFixture):
         self.successful_result()
         before = (self.output/'details/summary.json').read_bytes()
         with patch.object(factory, 'read_factory', side_effect=ValueError('unsupported v6')), \
-             patch('software.trajectory.calibration.selection.select_calibration', return_value=self.selected):
+             patch('software.trajectory.calibration.select_calibration', return_value=self.selected):
             result = workflow.run_recording(self.video, self.output.parent, replace(self.request, force=True))
         self.assertEqual(result['status'], 'failed')
         self.assertIn('unsupported v6', result['reason'])
@@ -138,7 +138,7 @@ class RearFallbackTests(RecordingFixture):
             {'camera': dict(calibration='front-version')}, tag_layout=tag_board.DEFAULT_LAYOUT)
         with patch.object(registry, 'read_insv_serial', return_value='camera'), \
              patch.object(registry, 'get', return_value=record), \
-             patch('software.vision.capabilities.require_forward_kb4') as capability:
+             patch('software.vision.orb_environment.require_forward_kb4') as capability:
             shared = camera_assets.select_camera(self.video, scene)
             capability.assert_not_called()
             dual = camera_assets.select_camera(self.video, replace(scene, mode='dual'))
@@ -155,14 +155,14 @@ class RearFallbackTests(RecordingFixture):
     def test_dual_workflow_passes_factory_snapshot_to_fusion(self):
         helper = workflow_tests.WorkflowTests('test_success_skip_and_reprocess_after_calibration_change')
         helper.setUp(); self.addCleanup(helper.doCleanups)
-        with patch('software.vision.capabilities.require_forward_kb4'), \
+        with patch('software.vision.orb_environment.require_forward_kb4'), \
              patch.object(factory, 'read_factory', return_value=self.native):
             result = helper.run_recording(TrajectoryRequest(mode='dual'))
         self.assertEqual(result['status'], 'ok', result)
         self.assertTrue(result['rear_calibration']['version'].startswith('factory_fallback_'))
         measured = calibration_assets.load_frozen_rear(helper.output/'devices/rear/manifest.json')
         self.assertEqual(measured['calibration_kind'], rear_fallback.KIND)
-        from software.trajectory.reporting.metadata import collect_run_settings
+        from software.trajectory.trajectory_export import collect_run_settings
         settings = collect_run_settings(helper.output, {}, 'dual', helper.video.name,
             calib=dict(json=str(helper.selected.assets.camera_json),
                        rear_calibration_manifest=str(helper.output/'devices/rear/manifest.json')))

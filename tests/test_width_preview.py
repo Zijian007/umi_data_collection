@@ -13,8 +13,9 @@ import cv2
 import numpy as np
 
 from software.calibration import cli
-from software.gripper_width.detection import markers as detection
-from software.gripper_width.tools import preview
+from software.gripper_width.detection import frames as detection
+from software.gripper_width.detection.markers import FrameDetection, MarkerDetector
+from software.gripper_width import video_tools as width_video
 
 
 def recording(path: Path, *, size=(3840, 1920)) -> None:
@@ -43,9 +44,9 @@ class WidthPreviewTests(unittest.TestCase):
     def test_contrast_only_changes_display_roi_and_keeps_source_image(self):
         front = np.full((1920, 1920, 3), 20, np.uint8)
         original = front.copy()
-        missing = detection.FrameDetection((), None, {})
+        missing = FrameDetection((), None, {})
         with patch.object(cv2, 'putText', wraps=cv2.putText) as labels:
-            rendered = preview.annotate(front, missing, timestamp_s=0., frame_index=0,
+            rendered = width_video.annotate(front, missing, timestamp_s=0., frame_index=0,
                                         roi=(400, 800, 1000, 1200), contrast=2)
         np.testing.assert_array_equal(rendered[450, 300], [40, 40, 40])
         np.testing.assert_array_equal(rendered[750, 750], [20, 20, 20])
@@ -89,9 +90,9 @@ class WidthPreviewTests(unittest.TestCase):
 
     def test_preview_and_extraction_agree_on_bright_unambiguous_tags(self):
         recording(self.source)
-        measured = detection.detect(self.source, roi=(0, 0, 1920, 1920))
-        with patch.object(preview, 'annotate', wraps=preview.annotate) as annotation:
-            preview.render(self.source, roi=(0, 0, 1920, 1920))
+        measured = detection.scan_width(self.source, roi=(0, 0, 1920, 1920))
+        with patch.object(width_video, 'annotate', wraps=width_video.annotate) as annotation:
+            width_video.preview(self.source, roi=(0, 0, 1920, 1920))
         displayed = [call.args[1].distance_px for call in annotation.call_args_list]
         np.testing.assert_allclose(displayed, measured.distance_px, equal_nan=True)
 
@@ -113,27 +114,27 @@ class WidthPreviewTests(unittest.TestCase):
     def test_custom_output_and_existing_file_protection(self):
         recording(self.source)
         target = self.root / 'nested/preview.mp4'
-        preview.render(self.source, target)
+        width_video.preview(self.source, target)
         before = target.read_bytes()
         with self.assertRaisesRegex(FileExistsError, '已存在'):
-            preview.render(self.source, target)
+            width_video.preview(self.source, target)
         self.assertEqual(target.read_bytes(), before)
         with self.assertRaisesRegex(ValueError, 'MP4'):
-            preview.render(self.source, self.root / 'preview.json')
+            width_video.preview(self.source, self.root / 'preview.json')
 
     def test_failed_detection_does_not_publish_partial_video(self):
         recording(self.source)
         target = self.root / 'preview.mp4'
-        with patch.object(detection.MarkerDetector, 'detect', side_effect=RuntimeError('detector failed')):
+        with patch.object(MarkerDetector, 'detect', side_effect=RuntimeError('detector failed')):
             with self.assertRaisesRegex(RuntimeError, 'detector failed'):
-                preview.render(self.source, target)
+                width_video.preview(self.source, target)
         self.assertFalse(target.exists())
         self.assertEqual(list(self.root.iterdir()), [self.source])
 
     def test_invalid_recording_geometry_is_rejected(self):
         recording(self.source, size=(320, 240))
         with self.assertRaisesRegex(ValueError, '3840'):
-            preview.render(self.source)
+            width_video.preview(self.source)
         self.assertFalse(self.source.with_name('width_width_preview.mp4').exists())
 
     def test_cli_reports_decoder_errors_without_publishing_output(self):

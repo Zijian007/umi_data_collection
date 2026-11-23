@@ -1,7 +1,7 @@
 """Source selection must keep B, lenses, maps, and current registry assets paired."""
 from __future__ import annotations
 from software.infrastructure import provenance as artifact_identity
-from software.scene.pipeline.maps import lifecycle as map_lifecycle
+from software.scene.pipeline.maps import repository as map_repository
 import copy
 import json
 from pathlib import Path
@@ -14,17 +14,17 @@ import numpy as np
 from software.configuration import loader as config
 from software.camera import registry
 from software.camera import calibration_source as origin
-from software.camera.x3 import factory as optical
+from software.camera.x3 import factory_geometry as optical
 from software.calibration import acceptance, cli, result_io, workflow
 from software.calibration.models import RunPaths, Step
-from software.calibration.solve import factory as solver, basalt
-from software.calibration.validation import factory as diagnostic
+from software.calibration.solve import factory_intrinsics as solver, basalt
+from software.calibration.validation import factory_comparison as diagnostic
 from software.scene import cli as scene_cli
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.batch import snapshot as batches
-from software.scene.management.inputs import batch as batch_inputs, kit as kit_inputs
+from software.scene.management import batch_snapshot as batches
+from software.scene.management.inputs import batch as batch_inputs, scene as kit_inputs
 from software.infrastructure.file_store import write_json, write_yaml
-from software.trajectory.calibration import assets
+from software.camera import calibration_assets as assets
 from test_factory_comparison import offset
 import test_calibration_workflow as calibration_tests
 
@@ -111,12 +111,12 @@ class SourceTests(unittest.TestCase):
         camera=SimpleNamespace(serial='camera',selected=selected,asset_hashes=dict(front='same'))
         manifest=dict(inputs=dict(cameras=dict(left=dict(serial='camera',assets=dict(front='same'),intrinsics_source='measured'))))
         with self.assertRaisesRegex(ValueError,'来源不同'):
-            map_lifecycle.validate_map_calibrations({'left':camera},manifest)
+            map_repository.validate_map_calibrations({'left':camera},manifest)
         manifest['inputs']['cameras']['left']['intrinsics_source']='factory'
-        map_lifecycle.validate_map_calibrations({'left':camera},manifest)
+        map_repository.validate_map_calibrations({'left':camera},manifest)
         manifest['inputs']['cameras']['left']['assets']['front']='changed'
         with self.assertRaisesRegex(ValueError,'标定版本'):
-            map_lifecycle.validate_map_calibrations({'left':camera},manifest)
+            map_repository.validate_map_calibrations({'left':camera},manifest)
 
     def test_factory_image_evidence_is_required_and_finite_large_errors_warn(self):
         p=config.load('calibration').values
@@ -160,7 +160,7 @@ class FactoryWorkflowTests(unittest.TestCase):
                 found=dict(n_frames=10,video_time_s=np.arange(10,dtype=float),dets={i:{} for i in range(10)})
                 validation=dict(common_frames=10,heldout_pixels=dict(count=100,rms=.4),sufficient=True)
                 with patch.object(diagnostic,'sources',return_value=dict(recordings={r:native() for r in 'ABCD'},consistent=True)), \
-                     patch('software.vision.capabilities.require_forward_kb4',return_value={}), \
+                     patch('software.vision.orb_environment.require_forward_kb4',return_value={}), \
                      patch.object(workflow,'_detect_board',return_value=(found,dict(elapsed_s=0))), \
                      patch.object(solver,'validate_images',return_value=validation), \
                      patch.object(workflow,'_compare_factory',return_value={}), \
@@ -227,7 +227,7 @@ class BatchSourceTests(unittest.TestCase):
         kit=dict(arms=dict(left=dict(serial='camera',calibration='002',intrinsics_source='factory')))
         manifest=dict(inputs=dict(cameras=dict(left=dict(serial='camera',intrinsics_source='measured',calibration_version='001'))))
         with self.assertRaisesRegex(ValueError,'来源不同'):
-            map_lifecycle.validate_map_bindings(kit,manifest)
+            map_repository.validate_map_bindings(kit,manifest)
 
 class SourceConfigurationTests(unittest.TestCase):
     def test_A_evidence_rules_can_be_rechecked_without_changing_computation(self):

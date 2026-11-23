@@ -14,7 +14,7 @@ from software.calibration import workflow, devices, result_io
 from software.calibration.models import Step, RunPaths, ExecutionOptions
 from software.calibration.pipeline import inputs, runtime
 from software.calibration.validation import gravity
-from software.trajectory.calibration import assets
+from software.camera import calibration_assets as assets
 from software.infrastructure.file_store import locked
 import test_calibration_workflow as workflow_fixtures
 
@@ -29,7 +29,7 @@ class CheckpointContractTests(unittest.TestCase):
             commands.clear()
             self.assertEqual(workflow.run(inputs.parse_run_args(args)),0)
             self.assertEqual(len(commands),1)
-            self.assertIn('software.calibration.tools.imu_calib_physical_check', commands[0])
+            self.assertIn('software.calibration.tools.imu_physical_check', commands[0])
             timing=result_io.read(Path(args.out))['execution']['timings']
             for step in (Step.INTRINSICS,Step.CAMERA_IMU,Step.TRAJECTORY):
                 self.assertEqual(timing[step]['status'],'reused')
@@ -147,7 +147,7 @@ class SolverAdapterTests(unittest.TestCase):
 
     def test_rear_cli_uses_explicit_exit_code_and_preserves_options(self):
         from software.calibration import cli
-        with patch('software.scene.spatial.rear_calibration.run',return_value=1) as run:
+        with patch('software.calibration.rear_workflow.run',return_value=1) as run:
             self.assertEqual(cli.main(['run','/data/rear','--resume','--workers','2']),1)
             self.assertTrue(run.call_args.args[0].resume)
             self.assertEqual(run.call_args.args[0].workers,2)

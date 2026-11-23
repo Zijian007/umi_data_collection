@@ -10,10 +10,10 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from software.camera.x3 import factory as optical
+from software.camera.x3 import factory_geometry as optical
 from software.calibration.algorithms import board_pnp
 from software.calibration.models import Kb4, Step
-from software.calibration.validation import factory
+from software.calibration.validation import factory_comparison as factory
 from software.calibration import reports, result_io, workflow
 from software.calibration.pipeline import inputs
 

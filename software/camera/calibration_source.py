@@ -57,7 +57,7 @@ def validate_factory(metadata: dict, camera: dict, *, serial: str, lens: str) ->
 def check_recording(path, origin: dict) -> None:
     """A frozen factory calibration cannot be replaced by a new per-video fit."""
     import numpy as np
-    from software.camera.x3.factory import read_factory, lens_model
+    from software.camera.x3.factory_geometry import read_factory; from software.camera.x3.factory_geometry import lens_model
     factory = origin['factory_intrinsics']
     native = read_factory(path)
     if native['serial'] != factory['camera_serial']:
@@ -84,7 +84,7 @@ def read_rear(path: Path, *, serial: str, expected_source: str | None = None, vi
     checked against its run manifest. Video-specific checks require a recording.
     """
     import json
-    from software.trajectory.calibration.assets import read_basalt
+    from software.camera.calibration_assets import read_basalt
 
     metadata = json.loads(path.read_text())
     if not isinstance(metadata, dict):

@@ -12,13 +12,14 @@ import numpy as np
 
 from software.configuration import loader as config
 from software.scene.models import PreparedRecording
-from software.scene.pipeline.tasks.backends import independent_reconstruction
+from software.scene.pipeline.tasks import poster_independent as independent_reconstruction
 from software.scene.management.inputs import scene as scene_inputs
-from software.trajectory.calibration import assets, selection
-from software.trajectory.pipeline import runtime
-from software.vision.models import LensVideo, RecordingPaths
+from software.camera import calibration_assets as assets
+from software.trajectory import calibration as selection
+from software.trajectory import reconstruction as runtime
+from software.vision.models import LensVideo, RecordingData, RecordingPaths
 from trajectory_fakes import FakeEngines
-from software.scene import asset_identity
+from software.scene import result_io as asset_identity
 
 
 class SceneFallbackAdapterTests(unittest.TestCase):
@@ -42,7 +43,8 @@ class SceneFallbackAdapterTests(unittest.TestCase):
         self.recording = PreparedRecording(
             SimpleNamespace(files={'front': self.camera, 'mask': selection.DEFAULT_FRONT_MASK}),
             SimpleNamespace(paths=self.paths, cores='', parameters=configuration.values),
-            (LensVideo('front', self.video, self.root / 'scene-settings.yaml', None),), times, np.empty((0, 7)))
+            (LensVideo('front', self.video, self.root / 'scene-settings.yaml', None),), times, np.empty((0, 7)),
+            RecordingData(dict(source=dict(name='right.insv')), self.paths.dataset / 'mav0/imu0/data.csv'))
         for mocked in (patch.dict(os.environ, self.engines.environment),
                        patch.object(runtime.subprocess, 'run', side_effect=self.engines),
                        patch.object(runtime.console, 'write')):

@@ -14,18 +14,26 @@ from software.scene.arms import resolve_arms
 from software.scene.management.collection_schema import normalize_collection
 from software.scene.management.inputs.scene import require_keys, validate_episode_name
 from software.scene.pipeline.maps import epoch_selection
-from software.scene.pipeline.tasks.policy import read_base_tag_enabled, read_mode, apply_task_backend
+from software.scene.management.collection_schema import apply_backend_options, apply_task_backend
+from software.sync.specialist_audio import DEFAULT_AUDIO_SYNC_ALGORITHM
 
 if TYPE_CHECKING:
     from software.scene.models import Scene
 
 
-def read_synchronization(synchronization_record: dict | str | None, arms: tuple[str, ...]) -> dict:
+def default_audio_sync_enabled(batch_setting: bool | None) -> bool:
+    if batch_setting is not None:
+        return batch_setting
+    return user_config.current().values['scene']['sync_policy'] == 'audio_auto'
+
+
+def read_synchronization(synchronization_record: dict | str | None, arms: tuple[str, ...], *,
+                         audio_sync_enabled: bool | None = None,
+                         audio_sync_algorithm: str = DEFAULT_AUDIO_SYNC_ALGORITHM) -> dict:
     """任务视频时钟：t_episode = t_video + offset；首只手为零偏移参考。"""
     if synchronization_record is None:
-        policy = user_config.current().values['scene']['sync_policy']
         synchronization_record = dict(offsets_s={arm: 0. for arm in arms}, confirmed=False, note='')
-        if policy == 'audio_auto' and len(arms) == 2:
+        if len(arms) == 2 and default_audio_sync_enabled(audio_sync_enabled):
             synchronization_record['mode'] = 'audio_auto'
     elif isinstance(synchronization_record, str):
         # The user-facing shorthand is intentionally small; normalize it to
@@ -43,7 +51,7 @@ def read_synchronization(synchronization_record: dict | str | None, arms: tuple[
     elif not isinstance(synchronization_record, dict):
         raise ValueError('synchronization 必须是简写字符串或配置表')
     # ``audio_auto`` is a request for the offline sync stage.  The task file
-    # carries placeholder offsets; the specialist-compatible session-clock
+    # carries placeholder offsets; the session-clock
     # offsets are filled from the input-fingerprinted sync record at run time.
     mode = synchronization_record.get('mode')
     allowed = {'offsets_s', 'confirmed', 'note', 'mode'}
@@ -64,7 +72,7 @@ def read_synchronization(synchronization_record: dict | str | None, arms: tuple[
     if offsets[arms[0]] != 0:
         raise ValueError(f'参考手 {arms[0]} 的同步偏移必须为零')
     if mode == 'audio_auto' and any(float(value) != 0. for value in offsets.values()):
-        raise ValueError('audio_auto 不接受手工 offsets_s；请由 specialist 音频同步阶段生成')
+        raise ValueError('audio_auto 不接受手工 offsets_s；请由音频同步阶段生成')
     confirmed, note = synchronization_record['confirmed'], synchronization_record.get('note', '')
     if type(confirmed) is not bool or not isinstance(note, str):
         raise ValueError('同步 confirmed 必须为布尔值，note 必须为文本')
@@ -72,7 +80,7 @@ def read_synchronization(synchronization_record: dict | str | None, arms: tuple[
         return dict(method='single_camera', offsets_s={arms[0]: 0.}, confirmed=True, note=note)
     if mode == 'audio_auto':
         return dict(method='audio_auto', mode='audio_auto', offsets_s={arm: float(offsets[arm]) for arm in arms},
-                    confirmed=False, note=note)
+                    confirmed=False, note=note, algorithm=audio_sync_algorithm)
     if confirmed and not note.strip():
         raise ValueError('确认双手同步时需要填写 note，说明核验依据')
     method = 'manual' if mode == 'manual' or confirmed or any(offsets.values()) else 'assumed_simultaneous'
@@ -92,29 +100,31 @@ class ResolvedTaskConfiguration:
     def map_version(self) -> str | None:
         return self.map_selection['map_version'] if self.map_selection else None
 
-    def require_ready_map(self) -> None:
+    def require_ready_map(self, *, allow_pending: bool = False) -> None:
+        allowed_statuses = ('ready', 'pending') if allow_pending else ('ready',)
         if (self.scene.reconstruction_mode != 'auto' and self.map_selection
-                and self.map_selection['status'] != 'ready'):
+                and self.map_selection['status'] not in allowed_statuses):
             raise epoch_selection.MapEpochError(self.map_selection['reason'])
 
 
 def resolve_task_configuration(root: Path, scene: Scene, batch_arms: tuple[str, ...],
                                batch_map_version: str | None = None, *,
-                               map_epoch_override: str | None = None) -> ResolvedTaskConfiguration:
+                               map_epoch_override: str | None = None,
+                               collection: dict | None = None) -> ResolvedTaskConfiguration:
     """Read declarations and the epoch plan, never recordings or map assets."""
     if (root / 'task.yaml').is_file():
         layout.reject_legacy_user_file(root / 'task.yaml')
     validate_episode_name(root.name)
-    raw = read_yaml(scene.path)
-    collection = normalize_collection(raw)
+    if collection is None:
+        collection = normalize_collection(read_yaml(scene.path))
     declaration = collection['tasks'].get(root.name, {})
-    mode = read_mode(declaration.get('reconstruction'), default=scene.reconstruction_mode)
-    base_tag_enabled = read_base_tag_enabled(
-        declaration.get('reconstruction'), default=scene.poster_vio_base_tag_enabled)
-    scene = apply_task_backend(scene, mode, raw.get('environment_poster'),
-                               base_tag_enabled=base_tag_enabled)
+    scene = apply_backend_options(scene, declaration.get('reconstruction'))
+    mode = scene.reconstruction_mode
+    scene = apply_task_backend(scene, collection.get('disabled_poster_switches', ()))
     arms = resolve_arms(declaration, batch_arms)
-    synchronization = read_synchronization(declaration.get('synchronization'), arms)
+    synchronization = read_synchronization(declaration.get('synchronization'), arms,
+        audio_sync_enabled=collection.get('audio_sync_enabled'),
+        audio_sync_algorithm=collection.get('audio_sync_algorithm', DEFAULT_AUDIO_SYNC_ALGORITHM))
     map_request = {key: declaration[key] for key in ('map_version', 'map_epoch') if key in declaration}
     if map_epoch_override is not None:
         if not isinstance(map_epoch_override, str) or not map_epoch_override.strip():

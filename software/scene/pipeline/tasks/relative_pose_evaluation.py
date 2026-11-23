@@ -9,7 +9,7 @@ from software.calibration.algorithms.trajectory_metrics import relative_pose_err
 from software.camera.geometry import relative_pose_series, resample_pose_series, validate_transform
 from software.dataset.sampling import brackets, validate_times
 from software.infrastructure import provenance
-from software.scene.asset_identity import validate_assets
+from software.scene.result_io import validate_assets
 from software.scene.result_io import pose_rows, scene_reference, trajectory_path
 
 

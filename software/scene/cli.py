@@ -14,13 +14,13 @@ import signal
 
 
 from software.scene import layout, workflow
-from software.scene.management import episodes, processing
-from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs
-from software.scene.management.batch.discovery import batch_root
+from software.scene.management import episodes, batch_processing as processing
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs
+from software.scene.layout import batch_root
 from software.scene.management.episodes import episode_paths
-from software.scene.pipeline.maps import lifecycle as map_lifecycle
+from software.scene.pipeline.maps import repository as map_repository
 from software.scene.pipeline.maps import epoch_selection as map_epoch_selection
-from software.scene.pipeline import recording_checks
+from software.scene.pipeline import recordings as recording_checks
 from software.scene.errors import ITEM_FAILURES
 
 
@@ -53,7 +53,13 @@ def build_parser() -> argparse.ArgumentParser:
     pipeline.add_argument('--dry-run', action='store_true', help='只检查规划和构建计划，不创建地图、缓存或结果')
     pipeline.add_argument('--json', action='store_true', help='以 JSON 输出完整阶段结果')
     run = commands.add_parser('run', help='读取批次配置和视频，自动登记、建图并抽取轨迹')
-    run.add_argument('paths', nargs='+', type=Path, metavar='路径', help='一个或多个场景、批次、任务目录，或 collection.yaml / 批次 .pipeline/manifest.yaml / .pipeline/tasks/<任务>/episode.yaml')
+    sync = commands.add_parser('sync', help='只同步已分组的双手任务原片')
+    for command in (run, sync):
+        command.add_argument('paths', nargs='+', type=Path, metavar='路径', help=(
+            '一个或多个场景、批次、任务目录，或 collection.yaml / 批次 .pipeline/manifest.yaml / .pipeline/tasks/<任务>/episode.yaml'))
+    sync.add_argument('--force', action='store_true', help='重试失败或失效的同步记录；匹配记录仍复用')
+    sync.add_argument('--dry-run', action='store_true', help='只读估计同步偏移，不写入结果')
+    sync.add_argument('--json', action='store_true', help='以 JSON 输出每个任务的同步结果')
     for command in (build, run):
         configuration = command.add_argument_group('专家配置', '仅排障或算法实验使用；日常配置统一读取 config/user.yaml')
         execution = command.add_argument_group('执行与检查', '只影响本次运行，不写入 YAML')
@@ -102,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument('--max-gap-s', type=float, default=.25, help='仅 training：最大插值间隔，须为有限正秒数，默认 %(default)g 秒；trajectory 忽略此项')
     export.add_argument('--start-s', type=float, help='仅 training：人工确认的任务窗口起点，单位秒')
     export.add_argument('--end-s', type=float, help='仅 training：人工确认的任务窗口终点，单位秒')
-    from software.dataset.policy import QUALITY_POLICIES, UNKNOWN_SUPPORT_POLICIES
+    from software.dataset.schema import QUALITY_POLICIES, UNKNOWN_SUPPORT_POLICIES
     export.add_argument('--quality-policy', choices=QUALITY_POLICIES, default='all',
                         help='仅 training：all 保留全部有效采样；position_supported 要求所有手插值两端均有位置支持')
     export.add_argument('--unknown-support', choices=UNKNOWN_SUPPORT_POLICIES, default='drop',
@@ -124,8 +130,8 @@ def _prepare_execution(args):
     """Load command overrides and configure process-wide runtime settings."""
     overrides = None
     if args.command in ('run', 'build', 'plan-epochs', 'pipeline'):
-        from software.scene.overrides import SceneOverrides
-        from software.scene.management.effective_config import effective_report
+        from software.scene.parameters import SceneOverrides
+        from software.scene.management.batch_snapshot import effective_report
         common = user_config.current().values
         if hasattr(args, 'jobs') and args.jobs is None:
             args.jobs = common['runtime']['jobs']
@@ -153,7 +159,18 @@ def _prepare_execution(args):
             raise ValueError('UMI_OPENCV_THREADS 必须是正整数')
         # OpenCV 设置是进程级的；在创建任务线程前设置一次。
         cv2.setNumThreads(threads)
-        if args.command in ('run', 'build', 'pipeline'):
+        if args.command == 'run':
+            execution = settings.execution_report(cores=args.cores, jobs=args.jobs)
+            resources = execution['resources']
+            parallel = '满足' if resources['dual_arm_eligible'] else '不满足'
+            workflow.console.write(f'CPU {resources["cpu_count"]} · 解码 {resources["decode_threads"]} 线程 · '
+                                   f'OpenCV {resources["opencv_threads"]} 线程 · '
+                                   f'双手并行条件 {parallel}', state='资源')
+            local_sources = [Path(source).name for kind in ('runtime', 'gripper_tag_detection')
+                             for source in execution[kind]['sources'] if '.local.' in source]
+            if local_sources:
+                workflow.console.write('本机覆盖 ' + ' · '.join(local_sources) + ' · 参数见 --show-config', state='配置')
+        elif args.command in ('build', 'pipeline'):
             workflow.console.write(settings.summary(cores=args.cores, jobs=getattr(args, 'jobs', 1)))
     return overrides, False
 
@@ -175,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         if handled:
             return 0
         if args.command == 'check':
-            from software.trajectory.pipeline.runtime import check
+            from software.trajectory.reconstruction import check
             return check()
         elif args.command == 'build':
             result = processing.build(args.batch, force=args.force, keep_work=args.keep_work,
@@ -198,6 +215,13 @@ def main(argv: list[str] | None = None) -> int:
                 overrides=overrides)
             print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else workflow.format_batch_summary(result))
             return int(any(item['status'] not in ('ok', 'skipped', 'local_ok', 'local_skipped', 'planned') for item in result))
+        elif args.command == 'sync':
+            from software.scene.management import audio_sync
+
+            result = audio_sync.run(args.paths, force=args.force, dry_run=args.dry_run)
+            print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
+                  if args.json else audio_sync.format_summary(result, dry_run=args.dry_run))
+            return int(any(item['status'] == 'failed' for item in result))
         elif args.command == 'preflight':
             target = args.target.expanduser().resolve()
             result = recording_checks.check_video(target) if target.suffix.lower() == '.insv' else recording_checks.check_episode(
@@ -277,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
             session = batch_inputs.read_batch(layout.manifest(batch, 'manifest.yaml'))
             scene = session.scene
             try:
-                directory, published = map_lifecycle.load_published(scene)
+                directory, published = map_repository.load_published(scene)
             except ValueError:
                 if session.map_version is not None:
                     raise
@@ -297,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
                                                error='地图尚未构建'))
                         continue
                     try:
-                        epoch_directory, epoch_manifest = map_lifecycle.load_published(
+                        epoch_directory, epoch_manifest = map_repository.load_published(
                             scene, version=epoch.map_version, allow_import=True)
                         epoch_maps.append(dict(epoch=epoch.epoch, map_version=epoch.map_version,
                                                sequence=epoch.sequence, available=True,

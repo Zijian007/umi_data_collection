@@ -9,13 +9,18 @@ import unittest
 
 from software.infrastructure.file_store import write_yaml
 from software.scene.cli import build_parser
-from software.scene.overrides import SceneOverrides, apply_overrides
+from software.scene.parameters import SceneOverrides, apply_overrides
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CURRENT_DOCS = ('software/scene/README.md', 'software/trajectory/README.md',
-                'software/dataset/README.md', 'exports/README.md', 'docs/场景处理.md',
-                'docs/训练数据.md', 'docs/命令行参数.md')
+CURRENT_DOCS = (
+    'README.md', 'config/README.md', 'exports/README.md', 'kits/README.md', 'scenes/README.md',
+    *(str(path.relative_to(ROOT)) for path in sorted((ROOT / 'docs').glob('*.md'))),
+    'docs/dev/README.md', 'docs/dev/SSOT与权威来源.md', 'docs/dev/算法实现约定.md',
+    'docs/dev/标定架构与验证.md',
+    'software/scene/README.md', 'software/trajectory/README.md',
+    'software/trajectory/algorithms/poster_vio/README.md', 'software/dataset/README.md', 'software/vision/README.md',
+)
 
 
 class DocumentationContractsTests(unittest.TestCase):
@@ -59,17 +64,11 @@ class DocumentationContractsTests(unittest.TestCase):
                         self.assertEqual(parsed.format, 'training')
         self.assertTrue(all(counts.values()))
 
-    def test_collection_examples_use_the_public_schema(self):
+    def test_collection_template_uses_the_public_schema(self):
         from ruamel.yaml import YAML
         from software.scene.management.collection_schema import normalize_collection
-        count = 0
-        for name in ('config/README.md',):
-            examples = re.findall(r'<!-- check: collection -->\s*```yaml\n(.*?)```',
-                                  (ROOT / name).read_text(), re.S)
-            for source in examples:
-                normalize_collection(YAML(typ='safe').load(source))
-                count += 1
-        self.assertGreater(count, 0)
+        source = (ROOT / 'scenes/example_scene/collection.example.yaml').read_text()
+        normalize_collection(YAML(typ='safe').load(source))
 
     def test_yaml_scalar_keys_have_user_facing_comments(self):
         # YAML defaults and examples are user-facing; every scalar declaration
@@ -90,12 +89,11 @@ class DocumentationContractsTests(unittest.TestCase):
     def test_scene_call_chain_references_existing_functions(self):
         # 指南的明确阅读入口必须存在；解析 AST，不导入或启动求解器。
         references = {
-            'pipeline/tasks/estimation.py': ('select_map', 'execute'),
-            'pipeline/tasks/backends/scene_map.py': ('execute_task',),
-            'pipeline/tasks/results/arm_writer.py': ('write_arm_result',),
-            'pipeline/tasks/results/trajectory_writers.py': ('write_bimanual_trajectory',),
-            'pipeline/tasks/results/result_writer.py': ('write_episode_result',),
-            'management/batch/snapshot.py': ('read_inputs', 'make_record', 'save_record'),
+            'pipeline/tasks/backend_routing.py': ('select_map', 'execute'),
+            'pipeline/tasks/scene_map.py': ('execute_task',),
+            'pipeline/tasks/trajectory_writers.py': ('write_arm_result', 'write_bimanual_trajectory'),
+            'pipeline/tasks/publication.py': ('write_episode_result',),
+            'management/batch_snapshot.py': ('read_inputs', 'make_record', 'save_record'),
         }
         guide = (ROOT / 'software/scene/README.md').read_text()
         for module, functions in references.items():

@@ -10,8 +10,7 @@ import json
 import os
 import threading
 
-from software.infrastructure.runtime_environment import python_executable
-from software.infrastructure.paths import PROJECT_ROOT
+from software.infrastructure.paths import PROJECT_ROOT, python_executable
 
 
 ROOT = PROJECT_ROOT
@@ -26,7 +25,7 @@ def canonical_hash(value: dict) -> str:
 # 修改它们不应让已有结果、验收或缓存失效。
 PRESENTATION_SOURCES = frozenset({
     'software/trajectory/cli.py', 'software/trajectory/__main__.py',
-    'software/trajectory/reporting/reports.py', 'software/trajectory/reporting/plots.py',
+    'software/trajectory/reporting/reports.py',
 })
 
 
@@ -35,13 +34,18 @@ def code_identity(domain: str) -> dict:
     shared_sources = [ROOT / 'software' / filename for filename in (
         'infrastructure/provenance.py', 'infrastructure/file_store.py',
         'infrastructure/paths.py',
-        'infrastructure/runtime_environment.py', 'camera/registry.py',
-        'trajectory/io/tum.py',
+        'camera/registry.py',
+        'trajectory/tum.py',
         'configuration/loader.py', 'configuration/operational_settings.py',
         'configuration/parameter_models.py')]
     source_paths = [*shared_sources, *sorted((ROOT / 'software' / domain).rglob('*.py')),
                     *sorted((ROOT / 'software/camera').rglob('*.py')),
                     *sorted((ROOT / 'software/vision').rglob('*.py'))]
+    if domain == 'scene':
+        source_paths += sorted((ROOT / 'software/trajectory/algorithms/fixed_map').glob('*.py'))
+        source_paths += [ROOT / 'software/trajectory/algorithms/inertial.py',
+                         ROOT / 'software/trajectory/models.py',
+                         ROOT / 'software/trajectory/reporting/constraint_quality.py']
     if domain == 'trajectory':
         source_paths += sorted((ROOT / 'software/trajectory/assets/config').glob('*.yaml'))
     return {name: source_hash(source_path)
@@ -95,7 +99,7 @@ def engine_identity(domain: str) -> dict:
     """Hash installed engines and numerical package metadata without running them."""
     import shutil
     import sys
-    from software.vision.paths import orb_directory, orb_executable
+    from software.vision.orb_environment import orb_directory, orb_executable
     paths = {}
     if domain == 'trajectory':
         orb = orb_directory(os.environ)

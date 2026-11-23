@@ -25,7 +25,7 @@ from software.calibration.pipeline import runtime
 from software.calibration.validation import trajectory as trajectory_validation
 from software.calibration import workflow
 from software.calibration.algorithms import board_pnp
-from software.trajectory.calibration import assets as tcal
+from software.camera import calibration_assets as tcal
 from software.calibration.models import CameraImuResult, GravityResult, IntrinsicsResult, VerificationRequest
 from software.infrastructure.file_store import locked
 
@@ -199,7 +199,7 @@ class FullWorkflowTests(unittest.TestCase):
                 destination = Path(command[command.index("--result-path") + 1])
                 (destination / "calibration.json").write_bytes(tcal.SAMPLE_CAMERA_JSON.read_bytes())
                 (destination / "corners.cereal").touch()
-            if any("software.calibration.tools.imu_calib_physical_check" in part for part in command):
+            if any("software.calibration.tools.imu_physical_check" in part for part in command):
                 destination = Path(command[command.index("--out") + 1])
                 destination.mkdir(exist_ok=True)
                 (destination / "imu_calib_physical_check.json").write_text(json.dumps({
@@ -491,7 +491,7 @@ class FullWorkflowTests(unittest.TestCase):
     def test_resume_verify_skips_decode_detection_and_trajectory(self):
         with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, _, _):
             args.video = args.c
-            selected = dict(tcal.describe(tcal.HERE, 'factory'), serial='camera')
+            selected = dict(tcal.describe(tcal.SAMPLE_CAMERA_JSON.parent, 'factory'), serial='camera')
             with patch.object(registry, 'resolve_insv', return_value=selected):
                 self.assertEqual(workflow.verify(inputs.parse_verify_args(args)), 0)
                 args.resume = True
@@ -516,8 +516,8 @@ class FullWorkflowTests(unittest.TestCase):
             tcal.describe(out, "registry")
             self.assertEqual(len(commands), 5)  # A bag, A solve, B bag, B solve, D check
             for command in (commands[0], commands[2]):
-                self.assertEqual(command[1:3], ['-m', 'software.calibration.tools.calib_folder_to_bag'])
-            self.assertEqual(commands[4][1:3], ['-m', 'software.calibration.tools.imu_calib_physical_check'])
+                self.assertEqual(command[1:3], ['-m', 'software.calibration.tools.euroc_to_bag'])
+            self.assertEqual(commands[4][1:3], ['-m', 'software.calibration.tools.imu_physical_check'])
             self.assertIn("--fixed-scale-opt-offset", commands[3])
             self.assertFalse((out / "run" / "work").exists())
             self.assertEqual({p.name for p in out.iterdir()}, {"report.txt", "calibration.json", "manifest.json", "run"})
@@ -672,7 +672,7 @@ class FullWorkflowTests(unittest.TestCase):
                 with self.simulation(Path(tmp), trajectory=AcceptanceTests().trajectory(ate=ate)) as (args, commands, install):
                     args.video = args.c
                     args.video.touch()
-                    selected = dict(tcal.describe(tcal.HERE, 'factory'), serial='camera')
+                    selected = dict(tcal.describe(tcal.SAMPLE_CAMERA_JSON.parent, 'factory'), serial='camera')
                     with patch.object(registry, 'read_insv_serial', return_value='camera'), patch.object(registry, 'resolve_insv', return_value=selected):
                         self.assertEqual(workflow.verify(inputs.parse_verify_args(args)), int(expected == Decision.REJECTED))
                     report = self.read_result(args)
@@ -698,7 +698,7 @@ class FullWorkflowTests(unittest.TestCase):
                             args.video = args.c
                             args.video.touch()
                             args.keep_work = keep_work
-                            selected = dict(tcal.describe(tcal.HERE, 'factory'), serial='camera')
+                            selected = dict(tcal.describe(tcal.SAMPLE_CAMERA_JSON.parent, 'factory'), serial='camera')
 
                             def fail(*values, **options):
                                 if operation == 'build':
@@ -740,7 +740,7 @@ class FullWorkflowTests(unittest.TestCase):
                         if command == 'verify':
                             args.video = args.c
                             args.video.touch()
-                            selected = dict(tcal.describe(tcal.HERE, 'factory'), serial='camera')
+                            selected = dict(tcal.describe(tcal.SAMPLE_CAMERA_JSON.parent, 'factory'), serial='camera')
                             stack.enter_context(patch.object(registry, 'resolve_insv', return_value=selected))
                         if fail:
                             stack.enter_context(patch.object(board_detection, 'detect_all', side_effect=RuntimeError('board failure')))
@@ -768,7 +768,7 @@ class FullWorkflowTests(unittest.TestCase):
                     if command == 'verify':
                         args.video = args.c
                         args.video.touch()
-                        selected = dict(tcal.describe(tcal.HERE, 'factory'), serial='camera')
+                        selected = dict(tcal.describe(tcal.SAMPLE_CAMERA_JSON.parent, 'factory'), serial='camera')
                         stack.enter_context(patch.object(registry, 'resolve_insv', return_value=selected))
                     stack.enter_context(patch.object(board_detection, 'detect_all', side_effect=KeyboardInterrupt))
                     request = inputs.parse_run_args(args) if command == 'run' else inputs.parse_verify_args(args)

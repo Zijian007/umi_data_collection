@@ -9,7 +9,7 @@ from unittest.mock import patch
 import numpy as np
 
 from software.dataset import export, sampling
-from software.dataset.coordinates import read_pose_series
+from software.dataset.schema import read_pose_series
 from software.scene import cli
 
 

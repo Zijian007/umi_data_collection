@@ -10,9 +10,9 @@ import time
 import unittest
 
 from software.scene import layout, workflow
-from software.scene.management import cleanup, processing
-from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs, scene as scene_inputs
-from software.scene.pipeline.tasks.backends import scene_reconstruction
+from software.scene.management import cleanup, batch_processing as processing
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
+from software.scene.pipeline.tasks import scene_map as scene_reconstruction
 from software.infrastructure.file_store import mark_used, write_yaml
 import test_scene as fixtures
 

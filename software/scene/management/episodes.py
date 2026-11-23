@@ -13,13 +13,14 @@ import tempfile
 
 from software.infrastructure import provenance as artifact_identity
 from software.scene import layout
-from software.scene.overrides import SceneOverrides, apply_overrides
+from software.scene.parameters import SceneOverrides, apply_overrides
 from software.scene.layout import locked
 from software.scene.management import camera_assets
-from software.scene.management.inputs.scene import INTERNAL_DIRECTORIES, validate_name
+from software.scene.layout import INTERNAL_DIRECTORIES
+from software.scene.management.inputs.scene import validate_name
 from software.scene.management.inputs.batch import batch_task_directories
-from software.scene.asset_identity import validate_assets
-from software.scene.management.inputs.episode import episode_inputs, read_episode
+from software.scene.result_io import validate_assets
+from software.scene.management.inputs.batch import episode_inputs, read_episode
 from software.scene.result_io import scene_reference, trajectory_path
 from software.infrastructure.file_store import write_json
 
@@ -59,7 +60,7 @@ def episode_paths(paths: list[Path], *, exclude: Iterable[Path] = ()) -> list[Pa
 
 def invalidate_task_state(path: Path) -> None:
     """清单变化使处理和验收失效；身份和使用手始终从清单读取。"""
-    read_episode(path, verify=False)
+    read_episode(path, verify=False, allow_pending_map=True)
     root = layout.owner(path)
     layout.metadata(root, 'state.json').unlink(missing_ok=True)
 

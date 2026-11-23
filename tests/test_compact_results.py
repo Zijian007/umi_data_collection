@@ -11,15 +11,15 @@ from scipy.spatial.transform import Rotation
 
 from software.infrastructure import provenance
 from software.scene import workflow
-from software.scene.overrides import SceneOverrides
-from software.scene.management.inputs import episode as episode_inputs
+from software.scene.parameters import SceneOverrides
+from software.scene.management.inputs import batch as episode_inputs
 from software.scene.result_io import scene_reference
 from software.infrastructure.file_store import write_yaml
 from software.viewer.results.catalog import RecordingCatalog
-from software.viewer.results.poses import derive_body_tracks
+from software.viewer.results.trajectory_reader import derive_body_tracks
 
 import test_scene as fixtures
-from software.scene import asset_identity
+from software.scene import result_io as asset_identity
 
 
 class BodyTrackTests(unittest.TestCase):
@@ -46,7 +46,7 @@ class BodyTrackTests(unittest.TestCase):
                                        expected_rotation.as_matrix(), atol=1e-12)
 
     def test_viewer_pose_reader_import_does_not_load_numerical_packages(self):
-        command = ('import sys; from software.viewer.results.poses import derive_body_tracks; assert not ({"numpy", "scipy", "gtsam"} & sys.modules.keys())')
+        command = ('import sys; from software.viewer.results.trajectory_reader import derive_body_tracks; assert not ({"numpy", "scipy", "gtsam"} & sys.modules.keys())')
         subprocess.run([sys.executable, '-c', command], check=True)
 
     def test_invalid_external_rotations_are_rejected(self):

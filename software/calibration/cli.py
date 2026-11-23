@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None, *, prepare_environment: bool = False) ->
             if not math.isfinite(args.tag_size_mm) or args.tag_size_mm <= 0:
                 raise ValueError('--tag-size-mm 必须是标定板标签的正的有限毫米边长')
             if args.show_config:
-                from software.calibration.configuration import effective_report
+                from software.calibration.pipeline.inputs import effective_report
                 report = effective_report(args, run_request)
                 report['user_config'] = user_config.current().report()
                 print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -66,14 +66,13 @@ def main(argv: list[str] | None = None, *, prepare_environment: bool = False) ->
     if args.cmd in ('preview-width', 'detect-width'):
         from av.error import FFmpegError
         from cv2 import error as OpenCVError
-        from software.gripper_width.tools import preview
+        from software.gripper_width import video_tools as width_video
         try:
             if args.cmd == 'preview-width':
-                result = preview.render(args.video, args.out, roi=args.roi, contrast=args.contrast)
+                result = width_video.preview(args.video, args.out, roi=args.roi, contrast=args.contrast)
             else:
-                from software.gripper_width.tools import monitor
                 video_output = None if args.no_video else (args.video_out or args.video.with_name(args.video.stem + '_width_detect.mp4'))
-                result = monitor.run(args.video, args.roi, hz=args.hz, output=args.out,
+                result = width_video.monitor(args.video, args.roi, hz=args.hz, output=args.out,
                                      benchmark=args.benchmark, video_output=video_output, contrast=args.contrast)
         except (OSError, ValueError, RuntimeError, FFmpegError, OpenCVError) as error:
             runtime.console.write(str(error), state='失败')
@@ -86,7 +85,7 @@ def main(argv: list[str] | None = None, *, prepare_environment: bool = False) ->
     if args.cmd == 'run':
         if run_request.lens == 'front':
             return workflow.run(run_request)
-        from software.scene.spatial.rear_calibration import run
+        from software.calibration.rear_workflow import run
         try:
             return run(run_request)
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, YAMLError) as error:

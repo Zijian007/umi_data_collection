@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from software.infrastructure import provenance as artifact_identity
-from software.dataset.coordinates import read_pose_series
+from software.dataset.schema import read_pose_series
 from software.dataset.schema import ARMS, EPISODE_FORMAT, FORMAT, READABLE_VERSIONS, validate_timeline
 
 

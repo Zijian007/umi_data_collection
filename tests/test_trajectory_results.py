@@ -13,9 +13,9 @@ from software.calibration.algorithms import board_pnp
 from software.configuration import loader as config
 from software.calibration.algorithms import trajectory_metrics
 from software.calibration.models import RunPaths, ExecutionOptions
-from software.trajectory.reporting import map_data, results
+from software.trajectory.reporting import map_data, artifacts as results
 from software.trajectory.models import RecordingPaths
-from software.trajectory.pipeline.reuse import REQUIRED_OUTPUTS, reuse_decision
+from software.trajectory.workflow import REQUIRED_OUTPUTS, reuse_decision
 
 
 class ResultLayoutTests(unittest.TestCase):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import math
 import shutil
@@ -10,29 +11,72 @@ import tempfile
 import numpy as np
 
 from software.infrastructure import provenance as artifact_identity
-from software.dataset import gripper, sampling, source
-from software.dataset.policy import validate_quality_policy
-from software.dataset.coordinates import reference_metadata
+from software.dataset import sampling
+from software.dataset.schema import EPISODE_FORMAT, FORMAT, SCHEMA_VERSION, reference_metadata, validate_quality_policy
+from software.scene.management import episodes
+from software.scene.management.inputs.batch import read_episode
 from software.scene.result_io import read_arm_settings, scene_reference
 from software.infrastructure.file_store import locked, write_json
 
 
-from software.dataset.schema import FORMAT, SCHEMA_VERSION, EPISODE_FORMAT
+@dataclass(frozen=True)
+class AcceptedEpisode:
+    path: Path
+    name: Path
+    scene_root: Path
+    run: Path
+    manifest: dict
+    review: dict
+    result_sha256: str
 
 
-def _write_episode(item: source.AcceptedEpisode, staging: Path, *, fps: float, max_gap_s: float,
+def read_accepted_episode(path: Path) -> AcceptedEpisode:
+    episode = read_episode(path)
+    run, manifest, review = episodes.accepted_run(episode)
+    if not episode.instruction.strip():
+        raise ValueError(f'训练导出需要非空 instruction：{path}')
+    if not episode.synchronization['confirmed']:
+        raise ValueError(f'训练导出需要先核验双手 synchronization：{path}')
+    if manifest.get('instruction') != episode.instruction or manifest.get('synchronization') != episode.synchronization:
+        raise ValueError(f'结果尚未携带当前指令/同步配置，请重新 run 和验收：{path}')
+    if set(manifest['tcp_frames']) != set(episode.expected_arms):
+        raise ValueError('结果 TCP 定义与任务使用手不一致')
+    for frame in manifest['tcp_frames'].values():
+        if not isinstance(frame, dict) or not isinstance(frame.get('convention'), str) or not frame['convention']:
+            raise ValueError('训练导出需要可识别的 TCP 定义')
+    name = episode.session.relative_path / episode.root.name
+    return AcceptedEpisode(episode.path, name, episode.scene.root, run, manifest, review,
+                           artifact_identity.file_hash(run / 'episode.json'))
+
+
+def select_accepted_episodes(paths: list[Path]) -> list[AcceptedEpisode]:
+    found = episodes.episode_paths(paths)
+    if not found:
+        raise ValueError('没有找到任务清单')
+    selected = [read_accepted_episode(path) for path in found]
+    if len({accepted_episode.name for accepted_episode in selected}) != len(selected):
+        raise ValueError('任务导出身份重复，请检查场景/套件/批次/任务名称')
+    return selected
+
+
+def verify_accepted_episode_unchanged(accepted_episode: AcceptedEpisode) -> None:
+    current = read_accepted_episode(accepted_episode.path)
+    if (current.run != accepted_episode.run
+            or current.result_sha256 != accepted_episode.result_sha256
+            or current.review != accepted_episode.review):
+        raise ValueError(f'导出期间源结果或验收发生变化：{accepted_episode.path}')
+
+
+def _write_episode(item: AcceptedEpisode, staging: Path, *, fps: float, max_gap_s: float,
                    quality_policy: str, unknown_support: str,
                    time_window_s: tuple[float, float] | None) -> dict:
     """在未发布目录写入一集；事务清理和最终源结果复核由 build 负责。"""
     target = staging / 'episodes' / item.name
     target.mkdir(parents=True)
-    offsets = item.manifest['synchronization']['offsets_s']
-    arms = {arm: sampling.read_arm(item.run / arm, offsets[arm]) for arm in item.manifest['arms']}
-    arrays, quality = sampling.sample(arms, fps, max_gap_s,
+    arms = list(item.manifest['arms'])
+    arrays, quality, readiness = sampling.sample_episode(item.run, item.manifest, fps, max_gap_s,
         quality_policy=quality_policy, unknown_support=unknown_support,
         time_window_s=time_window_s)
-    width_arrays, readiness = gripper.sample(item.run, item.manifest, arms, arrays['t_episode_s'], max_gap_s)
-    arrays.update(width_arrays)
     np.savez_compressed(target / 'samples.npz', **arrays)
     tcp_geometry = {}
     for arm in arms:
@@ -46,7 +90,7 @@ def _write_episode(item: source.AcceptedEpisode, staging: Path, *, fps: float, m
     metadata = dict(kind=EPISODE_FORMAT, schema_version=SCHEMA_VERSION,
         instruction=item.manifest['instruction'], synchronization=item.manifest['synchronization'],
         **reference_metadata(scene_reference(item.manifest)), scene=item.manifest['scene'], kit=item.manifest['kit'],
-        arms=list(arms), tcp_frames=item.manifest['tcp_frames'],
+        arms=arms, tcp_frames=item.manifest['tcp_frames'],
         tcp_geometry=tcp_geometry, actual_error=item.manifest['actual_error'],
         position_unit='m', fps=fps, sampling_window_s=quality['window_s'],
         rows=len(arrays['t_episode_s']), quality=quality,
@@ -76,7 +120,7 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
             or time_window_s[1] <= time_window_s[0]):
         raise ValueError('time_window_s 必须是有限的 [start, end] 秒区间，且 end 大于 start')
     validate_quality_policy(quality_policy, unknown_support)
-    selected = source.select_accepted_episodes(paths)
+    selected = select_accepted_episodes(paths)
     output = output.expanduser().resolve()
     if any(output.is_relative_to(item.scene_root) or item.scene_root.is_relative_to(output) for item in selected):
         raise ValueError('数据集输出目录不能位于源场景内或覆盖源场景')
@@ -91,7 +135,7 @@ def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float
                                       time_window_s=time_window_s)
                        for item in selected]
             for item in selected:
-                source.verify_accepted_episode_unchanged(item)
+                verify_accepted_episode_unchanged(item)
             missing_channels = sorted({name for entry in entries for name in entry['missing_channels']})
             ready = all(entry['training_ready'] for entry in entries)
             manifest = dict(kind=FORMAT, schema_version=SCHEMA_VERSION, fps=fps, max_gap_s=max_gap_s,

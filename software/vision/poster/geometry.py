@@ -6,7 +6,7 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 
-from software.camera.x3.factory import Kb4Model
+from software.camera.x3.factory_geometry import Kb4Model
 
 
 class PosterGeometryError(ValueError):
@@ -51,11 +51,15 @@ def rotation_correction_jacobian(correction, base_rotation, in_body, projection)
     return np.einsum('nij,njk->nik', projection, seat_camera).reshape(-1, 3)
 
 
-def residual_and_jacobians(body, board, T_camera_imu, points, pixels, model, *, return_projection=False):
-    """GTSAM Pose3 右扰动（旋转、平移）；一个 ID 的八维像素残差。"""
+def tag_camera_points(body, board, T_camera_imu, points):
     world = transform(board, points)
     in_body = transform(np.linalg.inv(body), world)
-    in_camera = transform(T_camera_imu, in_body)
+    return in_body, transform(T_camera_imu, in_body)
+
+
+def residual_and_jacobians(body, board, T_camera_imu, points, pixels, model, *, return_projection=False):
+    """KB4 corner residuals and GTSAM right-perturbation Jacobians at one pose."""
+    in_body, in_camera = tag_camera_points(body, board, T_camera_imu, points)
     projection = model.project_jacobian(in_camera)
     camera_rotation = T_camera_imu[:3, :3]
     board_rotation = body[:3, :3].T @ board[:3, :3]

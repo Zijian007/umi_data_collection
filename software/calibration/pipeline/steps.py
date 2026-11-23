@@ -50,9 +50,7 @@ class StageRunner:
             except (OSError, ValueError):
                 pass
         self.invalidate(step)
-        if doc.get('evaluation'):
-            doc.setdefault('evaluation_history', []).append(doc['evaluation'])
-        doc['evaluation'] = None
+        result_io.archive_evaluation(doc)
         doc['execution']['status'] = 'running'
         result_io.write(self.root, doc)
         runtime.console.write(step.label, state='开始')

@@ -12,13 +12,13 @@ import json
 from scipy.spatial.transform import Rotation
 
 from software.configuration import loader as config
-from software.calibration.algorithms import factory_kb4
+from software.camera.x3 import factory_kb4
 from software.camera import calibration_source
 from software.camera.geometry import imu_from_camera, validate_transform
-from software.camera.x3 import factory
+from software.camera.x3 import factory_geometry as factory
 from software.infrastructure.terminal import Console
 from software.infrastructure.file_store import atomic_file
-from software.trajectory.calibration.assets import parse_basalt
+from software.camera.calibration_assets import parse_basalt
 
 
 KIND = 'umi_rear_factory_fallback'

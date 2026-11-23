@@ -5,9 +5,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-from software.trajectory.poster_vio import solve_joint_poster_imu
-from software.trajectory.poster_vio import refinement
-from software.scene.pipeline.tasks.backends import poster_vio_inputs, poster_vio
+from software.trajectory.algorithms.poster_vio import solve_joint_poster_imu
+from software.trajectory.algorithms.poster_vio import refinement
+from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs, poster_vio
 
 
 class PosterVioRefinementTests(unittest.TestCase):
@@ -35,7 +35,7 @@ class PosterVioRefinementTests(unittest.TestCase):
     def test_isolated_bad_tag_is_removed_once_with_original_identity_and_metrics(self):
         request, arms, seed = self.prepared()
         request, arms = self.corrupted_tags(request, arms, [5])
-        result = solve_joint_poster_imu(request, arms, seed)
+        result = solve_joint_poster_imu(request.problem(), arms, seed)
         self.assertEqual(result.quality.status, 'solved')
         audit = result.arm_evidence['left']['refinement']
         self.assertEqual(audit['solves'], 2)
@@ -49,7 +49,7 @@ class PosterVioRefinementTests(unittest.TestCase):
         request, arms, seed = self.prepared()
         candidates = np.flatnonzero(~arms[0].tag_holdout_mask)
         request, arms = self.corrupted_tags(request, arms, candidates[::3])
-        result = solve_joint_poster_imu(request, arms, seed)
+        result = solve_joint_poster_imu(request.problem(), arms, seed)
         self.assertEqual(result.quality.status, 'rejected')
         audit = result.arm_evidence['left']['refinement']
         self.assertEqual(audit['solves'], 1)
@@ -58,7 +58,7 @@ class PosterVioRefinementTests(unittest.TestCase):
 
     def test_corrupt_holdout_never_changes_initialization_or_training_fit(self):
         request, arms, seed = self.prepared()
-        good = solve_joint_poster_imu(request, arms, seed)
+        good = solve_joint_poster_imu(request.problem(), arms, seed)
         self.assertGreaterEqual(good.arm_evidence['left']['holdout']['independent_frames'], 2)
         detections = self.helper.detections['left']
         held_times = np.unique(arms[0].times_s[arms[0].tag_indices[arms[0].tag_holdout_mask]])
@@ -66,18 +66,18 @@ class PosterVioRefinementTests(unittest.TestCase):
         pixels = detections.corners_half_px.copy()
         pixels[np.isin(np.round(times, 9), held_times)] += [60., -40.]
         self.helper.detections['left'] = replace(detections, corners_half_px=pixels)
+        self.inputs.detections.clear()
         bad_request, bad_arms, bad_seed = self.prepared()
         for previous, current in zip(arms, bad_arms):
             np.testing.assert_allclose(previous.seed_poses, current.seed_poses, atol=1e-10)
             np.testing.assert_allclose(previous.gravity_m_s2, current.gravity_m_s2, atol=1e-10)
-        bad = solve_joint_poster_imu(bad_request, bad_arms, bad_seed)
+        bad = solve_joint_poster_imu(bad_request.problem(), bad_arms, bad_seed)
         self.assertEqual(bad.quality.status, 'rejected')
         self.assertEqual(bad.arm_evidence['left']['holdout']['status'], 'rejected')
         self.assertLess(bad.arm_evidence['left']['tag_metrics']['rms_px'], 1e-4)
         np.testing.assert_allclose(good.trajectories['left'], bad.trajectories['left'], atol=1e-8)
-        with patch.object(poster_vio.arm_writer, 'write_arm_result') as written, self.assertRaisesRegex(ValueError, '质量拒绝'):
-            poster_vio.execute_task(replace(self.inputs, poster_vio_request=bad_request,
-                poster_vio_arms=bad_arms, poster_vio_board_seed=bad_seed))
+        with patch.object(poster_vio.trajectory_writers, 'write_arm_result') as written, self.assertRaisesRegex(ValueError, '质量拒绝'):
+            poster_vio.replay_task(self.inputs, request=bad_request, arms=bad_arms, board_seed=bad_seed)
         written.assert_not_called()
 
     def test_natural_outlier_removal_preserves_other_camera_and_original_indices(self):
@@ -87,7 +87,7 @@ class PosterVioRefinementTests(unittest.TestCase):
         pixels[2] += [100., -80.]
         tracks[0] = dict(tracks[0], pixels=pixels)
         changed = replace(arms[0], natural_tracks=tuple(tracks))
-        result = solve_joint_poster_imu(request, (changed, arms[1]), seed)
+        result = solve_joint_poster_imu(request.problem(), (changed, arms[1]), seed)
         self.assertEqual(result.quality.status, 'solved')
         audit = result.arm_evidence['left']['refinement']
         removed = audit['rounds'][0]['removed']
@@ -115,6 +115,37 @@ class PosterVioRefinementTests(unittest.TestCase):
         self.assertEqual(decision['status'], 'rejected')
         self.assertIn('front_natural_count_budget', decision['reasons'])
 
+    def test_recover_invalid_natural_projections_with_untouched_holdout(self):
+        request, arms, seed = self.prepared(features=True)
+        tracks = [dict(track, holdout_mask=np.arange(len(track['pixels'])) % 4 == 2)
+                  for track in arms[0].natural_tracks]
+        bad = tracks[0]
+        self.assertEqual(refinement.track_key(bad), ('front', 0))
+        pose = arms[0].seed_poses[bad['node_indices'][0]]
+        camera_pose = pose @ np.linalg.inv(arms[0].natural_cameras['front'].T_cam_imu)
+        bad['initial_point_m'] = (camera_pose @ [0., 0., -10., 1.])[:3]
+        changed = replace(arms[0], natural_tracks=tuple(tracks))
+        result = solve_joint_poster_imu(request.problem(), (changed, arms[1]), seed)
+        self.assertEqual(result.quality.status, 'solved')
+        left = result.arm_evidence['left']
+        first = left['refinement']['rounds'][0]
+        self.assertTrue(first['applied'])
+        self.assertEqual(first['natural_recovery_cameras'], ['front'])
+        budget = first['natural_budgets']['front']
+        self.assertGreater(budget['cumulative_removed'], budget['maximum_removed'])
+        self.assertEqual(budget['cumulative_removed'], budget['invalid_projections_removed'])
+        self.assertEqual(left['natural_holdout']['status'], 'passed')
+        self.assertIn(['front', 0], left['natural_holdout']['removed_tracks'])
+
+        # The recovery must fail closed if that camera cannot still be tested.
+        without_holdout = tuple(dict(track, holdout_mask=np.zeros(len(track['pixels']), dtype=bool))
+                                if track['camera'] == 'front' else track for track in tracks)
+        result = solve_joint_poster_imu(request.problem(), (replace(changed, natural_tracks=without_holdout), arms[1]), seed)
+        self.assertEqual(result.quality.status, 'rejected')
+        first = result.arm_evidence['left']['refinement']['rounds'][0]
+        self.assertFalse(first['applied'])
+        self.assertIn('front_natural_count_budget', first['reasons'])
+
     def test_holdout_mask_is_frozen_and_partial_frame_masks_are_rejected(self):
         request, arms, seed = self.prepared()
         path = self.inputs.directory / 'poster_vio/left/numerical_inputs.npz'
@@ -123,7 +154,7 @@ class PosterVioRefinementTests(unittest.TestCase):
         mask = arms[0].tag_holdout_mask.copy()
         mask[0] = True
         with self.assertRaisesRegex(ValueError, '完整标签时刻'):
-            solve_joint_poster_imu(request, (replace(arms[0], tag_holdout_mask=mask), arms[1]), seed)
+            solve_joint_poster_imu(request.problem(), (replace(arms[0], tag_holdout_mask=mask), arms[1]), seed)
 
     def test_holdout_rear_frames_are_absent_from_tracking_and_exclusion_polygons(self):
         calls = []
@@ -146,24 +177,27 @@ class PosterVioRefinementTests(unittest.TestCase):
     def test_disabled_and_unavailable_holdout_are_not_reported_as_passed(self):
         request, arms, seed = self.prepared()
         changed = tuple(replace(item, tag_holdout_mask=None) for item in arms)
-        result = solve_joint_poster_imu(request, changed, seed)
+        result = solve_joint_poster_imu(request.problem(), changed, seed)
         self.assertEqual(result.arm_evidence['left']['holdout']['status'], 'not_prepared')
         parameters = replace(self.inputs.episode.scene.parameters, poster_vio_minimum_tag_frames=100)
         mask = refinement.select_holdout(request.observations[0].times_s, parameters)
         self.assertFalse(mask.any())
         for stride, expected in ((0, 'disabled'), (5, 'insufficient_evidence')):
             changed = tuple(replace(item, tag_holdout_mask=np.zeros(len(item.pixels), dtype=bool),
-                scene_parameters=replace(item.scene_parameters, poster_vio_holdout_stride=stride)) for item in arms)
-            result = solve_joint_poster_imu(request, changed, seed)
+                parameters=replace(item.parameters, poster_vio_holdout_stride=stride)) for item in arms)
+            result = solve_joint_poster_imu(request.problem(), changed, seed)
             self.assertEqual(result.arm_evidence['left']['holdout']['status'], expected)
 
     def test_replayed_holdout_cannot_remove_endpoints_or_create_training_gaps(self):
+        # The gap-rejection contract uses a strict policy, independently of local/default tuning.
+        self.inputs.episode.scene.parameters = replace(
+            self.inputs.episode.scene.parameters, poster_vio_maximum_observation_gap_s=.5)
         request, arms, seed = self.prepared()
         nodes = np.unique(arms[0].tag_indices)
         for removed_nodes, reason in ((nodes[:1], '首尾'), (nodes[3:7], '时间覆盖')):
             held = np.isin(arms[0].tag_indices, removed_nodes)
             with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
-                solve_joint_poster_imu(request, (replace(arms[0], tag_holdout_mask=held), arms[1]), seed)
+                solve_joint_poster_imu(request.problem(), (replace(arms[0], tag_holdout_mask=held), arms[1]), seed)
 
     def test_holdout_selection_respects_whole_frames_local_gaps_and_training_capacity(self):
         parameters = self.inputs.episode.scene.parameters
@@ -180,9 +214,9 @@ class PosterVioRefinementTests(unittest.TestCase):
     def test_round_limit_stops_without_applying_more_candidates(self):
         request, arms, seed = self.prepared()
         request, arms = self.corrupted_tags(request, arms, [5])
-        changed = tuple(replace(item, scene_parameters=replace(item.scene_parameters,
+        changed = tuple(replace(item, parameters=replace(item.parameters,
                         poster_vio_maximum_cull_rounds=0)) for item in arms)
-        result = solve_joint_poster_imu(request, changed, seed)
+        result = solve_joint_poster_imu(request.problem(), changed, seed)
         audit = result.arm_evidence['left']['refinement']
         self.assertEqual(result.quality.status, 'rejected')
         self.assertEqual(audit['solves'], 1)
@@ -190,7 +224,7 @@ class PosterVioRefinementTests(unittest.TestCase):
         self.assertEqual(audit['rounds'][0]['reasons'], ['round_limit'])
 
     def test_nonfinite_holdout_projection_cannot_pass_comparisons(self):
-        from software.trajectory.poster_vio import solver
+        from software.trajectory.algorithms.poster_vio import solver
 
         request, arms, seed = self.prepared()
         project = solver.project_observations
@@ -202,4 +236,4 @@ class PosterVioRefinementTests(unittest.TestCase):
             return prediction, camera_points
         with patch.object(solver, 'project_observations', side_effect=nonfinite_holdout), \
                 self.assertRaisesRegex(ValueError, '留出投影'):
-            solve_joint_poster_imu(request, arms, seed)
+            solve_joint_poster_imu(request.problem(), arms, seed)

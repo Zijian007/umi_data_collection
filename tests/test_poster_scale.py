@@ -11,15 +11,20 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from software.trajectory.algorithms.fixed_map.parameters import MapPlacementParameters, PosterScaleParameters
+from software.configuration.loader import load
 from software.configuration import loader as config
-from software.scene.overrides import SceneOverrides
+from software.scene.parameters import SceneOverrides
 from software.infrastructure.file_store import read_yaml
 from software.scene.management.inputs import batch as batch_inputs, scene as scene_inputs
-from software.scene.spatial import geometry, mapping, poster_scale
+from software.scene import spatial as mapping
+from software.scene.spatial import correct_poster_placement
+from software.trajectory.algorithms.fixed_map import poster
+from software.trajectory.algorithms.fixed_map import geometry
 from software.vision.poster import layout as tag_board, detection as environment_tags
 tags = environment_tags
 from software.infrastructure.file_store import write_yaml
-from software.scene import asset_identity
+from software.scene import result_io as asset_identity
 
 
 def scale_fixture():
@@ -38,36 +43,37 @@ def scale_fixture():
 class PosterScaleNumericalTests(unittest.TestCase):
     def test_scale_recovery_partial_ids_offset_and_metric_lever(self):
         args = scale_fixture()
-        result = poster_scale.estimate_scale(*args)
+        result = poster.estimate_scale(*args[:-1], args[-1].for_algorithm(PosterScaleParameters))
         self.assertEqual(result['status'], 'estimated')
         self.assertAlmostEqual(result['scale'], 2.3, delta=1e-5)
         self.assertGreater(result['relative_scale_std'], 0.)
         self.assertLess(result['reprojection_rms_px'], 1e-5)
         # Changing arbitrary visual-map origin cannot change scale or uncertainty.
         moved = args[0].T_reference_camera.copy(); moved[:,:3,3] += [300.,-400.,200.]
-        again = poster_scale.estimate_scale(replace(args[0], T_reference_camera=moved), *args[1:])
+        again = poster.estimate_scale(replace(args[0], T_reference_camera=moved), *args[1:-1],
+                                          args[-1].for_algorithm(PosterScaleParameters))
         self.assertAlmostEqual(again['scale'], result['scale'], delta=1e-5)
 
     def test_no_tags_no_motion_and_map_gaps_are_unknown(self):
         args = list(scale_fixture())
         args[3] = replace(args[3], usable=np.zeros(len(args[3].usable), bool))
-        self.assertEqual(poster_scale.estimate_scale(*args)['status'], 'insufficient_observations')
+        self.assertEqual(poster.estimate_scale(*args[:-1], args[-1].for_algorithm(PosterScaleParameters))['status'], 'insufficient_observations')
         args = list(scale_fixture())
         static = args[0].T_reference_camera.copy(); static[:,:3,3] = 0.
         args[0] = replace(args[0], T_reference_camera=static)
-        self.assertEqual(poster_scale.estimate_scale(*args)['status'], 'insufficient_geometry')
+        self.assertEqual(poster.estimate_scale(*args[:-1], args[-1].for_algorithm(PosterScaleParameters))['status'], 'insufficient_geometry')
         args = list(scale_fixture())
         # Every rear timestamp is between map frames; nonadjacent IDs prohibit interpolation.
         args[0] = replace(args[0], indices=args[0].indices*2)
-        self.assertEqual(poster_scale.estimate_scale(*args)['status'], 'insufficient_observations')
+        self.assertEqual(poster.estimate_scale(*args[:-1], args[-1].for_algorithm(PosterScaleParameters))['status'], 'insufficient_observations')
 
     def test_moving_poster_rejects_static_scale_model(self):
         args = list(scale_fixture())
         corners = args[3].corners_half_px.copy()
         corners[len(corners)//2:] += [0., 70.]
         args[3] = replace(args[3], corners_half_px=corners)
-        with self.assertRaises(poster_scale.PosterScaleConflict):
-            poster_scale.estimate_scale(*args)
+        with self.assertRaises(poster.PosterScaleConflict):
+            poster.estimate_scale(*args[:-1], args[-1].for_algorithm(PosterScaleParameters))
 
     def test_scale_estimation_culls_an_isolated_bad_tag_sighting(self):
         args = list(scale_fixture())
@@ -75,7 +81,7 @@ class PosterScaleNumericalTests(unittest.TestCase):
         corners = detections.corners_half_px.copy()
         corners[0] += [20., 0.]
         args[3] = replace(detections, corners_half_px=corners)
-        result = poster_scale.estimate_scale(*args)
+        result = poster.estimate_scale(*args[:-1], args[-1].for_algorithm(PosterScaleParameters))
         self.assertEqual(result['status'], 'estimated')
         self.assertGreaterEqual(result['culled_observations'], 1)
         self.assertGreater(result['pre_cull_reprojection_rms_px'],
@@ -83,15 +89,15 @@ class PosterScaleNumericalTests(unittest.TestCase):
 
     def test_log_weighted_combination_floors_and_both_conflict_limits(self):
         p = scene_inputs.load_scene_parameters()
-        report = poster_scale.combine_scales(2., .01, 2.05, .02, p)
+        report = poster.combine_scales(2., .01, 2.05, .02, p.for_algorithm(PosterScaleParameters))
         self.assertTrue(report['compatible'])
         variance = np.array([.01**2+.03**2, .02**2+.02**2])
         weights = 1/variance; weights /= weights.sum()
         self.assertAlmostEqual(report['scale'], np.exp(weights@np.log([2.,2.05])))
         self.assertGreater(report['relative_scale_std'], 0.)
-        self.assertFalse(poster_scale.combine_scales(2., 1., 3., 1., p)['compatible'])
+        self.assertFalse(poster.combine_scales(2., 1., 3., 1., p.for_algorithm(PosterScaleParameters))['compatible'])
         strict = replace(p, tag_mapping_imu_std_floor=.001, tag_mapping_tag_std_floor=.001)
-        self.assertFalse(poster_scale.combine_scales(2., 0., 2.05, 0., strict)['compatible'])
+        self.assertFalse(poster.combine_scales(2., 0., 2.05, 0., strict.for_algorithm(PosterScaleParameters))['compatible'])
 
     def test_fixed_scale_refits_gravity_and_bias_and_rejects_inertial_conflict(self):
         from test_scene import motion
@@ -99,13 +105,13 @@ class PosterScaleNumericalTests(unittest.TestCase):
         raw = poses.copy(); raw[:,:3,3] /= 2.3
         obs = geometry.VisualObservations(times, raw, np.arange(len(times)), 'visual_map')
         p = scene_inputs.load_scene_parameters()
-        baseline = geometry.metric_alignment(obs, np.eye(4), imu, np.zeros(3), 9.81, p)
-        refit = geometry.metric_alignment(obs, np.eye(4), imu, np.zeros(3), 9.81, p, fixed_scale=2.3)
+        baseline = geometry.metric_alignment(obs, np.eye(4), imu, np.zeros(3), 9.81, p.for_algorithm(MapPlacementParameters), fusion_parameters=load('trajectory').values.fusion)
+        refit = geometry.metric_alignment(obs, np.eye(4), imu, np.zeros(3), 9.81, p.for_algorithm(MapPlacementParameters), fusion_parameters=load('trajectory').values.fusion, fixed_scale=2.3)
         self.assertEqual(refit['scale'], 2.3)
         self.assertLess(refit['evidence']['rms_m'], .001)
         np.testing.assert_allclose(refit['T_scene_metric_map'], baseline['T_scene_metric_map'], atol=.002)
         with self.assertRaises(ValueError):
-            geometry.metric_alignment(obs, np.eye(4), imu, np.zeros(3), 9.81, p, fixed_scale=4.6)
+            geometry.metric_alignment(obs, np.eye(4), imu, np.zeros(3), 9.81, p.for_algorithm(MapPlacementParameters), fusion_parameters=load('trajectory').values.fusion, fixed_scale=4.6)
 
     def test_diagnostics_preserve_placement_and_conflicts_block_correction(self):
         args = scale_fixture()
@@ -113,16 +119,16 @@ class PosterScaleNumericalTests(unittest.TestCase):
         scene = SimpleNamespace(parameters=parameters, trajectory=config.load('trajectory'))
         recording = SimpleNamespace(camera=SimpleNamespace(measurements=dict(front=front,rear=rear)))
         placement = dict(scale=2.3, T_scene_metric_map=np.eye(4).tolist(), evidence=dict(relative_scale_std=.02))
-        actual = poster_scale.correct_placement(placement, observations, 'front', recording, scene, (board,detections))
+        actual = correct_poster_placement(placement, observations, 'front', recording, scene, (board,detections))
         self.assertEqual(actual['scale'], placement['scale'])
         self.assertEqual(actual['evidence']['environment_poster']['status'], 'diagnostics_only')
         self.assertNotIn('environment_poster', placement['evidence'])
         conflict = copy.deepcopy(placement); conflict['scale'] = 3.5
-        diagnosed = poster_scale.correct_placement(conflict, observations, 'front', recording, scene, (board,detections))
+        diagnosed = correct_poster_placement(conflict, observations, 'front', recording, scene, (board,detections))
         self.assertEqual(diagnosed['evidence']['environment_poster']['status'], 'conflict')
         scene.parameters = replace(parameters, tag_mapping_scale_enabled=True)
         with self.assertRaises(geometry.MapAlignmentError):
-            poster_scale.correct_placement(conflict, observations, 'front', recording, scene, (board,detections))
+            correct_poster_placement(conflict, observations, 'front', recording, scene, (board,detections))
 
 
 class PosterScaleIdentityTests(unittest.TestCase):

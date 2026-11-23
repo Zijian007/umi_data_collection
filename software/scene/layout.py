@@ -9,8 +9,13 @@ from software.infrastructure.file_store import locked as storage_lock, read_yaml
 from software.scene.management.collection_schema import normalize_collection
 
 
+INTERNAL_DIRECTORIES = frozenset({
+    'archive', 'cache', 'runs', 'versions', 'maps', 'mapping', 'videos',
+    'pending', 'imports', 'results', 'local_results',
+})
+
+
 INTERNAL = '.pipeline'
-TASK_FIELDS = {'instruction', 'expected_arms', 'synchronization', 'map_version', 'map_epoch', 'reconstruction'}
 LEGACY_USER_FILES = {'scene.yaml', 'batch.yaml', 'task.yaml'}
 
 
@@ -83,15 +88,7 @@ def task_configuration(root: Path) -> dict:
     collection = batch / 'collection.yaml'
     if not collection.is_file():
         return {}
-    tasks = normalize_collection(read_yaml(collection)).get('tasks', {})
-    if not isinstance(tasks, dict):
-        raise ValueError('collection.yaml 的 tasks 必须是配置表')
-    declaration = tasks.get(root.name, {})
-    if not isinstance(declaration, dict):
-        raise ValueError(f'collection.yaml 的 tasks.{root.name} 必须是配置表')
-    if declaration.keys() - TASK_FIELDS:
-        raise ValueError('collection.yaml 的任务只允许 instruction、arms、synchronization、map.epoch、map.version 和 reconstruction.backend')
-    return declaration
+    return normalize_collection(read_yaml(collection))['tasks'].get(root.name, {})
 
 
 def task_configuration_hash(root: Path) -> str:
@@ -119,3 +116,43 @@ def read_state(root: Path) -> dict:
         if report.is_file():
             attempt['preflight_report'] = run_reference(root, report)
     return state
+
+
+def batch_root(path: Path) -> Path:
+    """把批次目录、collection.yaml 或 .pipeline 内的清单规范为批次根目录。"""
+    path = path.expanduser().resolve()
+    if path.is_file():
+        path = owner(path)
+    return path.parent if path.name == INTERNAL else path
+
+
+def require_collection(batch: Path, command: str) -> None:
+    if (batch / 'batch.yaml').is_file():
+        reject_legacy_user_file(batch / 'batch.yaml')
+    if not (batch / 'collection.yaml').is_file():
+        raise ValueError(f'{command} 需要包含 collection.yaml 的采集批次')
+
+
+def configured_batches(paths: list[Path]) -> list[Path]:
+    """发现真实 collection.yaml；示例、缓存和运行结果不参与发现。"""
+    found = set()
+    for path in paths:
+        path = path.expanduser().resolve()
+        if path.is_file():
+            reject_legacy_user_file(path)
+            if path.name not in {'collection.yaml', 'manifest.yaml'}:
+                continue
+            path = owner(path)
+        if not path.is_dir():
+            raise ValueError(f'处理路径不存在：{path}')
+        for current, children, files in os.walk(path):
+            children[:] = sorted(name for name in children if not name.startswith('.')
+                                 and name not in INTERNAL_DIRECTORIES)
+            if 'batch.yaml' in files:
+                reject_legacy_user_file(Path(current) / 'batch.yaml')
+            if 'scene.yaml' in files and 'collection.yaml' not in files:
+                reject_legacy_user_file(Path(current) / 'scene.yaml')
+            if 'collection.yaml' in files:
+                found.add(Path(current))
+                children[:] = []
+    return sorted(found)

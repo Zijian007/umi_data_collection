@@ -95,6 +95,25 @@ class ViewerCacheTests(unittest.TestCase):
                 media.preview_file(self.video, 'stale-version')
             self.assertEqual(encoder.call_count, 1)
 
+    def test_rear_preview_retains_crop_and_frame_grid_in_background_job(self):
+        clip = media.RearClip((240, 240, 1440, 1440), 12, 2, 3)
+
+        def run(command, **kwargs):
+            video_filter = command[command.index('-vf') + 1]
+            self.assertIn('trim=start_frame=12', video_filter)
+            self.assertIn('crop=1440:1440:240:240', video_filter)
+            self.assertEqual(command[command.index('-frames:v') + 1], '3')
+            Path(command[-1]).write_bytes(b'\x1aE\xdf\xa3preview')
+            return SimpleNamespace(returncode=0, stderr=b'')
+
+        with patch.object(media, 'find_ffmpeg', return_value='/ffmpeg'), patch.object(media.subprocess, 'run', side_effect=run):
+            target = media._preview_target(self.video, clip)
+            self.assertNotEqual(target, media._preview_target(self.video))
+            media.preview_status(self.video, clip)
+            media._jobs[target].result(timeout=5)
+            self.assertEqual(media.preview_status(self.video, clip)['status'], 'ready')
+            self.assertEqual(media.preview_file(self.video, target.stem, clip), target)
+
     def test_failed_encoder_never_publishes_partial_preview(self):
         def run(command, **kwargs):
             Path(command[-1]).write_bytes(b'partial')

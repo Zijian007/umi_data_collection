@@ -36,22 +36,17 @@ jobs:
           software/scene/arms.py
           software/configuration/user_settings.py
           software/configuration/operational_settings.py
-          software/scene/management/effective_config.py
+          software/scene/management/batch_snapshot.py
           software/scene/management/task_configuration.py
-          software/scene/management/inputs/kit.py
-          software/scene/overrides.py
+          software/scene/management/inputs/scene.py
+          software/scene/parameters.py
           software/viewer/server.py
-          software/scene/spatial/poster.py
+          software/scene/spatial.py
           software/trajectory/algorithms/fusion/graph.py
-          software/trajectory/poster_vio/models.py
-          software/trajectory/poster_vio/contract.py
-          software/trajectory/poster_vio/quality.py
-          software/trajectory/poster_vio/initialization.py
-          software/trajectory/poster_vio/frontend.py
-          software/trajectory/poster_vio/solver.py
-          software/trajectory/poster_vio/base_tags.py
-          software/trajectory/poster_vio/refinement.py
-          software/trajectory/poster_vio/feature_geometry.py
-          software/trajectory/poster_vio/keyframes.py
-          software/scene/pipeline/tasks/backends/poster_vio.py
-          software/scene/pipeline/tasks/backends/poster_vio_inputs.py
+          software/trajectory/algorithms/poster_vio/models.py
+          software/trajectory/algorithms/poster_vio/initialization.py
+          software/trajectory/algorithms/poster_vio/frontend.py
+          software/trajectory/algorithms/poster_vio/solver.py
+          software/trajectory/algorithms/poster_vio/base_tags.py
+          software/trajectory/algorithms/poster_vio/refinement.py
+          software/scene/pipeline/tasks/poster_vio.py

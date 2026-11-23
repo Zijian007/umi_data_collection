@@ -9,13 +9,15 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from software.camera.x3.factory import Kb4Model
-from software.trajectory.poster_vio.frontend import (
-    FeatureCameraInput, subsample_observations, track_cameras, track_video, triangulate_track)
+from software.camera.x3.factory_geometry import Kb4Model
+from software.scene.management.inputs.scene import load_scene_parameters
+from software.trajectory.algorithms.poster_vio.models import FeatureTrackingParameters
+from software.trajectory.algorithms.poster_vio.frontend import FeatureCameraInput, subsample_observations, track_cameras, triangulate_track
 
 
 class PosterVioFrontendTests(unittest.TestCase):
     def setUp(self):
+        self.parameters = load_scene_parameters().for_algorithm(FeatureTrackingParameters)
         self.model = Kb4Model(500., 500., 720., 720., 0., 0., 0., 0.)
         self.poses = np.tile(np.eye(4), (4, 1, 1))
         self.poses[:, 0, 3] = np.arange(4) * .05
@@ -42,6 +44,14 @@ class PosterVioFrontendTests(unittest.TestCase):
             decode=lambda stream: iter(frames))
         return context
 
+    def track_cameras(self, video, cameras, **options):
+        options.setdefault('parameters', self.parameters)
+        return track_cameras(video, cameras, **options)
+
+    def track_rear(self, video, source_frames, times, nodes, poses, camera_from_imu, model, **options):
+        stream = FeatureCameraInput('rear', source_frames, times, nodes, poses, camera_from_imu, model)
+        return self.track_cameras(video, (stream,), **options)['rear']
+
     def test_subsample_observations_keeps_endpoints_and_uniform_middle(self):
         nodes = np.arange(11)
         pixels = np.column_stack([nodes, nodes + .5])
@@ -58,7 +68,7 @@ class PosterVioFrontendTests(unittest.TestCase):
         seeds = np.tile(np.eye(4), (8, 1, 1))
         seeds[node_indices] = self.poses
         with patch('av.open', return_value=self.container()):
-            tracks = track_video(Path('generated.insv'), np.arange(4), self.times, node_indices,
+            tracks = self.track_rear(Path('generated.insv'), np.arange(4), self.times, node_indices,
                                  seeds, np.eye(4), self.model, maximum_tracks=30, max_features=30)
         self.assertGreater(len(tracks), 5)
         self.assertLessEqual(len(tracks), 30)
@@ -72,7 +82,7 @@ class PosterVioFrontendTests(unittest.TestCase):
         for options in (dict(truncate=True), dict(changed_time=True)):
             with self.subTest(options=options), patch('av.open', return_value=self.container(**options)):
                 with self.assertRaises(ValueError):
-                    track_video(Path('generated.insv'), np.arange(4), self.times, np.arange(4),
+                    self.track_rear(Path('generated.insv'), np.arange(4), self.times, np.arange(4),
                                 self.poses, np.eye(4), self.model)
 
     def test_both_raw_halves_are_decoded_once_with_front_mask_and_distinct_node_grids(self):
@@ -109,7 +119,7 @@ class PosterVioFrontendTests(unittest.TestCase):
                     np.eye(4), self.model),
             )
             with patch('av.open', return_value=self.container()) as opened:
-                tracks = track_cameras(Path('generated.insv'), streams)
+                tracks = self.track_cameras(Path('generated.insv'), streams)
             opened.assert_called_once()
         self.assertGreater(len(tracks['front']), 3)
         self.assertGreater(len(tracks['rear']), 3)
@@ -125,14 +135,14 @@ class PosterVioFrontendTests(unittest.TestCase):
         stream = FeatureCameraInput('front', np.arange(4), self.times, np.arange(4), self.poses,
                                      np.eye(4), self.model)
         with patch('av.open') as opened, self.assertRaisesRegex(ValueError, '遮手图'):
-            track_cameras(Path('generated.insv'), (stream,))
+            self.track_cameras(Path('generated.insv'), (stream,))
         opened.assert_not_called()
         with tempfile.TemporaryDirectory() as temporary:
             from dataclasses import replace
             path = Path(temporary) / 'invalid.png'
             path.write_bytes(b'not an image')
             with patch('av.open') as opened, self.assertRaisesRegex(ValueError, '遮手图'):
-                track_cameras(Path('generated.insv'), (replace(stream, mask_path=path),))
+                self.track_cameras(Path('generated.insv'), (replace(stream, mask_path=path),))
             opened.assert_not_called()
 
     def test_front_tracks_stop_when_optical_flow_enters_hand_mask(self):
@@ -157,7 +167,7 @@ class PosterVioFrontendTests(unittest.TestCase):
                 stream = FeatureCameraInput('front', np.arange(4), self.times, np.arange(4),
                     self.poses, np.eye(4), self.model, mask_path=path)
                 with patch('av.open', return_value=self.container()):
-                    results.append(track_cameras(Path('generated.insv'), (stream,), minimum_track_length=2)['front'])
+                    results.append(self.track_cameras(Path('generated.insv'), (stream,), minimum_track_length=2)['front'])
         baseline, masked = results
         self.assertGreater(len(baseline), 3)
         self.assertGreater(len(masked), 3)
@@ -176,7 +186,6 @@ class PosterVioFrontendTests(unittest.TestCase):
 
     def test_small_archive_budget_keeps_renewing_tracks_through_end_of_video(self):
         from dataclasses import replace
-        from software.scene.management.inputs.scene import load_scene_parameters
 
         count = 18
         poses = np.tile(np.eye(4), (count, 1, 1))
@@ -189,9 +198,9 @@ class PosterVioFrontendTests(unittest.TestCase):
                 cv2.rectangle(image, (x - 4, y - 4), (x + 4, y + 4), 255, -1)
             self.images.append(image)
         with patch('av.open', return_value=self.container()):
-            tracks = track_video(Path('generated.insv'), np.arange(count), np.arange(count) * .1,
+            tracks = self.track_rear(Path('generated.insv'), np.arange(count), np.arange(count) * .1,
                 np.arange(count), poses, np.eye(4), self.model, max_features=12, maximum_tracks=3,
-                maximum_track_length=3, parameters=replace(load_scene_parameters(),
+                maximum_track_length=3, parameters=replace(self.parameters,
                     poster_vio_natural_holdout_stride=0, poster_vio_revisit_enabled=False))
         self.assertEqual(len(tracks), 3)
         self.assertLess(tracks[0]['node_indices'][0], 6)
@@ -203,7 +212,7 @@ class PosterVioFrontendTests(unittest.TestCase):
         for settings in (dict(maximum_tracks=0), dict(max_features=True),
                          dict(minimum_track_length=1), dict(maximum_track_length=2)):
             with self.subTest(settings=settings), patch('av.open') as opened, self.assertRaises(ValueError):
-                track_video(Path('generated.insv'), np.arange(4), self.times, np.arange(4),
+                self.track_rear(Path('generated.insv'), np.arange(4), self.times, np.arange(4),
                             self.poses, np.eye(4), self.model, **settings)
             opened.assert_not_called()
 
@@ -224,7 +233,7 @@ class PosterVioFrontendTests(unittest.TestCase):
             self.images.append(image)
         diagnostics = {}
         with patch('av.open', return_value=self.container()):
-            tracks = track_video(Path('generated.insv'), np.arange(count), np.arange(count) * .1,
+            tracks = self.track_rear(Path('generated.insv'), np.arange(count), np.arange(count) * .1,
                 np.arange(count), poses, np.eye(4), self.model, max_features=100, maximum_tracks=100,
                 diagnostics=diagnostics)
         joined = [track for track in tracks if track['revisit_count'] > 0]
@@ -265,6 +274,30 @@ class PosterVioFrontendTests(unittest.TestCase):
             for axis in np.eye(3)])
         np.testing.assert_allclose(pose_jacobian, numerical_pose, atol=1e-5)
         np.testing.assert_allclose(point_jacobian, numerical_point, atol=1e-5)
+
+    def test_natural_factor_cost_batches_only_valid_depths_without_derivatives(self):
+        import gtsam
+        from software.vision.poster.factors import add_natural_track_factors, natural_track_error
+
+        values, graph = gtsam.Values(), gtsam.NonlinearFactorGraph()
+        point = np.array([.2, -.1, 1.])
+        # Mixed visibility in the first four-observation batch, then an all-invalid batch.
+        depths = [1., -.2, .0005, .6, -.1]
+        pixels = np.arange(10, dtype=float).reshape(-1, 2) + 600.
+        pose_key = lambda i: gtsam.symbol('x', i)
+        point_key = lambda i: gtsam.symbol('p', i)
+        for i, depth in enumerate(depths):
+            body = np.eye(4)
+            body[2, 3] = point[2] - depth
+            values.insert(pose_key(i), gtsam.Pose3(body))
+        add_natural_track_factors(graph, values, pose_key_fn=pose_key, point_key_fn=point_key,
+            T_camera_imu=np.eye(4), model=self.model, tracks=[dict(track_id=0,
+                node_indices=np.arange(len(depths)), pixels=pixels, initial_point_m=point)])
+        expected = np.concatenate([natural_track_error(values, pose_key(i), point_key(0),
+            np.eye(4), self.model, pixel)[0] for i, pixel in enumerate(pixels)])
+        with patch.object(type(self.model), 'project_jacobian', side_effect=AssertionError):
+            actual = np.concatenate([graph.at(i).unwhitenedError(values) for i in range(graph.size())])
+        np.testing.assert_array_equal(actual, expected)
 
     def test_natural_factor_keeps_negative_depth_finite_for_refinement(self):
         import gtsam

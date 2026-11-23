@@ -4,10 +4,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from software.configuration import loader as config
-from software.configuration import parameter_models
 from software.vision.models import RecordingPaths as VisualPaths, VisualSettings, VisualContext
+
+
+if TYPE_CHECKING:
+    import numpy as np
+    from software.configuration import loader as config
+
+
+@dataclass(frozen=True)
+class FusedTrajectory:
+    """IMU 位姿位于调用方声明的参考系；可为固定场景或单次局部坐标。"""
+    T_reference_imu: np.ndarray
+    tracked: np.ndarray
+    front_tracked: np.ndarray
+    evidence: dict
+
 
 
 @dataclass(frozen=True)
@@ -57,23 +71,11 @@ class ReconstructionSettings(VisualSettings):
 
 
 @dataclass(frozen=True)
-class ReconstructionContext:
+class ReconstructionContext(VisualContext):
+    """Resolved engine inputs for standalone trajectories and scene fallback."""
+
     paths: RecordingPaths
-    request: TrajectoryRequest
     settings: ReconstructionSettings
-    frame_count: int
-
-    def __post_init__(self):
-        if self.request.configuration is None:
-            raise ValueError("重建上下文需要 workflow 已解析的参数")
-
-    @property
-    def visual(self) -> VisualContext:
-        return VisualContext(self.paths, self.settings, self.parameters, self.frame_count, self.request.cores)
-
-    @property
-    def parameters(self) -> parameter_models.TrajectoryParameters:
-        return self.request.configuration.values
 
 
 @dataclass(frozen=True)

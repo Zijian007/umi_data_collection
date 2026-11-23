@@ -9,7 +9,7 @@ from software.camera import registry
 from software.infrastructure import provenance as artifact_identity
 from software.calibration import devices
 from software.calibration import reports
-from software.trajectory.calibration import assets as calibration
+from software.camera import calibration_assets as calibration
 
 
 class ResultReportTests(unittest.TestCase):

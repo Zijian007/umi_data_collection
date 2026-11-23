@@ -1,4 +1,4 @@
-"""Read prepared images, schedule board detection and cache raw pixel corners."""
+"""Detect AprilGrid corners in Kalibr order and cache sampled EuRoC frames."""
 
 from __future__ import annotations
 
@@ -14,11 +14,50 @@ import numpy as np
 
 from software.configuration import loader as config
 from software.infrastructure import provenance as artifact_identity
-from software.calibration.algorithms import aprilgrid_detect
 from software.infrastructure.file_store import atomic_file
 
 
-def detect_all(euroc: Path, make_detector, step: int = 1, workers: int = 4, up: float | None = None, *, cancelled=None) -> dict:
+# Kalibr and Basalt use a two-cell border and BL, BR, TR, TL corners.
+BLACK_BORDER_BITS = 2  # Kalibr / Basalt blackTagBorder
+# OpenCV ArUco 检测角序 → Kalibr (BL,BR,TR,TL)
+_OPENCV_TO_KALIBR = [1, 0, 3, 2]
+
+
+class GridDetector:
+    """detect(gray) -> {tag_id: 4×2 float 像素角点，顺序 BL,BR,TR,TL（Kalibr/Basalt）}。"""
+
+    def __init__(self, border_bits: int = BLACK_BORDER_BITS, refine: bool = True):
+        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+        p = cv2.aruco.DetectorParameters()
+        p.markerBorderBits = int(border_bits)
+        if refine:
+            # L 形角点（黑方块外角）用 AprilTag 式边缘直线拟合求交点：合成板实测 max 0.57 px / median 0.40 px；
+            # CORNER_REFINE_SUBPIX（鞍点假设）偏 ~0.8–1.4 px，CONTOUR ~1.4 px。
+            p.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_APRILTAG
+        self.det = cv2.aruco.ArucoDetector(dictionary, p)
+
+    def detect(self, gray: np.ndarray) -> dict:
+        if gray.ndim == 3:
+            gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+        corners, ids, _ = self.det.detectMarkers(gray)
+        out = {}
+        if ids is None:
+            return out
+        for c, i in zip(corners, ids.ravel()):
+            out[int(i)] = c.reshape(4, 2).astype(float)[_OPENCV_TO_KALIBR]
+        return out
+
+
+def detect_up(gray: np.ndarray, det, up: float | None = None) -> dict:
+    """Detection on a bicubic-upsampled image, corners mapped back to native pixels."""
+    up = config.load("calibration").values.board.detection_upscale if up is None else up
+    g = cv2.resize(gray, None, fx=up, fy=up, interpolation=cv2.INTER_CUBIC) if up != 1.0 else gray
+    dets = det.detect(g)
+    # cv2.resize maps source pixel centre x to (x + 0.5) * up - 0.5 -> invert exactly (no constant +0.25 px bias at 2x)
+    return {k: (np.asarray(v, float) + 0.5) / up - 0.5 for k, v in dets.items()} if up != 1.0 else dets
+
+
+def detect_all(euroc: Path, make_detector=GridDetector, step: int = 1, workers: int = 4, up: float | None = None, *, cancelled=None) -> dict:
     """AprilGrid detections (detect_up) on every `step`-th frame of an EuRoC folder.  Detection is the slow part (close to
     1 s a frame at 2x) and frames are independent, so a few threads share the work, each with its own detector (same
     result as one by one).  Returns {"n_frames": frames listed, "shape": (h, w), "dets": {frame index: {tag_id: 4x2 corners}}}."""
@@ -33,7 +72,7 @@ def detect_all(euroc: Path, make_detector, step: int = 1, workers: int = 4, up: 
         if not hasattr(loc, "det"):
             loc.det = make_detector()
         g = cv2.imread(str(Path(euroc) / "mav0" / "cam0" / "data" / rows[k][1].strip()), cv2.IMREAD_GRAYSCALE)
-        return (k, None, None) if g is None else (k, aprilgrid_detect.detect_up(g, loc.det, up), g.shape)
+        return (k, None, None) if g is None else (k, detect_up(g, loc.det, up), g.shape)
 
     with ThreadPoolExecutor(max(1, workers)) as ex:
         frame_detections = list(ex.map(one, range(0, len(rows), step)))
@@ -42,12 +81,15 @@ def detect_all(euroc: Path, make_detector, step: int = 1, workers: int = 4, up: 
             "video_time_s": np.array([int(row[0]) / 1e9 - 1.0 for row in rows])}
 
 
-def detect_cached(euroc: Path | Callable[[], Path], make_detector, *, cache: Path, source_identity: str,
+def detect_cached(euroc: Path | Callable[[], Path], make_detector=GridDetector, *, cache: Path, source_identity: str,
                   step: int, workers: int, up: float, cancelled=None) -> dict:
     """Reuse raw corners independently of calibration; a dataset callable runs only on a cache miss."""
-    key = artifact_identity.canonical_hash(dict(source=source_identity, step=step, upscale=up, opencv=cv2.__version__,
-        code=artifact_identity.source_hash(Path(__file__)), preprocessing=artifact_identity.source_hash(Path(aprilgrid_detect.__file__)),
-        detector=artifact_identity.source_hash(Path(inspect.getfile(make_detector)))))
+    source_file = Path(__file__)
+    code = artifact_identity.source_hash(source_file)
+    detector_file = Path(inspect.getfile(make_detector))
+    detector_code = code if detector_file == source_file else artifact_identity.source_hash(detector_file)
+    key = artifact_identity.canonical_hash(dict(source=source_identity, step=step, upscale=up,
+        opencv=cv2.__version__, code=code, detector=detector_code))
     try:
         with np.load(cache, allow_pickle=False) as saved:
             if str(saved['identity'].item()) == key:

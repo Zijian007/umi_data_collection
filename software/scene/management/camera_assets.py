@@ -12,7 +12,7 @@ from software.camera import registry
 from software.camera import calibration_source, rear_fallback
 from software.gripper_width import calibration as gripper_calibration
 from software.scene.models import CalibratedCamera, Scene
-from software.trajectory.calibration import selection
+from software.trajectory import calibration as selection
 
 
 def rear_files(devices: dict[str, dict]) -> dict[str, Path]:
@@ -44,7 +44,7 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
     expected_source = device_binding.get('intrinsics_source') or recorded_source
     calibration_source.require(device_record, expected_source, label=f'相机 {serial} 工作镜头')
     if recorded_source == 'factory':
-        from software.vision.capabilities import require_forward_kb4
+        from software.vision.orb_environment import require_forward_kb4
         require_forward_kb4()
         calibration_source.check_recording(recording_path, device_record['intrinsics_provenance'])
     if not re.fullmatch(r'[A-Za-z0-9_-]+', device_record['serial']):
@@ -91,7 +91,7 @@ def select_camera(recording_path: Path, scene: Scene) -> CalibratedCamera:
                 expected_source=rear_source, video=recording_path)
             asset_paths['rear'] = rear_calibration_path
         if measured['intrinsics_source'] == 'factory' and scene.mode == 'dual':
-            from software.vision.capabilities import require_forward_kb4
+            from software.vision.orb_environment import require_forward_kb4
             require_forward_kb4()
         lens_calibrations['rear'] = measured
     if scene.parameters.tag_fusion_enabled and 'rear' not in lens_calibrations:

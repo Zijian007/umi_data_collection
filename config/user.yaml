@@ -1,19 +1,18 @@
-# 本机用户偏好；只写需要覆盖的字段，省略项继承 user.defaults.yaml。
-# 下列注释示例列出全部当前字段；取消注释即可使用，不要添加旧版 scene/calibration 分组。
+# 本机通用配置；直接修改下方设置。
 schema_version: 2  # 固定整数 2；只描述 user 格式，collection.yaml 不填写此项。
 
-# features:  # 通用功能偏好；两个功能均可分别省略。
-#   audio_sync:  # 双手 take 没有 synchronization 声明时的默认同步方式。
-#     enabled: true  # true=audio_auto；false=假设同时开始；任务声明优先。
-#   factory_intrinsics:  # 影响所有后续批次的全局来源覆盖。
-#     enabled: true  # true=kit 两镜头统一选择 factory；false=沿用 kit 的逐镜头来源。
+features:  # 本机全局功能偏好。
+  audio_sync:  # 双手任务的全局同步默认值，可由批次和任务覆盖。
+    enabled: false  # true=audio_auto，false=假设同时开始。
+  factory_intrinsics:  # 全局镜头来源设置。
+    enabled: false  # true=两个镜头统一选择 factory；false=沿用 kit 的逐镜头来源。
 
-# runtime:  # CPU 与多个 take 的并发；CLI --cores/--jobs 优先。
-#   parallel_tasks:  # 不控制单个 take 内的双手并行。
-#     enabled: true  # true=使用 jobs；false=强制一次一个任务。
-#     jobs: 2  # 整数 >=1；只有 enabled:true 生效，省略取默认。
-#   cores: auto  # auto 或 CPU 编号/范围字符串，如 "0-3,8"；只使用进程可用 CPU 的交集。
+runtime:  # CPU 与多个 take 的并发；CLI --cores/--jobs 优先。
+  parallel_tasks:  # 控制同时运行的 take 数量。
+    enabled: false  # true=使用 jobs；false=一次一个任务。
+    jobs: 1  # 整数 >=1；enabled 为 true 时生效。
+  cores: auto  # auto 或 CPU 编号/范围字符串，如 "0-3,8"；只使用进程可用 CPU 的交集。
 
-# viewer:  # 仅影响查看器服务；CLI --host/--port 优先。
-#   host: 127.0.0.1  # null=继承 viewer.yaml；非空地址字符串，0.0.0.0 允许远程访问。
-#   port: 9092  # null=继承；整数 0–65535，0=自动分配空闲端口。
+viewer:  # 查看器监听配置；CLI --host/--port 优先。
+  host: null  # null=沿用 operations/viewer 配置；0.0.0.0 允许远程访问。
+  port: null  # null=沿用 operations/viewer 配置；整数 0–65535，0=自动分配空闲端口。

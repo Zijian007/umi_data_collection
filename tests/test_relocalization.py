@@ -11,7 +11,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from software.scene.management.inputs.scene import load_scene_parameters
-from software.scene.spatial import geometry, relocalization, slam
+from software.scene import spatial as slam
+from software.trajectory.algorithms.fixed_map import geometry, geometry as relocalization
 from software.configuration import loader as config
 from software.vision import slam as visual_slam
 
@@ -101,7 +102,7 @@ class RecoveryTests(unittest.TestCase):
                             '2,0.066666667,2,1,2,0,0,0,0,0,1\n'
                             '1,0.033333333,4,0,,,,,,,\n'
                             '0,0,2,1,0,0,0,0,0,0,1\n')
-            result = geometry.read_visual_observations(path, np.array([0., .033, .067]), 7000000)
+            result = slam.read_visual_observations(path, np.array([0., .033, .067]), 7000000)
             np.testing.assert_array_equal(result.indices, [0, 2])
             np.testing.assert_allclose(result.imu_times_s, [.007, .074])
 

@@ -13,12 +13,11 @@ class SharedBoundaryTests(unittest.TestCase):
     def test_domain_packages_do_not_eagerly_import_solvers_or_add_compatibility_exports(self):
         script = '''import importlib, sys
 packages = ('software.vision.poster', 'software.trajectory.algorithms.fusion',
+            'software.trajectory.algorithms.fixed_map',
             'software.scene.pipeline.maps', 'software.scene.pipeline.tasks',
-            'software.scene.pipeline.tasks.backends', 'software.scene.pipeline.tasks.results',
-            'software.scene.cache',
             'software.gripper_width.detection', 'software.gripper_width.distance',
-            'software.gripper_width.tools', 'software.scene.management.inputs',
-            'software.scene.management.batch', 'software.viewer.results',
+            'software.gripper_width', 'software.scene.management.inputs',
+            'software.scene.management', 'software.viewer.results',
             'software.viewer.resources')
 for name in packages:
     package = importlib.import_module(name)
@@ -39,21 +38,59 @@ print('lightweight')
             self.assertEqual(list(Path(temp).iterdir()), [])
 
     def test_spatial_and_shared_cache_do_not_depend_on_map_pipeline(self):
-        for directory in ('spatial', 'cache'):
-            # rear 标定仍需共用录像准备；缓存机制本身不依赖流水线。
-            forbidden = 'software.scene.pipeline' if directory == 'cache' else 'software.scene.pipeline.maps'
-            for path in (config.ROOT / 'software/scene' / directory).rglob('*.py'):
-                for node in ast.walk(ast.parse(path.read_text())):
-                    if isinstance(node, ast.ImportFrom) and node.module:
-                        self.assertFalse(node.module.startswith(forbidden), str(path))
+        for module in ('spatial', 'cache'):
+            forbidden = 'software.scene.pipeline' if module == 'cache' else 'software.scene.pipeline.maps'
+            path = config.ROOT / 'software/scene' / f'{module}.py'
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    self.assertFalse(node.module.startswith(forbidden), str(path))
 
     def test_shared_visual_code_has_no_business_module_dependencies(self):
         for path in (config.ROOT/'software/vision').rglob('*.py'):
             for node in ast.walk(ast.parse(path.read_text())):
                 if isinstance(node, ast.ImportFrom) and node.module:
-                    self.assertFalse(node.module.startswith(('software.scene', 'software.trajectory')), str(path))
+                    self.assertFalse(node.module.startswith(('software.scene', 'software.trajectory', 'software.gripper_width')), str(path))
         for domain in ('scene', 'trajectory'):
             self.assertIn('software/vision/slam.py', artifact_identity.code_identity(domain))
+
+    def test_camera_assets_and_models_do_not_import_calibration_or_trajectory_applications(self):
+        forbidden = ('software.calibration', 'software.trajectory', 'software.scene')
+        for path in (config.ROOT / 'software/camera').rglob('*.py'):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    modules = (node.module,)
+                elif isinstance(node, ast.Import):
+                    modules = tuple(alias.name for alias in node.names)
+                else:
+                    continue
+                self.assertFalse(any(name == prefix or name.startswith(prefix + '.')
+                                     for name in modules for prefix in forbidden), str(path))
+
+    def test_vio_and_fixed_map_algorithms_do_not_import_application_modules(self):
+        trajectory = config.ROOT / 'software/trajectory'
+        files = [*trajectory.joinpath('algorithms/poster_vio').rglob('*.py'),
+                 *trajectory.joinpath('algorithms/fixed_map').rglob('*.py'),
+                 trajectory / 'algorithms/inertial.py']
+        forbidden = ('software.scene', 'software.calibration', 'software.viewer',
+                     'software.dataset', 'software.configuration.loader')
+        for path in files:
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.ImportFrom):
+                    modules = (node.module or '',)
+                elif isinstance(node, ast.Import):
+                    modules = tuple(alias.name for alias in node.names)
+                else:
+                    continue
+                if isinstance(node, ast.ImportFrom) and node.module == 'software.configuration':
+                    modules += tuple(f'{node.module}.{alias.name}' for alias in node.names)
+                self.assertFalse(any(module == prefix or module.startswith(prefix + '.')
+                                     for module in modules for prefix in forbidden), str(path))
+
+    def test_scene_dispatch_does_not_load_poster_vio_before_selecting_it(self):
+        script = "import sys\nfrom software.scene.pipeline.tasks import backend_routing as estimation\nassert 'poster_vio' in estimation.ESTIMATORS\nassert 'software.scene.pipeline.tasks.poster_vio' not in sys.modules\nassert 'software.trajectory.algorithms.poster_vio' not in sys.modules\n"
+        result = subprocess.run([sys.executable, '-c', script], cwd=config.ROOT,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_importing_fusion_and_merge_tools_does_not_execute_or_create_outputs(self):
         with tempfile.TemporaryDirectory() as temp:

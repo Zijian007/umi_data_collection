@@ -1,4 +1,4 @@
-from software.scene.management.inputs import kit as kit_inputs
+from software.scene.management.inputs import scene as kit_inputs
 """双镜头档案只读查询：损坏隔离、来源选择与套件缺项的退出语义。"""
 import contextlib
 import io
@@ -14,7 +14,7 @@ from software.camera import registry
 from software.calibration import cli, inventory
 from software.infrastructure.file_store import read_yaml
 from software.infrastructure.file_store import write_json, write_yaml
-from software.trajectory.calibration import assets
+from software.camera import calibration_assets as assets
 from test_intrinsics_source import factory_bundle
 
 

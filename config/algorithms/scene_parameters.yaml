@@ -94,7 +94,7 @@ poster_vio:  # 实验性联合图的观测门槛；与独立引擎后端分开�
   culling:
     maximum_rounds: 2  # 联合求解后最多剔除并重求解的轮数；0 关闭。
     precull_iterations: 3  # 首轮先短求解判断异常；后续沿用已求解状态和阻尼。
-    maximum_natural_fraction: 0.15  # 每手每镜头相对原始自然像素观测的累计剔除比例；向下取整。
+    maximum_natural_fraction: 0.15  # 每手每镜头累计剔除比例；留出证据充足时，无效训练投影可额外剔除后重解。
     natural_threshold_px: 10.0  # 自然像素异常门槛，单位 px；标签沿用共享几何门槛及预算。
   holdout:
     stride: 5  # 初始化前按独立标签时刻留出内部帧；0 关闭，至少为 2。

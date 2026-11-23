@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from software.configuration import user_settings as user_config
-from software.infrastructure.file_store import write_yaml
+from software.infrastructure.file_store import read_yaml, write_yaml
 
 
 class UserConfigTests(unittest.TestCase):
@@ -41,17 +41,18 @@ class UserConfigTests(unittest.TestCase):
             with self.subTest(document=document), self.assertRaises(ValueError):
                 user_config._validate(document)
 
-    def test_default_values_come_from_the_yaml_source(self):
+    def test_default_path_reads_and_reports_the_single_user_file(self):
         from unittest.mock import patch
-        from software.infrastructure.file_store import read_yaml
         with tempfile.TemporaryDirectory() as directory:
-            defaults = Path(directory) / 'defaults.yaml'
-            values = read_yaml(user_config.DEFAULTS_PATH)
+            path = Path(directory) / 'user.yaml'
+            values = read_yaml(user_config.DEFAULT_PATH)
             values['features']['audio_sync']['enabled'] = True
             values['viewer']['port'] = 12345
-            write_yaml(defaults, values)
-            with patch.object(user_config, 'DEFAULTS_PATH', defaults):
-                config = user_config.load(Path(directory) / 'missing.yaml')
+            write_yaml(path, values)
+            with patch.object(user_config, 'DEFAULT_PATH', path):
+                config = user_config.load()
+            self.assertEqual(config.report(), dict(path=str(path.resolve()), values=dict(config.values),
+                                                  scope='user_common'))
         self.assertEqual(config.values['scene']['sync_policy'], 'audio_auto')
         self.assertEqual(config.values['viewer']['port'], 12345)
 

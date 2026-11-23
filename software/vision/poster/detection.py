@@ -15,7 +15,7 @@ from software.infrastructure import provenance
 from software.camera.timing import video_to_imu_seconds
 from software.camera.x3.frame import CROP, FPS_SRC, FPS_TOLERANCE, SRC_H, SRC_W
 from software.infrastructure.file_store import atomic_file, mark_used, write_json
-from software.vision.decoding import VideoDecode
+from software.vision.decoding import ScanProgress, VideoDecode
 
 if TYPE_CHECKING:
     from software.vision.poster.layout import TagBoardLayout
@@ -114,6 +114,14 @@ def load_observations(path: Path) -> TagObservations:
     return observations
 
 
+@dataclass(frozen=True)
+class DetectionSnapshot:
+    directory: Path
+    layout: TagBoardLayout
+    observations: TagObservations
+    report: dict
+
+
 class PosterDetector:
     def __init__(self, settings: DetectionSettings):
         self.settings = settings
@@ -157,8 +165,10 @@ class PosterDetector:
 class PosterDetection:
     """按源帧号采样环境半幅；完整源时间轴仍逐帧校验。"""
 
-    def __init__(self, settings: DetectionSettings, progress: Callable[[str], None] | None = None):
-        self.settings, self.progress = settings, progress
+    def __init__(self, settings: DetectionSettings, progress: Callable[[str], None] | None = None, *,
+                 on_progress: Callable[[ScanProgress], None] | None = None):
+        self.settings, self.progress, self.on_progress = settings, progress, on_progress
+        self.total = None
         self.detector = PosterDetector(settings)
         self.frames, self.times, self.samples, self.ids, self.corners = [], [], [], [], []
         self.duplicates, self.unknowns = [], []
@@ -174,6 +184,8 @@ class PosterDetection:
             raise ValueError('环境标签检测需要 X3 原始 3840×1920 双镜头画面')
         if stream.average_rate is None or abs(float(stream.average_rate) - FPS_SRC) > FPS_TOLERANCE:
             raise ValueError('环境标签检测需要 X3 4K60 录制模式')
+        if self.on_progress is not None and (frame_count := getattr(stream, 'frames', 0)):
+            self.total = (frame_count + self.settings.frame_step - 1) // self.settings.frame_step
 
     def consume(self, source_index: int, frame) -> None:
         if frame.pts is None or frame.time_base is None:
@@ -214,6 +226,9 @@ class PosterDetection:
             self.ids.append(tag_id)
             self.corners.append(points)
         self.last_corners = {int(tag_id): points for tag_id, points in found}
+        if self.on_progress is not None:
+            total = self.total if self.total is None or self.total >= len(self.times) else None
+            self.on_progress(ScanProgress(len(self.times), total, timestamp, len(self.ids)))
         if self.progress is not None and time.monotonic() - self.updated >= 3:
             self.progress(f'环境标签：已采样 {len(self.times)} 帧，原片 {timestamp:.2f} s，唯一 ID 观测 {len(self.ids)} 次')
             self.updated = time.monotonic()
@@ -230,10 +245,11 @@ class PosterDetection:
         return result
 
 
-def detect(video: Path, settings: DetectionSettings, *, progress: Callable[[str], None] | None = None) -> TagObservations:
+def detect(video: Path, settings: DetectionSettings, *, progress: Callable[[str], None] | None = None,
+           on_progress: Callable[[ScanProgress], None] | None = None) -> TagObservations:
     """顺序解码真实 PTS，按源帧号抽样；不读取 IMU，不插值或沿用角点。"""
     decoder = VideoDecode(video)
-    decoder.add(PosterDetection(settings, progress))
+    decoder.add(PosterDetection(settings, progress, on_progress=on_progress))
     return decoder.run()[0]
 
 
@@ -283,7 +299,9 @@ def report(observations: TagObservations, settings: DetectionSettings) -> dict:
 
 def cached(video: Path, output: Path, settings: DetectionSettings, *, force: bool = False,
            progress: Callable[[str], None] | None = None, layout: TagBoardLayout | None = None,
-           decoder: VideoDecode | None = None, cache_audit=None) -> dict | None:
+           decoder: VideoDecode | None = None, cache_audit=None,
+           on_ready: Callable[[TagObservations, dict], None] | None = None,
+           on_progress: Callable[[ScanProgress], None] | None = None) -> dict | None:
     """角点缓存独立绑定检测身份；decoder 将缺失检测推迟到共享解码。"""
     import av
 
@@ -335,11 +353,17 @@ def cached(video: Path, output: Path, settings: DetectionSettings, *, force: boo
         if cache_audit is not None and not reused:
             cache_audit.record(stage='environment_tags', key=key, path=str(output), status='computed',
                                reason='未命中环境标签缓存，完成检测并发布角点')
+        if on_progress is not None:
+            frames = result['sampled_frames']
+            on_progress(ScanProgress(frames, frames, result['last_video_time_s'], result['observations'], reused))
+        if on_ready is not None:
+            on_ready(observations, result)
         return result
 
     if observations is not None:
         return publish(observations, True)
     if decoder is not None:
-        decoder.add(PosterDetection(settings, progress), lambda found: publish(found, False))
+        consumer = PosterDetection(settings, progress, on_progress=on_progress)
+        decoder.add(consumer, lambda found: publish(found, False), background=True)
         return None
-    return publish(detect(video, settings, progress=progress), False)
+    return publish(detect(video, settings, progress=progress, on_progress=on_progress), False)

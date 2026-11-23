@@ -57,7 +57,7 @@ class CalibrationStartupTests(unittest.TestCase):
         with patch.object(runtime, 'use_calibration_environment') as select_environment, \
              patch.object(calibration_cli.workflow, 'run', return_value=0), \
              patch.object(calibration_cli.workflow, 'verify', return_value=0), \
-             patch('software.scene.spatial.rear_calibration.run', return_value=0), \
+             patch('software.calibration.rear_workflow.run', return_value=0), \
              redirect_stdout(io.StringIO()):
             for arguments in (['run', 'front', '--dry-run'], ['verify', 'C.insv'],
                               ['run', 'rear', '--dry-run']):
@@ -75,7 +75,7 @@ class CalibrationStartupTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0].tag_size_mm, 36.)
         arguments = ['run', 'folder with spaces/rear', '--workers', '2']
         with patch.object(runtime, 'use_calibration_environment') as select_environment, \
-             patch('software.scene.spatial.rear_calibration.run', return_value=0), \
+             patch('software.calibration.rear_workflow.run', return_value=0), \
              redirect_stdout(io.StringIO()):
             self.assertEqual(calibration_cli.main(arguments, prepare_environment=True), 0)
             select_environment.assert_called_once_with(arguments, install_missing=True)

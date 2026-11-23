@@ -8,8 +8,8 @@ from software.scene.management.inputs import (
     scene as scene_inputs,
 )
 from software.scene import layout
-from software.scene.overrides import SceneOverrides
-from software.scene.pipeline.maps import lifecycle as map_lifecycle
+from software.scene.parameters import SceneOverrides
+from software.scene.pipeline.maps import repository as map_lifecycle
 from software.infrastructure.file_store import write_yaml as _write_yaml
 
 
@@ -145,7 +145,7 @@ class SceneConfigurationTests(unittest.TestCase):
 
     def test_poster_backend_quality_parameters_are_independent_and_round_trip(self):
         from dataclasses import asdict
-        from software.scene.parameter_schema import nested_snapshot, flatten
+        from software.scene.parameters import nested_snapshot, flatten
         parameters = scene_inputs.load_scene_parameters(overrides=dict(
             placement=dict(maximum_rotation_deg=1.), localization=dict(maximum_visual_gap_s=.1)))
         self.assertEqual(parameters.poster_maximum_gravity_difference_deg, 5.)
@@ -184,8 +184,8 @@ class SceneConfigurationTests(unittest.TestCase):
         write_yaml(batch / 'collection.yaml', dict(schema_version=1, kit='rig', scene={}))
         write_yaml(batch / 'batch.yaml', dict(kit='rig'))
         with self.assertRaisesRegex(ValueError, 'batch.yaml 已移除'):
-            from software.scene.management.batch import snapshot as batches
-            batches._declaration(batch)
+            from software.scene.management import batch_snapshot as batches
+            batches.read_collection(batch)
         (batch / 'batch.yaml').unlink()
         task = batch / 'take_001'
         task.mkdir()
@@ -209,7 +209,7 @@ class SceneConfigurationTests(unittest.TestCase):
         self.assertEqual(scene_inputs.read_scene(collection).mode, 'dual')
 
     def test_auto_layout_handles_epoch_directory_shapes(self):
-        from software.scene.management.batch import snapshot as batches
+        from software.scene.management import batch_snapshot as batches
         batch = self.root / '20261115'
         (batch / 'mapping/epoch_001').mkdir(parents=True)
         (batch / 'mapping/epoch_001/map.insv').write_bytes(b'')

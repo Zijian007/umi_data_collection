@@ -6,10 +6,10 @@ import unittest
 import gtsam
 import numpy as np
 
-from software.camera.x3.factory import Kb4Model
-from software.scene.management.inputs.kit import gripper_paths
-from software.trajectory.poster_vio import base_tags, refinement, solve_joint_poster_imu
-from software.trajectory.poster_vio.contract import validate_request
+from software.camera.x3.factory_geometry import Kb4Model
+from software.scene.management.inputs.scene import gripper_paths
+from software.trajectory.algorithms.poster_vio import base_tags, refinement, solve_joint_poster_imu
+from software.trajectory.algorithms.poster_vio.models import validate_problem
 from software.vision.poster import factors
 
 
@@ -86,7 +86,7 @@ class CrossCameraBaseTagTests(unittest.TestCase):
 class BaseTagWorkflowTests(unittest.TestCase):
     def prepared(self):
         from test_poster_vio_workflow import PosterVioWorkflowTests
-        from software.scene.pipeline.tasks.backends import poster_vio_inputs
+        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
         helper = PosterVioWorkflowTests('runTest')
         helper.setUp()
         self.addCleanup(helper.doCleanups)
@@ -123,9 +123,9 @@ class BaseTagWorkflowTests(unittest.TestCase):
 
     def test_full_vio_joint_optimization_uses_asynchronous_cross_factors_and_warm_start(self):
         request, arms, seed, mounts = self.prepared()
-        expanded = base_tags.expand_nodes(request, arms)
+        expanded = base_tags.expand_nodes(request.problem(), arms)
         self.assertTrue(any(len(new.times_s) > len(old.times_s) for old, new in zip(arms, expanded)))
-        result = solve_joint_poster_imu(request, expanded, seed)
+        result = solve_joint_poster_imu(request.problem(), expanded, seed)
         self.assertEqual(result.quality.status, 'solved')
         for arm, evidence in result.arm_evidence.items():
             base = evidence['base_tag']
@@ -139,7 +139,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
     def test_nanosecond_rounding_keeps_original_observations_on_their_state(self):
         request, arms, _, _ = self.prepared()
         arms = tuple(replace(item, times_s=item.times_s + 2e-10) for item in arms)
-        expanded = base_tags.expand_nodes(request, arms)
+        expanded = base_tags.expand_nodes(request.problem(), arms)
         for original, current in zip(arms, expanded):
             np.testing.assert_allclose(current.times_s[current.tag_indices],
                                        original.times_s[original.tag_indices], atol=1e-9, rtol=0)
@@ -148,9 +148,9 @@ class BaseTagWorkflowTests(unittest.TestCase):
         from unittest.mock import patch
 
         request, arms, _, _ = self.prepared()
-        expanded = base_tags.expand_nodes(request, arms)
+        expanded = base_tags.expand_nodes(request.problem(), arms)
         with patch.object(base_tags, 'resample_pose_series') as resample:
-            repeated = base_tags.expand_nodes(request, expanded)
+            repeated = base_tags.expand_nodes(request.problem(), expanded)
         resample.assert_not_called()
         for original, same in zip(expanded, repeated):
             self.assertIs(original, same)
@@ -159,12 +159,12 @@ class BaseTagWorkflowTests(unittest.TestCase):
         request, _, _, _ = self.prepared()
         first = replace(request.observations[0], base_tag_ids=np.full_like(request.observations[0].base_tag_ids, 99))
         with self.assertRaisesRegex(ValueError, '归属'):
-            validate_request(replace(request, observations=(first, request.observations[1])))
+            validate_problem(replace(request, observations=(first, request.observations[1])).problem())
         with self.assertRaisesRegex(ValueError, '时钟'):
-            validate_request(replace(request, clock_offsets_s={}))
+            validate_problem(replace(request, clock_offsets_s={}).problem())
         scalar_time = replace(request.observations[0], base_tag_times_s=np.array(0.))
         with self.assertRaisesRegex(ValueError, '契约'):
-            validate_request(replace(request, observations=(scalar_time, request.observations[1])))
+            validate_problem(replace(request, observations=(scalar_time, request.observations[1])).problem())
 
     def test_original_base_tag_cull_budget_never_resets(self):
         request, arms, _, _ = self.prepared()
@@ -180,9 +180,9 @@ class BaseTagWorkflowTests(unittest.TestCase):
 
     def test_too_large_mount_correction_rejects_the_joint_result(self):
         request, arms, seed, _ = self.prepared()
-        arms = tuple(replace(item, scene_parameters=replace(item.scene_parameters,
+        arms = tuple(replace(item, parameters=replace(item.parameters,
             poster_vio_base_tag_maximum_translation_correction_m=1e-6)) for item in arms)
-        result = solve_joint_poster_imu(request, base_tags.expand_nodes(request, arms), seed)
+        result = solve_joint_poster_imu(request.problem(), base_tags.expand_nodes(request.problem(), arms), seed)
         self.assertEqual(result.quality.status, 'rejected')
         self.assertTrue(any(row['base_tag']['corrections']['status'] == 'rejected'
                             for row in result.arm_evidence.values()))
@@ -194,7 +194,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
         corrupted[2] += [90., -80.]
         request = replace(request, observations=(replace(first, base_tag_corners_px=corrupted),
                                                  request.observations[1]))
-        result = solve_joint_poster_imu(request, base_tags.expand_nodes(request, arms), seed)
+        result = solve_joint_poster_imu(request.problem(), base_tags.expand_nodes(request.problem(), arms), seed)
         self.assertEqual(result.quality.status, 'solved')
         audit = result.arm_evidence['left']['refinement']
         self.assertEqual(audit['cumulative_base_tag_removed'], 1)
@@ -203,7 +203,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
 
     def production_fixture(self, *, pairs=(), self_frames=None, single=False, outside_only=False):
         from test_poster_vio_workflow import PosterVioWorkflowTests
-        from software.scene.pipeline.tasks.backends import poster_vio_inputs
+        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
         from software.vision.poster import geometry
         helper = PosterVioWorkflowTests('runTest')
         helper.setUp()
@@ -255,7 +255,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
     def test_production_preparation_freezes_working_lens_pixels_and_mounts(self):
         from pathlib import Path
         from unittest.mock import patch
-        from software.scene.pipeline.tasks.backends import poster_vio_inputs
+        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
         helper, mounts, detect = self.production_fixture(pairs=(('left', 'right'), ('right', 'left')))
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect):
             request, arms, _ = poster_vio_inputs.prepare_task_inputs(helper.inputs)
@@ -272,7 +272,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
 
     def test_single_hand_skips_base_detection_and_fitting_with_declared_tag(self):
         from unittest.mock import patch
-        from software.scene.pipeline.tasks.backends import poster_vio_inputs
+        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
         helper, _, detect = self.production_fixture(single=True)
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect) as detector, \
                 patch.object(poster_vio_inputs, 'estimate_static_tag_extrinsic') as fit:
@@ -283,19 +283,19 @@ class BaseTagWorkflowTests(unittest.TestCase):
         self.assertEqual(len(request.observations[0].base_tag_times_s), 0)
         self.assertIsNone(arms[0].T_imu_base_tag)
         self.assertFalse((helper.inputs.directory / 'poster_vio/left/base_tag_observations.npz').exists())
-        result = solve_joint_poster_imu(request, arms, seed)
+        result = solve_joint_poster_imu(request.problem(), arms, seed)
         self.assertEqual(result.quality.status, 'solved')
         self.assertFalse(result.arm_evidence['left']['base_tag_extrinsics_optimized'])
 
     def test_self_only_sparse_observations_do_not_fit_or_reject_trajectories(self):
         from unittest.mock import patch
-        from software.scene.pipeline.tasks.backends import poster_vio_inputs
+        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
         helper, _, detect = self.production_fixture(self_frames={'left': 1, 'right': 1})
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
                 patch.object(poster_vio_inputs, 'estimate_static_tag_extrinsic') as fit:
             request, arms, seed = poster_vio_inputs.prepare_task_inputs(helper.inputs)
         fit.assert_not_called()
-        result = solve_joint_poster_imu(request, arms, seed)
+        result = solve_joint_poster_imu(request.problem(), arms, seed)
         self.assertEqual(result.quality.status, 'solved')
         for item in arms:
             self.assertIsNone(item.T_imu_base_tag)
@@ -306,7 +306,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
 
     def test_one_way_cross_sighting_only_fits_owner_mount(self):
         from unittest.mock import patch
-        from software.scene.pipeline.tasks.backends import poster_vio_inputs
+        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
         helper, mounts, detect = self.production_fixture(pairs=(('left', 'right'),), self_frames={'left': 1})
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
                 patch.object(poster_vio_inputs, 'estimate_static_tag_extrinsic',
@@ -315,7 +315,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
         self.assertEqual(fit.call_count, 1)
         self.assertIsNone(arms[0].T_imu_base_tag)
         np.testing.assert_allclose(arms[1].T_imu_base_tag, mounts['right'], atol=1e-5)
-        result = solve_joint_poster_imu(request, arms, seed)
+        result = solve_joint_poster_imu(request.problem(), arms, seed)
         self.assertEqual(result.quality.status, 'solved')
         self.assertFalse(result.arm_evidence['left']['base_tag_extrinsics_optimized'])
         self.assertTrue(result.arm_evidence['right']['base_tag_extrinsics_optimized'])
@@ -324,14 +324,14 @@ class BaseTagWorkflowTests(unittest.TestCase):
 
     def test_cross_sighting_outside_overlap_does_not_require_mount(self):
         from unittest.mock import patch
-        from software.scene.pipeline.tasks.backends import poster_vio_inputs
+        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
         helper, _, detect = self.production_fixture(pairs=(('left', 'right'),), outside_only=True,
                                                    self_frames={'left': 1, 'right': 1})
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
                 patch.object(poster_vio_inputs, 'estimate_static_tag_extrinsic') as fit:
             request, arms, seed = poster_vio_inputs.prepare_task_inputs(helper.inputs)
         fit.assert_not_called()
-        result = solve_joint_poster_imu(request, arms, seed)
+        result = solve_joint_poster_imu(request.problem(), arms, seed)
         self.assertEqual(result.quality.status, 'solved')
         cross = [r for r in result.arm_evidence['left']['base_tag']['observations'] if r['kind'] == 'cross']
         self.assertEqual([r['reason'] for r in cross], ['outside_common_time_span'])
@@ -339,7 +339,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
 
     def test_required_owner_still_needs_sufficient_self_observations(self):
         from unittest.mock import patch
-        from software.scene.pipeline.tasks.backends import poster_vio_inputs
+        from software.scene.pipeline.tasks import poster_vio as poster_vio_inputs
         helper, _, detect = self.production_fixture(pairs=(('left', 'right'),), self_frames={'right': 1})
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
                 self.assertRaisesRegex(ValueError, 'right.*自身观测'):
@@ -353,7 +353,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
             observations.append(replace(obs, base_tag_target_arms=tuple(np.array(obs.base_tag_target_arms)[keep]),
                 base_tag_times_s=obs.base_tag_times_s[keep], base_tag_ids=obs.base_tag_ids[keep],
                 base_tag_corners_px=obs.base_tag_corners_px[keep] + 400.))
-        result = solve_joint_poster_imu(replace(request, observations=tuple(observations)), arms, seed)
+        result = solve_joint_poster_imu(replace(request, observations=tuple(observations)).problem(), arms, seed)
         self.assertEqual(result.quality.status, 'solved')
         for evidence in result.arm_evidence.values():
             self.assertFalse(evidence['base_tag_extrinsics_optimized'])

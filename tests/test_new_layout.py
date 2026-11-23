@@ -1,5 +1,5 @@
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import kit as kit_inputs
+from software.scene.management.inputs import scene as kit_inputs
 """全局套件复用、扁平场景批次以及原片到训练包的业务回归。"""
 from software.infrastructure import provenance as artifact_identity
 import json
@@ -13,12 +13,12 @@ from software.scene import layout
 from software.dataset.export import build
 from software.dataset.reader import load_episode
 from software.scene.management import episodes, ingest
-from software.scene.management.inputs import batch as batch_inputs, episode as episode_inputs, scene as scene_inputs
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
 from software.scene import workflow
 from software.infrastructure.file_store import write_yaml
 from software.viewer.results.catalog import RecordingCatalog
-from software.viewer.results.episodes import capture_status
-from software.scene.management import processing
+from software.viewer.results.catalog import capture_status
+from software.scene.management import batch_processing as processing
 import shutil
 import tempfile
 import test_scene as fixtures
@@ -91,7 +91,7 @@ class NewLayoutTests(unittest.TestCase):
         write_kit('other', {arm: dict(serial=serial, calibration='test', gripper=dict(tcp='tcp_camera.json')) for arm, serial in (dict(right='SERIAL_right')).items()})
         other = self.session('20261104_002', kit='other')
         self.assertEqual(batch_inputs.read_batch(other).kit['id'], 'other')
-        for name in (*scene_inputs.INTERNAL_DIRECTORIES, 'kits', 'sessions'):
+        for name in (*layout.INTERNAL_DIRECTORIES, 'kits', 'sessions'):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, '批次名'):
                 self.session(name)
 

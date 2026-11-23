@@ -27,22 +27,24 @@ def prepare(video: Path, paths: RecordingPaths, *, allow_irregular: bool = False
     return RecordingData(manifest, imu_csv, times_csv)
 
 
-def prepare_lens_videos(video: Path, context: VisualContext, *, lenses: tuple[str, ...]) -> tuple[LensVideo, ...]:
+def prepare_lens_videos(video: Path, context: VisualContext, *, lenses: tuple[str, ...],
+                        source_frame_start: int = 0) -> tuple[LensVideo, ...]:
     """解码和裁切原片一次。所有建图/定位重试共用这些视频，不重复处理 INSV。"""
     paths, settings = context.paths, context.settings
     paths.lens_videos.mkdir(parents=True, exist_ok=True)
     if not lenses or len(set(lenses)) != len(lenses) or set(lenses) - {'front', 'rear'}:
         raise ProcessingError('准备镜头视频', '镜头列表必须由不重复的 front/rear 组成')
     prepared = []
-    resolved_config = paths.debug / 'video_parameters.yaml'
-    config.write_yaml(resolved_config, context.parameters)
+    frame_args = ['--source-frame-start', str(source_frame_start)] if source_frame_start else []
     for lens in lenses:
+        resolved_config = paths.debug / f'{lens}_video_parameters.yaml'
+        config.write_yaml(resolved_config, context.parameters)
         stage = f'准备镜头视频（{lens}）'
         output = paths.lens_videos / f'{lens}.mp4'
         log = paths.logs / f'{lens}_video.log'
         runtime.run_logged(
             [settings.tools_python, '-m', 'software.vision.tools.make_lens_video', str(video),
-             str(paths.dataset / 'mav0'), str(output), LENS_HALF[lens], '--config', str(resolved_config)],
+             str(paths.dataset / 'mav0'), str(output), LENS_HALF[lens], '--config', str(resolved_config), *frame_args],
             log, stage=stage, environment=settings.environment, cwd=runtime.REPO, failure_code=3,
         )
         if not output.is_file() or output.stat().st_size == 0:

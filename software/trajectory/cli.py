@@ -17,7 +17,7 @@ import sys
 
 from software.trajectory import workflow
 from software.trajectory.models import TrajectoryRequest
-from software.trajectory.pipeline import runtime
+from software.trajectory import reconstruction as runtime
 
 
 def main(argv=None) -> int:

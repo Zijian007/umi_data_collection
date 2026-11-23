@@ -17,7 +17,7 @@ import tempfile
 
 from software.infrastructure import provenance as artifact_identity
 from software.infrastructure.file_store import locked, write_json
-from software.trajectory.calibration import assets as traj_calib
+from software.camera import calibration_assets
 from software.infrastructure.paths import PROJECT_ROOT, REGISTRY_ROOT
 
 
@@ -171,7 +171,7 @@ def _find_version(serial: str, lens: str, identity: str) -> Path:
 
 
 def bundle_sha256(bundle_dir: Path) -> str:
-    return artifact_identity.file_hash(traj_calib.calibration_path(Path(bundle_dir)))
+    return artifact_identity.file_hash(calibration_assets.calibration_path(Path(bundle_dir)))
 
 
 def read_insv_identity(path: Path) -> dict:
@@ -224,9 +224,9 @@ def read_front_version(serial: str, version: str) -> dict:
     if version_manifest.get('kind') != 'umi_camera_calibration' or version_manifest.get('serial') != serial:
         raise RegistryError(f'相机当前标定身份不一致：{directory}')
     bundle = directory / 'bundle'
-    calibration_description = traj_calib.describe(bundle, 'registry')
+    calibration_description = calibration_assets.describe(bundle, 'registry')
     metadata_name = 'manifest.json' if calibration_description['bundle_schema_version'] == 3 else 'bundle.json'
-    required = {'bundle/' + metadata_name, 'bundle/' + traj_calib.calibration_path(bundle).name}
+    required = {'bundle/' + metadata_name, 'bundle/' + calibration_assets.calibration_path(bundle).name}
     if not required <= version_manifest['assets'].keys():
         raise RegistryError('工作镜头测量或清单未纳入资产哈希清单')
     metadata = json.loads((bundle / metadata_name).read_text())
@@ -342,7 +342,8 @@ def resolve_insv(path: Path, device: str | None = None, *, intrinsics_source: st
         origin.validate(intrinsics_source)
     env = (os.environ.get("UMI_TRAJ_CALIB") or "").strip()
     if env:
-        cal = traj_calib.active()
+        cal = (calibration_assets.describe(calibration_assets.SAMPLE_CAMERA_JSON.parent, 'factory')
+               if env == 'factory' else calibration_assets.describe(Path(env).expanduser().resolve(), 'registry'))
         origin.require(cal, intrinsics_source)
         try:
             ident = read_insv_identity(path)
@@ -362,7 +363,7 @@ def register(serial: str, bundle_dir: Path, *, status: str = "active",
     serial = validate_id(serial.strip())
     if serial == SAMPLE_SERIAL or status not in ('active', 'retired'):
         raise RegistryError('不能覆盖样例设备，状态应为 active 或 retired')
-    description = traj_calib.describe(bundle_dir, 'registry')
+    description = calibration_assets.describe(bundle_dir, 'registry')
     if description['bundle_schema_version'] == 3:
         metadata = json.loads((bundle_dir / 'manifest.json').read_text())
         if metadata['camera_serial'] != serial or metadata['lens'] != 'front':

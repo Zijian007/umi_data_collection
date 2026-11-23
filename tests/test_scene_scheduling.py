@@ -5,17 +5,12 @@ from threading import Barrier, Event
 from unittest.mock import patch
 import unittest
 
-from software.scene import layout, cpu_budget, workflow
+from software.scene import layout, workflow
 from software.infrastructure.file_store import read_yaml
-from software.scene.management.inputs import (
-    batch as batch_inputs,
-    episode as episode_inputs,
-    kit as kit_inputs,
-    scene as scene_inputs,
-)
-from software.scene.pipeline.maps import lifecycle as map_lifecycle
-from software.scene.pipeline.tasks.backends import scene_reconstruction
-from software.scene.pipeline.tasks import recording_preparation
+from software.scene.management.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
+from software.scene.pipeline import recordings
+from software.scene.pipeline.maps import repository as map_lifecycle
+from software.scene.pipeline.tasks import scene_map as scene_reconstruction
 from software.infrastructure.file_store import write_yaml
 import test_scene as fixtures
 
@@ -23,15 +18,15 @@ import test_scene as fixtures
 class CoreBudgetTests(unittest.TestCase):
     def test_parallel_budget_splits_allowed_cores_and_serializes_small_budget(self):
         arms = ('left', 'right')
-        with patch.object(cpu_budget.settings.os, 'sched_getaffinity', return_value=set(range(16))):
-            arm_cpu_sets = cpu_budget.arm_cores(arms, '2-9', parallel=True)
+        with patch.object(recordings.settings.os, 'sched_getaffinity', return_value=set(range(16))):
+            arm_cpu_sets = recordings.arm_cores(arms, '2-9', parallel=True)
             self.assertEqual(arm_cpu_sets, dict(left='2,4,6,8', right='3,5,7,9'))
-            self.assertIsNone(cpu_budget.arm_cores(arms, '0-6', parallel=True))
-            self.assertIsNone(cpu_budget.arm_cores(arms, '', parallel=False))
-            self.assertIsNone(cpu_budget.arm_cores(('left',), '', parallel=True))
+            self.assertIsNone(recordings.arm_cores(arms, '0-6', parallel=True))
+            self.assertIsNone(recordings.arm_cores(arms, '', parallel=False))
+            self.assertIsNone(recordings.arm_cores(('left',), '', parallel=True))
             for invalid in ('8-2', '0-1-2', 'none', '99'):
                 with self.subTest(invalid=invalid), self.assertRaises(ValueError):
-                    cpu_budget.arm_cores(arms, invalid, parallel=True)
+                    recordings.arm_cores(arms, invalid, parallel=True)
 
 
 class SceneSchedulingTests(unittest.TestCase):
@@ -59,9 +54,9 @@ class SceneSchedulingTests(unittest.TestCase):
             barrier.wait(timeout=10)
             return original(*args, **kwargs)
 
-        with patch.object(cpu_budget.settings.os, 'sched_getaffinity', return_value=set(range(8))), \
+        with patch.object(recordings.settings.os, 'sched_getaffinity', return_value=set(range(8))), \
                 patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=together), \
-                patch.object(recording_preparation, 'prepare_with_cache', wraps=recording_preparation.prepare_with_cache) as prepare:
+                patch.object(recordings, 'prepare_with_cache', wraps=recordings.prepare_with_cache) as prepare:
             workflow.run_episode(self.f.episode_path, force=True)
         self.assertEqual({name: (output / name).read_bytes() for name in before}, before)
         self.assertEqual([call.args[-1] for call in prepare.call_args_list], ['0,2,4,6', '1,3,5,7'])
@@ -81,7 +76,7 @@ class SceneSchedulingTests(unittest.TestCase):
             finally:
                 finished.set()
 
-        with patch.object(cpu_budget.settings.os, 'sched_getaffinity', return_value=set(range(8))), \
+        with patch.object(recordings.settings.os, 'sched_getaffinity', return_value=set(range(8))), \
                 patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=failing), \
                 self.assertRaisesRegex(ValueError, 'left failed'):
             workflow.run_episode(self.f.episode_path, force=True)
@@ -94,7 +89,7 @@ class SceneSchedulingTests(unittest.TestCase):
     def test_batch_binds_once_and_does_not_nest_arm_parallelism(self):
         second = self.second_task()
         with patch.object(map_lifecycle, 'bind_map', wraps=map_lifecycle.bind_map) as bind, \
-                patch.object(cpu_budget, 'arm_cores', wraps=cpu_budget.arm_cores) as budget:
+                patch.object(recordings, 'arm_cores', wraps=recordings.arm_cores) as budget:
             results = workflow.run_episodes([self.f.episode_path, second], jobs=2)
         self.assertEqual([item['status'] for item in results], ['ok', 'ok'])
         self.assertEqual(bind.call_count, 1)
@@ -106,6 +101,34 @@ class SceneSchedulingTests(unittest.TestCase):
             results = workflow.run_episodes([self.f.episode_path, second], jobs=2)
         self.assertEqual([item['status'] for item in results], ['failed', 'failed'])
         self.assertEqual(bind.call_count, 1)
+
+    def test_shared_map_binding_preserves_each_tasks_backend_options(self):
+        second = self.second_task()
+        path = self.f.batch_root / 'collection.yaml'
+        collection = read_yaml(path)
+        collection.pop('reconstruction')
+        collection['environment_poster'] = dict(layout_path=str(
+            Path(__file__).resolve().parents[1] / 'hardware/calibration_targets/environment_poster.json'))
+        collection['backend'] = dict(mode='auto', poster_edge_trim=dict(enabled=True))
+        collection['tasks'] = dict(
+            take_001=dict(backend=dict(mode='scene_map', scene_map=dict(
+                poster_constraint=dict(enabled=True, method='joint')))),
+            take_002=dict(backend=dict(poster_vio=dict(base_tag=dict(enabled=False)),
+                                       poster_edge_trim=dict(enabled=False))))
+        write_yaml(path, collection)
+        episodes = [episode_inputs.read_episode(path) for path in (self.f.episode_path, second)]
+        binding = map_lifecycle.BatchMap(None, False)
+        bound = [binding.bind(episode) for episode in episodes]
+        self.assertEqual(bound[0][1], bound[1][1])
+        first_scene, second_scene = (item[0].scene for item in bound)
+        self.assertEqual(first_scene.reconstruction_mode, 'scene_map')
+        self.assertEqual(first_scene.parameters.tag_fusion_method, 'joint')
+        self.assertTrue(first_scene.parameters.tag_fusion_enabled)
+        self.assertTrue(first_scene.recording_trim['enabled'])
+        self.assertEqual(second_scene.reconstruction_mode, 'auto')
+        self.assertFalse(second_scene.scene_map_poster_constraint_enabled)
+        self.assertFalse(second_scene.recording_trim['enabled'])
+        self.assertFalse(second_scene.poster_vio_base_tag_enabled)
 
     def test_bound_map_detects_configuration_and_asset_changes(self):
         episode = episode_inputs.read_episode(self.f.episode_path)

@@ -12,10 +12,11 @@ import unittest
 from unittest.mock import patch
 
 from software.configuration import operational_settings as settings
-from software.gripper_width.detection import markers as detection
-from software.gripper_width import pipeline
-from software.gripper_width.distance import pipeline as tag_distance
-from software.scene import cpu_budget
+from software.gripper_width.detection import frames as detection
+from software.gripper_width.detection.markers import MarkerDetector
+from software.gripper_width import width_estimation
+from software.gripper_width.distance import measurement as tag_distance
+from software.scene.pipeline import recordings
 from software.infrastructure.file_store import write_yaml
 from software.viewer.resources import cache, maps, video as media
 from software.viewer import server
@@ -100,20 +101,20 @@ class OperationalSettingsTests(unittest.TestCase):
             self.assertEqual(report['resources']['calibration_workers'], 6)
             self.assertEqual(report['resources']['opencv_threads'], 1)
             self.assertEqual(settings.calibration_workers(cores='2-7'), 4)
-            self.assertEqual(cpu_budget.arm_cores(('left', 'right'), '2-7', parallel=True),
+            self.assertEqual(recordings.arm_cores(('left', 'right'), '2-7', parallel=True),
                              {'left': '2,4,6', 'right': '3,5,7'})
             self.assertFalse(settings.execution_report(jobs=2)['resources']['dual_arm_eligible'])
             with self.assertRaisesRegex(ValueError, '--cores'):
                 settings.execution_report(cores='40-42')
 
     def test_runtime_changes_reuse_detection_but_detection_changes_invalidate_final_inputs(self):
-        original = [function() for function in (detection.identity, pipeline.identity, tag_distance.identity)]
+        original = [function() for function in (detection.identity, width_estimation.identity, tag_distance.identity)]
         self.overlay('runtime', decode_threads=2, slam_timeout_base_s=900)
-        self.assertEqual(original, [function() for function in (detection.identity, pipeline.identity, tag_distance.identity)])
+        self.assertEqual(original, [function() for function in (detection.identity, width_estimation.identity, tag_distance.identity)])
         self.overlay('gripper_tag_detection', candidate_limit=48, full_search_interval=10)
-        for before, function in zip(original, (detection.identity, pipeline.identity, tag_distance.identity)):
+        for before, function in zip(original, (detection.identity, width_estimation.identity, tag_distance.identity)):
             self.assertNotEqual(before, function())
-        detector = detection.MarkerDetector()
+        detector = MarkerDetector()
         self.assertEqual(detector._candidate_limit, 48)
         self.assertEqual(detector._full_search_interval, 10)
 

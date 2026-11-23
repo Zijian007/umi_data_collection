@@ -1,0 +1,44 @@
+# 双手音频同步 · UMI 项目默认值，基于 KIWI 0.1.0
+sample_rate: 48000  # 单声道 PCM 采样率，单位 Hz
+
+# 谱峰、指纹和投票
+nfft: 4096  # 每个频谱窗的音频采样点数
+hop: 1024  # 相邻频谱窗之间的采样步长
+fan: 16  # 每个锚峰最多生成的指纹数
+dt_min: 3  # 配对谱峰最小时间距离，单位频谱帧
+dt_max: 60  # 配对谱峰最大时间距离，单位频谱帧
+df_max: 96  # 配对谱峰最大频率距离，单位频率格
+peak_neighborhood: [15, 31]  # 局部最大值搜索范围，依次为时间帧和频率格
+peak_floor: 1.5  # 谱峰必须高于对数幅值中位数的量
+max_hash_pairs: 64  # 单个指纹允许的跨录像候选配对数上限
+vote_bin_s: 0.05  # 偏移投票桶宽度，单位秒
+analysis_block_frames: 256  # 每次计算的频谱帧数，影响工作内存
+
+# 粗匹配和原片验收
+min_votes: 15  # 最佳偏移候选至少需要的票数
+vote_margin: 1.5  # 最佳候选票数相对次峰的最低倍数
+min_vote_span_s: 3.0  # 获胜指纹首尾锚点的最小跨度，单位秒
+min_overlap_s: 3.0  # 粗对齐后的最小共同音频时长，单位秒
+min_landmark_match_fraction: 0.0  # 共同区间内获胜指纹锚点的最低匹配比例
+min_support_coverage: 0.0  # 共同区间内有获胜指纹支持的最低时间覆盖比例
+duration_tol_s: 0.15  # 每段音频与视频长度之差必须小于该值，单位秒
+silence_peak_frac: 0.05  # 每段音频的峰值必须高于该满幅比例
+clip_frac_max: 0.001  # 每段音频允许的最大削波采样比例
+
+# GCC-PHAT 精对齐
+refine_window_s: 0.3  # 相对粗估偏移的精对齐搜索半径，单位秒
+refine_max_duration_s: 30.0  # 整段精对齐的时长上限，也是长片单个窗口的时长上限，单位秒
+refine_windows: 5  # 长片精对齐使用的候选窗口数
+
+# 长录制时钟漂移
+drift_min_duration_s: 90.0  # 开始评估漂移所需的最小共同音频时长，单位秒
+drift_window_s: 20.0  # 单个漂移估计窗口的时长，单位秒
+drift_hop_s: 10.0  # 相邻漂移窗口的步长，单位秒
+drift_min_windows: 5  # 拟合漂移所需的最少有效窗口数
+drift_min_coverage: 0.8  # 确认漂移受约束所需的最低共同时间覆盖比例
+max_drift_ppm: 150.0  # 相对时钟漂移的容许范围，单位 ppm
+max_drift_error_s: 0.020  # 固定偏移可接受的累计时间误差预算，单位秒
+
+# 显著声音事件仅用于诊断
+onset_count: 8  # 每段最多用于一致性诊断的显著声音事件数
+onset_tol_s: 0.15  # 判定两边声音事件相符的时间差容限，单位秒

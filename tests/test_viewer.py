@@ -8,8 +8,9 @@ from types import SimpleNamespace
 from pathlib import Path
 
 from software.viewer.results.catalog import RecordingCatalog
-from software.viewer.errors import ViewerDataError
-from software.viewer.results.readers import read_trajectory
+from software.viewer.results.catalog import read_manifest
+from software.viewer import ViewerDataError
+from software.viewer.results.trajectory_reader import read_trajectory
 from software.viewer.server import byte_range, make_handler
 from software.viewer.resources.video import decode_frame
 
@@ -60,6 +61,18 @@ class ViewerDataTests(unittest.TestCase):
             with self.assertRaises(ViewerDataError):
                 read_trajectory(path)
 
+    def test_shared_manifest_cache_is_invalidated_and_returns_independent_data(self):
+        path = self.root / 'episode.json'
+        path.write_text('{"arms": {"left": "left"}}')
+        first = read_manifest(path)
+        first['arms']['left'] = 'changed'
+        with patch.object(Path, 'read_text', side_effect=AssertionError('manifest was read again')):
+            self.assertEqual(read_manifest(path)['arms'], {'left': 'left'})
+        replacement = self.root / 'replacement.json'
+        replacement.write_text('{"arms": {"right": "right"}}')
+        replacement.replace(path)
+        self.assertEqual(read_manifest(path)['arms'], {'right': 'right'})
+
     def test_missing_video_and_unaligned_optional_track(self):
         output, details, video = self.fixture()
         video.unlink()
@@ -79,6 +92,79 @@ class ViewerDataTests(unittest.TestCase):
             (details / 'summary.json').unlink()
             (details / 'summary.json').symlink_to(outside)
             self.assertEqual(RecordingCatalog(self.root).scan()['recordings'], [])
+
+    def test_frame_reader_retains_poster_support_and_native_source_frame(self):
+        output, details, _ = self.fixture()
+        (details / 'frames.csv').write_text(
+            'row,video_frame,source_video_frame,t_video_s,constraint,front_lens_tracked,position_source\n'
+            '0,0,120,0,imu,0,poster\n1,1,122,0.5,full,1,visual_and_poster\n2,2,124,1,imu,0,imu\n')
+        catalog = RecordingCatalog(self.root)
+        data = catalog.playback(catalog.scan()['recordings'][0]['id'])
+        self.assertEqual([frame['source_video_frame'] for frame in data['frames']], [120, 122, 124])
+        self.assertEqual([frame['position_source'] for frame in data['frames']], ['poster', 'visual_and_poster', 'imu'])
+
+    def test_rear_source_requires_frozen_raw_identity_and_original_frame_grid(self):
+        from software.scene.result_io import recording_identity
+        from software.viewer.resources.video import rear_source
+
+        arm = self.root / 'take_001' / 'results' / 'left'
+        (arm / 'details').mkdir(parents=True)
+        frames = arm / 'details' / 'frames.csv'
+        frames.write_text('video_frame,source_video_frame\n0,12\n1,14\n2,16\n')
+        raw = self.root / 'take_001' / 'camera.insv'
+        raw.write_bytes(b'fixture')
+        metadata = dict(schema_version=4, inputs=dict(recordings=dict(left=recording_identity(raw))),
+            arm_results=dict(left=dict(rows=3, frame_geometry=dict(
+                profile='x3_360_4k_60', source_px=[3840, 1920], frame_step=2,
+                rear_lens=dict(crop_xywh=[240, 240, 1440, 1440])))))
+        manifest = arm.parent / 'episode.json'
+        manifest.write_text(json.dumps(metadata))
+        contains = RecordingCatalog(self.root).contains
+        source, clip = rear_source(arm, contains)
+        self.assertEqual(source, raw)
+        self.assertEqual((clip.first_frame, clip.frame_step, clip.frames), (12, 2, 3))
+        self.assertIn('trim=start_frame=12', clip.filter())
+        self.assertIn('crop=1440:1440:240:240', clip.filter())
+        frames.write_text('video_frame,source_video_frame\n0,12\n1,160\n2,180\n')
+        self.assertIsNone(rear_source(arm, contains))
+        frames.write_text('video_frame,source_video_frame\n0,12\n1,14\n2,16\n')
+        raw.write_bytes(b'changed source')
+        self.assertIsNone(rear_source(arm, contains))
+        (arm / 'rear.mp4').write_bytes(b'exported')
+        self.assertEqual(rear_source(arm, contains), (arm / 'rear.mp4', None))
+
+    def test_opening_published_results_can_read_only_matching_task_arm_raw_video(self):
+        from software.scene.result_io import recording_identity
+
+        take = self.root / 'take_001'
+        run = self.root / '.pipeline' / 'tasks' / take.name / 'runs' / 'completed'
+        arm = run / 'left'
+        (arm / 'details').mkdir(parents=True)
+        (arm / 'details' / 'frames.csv').write_text('video_frame,source_video_frame\n0,0\n1,2\n')
+        raw = take / 'left' / 'camera.insv'
+        raw.parent.mkdir(parents=True)
+        raw.write_bytes(b'fixture')
+        (take / 'results').symlink_to(run, target_is_directory=True)
+        catalog = RecordingCatalog(take / 'results')
+        catalog.directories['left'] = arm
+        manifest = run / 'episode.json'
+        geometry = dict(profile='x3_360_4k_60', source_px=[3840, 1920], frame_step=2,
+                        rear_lens=dict(crop_xywh=[240, 240, 1440, 1440]))
+
+        def record(path):
+            manifest.write_text(json.dumps(dict(schema_version=4,
+                inputs=dict(recordings=dict(left=recording_identity(path))),
+                arm_results=dict(left=dict(rows=2, frame_geometry=geometry)))))
+
+        record(raw)
+        self.assertFalse(catalog.contains(raw))
+        self.assertEqual(catalog.rear_source('left')[0], raw)
+
+        for outside in (take / 'right' / 'other_arm.insv', self.root / 'take_002' / 'left' / 'different_task.insv'):
+            outside.parent.mkdir(parents=True)
+            outside.write_bytes(b'same file size')
+            record(outside)
+            self.assertIsNone(catalog.rear_source('left'))
 
     def test_bad_frame_times_are_unknown_instead_of_misleading(self):
         output, details, video = self.fixture()
@@ -129,6 +215,24 @@ class HTTPContractTests(unittest.TestCase):
                 status, body = request(f'/api/recordings/{key}/map')
                 self.assertEqual((status['status'], json.loads(body)), (200, {'maps': []}))
                 read_map.assert_called_once_with(key)
+            status, body = request(f'/api/recordings/{key}/playback')
+            self.assertEqual(status['status'], 200)
+            self.assertEqual(json.loads(body)['times'], [0, .5, 1])
+            status, body = request(f'/api/recordings/{key}/details')
+            self.assertEqual(status['status'], 200)
+            self.assertEqual(json.loads(body)['summary'], {'status': 'ok'})
+            status, _ = request(f'/api/recordings/{key}/rear/preview')
+            self.assertEqual(status['status'], 404)
+            rear = root / 'rear.mp4'
+            rear.write_bytes(b'rear')
+            status, body = request(f'/api/recordings/{key}/playback')
+            self.assertEqual(json.loads(body)['rear']['preview_url'], f'/api/recordings/{key}/rear/preview')
+            status, body = request(f'/api/recordings/{key}/rear/video', {'Range': 'bytes=1-2'})
+            self.assertEqual((status['status'], body), (206, b'ea'))
+            with patch('software.viewer.server.preview_status', return_value={'status': 'ready', 'version': 'rear'}) as prepare:
+                status, body = request(f'/api/recordings/{key}/rear/preview')
+                self.assertEqual(json.loads(body)['url'], f'/api/recordings/{key}/rear/preview/video?v=rear')
+                prepare.assert_called_once_with(rear, None)
             status, body = request(f'/api/recordings/{key}/video', {'Range': 'bytes=2-5'})
             self.assertEqual((status['status'], body), (206, b'2345'))
             self.assertEqual(status['extra']['Content-Range'], 'bytes 2-5/10')

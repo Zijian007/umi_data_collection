@@ -5,10 +5,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from software.scene.pipeline.tasks.backends import scene_map as episode_execution, scene_reconstruction
+from software.scene.pipeline.tasks import scene_map as episode_execution, scene_map as scene_reconstruction
 from software.scene.pipeline.tasks import measurements
-from software.scene.pipeline.tasks.results import arm_writer
-from software.scene.spatial import poster
+from software.scene.pipeline.tasks import trajectory_writers
+from software.trajectory.algorithms.fixed_map import poster
 from software.scene.models import TaskInputs
 
 
@@ -36,7 +36,7 @@ class SharedPosterExecutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(measurements, 'prepare_detections'), \
                 patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=reconstruct), \
-                patch.object(arm_writer, 'write_arm_result', side_effect=write), \
+                patch.object(trajectory_writers, 'write_arm_result', side_effect=write), \
                 patch.object(poster, 'refine_shared_poster_pose', return_value=refined) as shared:
             task_inputs = TaskInputs(episode, {'left': object(), 'right': object()},
                 {'left': 0., 'right': 0.}, Path(directory), None, None,
