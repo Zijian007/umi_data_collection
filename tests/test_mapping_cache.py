@@ -154,7 +154,6 @@ class MapReuseTests(unittest.TestCase):
         scene = self.fixture.scene
         source = self.fixture.recording_paths['left']
         camera = self.fixture.cameras[source]
-        cache = StageCache(self.fixture.root / 'cache')
         original = preparation_inputs(source, camera, scene)
         tuned = replace(scene, parameters=replace(scene.parameters, maximum_scale_relative_std=.4),
                         trajectory=replace(scene.trajectory, values=replace(scene.trajectory.values,

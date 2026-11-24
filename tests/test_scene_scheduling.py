@@ -8,7 +8,7 @@ import unittest
 from umi.store import layout
 from umi.workflows.scene import workflow
 from umi.infra.file_store import read_yaml
-from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
+from umi.workflows.scene.inputs import batch as episode_inputs
 from umi.workflows.scene import recordings
 from umi.workflows.scene.maps import repository as map_lifecycle
 from umi.workflows.scene.tasks import scene_map as scene_reconstruction

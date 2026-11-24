@@ -6,7 +6,6 @@ import tempfile
 import unittest
 from pathlib import Path
 from umi.config import loader as config
-from umi.infra import provenance as artifact_identity
 
 
 class SharedBoundaryTests(unittest.TestCase):

@@ -5,8 +5,7 @@ from copy import deepcopy
 import unittest
 from unittest.mock import patch
 
-from umi.workflows.scene.errors import MapUnavailableError, MapCompatibilityError, fallback_record
-from umi.workflows.scene.maps import repository as lifecycle
+from umi.workflows.scene.errors import MapUnavailableError, fallback_record
 from umi.workflows.scene.maps import repository
 from umi.workflows.scene.maps import repository as map_repository
 

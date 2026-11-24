@@ -224,7 +224,7 @@ class AutomaticWorkflowTests(unittest.TestCase):
             def compare(*arguments, **options):
                 self.assertEqual(options['lens'], 'front')
                 self.assertEqual(options['intrinsics_source'], 'measured')
-                path = root/'factory/comparison.json'
+                path = arguments[6]/'factory/comparison.json'
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('{}')
                 return dict(status='ok', method_version=factory.METHOD_VERSION,
@@ -233,12 +233,13 @@ class AutomaticWorkflowTests(unittest.TestCase):
             with patch.object(factory, 'sources', return_value={}), patch.object(factory, 'compare', side_effect=compare) as call:
                 self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
                 self.assertFalse((root/'run/work').exists())
-                args.resume = True
                 self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
                 self.assertEqual(call.call_count, 1)
                 (root/'factory/comparison.json').write_text('changed')
                 self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
                 self.assertEqual(call.call_count, 2)
+                self.assertEqual((root/'factory/comparison.json').read_text(), 'changed')
+                self.assertTrue((root.with_name('out_v002')/'factory/comparison.json').is_file())
 
 
 if __name__ == '__main__':

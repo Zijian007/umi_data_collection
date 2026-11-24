@@ -1,4 +1,3 @@
-from umi.infra import provenance as artifact_identity
 """共用外参与逐帧位姿换算：非零杆臂、转动和四元数约定。"""
 import json
 from pathlib import Path

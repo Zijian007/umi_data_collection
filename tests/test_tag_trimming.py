@@ -85,9 +85,8 @@ class TagTrimmingTests(unittest.TestCase):
         with patch.object(pnp, 'solve_frame_candidates', wraps=pnp.solve_frame_candidates) as solver:
             pnp.solve_frame(points, pixels, camera_model(measured),
                             parameters.tag_maximum_reprojection_rms_px, solve_candidates=solve)
-            reused = solve(points.copy(), pixels.copy(), camera_model(measured),
-                           parameters.tag_maximum_reprojection_rms_px)
-            self.assertTrue(reused)
+            pnp.solve_frame(points.copy(), pixels.copy(), camera_model(measured),
+                            2 * parameters.tag_maximum_reprojection_rms_px, solve_candidates=solve)
             solver.assert_called_once()
 
     def test_pnp_branch_jump_does_not_form_stable_boundary(self):

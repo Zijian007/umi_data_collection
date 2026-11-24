@@ -210,7 +210,7 @@ class IndependentPosterPipelineTests(unittest.TestCase):
         import json
         from types import SimpleNamespace
         import test_scene_fallback
-        from umi.workflows.segment import environment_assets as calibration_assets, reconstruction as runtime
+        from umi.workflows.segment import environment_assets as calibration_assets
         helper=test_scene_fallback.SceneFallbackAdapterTests('runTest')
         helper.setUp();self.addCleanup(helper.doCleanups)
         inputs,_=fixture()

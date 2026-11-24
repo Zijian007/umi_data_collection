@@ -20,9 +20,8 @@ from umi.perception.gripper.distance import measurement as tag_distance
 from umi.perception.gripper.detection import sampling as sampled_detection
 from umi.perception.gripper.distance.pose_estimation import TagPoseEstimator, TagPoseQuality
 from umi.perception.gripper.distance.measurement import TagDistanceRequest, TagDistanceResult, TagDistanceSeries
-from umi.infra.file_store import read_yaml
-from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
 from umi.infra.file_store import write_json
+from umi.workflows.scene.inputs import batch as batch_inputs, scene as kit_inputs
 from umi.apps.viewer.results.trajectory_reader import read_tag_distance
 from umi.apps.viewer import ViewerDataError
 

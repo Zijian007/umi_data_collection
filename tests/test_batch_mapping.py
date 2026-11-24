@@ -14,7 +14,7 @@ from umi.devices import registry
 from umi.apps import scene as cli
 from umi.workflows.scene import workflow
 from umi.workflows.scene import ingest
-from umi.workflows.scene.inputs import scene as kit_inputs, batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs
 import test_scene as fixtures
 
 

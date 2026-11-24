@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+from functools import partial
 
 from scipy.spatial.transform import Rotation
 import numpy as np
 
-from umi.estimation import mapping, mapping as slam
+from umi.estimation import mapping
 from umi.estimation.fixed_map import fusion
 from umi.estimation.fixed_map.parameters import FixedMapParameters
-from umi.config import loader as config
 from umi.devices import registry
 from umi.infra import provenance as artifact_identity
 from umi.infra.file_store import write_tum
-from umi.workflows.calibration import workflow
-from umi.workflows.calibration.models import CalibrationRequest
-from umi.workflows.calibration.pipeline import inputs as calibration_inputs
 from umi.core.geometry import imu_from_camera
 from umi.core.timing import video_to_imu_seconds
 from umi.workflows.scene import camera_assets
@@ -26,7 +23,7 @@ from umi.devices import calibration_assets as assets
 
 
 def generate_trajectory(video, execution, *, trajectory_configuration, calibration_json, bundle, tag, front, scene):
-    scene = replace(scene, trajectory=trajectory_configuration)
+    scene = replace(scene, path=execution.paths.output/'scene.yaml', trajectory=trajectory_configuration)
     parameters = assets.read_basalt(calibration_json)
     # The trajectory runtime always requires a front visual configuration for
     # masks/settings, even when this independent validation uses only rear for
@@ -37,7 +34,7 @@ def generate_trajectory(video, execution, *, trajectory_configuration, calibrati
                      files=dict(front.files, rear=calibration_json))
     paths = execution.paths
     prepared = recordings.prepare_recording(video, camera, scene, paths.work/'C_trajectory', cores=execution.cores or '')
-    atlas = slam.build(prepared, 'rear', paths.work/'C_map')
+    atlas = mapping.build(prepared, 'rear', paths.work/'C_map')
     selected, raw = mapping.choose_map(prepared, 'rear', atlas.archive, paths.work/'C_localize', scene)
     obs = raw.placed(selected['placement'], reference_frame='scene')
     T_cam_imu = np.linalg.inv(imu_from_camera(parameters))
@@ -50,20 +47,14 @@ def generate_trajectory(video, execution, *, trajectory_configuration, calibrati
     return prepared.video_times_s, poses[:, :3, 3], dict(map_position_fraction=solved.evidence['localization_fraction'])
 
 
-def run(request: CalibrationRequest) -> int:
-    if request.lens != 'rear':
-        raise ValueError('环境镜头后端只接受 rear 标定请求')
-    output = request.output_directory
-    source = calibration_inputs.prepare_inputs(request)
-    configuration = config.load('calibration', request.config)
+def prepare_backend(source, output, trajectory_configuration):
     from umi.workflows.calibration.pipeline.inputs import rear_validation_parameters
-    validation_parameters = rear_validation_parameters()
-    scene = Scene(output/'scene.yaml', 'rear_validation', 'shared_front', 'left',
-        dict(left=source.recordings.c), {}, configuration.load_trajectory_validation(tag_size_m=source.grid['tagSize']), validation_parameters,
+
+    scene = Scene(output / 'scene.yaml', 'rear_validation', 'shared_front', 'left',
+        dict(left=source.recordings.c), {}, trajectory_configuration, rear_validation_parameters(),
         {source.camera_serial: registry.pin(source.camera_serial)})
     front = camera_assets.select_camera(source.recordings.c, scene)
-    from functools import partial
     generator = partial(generate_trajectory, front=front, scene=scene)
     identity = dict(kind='rear', scene_parameters=asdict(scene.parameters), camera=scene.devices,
         files={key: artifact_identity.file_hash(path) for key, path in front.files.items() if path is not None})
-    return workflow.run(request, trajectory_generator=generator, backend_identity=identity)
+    return generator, identity

@@ -147,6 +147,8 @@ def flatten(document: Mapping, *, label: str = 'parameters', require_schema: boo
     """Flatten the versioned, grouped user configuration."""
     if not isinstance(document, Mapping):
         raise ValueError(f'{label} 必须是配置表')
+    if require_schema and 'schema_version' not in document:
+        raise ValueError(f'{label} 需要显式声明 schema_version: {SCENE_SCHEMA_VERSION}')
     if not document:
         return {'schema_version': INTERNAL_SCHEMA_VERSION}
 

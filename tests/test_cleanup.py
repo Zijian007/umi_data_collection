@@ -13,7 +13,6 @@ from umi.store.result_io import result_paths
 from umi.store import layout
 from umi.workflows.scene import workflow
 from umi.workflows.scene import cleanup, batch_processing as processing
-from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
 from umi.workflows.scene.tasks import scene_map as scene_reconstruction
 from umi.infra.file_store import mark_used, write_yaml
 import test_scene as fixtures

@@ -16,7 +16,7 @@ from umi.devices import registry
 from umi.apps import scene as cli
 from umi.workflows.scene import workflow
 from umi.workflows.scene import batch_snapshot as batches
-from umi.workflows.scene import episodes, ingest, batch_processing as processing
+from umi.workflows.scene import episodes, ingest, recordings, batch_processing as processing
 from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs
 from umi.infra.file_store import write_yaml as _write_yaml
 import test_scene as fixtures
@@ -227,6 +227,27 @@ class ProcessingTests(unittest.TestCase):
         self.assertFalse((new_scene / 'collection.yaml').exists())
         self.assertTrue((layout.metadata(self.batch, 'manifest.yaml')).is_file())
 
+    def test_preview_preflights_new_and_registered_tasks_without_writing(self):
+        take = self.batch / 'take_001'
+        for registered in (False, True):
+            if registered:
+                processing.prepare_batch(self.batch)
+            before = {path: path.read_bytes() for path in self.batch.rglob('*') if path.is_file()}
+            for target in (self.batch, take):
+                with (
+                    self.subTest(registered=registered, target=target),
+                    patch.object(recordings, 'check_episode',
+                                 return_value=recordings.EpisodeCheckReport(False, ['bad IMU'])) as check,
+                ):
+                    report = processing.run([target], dry_run=True)
+                    self.assertEqual([item['status'] for item in report], ['failed'])
+                    self.assertIn('bad IMU', report[0]['error'])
+                    self.assertEqual(check.call_args.args[0].root, take)
+                    check.reset_mock()
+                    self.assertEqual(processing.run([target], dry_run=True, check_recordings=False)[0]['status'], 'planned')
+                    check.assert_not_called()
+                    self.assertEqual({path: path.read_bytes() for path in self.batch.rglob('*') if path.is_file()}, before)
+
     def test_missing_peer_returns_failure_without_treating_dual_task_as_single(self):
         self.infos[1].path.unlink()
         result = processing.run([self.batch])
@@ -391,7 +412,7 @@ class ProcessingTests(unittest.TestCase):
             schema_version=1,
             maps=[dict(epoch='epoch_001', map_version=None, sequence=0,
                        recording='mapping/map.INSV')], tasks=[]))
-        result = processing.build(self.batch, epochs=True)
+        result = processing.build(self.batch)
         self.assertEqual(result['status'], 'ok')
         version = result['epochs'][0]['version']
         plan = read_yaml(self.batch / '.pipeline/map_epochs.yaml')
@@ -436,6 +457,10 @@ class ProcessingTests(unittest.TestCase):
         preview = processing.run([self.batch], dry_run=True)
         self.assertEqual(preview[0]['status'], 'planned')
         self.assertFalse((self.batch / '.pipeline/map_epochs.yaml').exists())
+        build_preview = processing.build(self.batch, dry_run=True)
+        self.assertEqual(build_preview['epochs'], [
+            dict(epoch='epoch_001', status='planned', recording='mapping/map.INSV')])
+        self.assertFalse((self.batch / '.pipeline').exists())
         result = processing.run([self.batch])
         self.assertEqual(result[0]['status'], 'ok')
         plan = read_yaml(self.batch / '.pipeline/map_epochs.yaml')
@@ -516,6 +541,11 @@ class ProcessingTests(unittest.TestCase):
         right = self.batch / 'mapping/right/VID.insv'
         right.parent.mkdir()
         right.write_text('right_mapping')
+        self.bind_fake_video(left, 'left')
+        self.bind_fake_video(right, 'right')
+        planned = processing.build(self.batch, dry_run=True)
+        self.assertNotIn('epochs', planned)
+        self.assertEqual(set(planned['inputs']['definition']['mapping']), {'left', 'right'})
         request = batches.read_inputs(self.batch)
         path = batches.save_record(request)
         self.assertEqual(read_yaml(path)['mapping_reference_arm'], 'right')
@@ -589,16 +619,34 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(build.call_args.kwargs['time_window_s'], (.2, .8))
 
     def test_trajectory_export_rejects_training_quality_options(self):
-        with patch.object(episodes, 'export') as export, redirect_stderr(io.StringIO()):
-            code = cli.main(['export', str(self.batch), '--out', str(self.f.root / 'dataset'),
-                             '--quality-policy', 'position_supported'])
-        self.assertNotEqual(code, 0)
-        export.assert_not_called()
+        for option, value in (('--quality-policy', 'all'), ('--fps', '30'), ('--max-gap-s', '0.25'),
+                              ('--unknown-support', 'drop'), ('--profile', 'unused.yaml')):
+            with self.subTest(option=option), patch.object(episodes, 'export') as export, redirect_stderr(io.StringIO()):
+                code = cli.main(['export', str(self.batch), '--out', str(self.f.root / 'dataset'), option, value])
+                self.assertNotEqual(code, 0)
+                export.assert_not_called()
 
-    def test_only_three_root_programs_remain(self):
+    def test_export_loads_training_profile_and_rejects_ambiguous_or_invalid_configuration(self):
+        profile = self.f.root / 'profile.yaml'
+        arguments = ['export', str(self.batch), '--out', str(self.f.root / 'dataset'),
+                     '--format', 'training', '--profile', str(profile)]
+        write_yaml(profile, dict(fps=24, quality_policy='position_supported', unknown_support='error'))
+        with patch('umi.dataset.export.build', return_value={}) as build, redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(arguments), 0)
+            self.assertEqual(build.call_args.kwargs, dict(fps=24, max_gap_s=.25, quality_policy='position_supported',
+                                                        unknown_support='error', time_window_s=None))
+            build.reset_mock()
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(cli.main([*arguments, '--fps', '30']), 2)
+                for invalid in (dict(fps=True), dict(typo=1), dict(max_gap_s=0)):
+                    write_yaml(profile, invalid)
+                    self.assertEqual(cli.main(arguments), 2)
+            build.assert_not_called()
+
+    def test_root_programs_include_the_shared_maintenance_entry_point(self):
         project = Path(__file__).resolve().parents[1]
         self.assertEqual(sorted(path.name for path in project.glob('umi*') if path.is_file()),
-                         ['umi-calib', 'umi-scene', 'umi-view'])
+                         ['umi-calib', 'umi-maint', 'umi-scene', 'umi-view'])
 
     def test_task_discovery_skips_batches_already_handled_by_processor(self):
         from umi.workflows.scene import episodes
@@ -615,7 +663,7 @@ class ProcessingTests(unittest.TestCase):
 
     def test_rear_calibration_belongs_to_calibration_entry(self):
         from umi.apps import calib as calibration_cli
-        with patch('umi.workflows.calibration.rear_workflow.run', return_value=0) as run, redirect_stdout(io.StringIO()):
+        with patch('umi.workflows.calibration.workflow.run', return_value=0) as run, redirect_stdout(io.StringIO()):
             code = calibration_cli.main(['run', str(self.f.source/'rear'), '--dry-run', '--tag-size-mm', '36'])
         self.assertEqual(code, 0)
         self.assertEqual(run.call_args.args[0].folder, self.f.source/'rear')

@@ -127,7 +127,6 @@ class RearFallbackTests(RecordingFixture):
         self.assertEqual(before, (self.output/'details/summary.json').read_bytes())
 
     def test_shared_scene_and_dual_share_fallback_and_frozen_asset_identity(self):
-        from umi.infra.file_store import read_yaml
         from umi.workflows.scene.inputs import scene as scene_inputs
         front = assets.read_basalt(self.selected.assets.camera_json)
         record = dict(serial='camera', status='active', json=str(self.selected.assets.camera_json),

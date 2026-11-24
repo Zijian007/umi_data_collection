@@ -33,7 +33,6 @@ class CalibrationRequest:
     compare_sample: bool = False
     config: Path | None = None
     dry_run: bool = False
-    resume: bool = False
     workers: int | None = None
     lens: str = 'front'
     intrinsics_source: str = 'measured'
@@ -57,7 +56,6 @@ class VerificationRequest:
     force: bool = False
     config: Path | None = None
     dry_run: bool = False
-    resume: bool = False
     workers: int | None = None
 
 

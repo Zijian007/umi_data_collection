@@ -11,7 +11,7 @@ from unittest.mock import patch
 from umi.config import loader as config
 from umi.devices import registry
 from umi.workflows.calibration import workflow, devices, result_io
-from umi.workflows.calibration.models import Step, RunPaths, ExecutionOptions
+from umi.workflows.calibration.models import RunPaths, ExecutionOptions
 from umi.workflows.calibration.pipeline import inputs, runtime
 from umi.workflows.calibration.validation import gravity
 from umi.devices import calibration_assets as assets
@@ -20,20 +20,19 @@ import test_calibration_workflow as workflow_fixtures
 
 
 class CheckpointContractTests(unittest.TestCase):
-    def test_gravity_parameters_only_recompute_gravity(self):
+    def test_new_version_uses_current_gravity_parameters(self):
         with tempfile.TemporaryDirectory() as tmp, workflow_fixtures.FullWorkflowTests().simulation(Path(tmp)) as (args, commands, _):
             self.assertEqual(workflow.run(inputs.parse_run_args(args)),0)
             override=Path(tmp)/'d.yaml'
             override.write_text('gravity:\n  window_s: 0.7\n')
-            args.resume,args.config=True,override
+            args.config=override
             commands.clear()
             self.assertEqual(workflow.run(inputs.parse_run_args(args)),0)
-            self.assertEqual(len(commands),1)
-            self.assertIn('umi.workflows.calibration.tools.imu_physical_check', commands[0])
-            timing=result_io.read(Path(args.out))['execution']['timings']
-            for step in (Step.INTRINSICS,Step.CAMERA_IMU,Step.TRAJECTORY):
-                self.assertEqual(timing[step]['status'],'reused')
-            self.assertEqual(timing[Step.GRAVITY]['status'],'computed')
+            gravity = next(command for command in commands if 'umi.workflows.calibration.tools.imu_physical_check' in command)
+            self.assertEqual(gravity[gravity.index('--window-s')+1], '0.7')
+            original = result_io.read(Path(args.out))
+            updated = result_io.read(Path(tmp)/'out_v002')
+            self.assertNotEqual(original['computation'], updated['computation'])
 
     def test_recheck_uses_result_lock_and_preserves_old_evaluation(self):
         with tempfile.TemporaryDirectory() as tmp, workflow_fixtures.FullWorkflowTests().simulation(Path(tmp)) as (args, _, _):
@@ -49,7 +48,7 @@ class CheckpointContractTests(unittest.TestCase):
             self.assertEqual(after['evaluation_history'][-1],before['evaluation'])
             self.assertEqual(after['measurements'],before['measurements'])
 
-    def test_incompatible_method_version_refuses_read_resume_recheck_and_install(self):
+    def test_incompatible_method_version_starts_new_run_and_refuses_recheck_and_install(self):
         with tempfile.TemporaryDirectory() as tmp, workflow_fixtures.FullWorkflowTests().simulation(Path(tmp),mock_install=False) as (args, _, _):
             workflow.run(inputs.parse_run_args(args))
             out=Path(args.out)
@@ -57,8 +56,8 @@ class CheckpointContractTests(unittest.TestCase):
             doc=json.loads(path.read_text());doc['measurement_version']=999
             path.write_text(json.dumps(doc));original=path.read_bytes()
             with self.assertRaises(ValueError): result_io.load_result(out)
-            args.resume=True
-            self.assertEqual(workflow.run(inputs.parse_run_args(args)),2)
+            self.assertEqual(workflow.run(inputs.parse_run_args(args)),0)
+            self.assertTrue((Path(tmp)/'out_v002'/'report.txt').is_file())
             self.assertEqual(workflow.recheck(out,None),2)
             self.assertEqual(devices.install_bundle(out,True),2)
             self.assertEqual(path.read_bytes(),original)
@@ -147,7 +146,7 @@ class SolverAdapterTests(unittest.TestCase):
 
     def test_rear_cli_uses_explicit_exit_code_and_preserves_options(self):
         from umi.apps import calib as cli
-        with patch('umi.workflows.calibration.rear_workflow.run',return_value=1) as run:
+        with patch('umi.workflows.calibration.workflow.run',return_value=1) as run:
             self.assertEqual(cli.main(['run','/data/rear','--resume','--workers','2']),1)
-            self.assertTrue(run.call_args.args[0].resume)
+            self.assertEqual(run.call_args.args[0].lens,'rear')
             self.assertEqual(run.call_args.args[0].workers,2)

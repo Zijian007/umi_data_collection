@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+DEPENDENCY_ROOT=${UMI_DEPS:-$PROJECT_ROOT/.deps}
+if [ ! -f "$DEPENDENCY_ROOT/env.sh" ]; then
+  echo "还没安装运行环境：先运行 bash $PROJECT_ROOT/install.sh" >&2
+  exit 2
+fi
+
+source "$DEPENDENCY_ROOT/env.sh"
+export UMI_PY=${UMI_PY:-$DEPENDENCY_ROOT/env/bin/python}
+export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec "$UMI_PY" -m umi.apps.maintenance "$@"

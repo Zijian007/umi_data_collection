@@ -39,19 +39,19 @@ runtime:
 
 | 入口 | 命令行输入 | YAML / 资产 |
 |---|---|---|
-| `umi-scene run / build` | 路径、`--cores`、`--force`、`--dry-run`；run 另有 `--jobs`、`--skip-preflight`，build 另有 `--keep-work` | `algorithms/trajectory.yaml`、`algorithms/scene_parameters.yaml` 提供算法默认值；批次日常配置统一写 `collection.yaml`（场景、kit、手和任务）；专家调参使用 `--expert-config`；`kit.yaml` 选择每镜头当前参数来源与测量文件 |
-| `umi-calib run / verify` | 录像、输出路径、`--tag-size-mm` 实测板边长、CPU/线程、继续/重算、保留中间文件 | `algorithms/calibration.yaml` 保存求解与验收参数；C 验证读取 `algorithms/trajectory.yaml`；板布局和版本化测量是独立资产 |
+| `umi-scene run` | 路径、`--dry-run`、`--recompute`、`--json`。单次 CPU、并发和预检选项见 `umi-maint scene run --help` | `algorithms/trajectory.yaml`、`algorithms/scene_parameters.yaml` 提供算法默认值；批次日常配置统一写 `collection.yaml`（场景、kit、手和任务）；专家调参使用 `--expert-config`；`kit.yaml` 选择每镜头当前参数来源与测量文件 |
+| `umi-calib run / verify` | 录像、输出路径、`--tag-size-mm`、`--dry-run`、`--recompute`。CPU 和线程选项见 `umi-maint calib run --help` | `algorithms/calibration.yaml` 保存求解与验收参数；C 验证读取 `algorithms/trajectory.yaml`；板布局和版本化测量是独立资产 |
 | `umi-view` | 结果根目录、`--host`、`--port` | `operations/viewer.yaml` 管理服务、预览和缓存；读取已有结果，不重新计算轨迹 |
 
 `--expert-config` 仅用于本次专家算法实验；内参来源读取 `config/user.yaml`，地图阶段读取 `collection.yaml.tasks` 和 `.pipeline/map_epochs.yaml`。逐个子命令的完整选项、默认值与互斥关系见[命令行参数参考](../docs/命令行参数.md)，也可用 `<入口> <子命令> --help` 查阅。
 
-独立诊断工具的参数仍由该次命令传入：`umi-scene detect-tags` 的检测采样/投影尺寸、`umi-calib preview-width / detect-width` 的 ROI/对比度/检测频率、`umi-scene export` 的导出格式/采样频率。它们只作用于本次诊断或导出，不改正式轨迹流程的 YAML。
+独立诊断工具的参数仍由该次命令传入：`umi-maint scene detect-tags` 的检测采样/投影尺寸、`umi-maint calib preview-width / detect-width` 的 ROI/对比度/检测频率。训练采样设置通过 `umi-scene export --profile 文件.yaml` 传入。它们只作用于本次诊断或导出，不改正式轨迹流程的 YAML。
 
 ## 先查看本次配置
 
 ```bash
-./umi-scene run scenes/test_shelf/20261120_002 --show-config
-./umi-calib run /path/to/front --show-config
+./umi-maint scene run scenes/test_shelf/20261120_002 --show-config
+./umi-maint calib run /path/to/front --show-config
 ./umi-view scenes/test_shelf --port 9092 --show-config
 ```
 
@@ -104,7 +104,7 @@ map_max_points: 20000
 - `kiwi.yaml` 包含指纹提取、投票门槛、GCC-PHAT 精对齐和长录制漂移参数。项目采用 48 kHz 音频、4096 点频谱窗、1024 点步长，每个锚峰最多配对 16 个指纹。 [Kiwi 参数](algorithms/audio_sync/kiwi.yaml)
 - `specialist.yaml` 包含采样率、包络低通、降采样、搜索范围和峰值比参数。 [Specialist 参数](algorithms/audio_sync/specialist.yaml)
 
-`umi-scene run` 从所选算法的 YAML 读取完整默认值。需要只调整部分参数时，在同目录新建 `kiwi.local.yaml` 或 `specialist.local.yaml`，只写需要覆盖的键。旧配置中修改过的值也可移入对应的本机覆盖文件。用 `run --show-config` 查看来源和实际参数。`sync.json` 的 `inputs.parameters` 保存实际参数，数值变化后会重新估计偏移。
+`umi-scene run` 从所选算法的 YAML 读取完整默认值。需要只调整部分参数时，在同目录新建 `kiwi.local.yaml` 或 `specialist.local.yaml`，只写需要覆盖的键。旧配置中修改过的值也可移入对应的本机覆盖文件。用维护入口的 `run --show-config` 查看来源和实际参数。`sync.json` 的 `inputs.parameters` 保存实际参数，数值变化后会重新估计偏移。
 
 ### 轨迹与标定
 
@@ -190,15 +190,15 @@ trajectory:
 场景算法优先级为 **项目默认 YAML → 本次 `--expert-config` 文件**。临时实验不会修改场景声明：把上面的 `trajectory` / `parameters` 两部分保存为 `experiment.yaml`，然后运行：
 
 ```bash
-./umi-scene run scenes/test_shelf/20261120_002 --expert-config experiment.yaml --show-config
-./umi-scene run scenes/test_shelf/20261120_002 --expert-config experiment.yaml
+./umi-maint scene run scenes/test_shelf/20261120_002 --expert-config experiment.yaml --show-config
+./umi-maint scene run scenes/test_shelf/20261120_002 --expert-config experiment.yaml
 ```
 
 `build` 同样支持 `--expert-config`。覆盖文件顶层只允许 `trajectory` 和 `parameters`；不接受设备、地图模式、标签布局或运行选项。最终参数与覆盖文件的路径、内容和哈希记录在新地图/任务结果中，不回写 `collection.yaml` 或 `kit.yaml`。数值相同的配置换路径或改注释不会触发重算；只改变任务参数时仍复用兼容地图。复用结果保留其原计算记录。
 
 验收和导出使用结果冻结的覆盖内容，临时 YAML 删除后仍能进行；当前原片、资产和基础配置变化仍会触发失效检查。内参来源由 `config/user.yaml` 和 kit 解析；带建图原片的快照也会按显式 `--expert-config` 检查地图兼容性。
 
-标定的 `--expert-config` 文件直接使用 `board`、`imu`、`checks` 等 calibration 字段，不包一层 `calibration:`，也不使用场景的 `trajectory:` / `parameters:` 外层。C 的轨迹实验配置通过下面的 `trajectory_validation.config` 引用。`--jobs`、`--cores`、`--force` 等执行选项不写入算法 YAML。
+标定的 `--expert-config` 文件直接使用 `board`、`imu`、`checks` 等 calibration 字段，不包一层 `calibration:`，也不使用场景的 `trajectory:` / `parameters:` 外层。C 的轨迹实验配置通过下面的 `trajectory_validation.config` 引用。`--jobs`、`--cores`、`--recompute` 等执行选项不写入算法 YAML。
 
 ## 参数按流程组织
 
@@ -266,7 +266,7 @@ C 固定覆盖 `input.mode: handheld` 和 `environment_tags.tag_fusion_enabled: 
 - 轨迹去中心 RMS 的数值退化保护固定为 `1e-6 m`，同样定义于 `trajectory_metrics.py`。实际移动范围的验收仍通过 `checks.minimum_board_extent_m` 配置。
 - 覆盖归一化半径从相机原始镜头半幅尺寸推导，当前为 `1920 / 2 = 960 px`，不随 1440 裁切或轨迹输出尺寸变化；实际分母写入覆盖指标。
 
-原配置快照与当前配置不同时，`recheck` 会拒绝，可用 `run --resume` 或 `verify --resume` 更新受影响的计算后再验收。
+原配置快照与当前配置不同时，`recheck` 会拒绝，重新执行 `run` 或 `verify` 会用新配置生成独立的结果版本。
 
 ## 夹爪宽度处理参数
 
@@ -329,7 +329,7 @@ video:
 
 裁切和缩放会同步变换 SLAM 内参与遮手图：`f'=s·f`，`c'=s·(c−裁切起点+0.5)−0.5`。KB4 畸变系数、相机–IMU 外参、相机–TCP 几何保持原值。遮手图只生成本次运行的处理副本，注册表资产不改写。场景双路模式按套件选择环境镜头参数。内部逐段 `dual` 通过 `--rear-calibration` 选择本设备的登记参数，省略时尝试从 INSV 工厂参数推导。
 
-取帧步长同步用于时间戳提取、MP4 编码、SLAM 帧率、独立融合时间网格、结果中的原片帧号及训练对齐。`fusion.step`、`node_stride` 等仍按处理后的帧数计数，改变取帧密度后需结合录像长度核验求解质量。训练导出的 `--fps` 只设置训练样本时间轴，视频维持这里生成的帧率。
+取帧步长同步用于时间戳提取、MP4 编码、SLAM 帧率、独立融合时间网格、结果中的原片帧号及训练对齐。`fusion.step`、`node_stride` 等仍按处理后的帧数计数，改变取帧密度后需结合录像长度核验求解质量。训练导出配置的 `fps` 只设置训练样本时间轴，视频维持这里生成的帧率。
 
 ORB 引擎要求 `Camera.fps` 为整数，因此自动使用四舍五入且至少为 1 的标称帧率（默认 30）；MP4 编码、时间戳和融合仍使用精确帧率（默认 `30000/1001`），无需额外配置。
 
@@ -344,18 +344,18 @@ ORB 引擎要求 `Camera.fps` 为整数，因此自动使用四舍五入且至�
 - 内部逐段轨迹：`details/run_settings.json` 的 `parameters`、`frame_geometry`，以及摘要中的运行指纹。
 - TXT 报告：算法配置 ID、验收/提醒 ID、相对默认值的覆盖项和完整记录路径。
 
-记录包含完整有效值、默认/覆盖文件来源、显式 CLI 覆盖、配置版本、实际相机和夹爪资产，以及 git 提交号（`code_revision`）。缓存复用不看代码和引擎版本；改了算法或重编引擎后用 `--force` 重算。轨迹使用的 ORB YAML 和融合 JSON 在运行时生成；完整中间输入用 `--keep-work` 保留。
+记录包含完整有效值、默认/覆盖文件来源、显式 CLI 覆盖、配置版本、实际相机和夹爪资产，以及 git 提交号（`code_revision`）。缓存复用不看代码和引擎版本；改了算法或重编引擎后用 `--recompute` 重算。轨迹使用的 ORB YAML 和融合 JSON 在运行时生成；完整中间输入用 `--keep-work` 保留。
 
 `configuration.computation_hash` 仅表示算法配置；内部逐段轨迹的外层 `computation_hash` 还包括原片与测量资产。`evaluation_hash` 仅表示验收或提醒规则。配置注释、键顺序、覆盖文件的位置不改变配置数值指纹。
 
 ## 改参数或改代码后如何处理已有结果
 
-**轨迹**：改变重建数值、重试条件、输入或设备资产会重新计算；改变 `notes` 只重新评估已有指标、更新配置记录和报告，轨迹文件保持原样。证据缺失会重算。改了算法代码或重编引擎不会自动失效，需要用 `--force` 重算。
+**轨迹**：改变重建数值、重试条件、输入或设备资产会重新计算；改变 `notes` 只重新评估已有指标、更新配置记录和报告，轨迹文件保持原样。证据缺失会重算。改了算法代码或重编引擎不会自动失效，需要用 `--recompute` 重算。
 
-**标定**：`run` 仍按原规则保护已有输出，需要重算时显式 `--force`。只有验收规则变化时，可以单独重新验收：
+**标定**在输入匹配时自动续跑或复用结果。用 `--recompute` 建立新版本。只有验收规则变化时，可以单独重新验收。
 
 ```bash
-./umi-calib recheck hardware/calibration_runs/CAMERA_SERIAL/YYYYMMDD/front/calibration_result --expert-config umi-calib-checks.yaml
+./umi-maint calib recheck hardware/calibration_runs/CAMERA_SERIAL/YYYYMMDD/front/calibration_result --expert-config umi-calib-checks.yaml
 ```
 
 这里的覆盖文件需自行准备。`recheck` 校验算法设置与原运行一致，仅修改验收项、结论和报告，保存完整先前验收及配置历史。若原运行用了算法覆盖，重验时需包含相同的算法覆盖。不支持的记录格式、缺少完整原始指标或未完成的执行不能重验；拒绝时保留原报告，需先完成计算。验收使用原始指标，`recheck` 不启用设备标定。
@@ -366,7 +366,7 @@ ORB 引擎要求 `Camera.fps` 为整数，因此自动使用四舍五入且至�
 
 共享场景在 kit 的 `intrinsics.front/rear` 分别选择 measured / factory，默认 front measured、rear factory。每个镜头、每种来源使用一份当前参数，安装后自动更新；已开始的运行和已有结果使用自己的冻结参数。rear measured 需要已登记的独立标定；rear factory 优先使用已登记的工厂来源整包，缺少时以 X3 原片工厂 rear 内参/双镜头外参 + 本设备 front B 推导并沿用 front 时差，标记 `NOT_EVALUATED`。当前选择损坏或身份/来源错误时拒绝，不静默推导。两个镜头允许不同来源；完整参数包内的内参与 B 仍必须配套。配置位置见[套件说明](../hardware/kits/README.md#前后镜头独立选择来源)，不写入算法参数 YAML。
 
-Basalt/ORB/OpenCV/GTSAM 内部尚未暴露的参数随引擎版本固定；引擎变化不会自动让缓存失效。浮点稳定性保护、矩阵维度、Jacobian 自检容差、格式/数学约定、PNG 无损压缩和执行超时策略保留在代码中。录像契约还包含 0.05 fps 的模式识别容差、1 ms 规则帧网格判据、1.5 倍中位帧间隔的丢帧判据，以及 50 ms 的 IMU 覆盖容差；这些集中在 `umi/core/frame.py`，写入提取清单和轨迹设置；修改后需用 `--force` 重算已有缓存。当前 ORB 包装器使用纯单目模式，IMU 噪声由融合配置控制。
+Basalt/ORB/OpenCV/GTSAM 内部尚未暴露的参数随引擎版本固定；引擎变化不会自动让缓存失效。浮点稳定性保护、矩阵维度、Jacobian 自检容差、格式/数学约定、PNG 无损压缩和执行超时策略保留在代码中。录像契约还包含 0.05 fps 的模式识别容差、1 ms 规则帧网格判据、1.5 倍中位帧间隔的丢帧判据，以及 50 ms 的 IMU 覆盖容差；这些集中在 `umi/core/frame.py`，写入提取清单和轨迹设置；修改后需用 `--recompute` 重算已有缓存。当前 ORB 包装器使用纯单目模式，IMU 噪声由融合配置控制。
 
 
 ## 运行解释器
@@ -375,7 +375,7 @@ Basalt/ORB/OpenCV/GTSAM 内部尚未暴露的参数随引擎版本固定；引�
 
 标定运行记录使用 schema 3，和 YAML 的 `schema_version`、资产清单 schema 3 分别管理。`checks.minimum_board_extent_m` 不足使验收为 INCOMPLETE。D 的 `checks.gravity_residual_m_s2` 只影响 WARN，工具始终以 REPORT_ONLY 测量，因此只改该阈值可直接 recheck。
 
-标定配置的 `factory` 负责工厂来源的转换和独立 A 验证：转换 RMS/P99 与原片射线一致性属于候选生成约束；`minimum_holdout_frames`、`holdout_warn_rms_px` 属于可通过 `umi-calib recheck` 重新判定的 A 证据/提醒规则。后两项不会改变已生成的参数，缺 A 证据不能安装。
+标定配置的 `factory` 负责工厂来源的转换和独立 A 验证：转换 RMS/P99 与原片射线一致性属于候选生成约束；`minimum_holdout_frames`、`holdout_warn_rms_px` 属于可通过 `umi-maint calib recheck` 重新判定的 A 证据/提醒规则。后两项不会改变已生成的参数，缺 A 证据不能安装。
 
 算法参数类型位于 [`umi/config/parameter_models.py`](../umi/config/parameter_models.py)；覆盖合并、校验和快照由 [`umi/config/loader.py`](../umi/config/loader.py) 管理。规范 JSON、文件内容哈希与 git 提交号统一由 [`umi/infra/provenance.py`](../umi/infra/provenance.py) 计算，修改结构时保留序列化字段和单位。
 

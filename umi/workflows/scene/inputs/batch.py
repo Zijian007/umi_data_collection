@@ -177,10 +177,21 @@ def read_episode(path: Path, *, verify: bool = True, overrides: SceneOverrides |
     collection_path = root.parent / 'collection.yaml'
     collection = normalize_collection(read_yaml(collection_path)) if collection_path.is_file() else None
     session = read_batch(session_path, overrides=overrides, collection=collection)
+    return episode_from_recordings(path, session, episode_document['recordings'], verify=verify,
+                                   map_epoch_override=map_epoch_override, allow_pending_map=allow_pending_map,
+                                   collection=collection)
+
+
+def episode_from_recordings(path: Path, session: Session, raw_recording_references: dict, *,
+                            verify: bool = True, map_epoch_override: str | None = None,
+                            allow_pending_map: bool = False, collection: dict | None = None,
+                            epoch_plan=None) -> Episode:
+    root = layout.owner(path)
     if root.parent != session.root:
         raise ValueError('任务必须直接位于采集批次的 <任务>/ 目录')
     resolved = resolve_task_configuration(root, session.scene, session.expected_arms, session.map_version,
-                                          map_epoch_override=map_epoch_override, collection=collection)
+                                          map_epoch_override=map_epoch_override, collection=collection,
+                                          epoch_plan=epoch_plan)
     resolved.require_ready_map(allow_pending=allow_pending_map)
     session = replace(session, scene=resolved.scene)
     expected = resolved.expected_arms
@@ -189,7 +200,6 @@ def read_episode(path: Path, *, verify: bool = True, overrides: SceneOverrides |
     # 单手，磁盘上的另一侧原片也不应阻断当前任务；过滤后再校验设备身份。
     # 任务声明扩展批次手臂的情况已经由 resolve_task_configuration 拒绝，
     # 因而这里的额外引用只能是历史清单中的未使用手臂。
-    raw_recording_references = episode_document['recordings']
     require_keys(raw_recording_references, {'left', 'right'}, set(), 'recordings')
     recording_references = {
         arm: item for arm, item in raw_recording_references.items()

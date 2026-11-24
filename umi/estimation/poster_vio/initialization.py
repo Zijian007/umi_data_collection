@@ -130,10 +130,9 @@ def robust_seed_poses(times, tag_indices, points, pixels, camera_from_imu, model
                 continue
             try:
                 # External four-argument solvers retain their existing contract.
-                ray_args = {'rays': rays[group].reshape(-1, 3)} if reuse_rays else {}
-                group_candidates = solve_candidates(
-                    local_points[group].reshape(-1, 3), local_pixels[group].reshape(-1, 2),
-                    model, parameters.tag_maximum_reprojection_rms_px, **ray_args)
+                arguments = (local_points[group].reshape(-1, 3), local_pixels[group].reshape(-1, 2), model)
+                group_candidates = (solve_candidates(*arguments, rays=rays[group].reshape(-1, 3))
+                                    if reuse_rays else solve_candidates(*arguments, parameters.tag_maximum_reprojection_rms_px))
             except ValueError:
                 continue
             for _, pose in group_candidates:

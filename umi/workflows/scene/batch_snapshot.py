@@ -125,9 +125,9 @@ def _infer_mode(batch: Path, declaration: dict, clips: list[Path] | None = None)
     if clips:
         mapping_root = (batch / 'mapping').resolve()
         relative = [clip.resolve().relative_to(mapping_root).parts for clip in clips]
-        if len(clips) == 1 and len(relative[0]) == 1:
+        if all(len(parts) == 1 for parts in relative):
             return 'shared_front'
-        if len(clips) == 2 and all(len(parts) == 2 and parts[0] in ARMS for parts in relative):
+        if all(len(parts) == 2 and parts[0] in ARMS for parts in relative):
             if {parts[0] for parts in relative} == set(ARMS):
                 return 'dual'
         # Epoch recordings add an epoch directory before the camera role:
@@ -179,7 +179,8 @@ def mapping_requirements(collection: dict, *, has_mapping: bool) -> tuple[bool, 
 def read_inputs(batch: Path, *, require_mapping: bool = True, include_mapping: bool = True,
                 intrinsics_source: str | None = None, overrides: SceneOverrides | None = None,
                 collection_source: tuple[Path, dict, dict] | None = None,
-                mapping_clips: list[Path] | None = None) -> BatchInputs:
+                mapping_clips: list[Path] | None = None,
+                epoch_maps: list[dict] | None = None) -> BatchInputs:
     validate_batch_name(batch.name)
     validate_name(batch.parent.name)
     declaration_path, document, collection = collection_source or read_collection(batch)
@@ -196,7 +197,10 @@ def read_inputs(batch: Path, *, require_mapping: bool = True, include_mapping: b
         mapping_clips = recordings.insv_files(batch / 'mapping')
     map_required, _ = mapping_requirements(collection, has_mapping=bool(mapping_clips))
     if scene.mode == 'auto':
-        if not map_required and (not include_mapping or not mapping_clips):
+        epoch_recording = next((item['recording'] for item in epoch_maps or [] if item.get('recording')), None)
+        if epoch_recording is not None:
+            scene = replace(scene, mode='dual' if isinstance(epoch_recording, dict) else 'shared_front')
+        elif not map_required and (not include_mapping or not mapping_clips):
             # Mapless runs must not need a healthy map just to infer its layout.
             # auto resolves the actual layout after a published map is loaded.
             resolved_mode = previous_record.get('resolved_mode', 'shared_front')

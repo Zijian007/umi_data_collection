@@ -15,9 +15,11 @@ import os
 import shutil
 import threading
 
+from ruamel.yaml.error import YAMLError
+
 from umi.config import loader as config
 from umi.infra import provenance as artifact_identity
-from umi.workflows.calibration import acceptance, devices, reports, result_io
+from umi.workflows.calibration import acceptance, devices, reports, result_io, versions
 from umi.workflows.calibration.algorithms import board_pnp
 from umi.workflows.calibration.models import CalibrationRequest, VerificationRequest, RunPaths, ExecutionOptions, Step, ROLE_STEPS, Decision
 from umi.workflows.calibration.pipeline import board_detection, inputs, recordings, runtime
@@ -34,12 +36,17 @@ def parameter_record(configuration, trajectory_configuration):
     return dict(configuration=configuration.snapshot(), trajectory_validation=trajectory_configuration.snapshot())
 
 
+def _reuse_completed(paths, previous, resources, *, install_serial=None):
+    if not versions.finished(previous):
+        return None
+    accepted = Decision(previous['evaluation']['decision']).installable
+    resources.close()
+    if accepted and install_serial is not None:
+        return devices.install(paths.output, force=False, camera_serial=install_serial)
+    return 0 if accepted else 1
+
+
 def _document(paths, subject, sources, provenance, *, operation, previous):
-    if previous and (previous['operation'] != operation or
-            any(previous['subject'][k] != subject[k] for k in ('serial', 'lens'))):
-        raise ValueError('恢复目录的操作、设备或镜头不一致，请选择新输出目录')
-    if previous and previous['subject'].get('intrinsics_source', 'measured') != subject.get('intrinsics_source', 'measured'):
-        raise ValueError('恢复目录的内参来源不一致，请为另一来源使用独立结果目录')
     doc = previous or dict(measurements={}, execution=dict(steps={}), evaluation=None, evaluation_history=[])
     if previous and any(doc[k] != value for k, value in (('inputs', sources), ('computation', provenance), ('subject', subject))):
         result_io.archive_evaluation(doc)
@@ -179,13 +186,11 @@ def _record_execution(paths, doc, configuration):
         doc['execution'].update(status='complete', error=None)
 
 
-def run(request: CalibrationRequest, *, trajectory_generator=None, backend_identity=None) -> int:
+def run(request: CalibrationRequest, *, trajectory_generator=None) -> int:
     resources = ExitStack()
     try:
-        if request.resume and request.force:
-            raise ValueError('--resume 和 --force 不能同时使用')
-        if request.lens not in ('front', 'rear') or (request.lens == 'rear' and trajectory_generator is None):
-            raise ValueError('环境镜头需要显式轨迹后端')
+        if request.lens not in ('front', 'rear'):
+            raise ValueError('标定镜头必须是 front 或 rear')
         validate_source(request.intrinsics_source)
         configuration = config.load('calibration', request.config)
         source = inputs.prepare_inputs(request)
@@ -198,12 +203,22 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
         paths = RunPaths(request.output_directory)
         provenance = parameter_record(configuration, trajectory_configuration)
         provenance['intrinsics_source'] = request.intrinsics_source
-        provenance['backend'] = backend_identity or dict(kind='front')
+        backend_identity = dict(kind=request.lens)
+        if request.lens == 'rear' and trajectory_generator is None:
+            from umi.workflows.calibration.rear_workflow import prepare_backend
+            trajectory_generator, backend_identity = prepare_backend(source, paths.output, trajectory_configuration)
+        provenance['backend'] = backend_identity
+        if request.compare_sample:
+            provenance['compare_sample'] = True
         sample_camera = assets.read_basalt(assets.SAMPLE_CAMERA_JSON) if request.lens == 'front' else None
         sources = dict(grid=source.grid, sample_camera=sample_camera,
             recordings={role: dict(path=str(video.resolve()), sha256=artifact_identity.file_hash(video)) for role, video in source.recordings.items()})
+        subject = dict(serial=source.camera_serial, lens=request.lens, parameter_file='calibration.json',
+                       intrinsics_source=request.intrinsics_source)
+        identity = dict(operation='calibrate', subject=subject.copy(), inputs=sources, computation=provenance)
         if request.dry_run:
-            print(json.dumps(dict(serial=source.camera_serial, lens=request.lens, output=str(paths.output), inputs=sources,
+            output = versions.output_plan(paths.output, identity, recompute=request.force)
+            print(json.dumps(dict(serial=source.camera_serial, lens=request.lens, **output, inputs=sources,
                                  computation=provenance, automatic_factory_comparison=(
                                      dict(views=[1440, 1920], lens=request.lens, affects_acceptance=False)
                                      if request.lens == 'front' or request.intrinsics_source == 'factory' else None)),
@@ -212,15 +227,16 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
         if not runtime.prepare(request.cores, solve=True):
             return 2
         workers = recordings.n_workers(request.workers)
-        resources.enter_context(runtime.output_directory(paths, force=request.force, resume=request.resume))
-        subject = dict(serial=source.camera_serial, lens=request.lens, parameter_file='calibration.json', parameter_sha256=None)
-        subject['intrinsics_source'] = request.intrinsics_source
-        previous = result_io.read(paths.output) if request.resume else {}
+        paths, previous = resources.enter_context(versions.open_run(paths.output, identity, recompute=request.force))
+        completed = _reuse_completed(paths, previous, resources,
+                                     install_serial=source.camera_serial if request.install else None)
+        if completed is not None:
+            return completed
         subject['parameter_sha256'] = previous.get('subject', {}).get('parameter_sha256')
         doc = _document(paths, subject, sources, provenance, operation='calibrate', previous=previous)
         execution = ExecutionOptions(paths, request.cores, workers, doc['execution']['details'])
         runner = StageRunner(paths.output, doc)
-    except (OSError, ValueError, RuntimeError) as error:
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError, YAMLError) as error:
         resources.close()
         runtime.console.write(f'准备标定失败：{error}', state='失败')
         return 2
@@ -333,8 +349,6 @@ def run(request: CalibrationRequest, *, trajectory_generator=None, backend_ident
 def verify(request: VerificationRequest) -> int:
     resources = ExitStack()
     try:
-        if request.resume and request.force:
-            raise ValueError('--resume 和 --force 不能同时使用')
         configuration = config.load('calibration', request.config)
         source = inputs.prepare_verification(request)
         trajectory_configuration = configuration.load_trajectory_validation(tag_size_m=source.grid['tagSize'])
@@ -345,14 +359,18 @@ def verify(request: VerificationRequest) -> int:
         provenance = parameter_record(configuration, trajectory_configuration)
         sources = dict(grid=source.grid, recordings=dict(C=dict(path=str(source.video.resolve()), sha256=artifact_identity.file_hash(source.video))),
                        calibration=source.calibration)
+        identity = dict(operation='verify', subject=subject, inputs=sources, computation=provenance)
         if request.dry_run:
-            print(json.dumps(dict(subject=subject, inputs=sources, computation=provenance, output=str(paths.output)), ensure_ascii=False, indent=2))
+            output = versions.output_plan(paths.output, identity, recompute=request.force)
+            print(json.dumps(dict(subject=subject, inputs=sources, computation=provenance, **output), ensure_ascii=False, indent=2))
             return 0
         if not runtime.prepare(request.cores, solve=False):
             return 2
         workers = recordings.n_workers(request.workers)
-        resources.enter_context(runtime.output_directory(paths, force=request.force, resume=request.resume))
-        previous = result_io.read(paths.output) if request.resume else {}
+        paths, previous = resources.enter_context(versions.open_run(paths.output, identity, recompute=request.force))
+        completed = _reuse_completed(paths, previous, resources)
+        if completed is not None:
+            return completed
         doc = _document(paths, subject, sources, provenance, operation='verify', previous=previous)
         execution = ExecutionOptions(paths, request.cores, workers, doc['execution']['details'])
         runner = StageRunner(paths.output, doc)

@@ -9,14 +9,14 @@ from unittest.mock import patch
 from umi.store import layout
 from umi.workflows.scene import workflow
 from umi.workflows.scene import episodes, batch_processing as processing
-from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs
 from umi.infra.file_store import write_json, write_yaml
 from umi.apps.viewer.results.catalog import RecordingCatalog
 from umi.apps.viewer.results.catalog import capture_status
 from umi.workflows.scene.maps import repository as map_repository
 import test_processing
 import test_scene
-from registry_fakes import write_task_configuration, read_task_configuration
+from registry_fakes import write_task_configuration
 
 
 class InternalLayoutTests(unittest.TestCase):

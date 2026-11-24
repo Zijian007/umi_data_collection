@@ -12,9 +12,7 @@ import subprocess
 import sys
 import time
 
-from umi.workflows.calibration.models import RunPaths
 from umi.infra.terminal import Console
-from umi.infra.file_store import locked
 from umi.infra.paths import PROJECT_ROOT, SETUP_ROOT, deps_root
 
 
@@ -155,32 +153,6 @@ def check_environment(quiet: bool = False, *, solve: bool = True) -> bool:
         except Exception as error:
             line(False, tool, repr(error))
     return ok
-
-
-def prepare_output(paths: RunPaths, *, force: bool, resume: bool = False) -> None:
-    import shutil
-
-    if resume and force:
-        raise ValueError('--resume 和 --force 不能同时使用')
-    if paths.output.exists() and any(paths.output.iterdir()):
-        if resume:
-            if not paths.record.is_file():
-                raise ValueError('此目录没有可恢复的阶段记录；请换一个 --out，或用 --force 重新运行')
-            paths.logs.mkdir(parents=True, exist_ok=True)
-            return
-        if not force:
-            raise ValueError(f"{paths.output} 已经有内容；用 --resume 继续、换一个 --out，或加 --force 覆盖。")
-        shutil.rmtree(paths.output)
-    paths.logs.mkdir(parents=True)
-
-
-@contextmanager
-def output_directory(paths: RunPaths, *, force: bool, resume: bool):
-    # 锁放在输出旁，--force 清理输出时也不能删除活跃的锁。
-    root = paths.output.expanduser().resolve()
-    with locked(root.parent, name=f'.{root.name}.calibration.lock'):
-        prepare_output(paths, force=force, resume=resume)
-        yield
 
 
 def prepare(cores: str | None, *, solve: bool = True) -> bool:

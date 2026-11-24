@@ -9,7 +9,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from umi.infra.file_store import read_yaml
-from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs
 from umi.workflows.scene import episodes
 from umi.apps import scene as cli
 from umi.store import layout

@@ -49,9 +49,9 @@ def _installable(output, lens, *, force=False, camera_serial=None):
         raise ValueError('缺少完整验收证据')
     decision = Decision(doc['evaluation']['decision'])
     if decision == Decision.INCOMPLETE:
-        raise ValueError('证据不完整，--force 也不能安装')
+        raise ValueError('证据不完整，--allow-rejected 也不能安装')
     if not decision.installable and not force:
-        raise RejectedResult('验收未通过；完整且有效的结果可用 --force 显式覆盖质量判定')
+        raise RejectedResult('验收未通过，完整且有效的结果可用 umi-maint calib install --allow-rejected 登记')
     return doc
 
 

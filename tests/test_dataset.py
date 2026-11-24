@@ -15,7 +15,6 @@ from umi.apps import scene as cli
 from umi.dataset.export import build
 from umi.dataset.reader import load_episode
 from umi.workflows.scene import episodes
-from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
 from umi.workflows.scene import workflow
 from umi.infra.file_store import write_yaml
 from registry_fakes import write_task_configuration, read_task_configuration

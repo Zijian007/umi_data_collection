@@ -50,7 +50,7 @@ class PosterVioInitializationTests(unittest.TestCase):
         args = times, indices, points, pixels, extrinsics['rear'], model, parameters
 
         def reference_solver(points, pixels, camera, rms):
-            return solve_frame_candidates(points, pixels, camera, rms)
+            return solve_frame_candidates(points, pixels, camera)
 
         reference = robust_seed_poses(*args, solve_candidates=reference_solver)
         for solver in (None, FrameCandidateCache()):

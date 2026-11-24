@@ -68,7 +68,7 @@ class RearCalibrationTests(unittest.TestCase):
         a = IntrinsicsResult(self.front.files['front'], [350., 350., 720., 720., 0., 0., 0., 0.], self.metrics(), self.coverage())
         reference = dict(video_time_s=self.fixture.prepared_recordings[self.video].video_times_s, idx=np.arange(len(self.poses)), p=scale*self.poses[:, :3, 3], n_frames=len(self.poses), reproj_deg_med=[])
         with patch.object(rear_calibration.registry, 'pin', return_value=self.fixture.device_pins[self.front.serial]), \
-             patch.object(rear_calibration.calibration_inputs, 'prepare_inputs', return_value=self.inputs), \
+             patch.object(workflow.inputs, 'prepare_inputs', return_value=self.inputs) as prepare_inputs, \
              patch.object(rear_calibration.camera_assets, 'select_camera', return_value=self.front), \
              patch.object(workflow.runtime, 'prepare', return_value=True), \
              patch.object(recordings, 'build', side_effect=dataset) as build, \
@@ -85,6 +85,7 @@ class RearCalibrationTests(unittest.TestCase):
             code = cli.main(arguments + (['--install'] if install else []))
             doc = result_io.load_result(output)
             result = dict(status=Decision(doc['evaluation']['decision']).label, exit_code=code)
+        prepare_inputs.assert_called_once()
         self.assertEqual(build.call_count, 4)
         self.assertTrue(all(call.kwargs['lens'] == 'rear' for call in build.call_args_list))
         self.assertEqual([call.kwargs['with_images'] for call in build.call_args_list], [True, True, True, False])

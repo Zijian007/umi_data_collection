@@ -325,14 +325,3 @@ def check_episode(episode, parameters: SceneParameters | None = None) -> Episode
         reasons.append('录像不完整，缺少：' + ', '.join(sorted(missing)))
     parameters = {key: value for key, value in asdict(parameters).items() if key.startswith('recording_')}
     return EpisodeCheckReport(not reasons, reasons, recording_reports, parameters)
-
-
-def format_report(report: EpisodeCheckReport | RecordingCheckReport) -> str:
-    recording_reports = report.videos if isinstance(report, EpisodeCheckReport) else {'video': report}
-    lines = []
-    for arm, recording_report in recording_reports.items():
-        lines.append(f'{arm}: {recording_report.path}')
-        lines += [f'  [{item.status}] {item.name}: {item.message}' for item in recording_report.checks]
-    lines.append('检查结论：' + ('PASS' if report.passed else 'FAIL'))
-    lines.extend(report.reasons)
-    return '\n'.join(lines)

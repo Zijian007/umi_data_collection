@@ -18,7 +18,8 @@ from umi.store.models import SceneParameters, Session
 from umi.workflows.scene import recordings
 from umi.infra.file_store import read_yaml, write_json, write_yaml
 from umi.workflows.scene.inputs.batch import batch_task_directories, batch_video_sources, task_video_sources
-from umi.workflows.scene.inputs.batch import read_episode
+from umi.workflows.scene.inputs.batch import episode_from_recordings, read_episode_document
+from umi.workflows.scene.maps.epoch_selection import EpochPlan
 from umi.core.arms import read_arms, resolve_arms
 
 
@@ -172,7 +173,9 @@ def _write_episode(path: Path, recording_refs: dict) -> None:
         invalidate_task_state(path)
 
 
-def register_recordings(session: Session, *, dry_run: bool = False) -> dict:
+def register_recordings(session: Session, *, dry_run: bool = False,
+                        preview_recordings: dict[Path, dict] | None = None,
+                        collection: dict | None = None, epoch_plan: EpochPlan | None = None) -> dict:
     """按批次目录规划原片归属；预览返回计划，实际运行再保存任务与报告。"""
     expected_arms = session.expected_arms
     batch = session.root
@@ -196,7 +199,11 @@ def register_recordings(session: Session, *, dry_run: bool = False) -> dict:
         # batch_task_directories 已按任务名校验，内部目录与隐藏目录不会出现。
         for path in (layout.manifest(task, 'episode.yaml') for task in batch_task_directories(batch)
                      if layout.manifest(task, 'episode.yaml').is_file()):
-            episode = read_episode(path, verify=False, allow_pending_map=True)
+            document = read_episode_document(path)
+            episode = episode_from_recordings(path, session, document['recordings'], verify=False,
+                                              allow_pending_map=True, collection=collection, epoch_plan=epoch_plan)
+            if preview_recordings is not None:
+                preview_recordings[path] = episode.recording_refs
             for recording in episode.recording_refs.values():
                 if recording['sha256'] in recording_owners:
                     raise ValueError('同一原片已属于多个任务，请先核对任务清单')
@@ -223,6 +230,9 @@ def register_recordings(session: Session, *, dry_run: bool = False) -> dict:
         for path, plan in plans:
             task_summary = dict(name=layout.owner(path).name, path=str(path), status='planned' if dry_run else 'imported', arms=list(plan))
             registered_tasks.append(task_summary)
+            if preview_recordings is not None:
+                preview_recordings[path] = {arm: recording.reference(layout.owner(path))
+                                            for arm, recording in plan.items()}
             if not dry_run:
                 task_root = layout.owner(path)
                 for arm, recording in plan.items():

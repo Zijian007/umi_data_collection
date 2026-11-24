@@ -2,11 +2,12 @@ from umi.infra import provenance as artifact_identity
 """Peripheral workflow regressions; no camera recordings or solver execution required."""
 import json
 import copy
+import io
 import tempfile
 import threading
 import unittest
 from argparse import Namespace
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -259,24 +260,55 @@ class FullWorkflowTests(unittest.TestCase):
                 'trajectory_configuration'].values.orb.initial_tag_size_m, .0357)
             self.assertEqual(workflow.recheck(Path(tmp) / 'verification', None), 0)
 
-    def test_resume_completed_run_skips_all_expensive_work_even_after_work_cleanup(self):
+    def test_completed_run_is_reused_without_rewriting_its_evidence(self):
         with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, commands, _):
             self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
-            original = self.read_result(args)
-            original_camera = (Path(args.out) / 'calibration.json').read_bytes()
+            output = Path(args.out)
+            files = [output / 'run/record.json', output / 'calibration.json', output / 'report.txt']
+            original = [path.read_bytes() for path in files]
             commands.clear()
-            args.resume, args.workers = True, 2
+            args.workers = 2
             with patch.object(recordings, 'build', side_effect=AssertionError('must not decode again')):
                 self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
-            current = self.read_result(args)
             self.assertEqual(commands, [])
-            self.assertEqual(current['evaluation']['checks'], original['evaluation']['checks'])
-            self.assertEqual((Path(args.out) / 'calibration.json').read_bytes(), original_camera)
-            # Fake INSV files contain no offset: the optional failed comparison is retried.
-            self.assertTrue(all(item['status'] == 'reused' for key, item in current['execution']['timings'].items()
-                                if key != Step.FACTORY))
-            self.assertEqual(result_io.measurement(current, Step.FACTORY)['status'], 'comparison_failed')
-            self.assertIn('reused', (Path(args.out) / 'report.txt').read_text())
+            self.assertEqual([path.read_bytes() for path in files], original)
+
+    def test_cli_versions_preserve_old_results_on_recompute_and_changed_input(self):
+        with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, commands, _):
+            base = Path(args.out)
+            command = ['run', str(args.folder), '--out', str(base), '--workers', '1']
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(cli.main([*command, '--dry-run']), 0)
+            self.assertEqual(json.loads(output.getvalue())['action'], 'new')
+            self.assertFalse(base.exists())
+            self.assertFalse((base.parent / f'.{base.name}.calibration-series.lock').exists())
+            self.assertEqual(cli.main(command), 0)
+            record = base / 'run/record.json'
+            original = record.read_bytes()
+            commands.clear()
+            self.assertEqual(cli.main(command), 0)
+            self.assertEqual(commands, [])
+            self.assertEqual(record.read_bytes(), original)
+            self.assertEqual(cli.main([*command, '--recompute']), 0)
+            second = base.with_name('out_v002') / 'run/record.json'
+            self.assertTrue(second.is_file())
+            second_contents = second.read_bytes()
+            args.c.write_bytes(b'new recording')
+            self.assertEqual(cli.main(command), 0)
+            self.assertTrue((base.with_name('out_v003') / 'run/record.json').is_file())
+            self.assertEqual(record.read_bytes(), original)
+            self.assertEqual(second.read_bytes(), second_contents)
+
+    def test_cli_repeats_incomplete_run_without_resume_flag(self):
+        with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, commands, _):
+            command = ['run', str(args.folder), '--out', args.out, '--workers', '1']
+            trajectory_validation.trajectory_check.side_effect = [
+                dict(status='trajectory_failed', reason='lost tracking'), AcceptanceTests().trajectory()]
+            self.assertEqual(cli.main(command), 1)
+            commands.clear()
+            self.assertEqual(cli.main(command), 0)
+            self.assertEqual(commands, [])
+            self.assertEqual(self.read_result(args)['execution']['timings'][Step.TRAJECTORY]['status'], 'computed')
 
     def test_resume_c_failure_reuses_ab_and_board_detections(self):
         with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, commands, _):
@@ -285,43 +317,39 @@ class FullWorkflowTests(unittest.TestCase):
             self.assertTrue((Path(args.out) / 'run/work/C_board.npz').is_file())
             self.assertEqual(board_detection.detect_all.call_count, 2)
             commands.clear()
-            args.resume = True
             self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
             self.assertEqual(commands, [])
             self.assertEqual(board_detection.detect_all.call_count, 2)
             self.assertEqual(self.read_result(args)['execution']['timings'][Step.TRAJECTORY]['status'], 'computed')
 
-    def test_c_sampling_change_only_rebuilds_c_and_keeps_ab(self):
-        with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, commands, _):
+    def test_c_sampling_change_creates_a_new_result_with_current_sampling(self):
+        with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, _, _):
             self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
+            first = Path(args.out) / 'run/record.json'
+            original = first.read_bytes()
             override = Path(tmp) / 'sampling.yaml'
             override.write_text('board:\n  validation_step: 2\n')
-            args.config, args.resume = override, True
-            commands.clear()
-            recordings.build.reset_mock()
+            args.config = override
             self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
-            self.assertEqual(commands, [])
-            self.assertEqual([call.args[0].stem for call in recordings.build.call_args_list], ['C'])
-            timing = self.read_result(args)['execution']['timings']
-            self.assertEqual(timing[Step.INTRINSICS]['status'], 'reused')
-            self.assertEqual(timing[Step.CAMERA_IMU]['status'], 'reused')
-            self.assertEqual(timing[Step.TRAJECTORY]['status'], 'computed')
+            second = result_io.load_result(Path(tmp) / 'out_v002')
+            self.assertEqual(second['computation']['configuration']['values']['board']['validation_step'], 2)
+            self.assertEqual(first.read_bytes(), original)
 
-    def test_imu_parameter_change_reuses_corners_without_preparing_c_again(self):
+    def test_imu_parameter_change_keeps_the_old_work_and_uses_new_solver_inputs(self):
         with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, commands, _):
             args.keep_work = True
             self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
+            first = Path(args.out) / 'run/work/C_board.npz'
+            original = first.read_bytes()
             override = Path(tmp) / 'imu.yaml'
             override.write_text('imu:\n  gyro_noise: 0.0004\n')
-            args.config, args.resume = override, True
+            args.config = override
             commands.clear()
-            recordings.build.reset_mock()
-            board_detection.detect_all.reset_mock()
             self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
-            board_detection.detect_all.assert_not_called()
-            self.assertNotIn('C', [call.args[0].stem for call in recordings.build.call_args_list])
-            self.assertEqual([Path(command[command.index('--dataset-path') + 1]).name
-                for command in commands if '--dataset-path' in command], ['camera_imu.bag'])
+            command = next(command for command in commands if '--gyro-noise-std' in command)
+            self.assertEqual(float(command[command.index('--gyro-noise-std') + 1]), .0004)
+            self.assertIn('out_v002', command[command.index('--dataset-path') + 1])
+            self.assertEqual(first.read_bytes(), original)
 
     def test_c_detection_overlaps_a_and_is_shared_with_sample_comparison(self):
         started, solving = threading.Event(), threading.Event()
@@ -407,7 +435,6 @@ class FullWorkflowTests(unittest.TestCase):
             self.assertTrue(details['A.detect']['background'])
             self.assertTrue(details['camera_imu.bag']['background'])
             self.assertIn('camera_imu.bag_wait', details)
-            args.resume = True
             with patch.object(basalt, 'prepare_bag', side_effect=AssertionError('completed run must not convert')), \
                     patch.object(workflow, '_detect_board', side_effect=AssertionError('completed run must not detect')):
                 self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
@@ -446,47 +473,44 @@ class FullWorkflowTests(unittest.TestCase):
             self.assertEqual(doc['execution']['error']['step'], Step.CAMERA_IMU)
             self.assertFalse(any('basalt_calibrate_imu' in ' '.join(command) for command in commands))
 
-    def test_resume_reevaluates_checks_without_reusing_old_verdict(self):
-        with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, commands, _):
+    def test_changed_checks_apply_to_a_new_version_and_keep_the_old_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, _, _):
             self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
             override = Path(tmp) / 'strict.yaml'
             override.write_text('checks:\n  ate_fail_mm: 3.0\n  ate_warn_mm: 1.0\n')
-            args.config, args.resume = override, True
-            commands.clear()
+            args.config = override
             self.assertEqual(workflow.run(inputs.parse_run_args(args)), 1)
-            self.assertEqual(commands, [])
-            self.assertEqual(self.read_result(args)['evaluation']['decision'], Decision.REJECTED)
+            self.assertEqual(self.read_result(args)['evaluation']['decision'], Decision.ACCEPTED)
+            self.assertEqual(result_io.load_result(Path(tmp) / 'out_v002')['evaluation']['decision'], Decision.REJECTED)
 
-    def test_changed_solver_artifact_is_recomputed_instead_of_trusted(self):
-        with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, commands, _):
+    def test_changed_solver_artifact_creates_a_new_valid_version(self):
+        with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, _, _):
             self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
-            (Path(args.out) / 'calibration.json').write_text('corrupt')
-            args.resume = True
-            commands.clear()
+            old = Path(args.out) / 'calibration.json'
+            old.write_text('corrupt')
             self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
-            self.assertEqual([Path(command[command.index('--dataset-path') + 1]).name
-                for command in commands if '--dataset-path' in command], ['camera_imu.bag'])
-            tcal.describe(Path(args.out), 'registry')
+            self.assertEqual(old.read_text(), 'corrupt')
+            tcal.describe(Path(tmp) / 'out_v002', 'registry')
 
-    def test_locked_output_rejects_force_before_clearing_previous_result(self):
-        with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, commands, _):
+    def test_locked_series_rejects_concurrent_version_allocation(self):
+        with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, _, _):
             self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
             before = (Path(args.out) / 'report.txt').read_bytes()
             args.force = True
-            with locked(Path(tmp), name='.out.calibration.lock'):
+            with locked(Path(tmp), name='.out.calibration-series.lock'):
                 self.assertEqual(workflow.run(inputs.parse_run_args(args)), 2)
+            self.assertFalse((Path(tmp) / 'out_v002').exists())
             self.assertEqual((Path(args.out) / 'report.txt').read_bytes(), before)
 
-    def test_resume_refuses_historical_directory_without_touching_its_contents(self):
-        with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, commands, _):
+    def test_historical_directory_with_no_checkpoint_is_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, _, _):
             output = Path(args.out)
             output.mkdir()
             saved = output / 'report.txt'
             saved.write_text('historical result')
-            args.resume = True
-            self.assertEqual(workflow.run(inputs.parse_run_args(args)), 2)
+            self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
             self.assertEqual(saved.read_text(), 'historical result')
-            self.assertEqual(commands, [])
+            self.assertTrue((Path(tmp) / 'out_v002' / 'report.txt').is_file())
 
     def test_resume_verify_skips_decode_detection_and_trajectory(self):
         with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, _, _):
@@ -494,10 +518,25 @@ class FullWorkflowTests(unittest.TestCase):
             selected = dict(tcal.describe(tcal.SAMPLE_CAMERA_JSON.parent, 'factory'), serial='camera')
             with patch.object(registry, 'resolve_insv', return_value=selected):
                 self.assertEqual(workflow.verify(inputs.parse_verify_args(args)), 0)
-                args.resume = True
                 with patch.object(recordings, 'build', side_effect=AssertionError('must reuse')):
                     self.assertEqual(workflow.verify(inputs.parse_verify_args(args)), 0)
             self.assertEqual(trajectory_validation.trajectory_check.call_count, 1)
+
+    def test_cli_verify_reuses_existing_result_and_legacy_force_keeps_it(self):
+        with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, _, _):
+            output = Path(args.out)
+            command = ['verify', str(args.c), '--out', str(output), '--workers', '1']
+            selected = dict(tcal.describe(tcal.SAMPLE_CAMERA_JSON.parent, 'factory'), serial='camera')
+            with patch.object(registry, 'resolve_insv', return_value=selected):
+                self.assertEqual(cli.main(command), 0)
+                record = output / 'run/record.json'
+                original = record.read_bytes()
+                with patch.object(recordings, 'build', side_effect=AssertionError('must reuse')):
+                    self.assertEqual(cli.main(command), 0)
+                self.assertEqual(trajectory_validation.trajectory_check.call_count, 1)
+                self.assertEqual(cli.main([*command, '--force']), 0)
+                self.assertEqual(record.read_bytes(), original)
+                self.assertTrue((output.with_name('out_v002') / 'report.txt').is_file())
 
     def test_run_writes_installable_bundle_with_mocked_solver(self):
         with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, commands, install):
@@ -545,18 +584,18 @@ class FullWorkflowTests(unittest.TestCase):
             self.assertFalse((out / 'run/work').exists())
             install.assert_not_called()
 
-    def test_interruption_invalidates_previous_success_for_install_even_when_forced(self):
+    def test_interruption_only_invalidates_installation_of_the_new_version(self):
         with tempfile.TemporaryDirectory() as tmp, self.simulation(Path(tmp)) as (args, _, _):
             self.assertEqual(workflow.run(inputs.parse_run_args(args)), 0)
             cfg = Path(tmp) / 'new_imu.yaml'
             cfg.write_text('imu:\n  gyro_noise: 0.0003\n')
-            args.config, args.resume = cfg, True
+            args.config = cfg
             with patch.object(basalt, 'estimate_camera_imu', side_effect=KeyboardInterrupt):
                 with self.assertRaises(KeyboardInterrupt):
                     workflow.run(inputs.parse_run_args(args))
-            # simulation patches install, so validate the public evidence reader directly.
+            result_io.load_result(Path(args.out), complete=True)
             with self.assertRaisesRegex(ValueError, '尚未完成'):
-                result_io.load_result(Path(args.out), complete=True)
+                result_io.load_result(Path(tmp) / 'out_v002', complete=True)
 
     def test_requested_sample_comparison_does_not_change_verdict(self):
         for sample in (AcceptanceTests().trajectory(ate=300, scale=1.5),
@@ -795,7 +834,6 @@ class ReportAndCliTests(unittest.TestCase):
             self.assertTrue(request.install)
             self.assertTrue(request.compare_sample)
             self.assertEqual(request.workers, 3)
-            self.assertTrue(request.resume)
 
     def test_invalid_execution_options_are_rejected_even_for_dry_run(self):
         for options in (['--workers', '0'], ['--workers', '-1'], ['--force', '--resume']):

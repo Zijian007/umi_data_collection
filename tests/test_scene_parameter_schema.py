@@ -6,6 +6,12 @@ from umi.config.scene_parameters import flatten, nested_snapshot
 
 
 class SceneParameterSchemaTests(unittest.TestCase):
+    def test_project_defaults_require_explicit_version_but_overlays_can_omit_it(self):
+        document = {'localization': {'bidirectional': False}}
+        self.assertFalse(flatten(document)['localization_bidirectional'])
+        with self.assertRaisesRegex(ValueError, 'schema_version'):
+            flatten(document, require_schema=True)
+
     def test_nested_defaults_flatten_to_internal_fields(self):
         values = flatten({
             'schema_version': 2,

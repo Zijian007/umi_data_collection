@@ -24,7 +24,7 @@ class EntrypointPathTests(unittest.TestCase):
         environment.pop('PYTHONPATH', None)
         with tempfile.TemporaryDirectory() as folder:
             directory = Path(folder)
-            for command in ('umi-view', 'umi-scene', 'umi-calib'):
+            for command in ('umi-view', 'umi-scene', 'umi-calib', 'umi-maint'):
                 with self.subTest(command=command):
                     shortcut = directory / command
                     shortcut.symlink_to(project / command)
@@ -57,7 +57,6 @@ class CalibrationStartupTests(unittest.TestCase):
         with patch.object(runtime, 'use_calibration_environment') as select_environment, \
              patch.object(calibration_cli.workflow, 'run', return_value=0), \
              patch.object(calibration_cli.workflow, 'verify', return_value=0), \
-             patch('umi.workflows.calibration.rear_workflow.run', return_value=0), \
              redirect_stdout(io.StringIO()):
             for arguments in (['run', 'front', '--dry-run'], ['verify', 'C.insv'],
                               ['run', 'rear', '--dry-run']):
@@ -75,10 +74,11 @@ class CalibrationStartupTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0].tag_size_mm, 36.)
         arguments = ['run', 'folder with spaces/rear', '--workers', '2']
         with patch.object(runtime, 'use_calibration_environment') as select_environment, \
-             patch('umi.workflows.calibration.rear_workflow.run', return_value=0), \
+             patch.object(calibration_cli.workflow, 'run', return_value=0) as run, \
              redirect_stdout(io.StringIO()):
             self.assertEqual(calibration_cli.main(arguments, prepare_environment=True), 0)
             select_environment.assert_called_once_with(arguments, install_missing=True)
+            self.assertEqual(run.call_args.args[0].lens, 'rear')
 
     def test_check_uses_existing_environment_without_allowing_installation(self):
         with patch.object(runtime, 'use_calibration_environment') as select_environment, \
@@ -156,6 +156,26 @@ class SolverEnvironmentTests(unittest.TestCase):
 
 
 class CommandHelpTests(unittest.TestCase):
+    def test_daily_help_omits_maintenance_commands_and_old_options(self):
+        for module, daily, tools, options in (
+            (scene_cli, '{run,status,review,export}', ('clean', 'detect-tags'), ('--skip-preflight', '--jobs')),
+            (calibration_cli, '{run,verify,install,devices}', ('recheck', 'preview-width'), ('--install', '--workers')),
+        ):
+            parser = module.build_parser()
+            self.assertIn(daily, parser.format_help())
+            maintenance = module.build_parser(maintenance=True)
+            for name in tools:
+                self.assertNotIn(name, parser.format_help())
+                self.assertIn(name, maintenance.format_help())
+            with redirect_stdout(io.StringIO()) as output, self.assertRaises(SystemExit):
+                parser.parse_args(['run', '--help'])
+            for option in options:
+                self.assertNotIn(option, output.getvalue())
+            with redirect_stdout(io.StringIO()) as output, self.assertRaises(SystemExit):
+                maintenance.parse_args(['run', '--help'])
+            for option in options:
+                self.assertIn(option, output.getvalue())
+
     def test_all_user_arguments_have_help(self):
         def check_parser(parser):
             for action in parser._actions:

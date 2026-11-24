@@ -9,11 +9,12 @@
 | `./umi-calib` | 求解和验收相机标定，登记设备参数 |
 | `./umi-scene` | 建图、重建任务轨迹、验收和导出 |
 | `./umi-view` | 对照原片画面查看轨迹、地图和结果报告 |
+| `./umi-maint` | 检查环境、单独建图和运行维护诊断 |
 
 ## 已有批次
 
 ```bash
-./umi-scene run scenes/test_shelf/20261120_002 --show-config
+./umi-scene run scenes/test_shelf/20261120_002 --dry-run
 ./umi-scene run scenes/test_shelf/20261120_002
 ./umi-view scenes/test_shelf/20261120_002
 ```

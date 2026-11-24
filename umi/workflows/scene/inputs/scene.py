@@ -16,7 +16,7 @@ from umi.infra.file_store import read_yaml
 from umi.infra.paths import KITS_ROOT as KITS, PROJECT_ROOT
 from umi.config.collection_schema import normalize_collection
 from umi.devices import registry, calibration_source
-from umi.core.arms import ARMS, read_arms
+from umi.core.arms import ARMS
 from umi.perception.gripper import default_tag_roi, validate_roi
 
 
@@ -399,13 +399,3 @@ def validate_kit(declaration: dict, *, name: str | None = None, intrinsics_sourc
 def read_kit(name: str, *, intrinsics_source: str | None = None) -> dict:
     path = KITS / validate_name(name) / 'kit.yaml'
     return validate_kit(read_yaml(path), name=name, intrinsics_source=intrinsics_source)
-
-
-def read_kit_serials(name: str) -> dict[str, str]:
-    """Read device bindings for commands that do not need camera calibration."""
-    arms = read_yaml(KITS / validate_name(name) / 'kit.yaml').get('arms')
-    require_keys(arms, set(ARMS), set(), '套件使用手')
-    serials = {arm: registry.validate_id(arms[arm]['serial']) for arm in read_arms(list(arms))}
-    if len(set(serials.values())) != len(serials):
-        raise ValueError('套件的左右手必须使用不同相机')
-    return serials

@@ -61,7 +61,7 @@ A/B 只求解和返回测量；验收策略决定是否可用；安装是独立�
 
 函数显式接收所需的板、IMU、重力或轨迹参数组。A/B 的两个公开入口共用一个内部执行函数，执行器统一记录异常所属步骤。
 
-板几何由 `pipeline/inputs.load_board()` 将唯一布局 [`hardware/calibration_targets/aprilgrid.json`](../../../hardware/calibration_targets/aprilgrid.json) 与本次 `--tag-size-mm` 实测边长合并。布局中的标签族和黑边需符合当前 Basalt/OpenCV 检测器；传给 Basalt 的板文件只含 `tagCols`、`tagRows`、`tagSpacing`、`tagSize`（米）。A4/A3 打印资产与自检记录放在 `prints/`，不作为求解配置；`umi-calib check` 核对这些记录与布局是否一致。详见 [标定板说明](../../../hardware/calibration_targets/README.md)。
+板几何由 `pipeline/inputs.load_board()` 将唯一布局 [`hardware/calibration_targets/aprilgrid.json`](../../../hardware/calibration_targets/aprilgrid.json) 与本次 `--tag-size-mm` 实测边长合并。布局中的标签族和黑边需符合当前 Basalt/OpenCV 检测器；传给 Basalt 的板文件只含 `tagCols`、`tagRows`、`tagSpacing`、`tagSize`（米）。A4/A3 打印资产与自检记录放在 `prints/`，不作为求解配置；`umi-maint calib check` 核对这些记录与布局是否一致。详见 [标定板说明](../../../hardware/calibration_targets/README.md)。
 
 C 的轨迹配置在板几何解析后通过 `Configuration.load_trajectory_validation(tag_size_m=...)` 生成，将实测尺寸派生到 `orb.initial_tag_size_m`；run、verify、环境镜头 Scene 与 recheck 使用同一规则，配置快照和检查点均记录派生后的值。板参考通过球面 KB4 反投影保留超 90° 的射线方向，再由 `minimum_bearing_z` 筛选可用于前向 PnP 的角点；不再调用会截断半径的 `cv2.fisheye.undistortPoints`。拟合诊断仍单独记录 OpenCV 和自带 ORB-SLAM3 反投影限制，不把它们当成全视野真值。时间匹配/退化的数值保护在 `trajectory_metrics.py`，覆盖归一化半径由相机规格推导，不再作为 YAML 调参项。
 
@@ -81,7 +81,7 @@ C 同时显式覆盖 `input.mode: handheld`、`environment_tags.tag_fusion_enabl
 
 `PASS`、`FAIL`、中文阶段名只用于展示。断点使用 `estimate_intrinsics`、`estimate_camera_imu`、`measure_gravity`、`validate_trajectory` 等稳定 ID。环境镜头登记文件需要的 PASS 文案在发布边界转换。
 
-必需步骤失败、中断，或 C 证据无效/不足 → `incomplete`；有完整证据但质量不合格 → `rejected`。二者都不自动安装。`install --force` 只允许覆盖完整结果的质量拒绝，不能覆盖缺证据、错误身份或已变化参数。
+必需步骤失败、中断，或 C 证据无效/不足 → `incomplete`；有完整证据但质量不合格 → `rejected`。二者都不自动安装。`umi-maint calib install --allow-rejected` 只允许覆盖完整结果的质量拒绝，不能覆盖缺证据、错误身份或已变化参数。
 
 D 工具以 REPORT_ONLY 调用，重力残差超过默认 0.3 m/s² 给 WARN；无静止窗口也给诊断提醒。工具失败、缺输出、非法 JSON、输入哈希或参数不符都是执行错误。每次重算使用唯一工作目录，不回读旧成功文件。
 
@@ -108,13 +108,13 @@ calibration_result/
 
 `record.json` 分为 `subject`、`inputs`、`computation`、`measurements`、`execution`、`evaluation`、`evaluation_history`。测量存一次，检查点引用测量哈希和输入指纹，不重复保存 dataclass。A 的原始 JSON 保存为快照；B 参数只在最终文件；D 保存完整工具证据；C 保存未舍入的指标。读取接口是 `result_io.load_result()`，不会写文件或查询设备。
 
-`--resume` 在输出锁内验证记录格式、输入内容、计算参数和阶段产物。改动算法或重编引擎后用 `--force` 重算。输入变化沿显式依赖失效；只改 C 抽帧参数不重算 A/B，只改 D 窗口不重算 A/B/C。工作目录被清理后，复用完整测量不需要重新解码；只有待重算步骤重新准备所需数据。损坏记录与不支持的 schema 明确拒绝。
+重复运行时，先在系列锁内判断最新版本，再在结果锁内验证记录格式、输入、配置和阶段产物。输入或配置有变化、记录损坏或 schema 版本不兼容时使用新的结果目录。改动算法或重编引擎后也可以用 `--recompute` 建立新版本。已有有效阶段在续跑时复用。
 
 `recheck` 校验现有证据与参数绑定，只允许改变验收门限，保留完整先前验收记录。不调用算法、不安装、不依赖当前 registry 默认参数。安装重新校验操作类型、设备/镜头、参数与清单、证据指纹和完成状态。run/recheck/install 共用输出旁的锁；安装在持有结果锁时再进入 registry 锁。
 
-成功且可用的结果默认清理 work；失败、不完整和中断保留现场。中断保存状态后继续传播信号。`--force` 重算与 `--resume` 互斥；输入身份检查先于清理。工作镜头与环境镜头都支持 `--workers`、`--cores`、`--keep-work`、`--resume`。
+成功且可用的结果默认清理 work；失败、不完整和中断保留现场。中断保存状态后继续传播信号。工作镜头与环境镜头都支持自动续跑。维护入口可用 `--workers`、`--cores` 和 `--keep-work`。
 
-A/C 的独立板角点分别缓存到 `work/{A,C}_board.npz`。缓存绑定录像准备身份、抽帧、上采样、检测代码与 OpenCV 版本，与相机参数无关；求解参数改变时可复用角点，PnP 仍使用本次参数重算。先查角点缓存，再按需准备图像；同轮已准备的数据不重复校验。要保留这些中间数据用于调参，运行时加 `--keep-work`，随后使用 `--resume`。
+A/C 的独立板角点分别缓存到 `work/{A,C}_board.npz`。缓存绑定录像准备身份、抽帧、上采样、检测代码与 OpenCV 版本，与相机参数无关；求解参数改变时可复用角点，PnP 仍使用本次参数重算。先查角点缓存，再按需准备图像；同轮已准备的数据不重复校验。要保留这些中间数据用于调参，用维护入口运行并加 `--keep-work`。
 
 首次或尚未完成 A/B 求解时，可在后台提前检测 C 角点。限定到至少 8 个可用核心、至少 2 个检测线程才启用；后台最多使用可用核心的四分之一、上限 8 个线程，且降低调度优先级。`--cores` 生效后才计算线程预算。仅重跑 C 或执行 `verify` 时使用正常检测预算。后台只返回角点和耗时，主流程统一提交记录；失败、中断时取消剩余帧并等待线程退出，再释放输出锁。
 
@@ -143,7 +143,7 @@ Basalt 保留 bag 输入、KB4、噪声先验和 `--fixed-scale-opt-offset`。�
 
 工作镜头 `run <front目录>` 和环境镜头 `run <rear目录>` 均读取套件的 `intrinsics.front/rear` 来源，默认 front measured、rear factory；全局 factory 覆盖使用 `config/user.yaml.features.factory_intrinsics.enabled`。factory 表示“出厂 MEI 拟合的 KB4 + 用该 KB4 重新实测的 B”，不使用工厂相机–IMU 外参替代 B。仍要求 A/B/C/D：A 仅做固定内参的留出标签验证，B 求外参与时间偏移，C/D 按原规则验收。
 
-两来源使用独立结果目录，factory 默认增加 `_factory` 后缀；`--resume` 拒绝切换来源。正式结果的 `manifest.json` 标明 `intrinsics_source`、工厂 B 原片及哈希、镜头编号、有效视野和 B 输入内参哈希。工厂原始参数与拟合/A 验证证据保存在 `factory/intrinsics.json`、`run/record.json`。C 原片自动对照仍是诊断，不能把选用的工厂 KB4 标成实测 A。
+两来源使用独立结果目录，factory 默认增加 `_factory` 后缀。正式结果的 `manifest.json` 标明 `intrinsics_source`、工厂 B 原片及哈希、镜头编号、有效视野和 B 输入内参哈希。工厂原始参数与拟合/A 验证证据保存在 `factory/intrinsics.json`、`run/record.json`。C 原片自动对照仍是诊断，不能把选用的工厂 KB4 标成实测 A。
 
 factory 的硬条件包括：有效单调前向模型、1440 分辨率下转换 RMS ≤1 px/P99 ≤2 px、各原片相对 B 的最大射线差 ≤0.1°。这些是 `config/algorithms/calibration.yaml` 中可配置的初始工程门槛，不是外部真值精度承诺。A 至少 6 个有效留出帧；缺证据不可安装，留出 RMS 超过 2 px 给 WARN，和实测 A 重投影提醒采用相同语义。C 的 30 mm/10% 失败门槛保持原值。只有完整、可验收的结果才能正常安装。
 

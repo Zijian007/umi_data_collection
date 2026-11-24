@@ -60,7 +60,7 @@
 
 缓存和结果复用**只依据数据输入**：原片内容、所选标定与资产、参数与配置。代码和外部引擎的版本不参与判断，也不需要维护任何源文件清单。
 
-- 改了算法、重编 ORB-SLAM3/Basalt 或升级依赖后，用 `--force` 重算。`umi-scene run --force` 重算任务结果，并跳过本次运行前的解码、定位和检测缓存。本次运行中新生成的缓存和有效的音频同步记录仍可复用。需要重建已有地图时用 `build --force`。阶段缓存的时间检查见 `umi/infra/file_store.py` 的 `recompute()` / `is_current()`。
+- 改了算法、重编 ORB-SLAM3/Basalt 或升级依赖后，用 `--recompute` 重算。`umi-scene run --recompute` 重算任务结果，并跳过本次运行前的解码、定位和检测缓存。本次运行中新生成的缓存和有效的音频同步记录仍可复用。需要重建已有地图时用 `umi-maint scene build --recompute`。阶段缓存的时间检查见 `umi/infra/file_store.py` 的 `recompute()` / `is_current()`。
 - 结果、地图清单、逐段引擎设置和标定记录写入 `code_revision`（git 提交号及 `umi/` 是否有未提交改动），只用于追溯。
 - 原片、设备资产、配置及结果文件的完整性用 `file_hash()` 的原始字节 SHA256 校验。数组缓存统一用 `file_store.read_npz_cache()` / `write_npz_cache()`：完成标记记录输入身份（按 JSON 规范形式比较）和数组文件哈希。
 
@@ -94,8 +94,8 @@
 ```bash
 .deps/calib_env/bin/python -m unittest discover -s tests -q
 node --test tests/js/viewer.test.mjs
-./umi-calib check
-./umi-scene check
+./umi-maint calib check
+./umi-maint scene check
 ```
 
 Node 只用于查看器前端测试，运行查看器不需要 Node。Python 测试覆盖输入、标定验收、流程、复用、重建协议、产物布局与查看器；涉及求解器和 SLAM 的单元测试使用替代引擎。真实录像端到端回归和独立误差评估需另外记录输入、设备标定、版本及结果。
@@ -110,7 +110,7 @@ Node 只用于查看器前端测试，运行查看器不需要 Node。Python 测
 
 ```bash
 .deps/env/bin/python tests/golden/golden.py prepare            # 用硬链接生成 scenes/golden_<后端>/ 三个变体
-.deps/env/bin/python tests/golden/golden.py run                # 依次 --force 运行，三个后端约 10 分钟
+.deps/env/bin/python tests/golden/golden.py run                # 依次重算，三个后端约 10 分钟
 .deps/env/bin/python tests/golden/golden.py snapshot ~/umi_golden/new
 .deps/env/bin/python tests/golden/golden.py compare ~/umi_golden/base ~/umi_golden/new
 ```

@@ -9,7 +9,7 @@ from scipy.spatial.transform import Rotation
 from umi.core.geometry import transform
 
 
-def solve_frame_candidates(points, pixels, model, maximum_rms_px, *, rays=None):
+def solve_frame_candidates(points, pixels, model, *, rays=None):
     """Return valid IPPE candidates for one planar frame."""
     if rays is None:
         rays = model.unproject(np.asarray(pixels, dtype=float))
@@ -50,8 +50,10 @@ def solve_frame_candidates(points, pixels, model, maximum_rms_px, *, rays=None):
 
 def solve_frame(points, pixels, model, maximum_rms_px, *, solve_candidates=None):
     """Solve one planar frame and reject unresolved planar ambiguity."""
-    solve_candidates = solve_candidates or solve_frame_candidates
-    candidates = solve_candidates(points, pixels, model, maximum_rms_px)
+    if solve_candidates is None or isinstance(solve_candidates, FrameCandidateCache):
+        candidates = (solve_candidates or solve_frame_candidates)(points, pixels, model)
+    else:
+        candidates = solve_candidates(points, pixels, model, maximum_rms_px)
     best_rms, best_pose = candidates[0]
     if best_rms > maximum_rms_px:
         raise ValueError(f'poster_vio 海报 PnP 重投影误差过大：{best_rms:.3f} px')
@@ -69,12 +71,12 @@ class FrameCandidateCache:
     def __init__(self):
         self.cached = {}
 
-    def __call__(self, points, pixels, model, maximum_rms_px, *, rays=None):
+    def __call__(self, points, pixels, model, *, rays=None):
         # Rays are derived from the keyed model and pixels, including on trim-cache hits.
-        key = (model, maximum_rms_px, points.tobytes(), pixels.tobytes())
+        key = (model, points.tobytes(), pixels.tobytes())
         if key not in self.cached:
             try:
-                self.cached[key] = solve_frame_candidates(points, pixels, model, maximum_rms_px, rays=rays)
+                self.cached[key] = solve_frame_candidates(points, pixels, model, rays=rays)
             except ValueError as error:
                 self.cached[key] = str(error)
         result = self.cached[key]

@@ -105,7 +105,6 @@ class IngestTests(unittest.TestCase):
         data = read_yaml(self.f.session_path)
         data['expected_arms'] = ['right']
         write_yaml(self.f.session_path, data)
-        session = batch_inputs.read_batch(self.f.session_path)
         task = self.f.batch_root / 'take_001'
         task.mkdir()
         refs = {arm: item.reference(task) for arm, item in zip(('left', 'right'), self.infos)}

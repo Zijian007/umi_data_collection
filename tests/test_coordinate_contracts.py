@@ -10,8 +10,7 @@ from umi.estimation.fixed_map.parameters import FixedMapParameters
 from umi.config import loader as config
 from umi.core.timing import canonical_to_video_seconds, euroc_ns_to_seconds, video_to_canonical_seconds, video_to_imu_seconds
 from umi.estimation.fixed_map import fusion
-from umi.infra.file_store import read_yaml
-from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
+from umi.workflows.scene.inputs import scene as scene_inputs
 from umi.workflows.scene.tasks import trajectory_writers
 from umi.estimation.fixed_map.geometry import VisualObservations
 from umi.store.models import ArmTrajectory

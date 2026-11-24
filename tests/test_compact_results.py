@@ -10,10 +10,8 @@ import unittest
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from umi.infra import provenance
 from umi.workflows.scene import episodes, workflow
 from umi.workflows.scene.parameters import SceneOverrides
-from umi.workflows.scene.inputs import batch as episode_inputs
 from umi.store.result_io import arm_evidence, result_paths, scene_reference
 from umi.infra.file_store import publish_link, write_json, write_yaml
 from umi.apps.viewer.results.catalog import RecordingCatalog

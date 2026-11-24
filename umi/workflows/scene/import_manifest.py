@@ -59,8 +59,8 @@ def read_manifest(batch: Path, *, verify: bool = True) -> dict | None:
         raise ValueError('import_manifest.json 的 batch 与目录名不一致')
     maps = document.get('maps')
     tasks = document.get('tasks')
-    if not isinstance(maps, list) or not maps:
-        raise ValueError('import_manifest.json 至少需要一张地图 maps')
+    if not isinstance(maps, list):
+        raise ValueError('import_manifest.json 的 maps 必须是列表')
     if not isinstance(tasks, list):
         raise ValueError('import_manifest.json 的 tasks 必须是列表')
 
@@ -135,6 +135,14 @@ def _append_only(current: list[dict], incoming: list[dict], key: str, label: str
     return sorted(merged, key=lambda item: item['sequence'])
 
 
+def merge_epoch_plan(current: dict, manifest: dict) -> dict:
+    maps = _append_only(current.get('maps', []), manifest['maps'], 'epoch', '地图 epoch')
+    tasks = _append_only(current.get('tasks', []), manifest['tasks'], 'task', '任务')
+    plan = dict(schema_version=1, maps=maps, tasks=tasks)
+    map_epoch_selection.parse_plan(plan)
+    return plan
+
+
 def ensure_epoch_plan(batch: Path, *, verify: bool = True) -> Path | None:
     """把 Organizer 交接清单并入 UMI 内部 epoch 计划。
 
@@ -146,13 +154,14 @@ def ensure_epoch_plan(batch: Path, *, verify: bool = True) -> Path | None:
     if manifest is None:
         return None
     plan_path = batch / layout.INTERNAL / 'map_epochs.yaml'
-    # build --epochs 会在锁内回写 map_version；合并必须与它互斥，避免覆盖。
+    if not manifest['maps']:
+        if plan_path.is_file():
+            raise ValueError('import_manifest.json 声明没有建图，但批次已有 map_epochs.yaml')
+        return None
+    # Build writes map_version under this lock.
     with layout.locked(batch, blocking=True):
-        current = read_yaml(plan_path) if plan_path.is_file() else dict(maps=[], tasks=[])
-        maps = _append_only(current.get('maps', []), manifest['maps'], 'epoch', '地图 epoch')
-        tasks = _append_only(current.get('tasks', []), manifest['tasks'], 'task', '任务')
-        map_epoch_selection.validate_epochs(map_epoch_selection.MapEpoch(**item) for item in maps)
-        plan = dict(schema_version=1, maps=maps, tasks=tasks)
+        current = read_yaml(plan_path) if plan_path.is_file() else {}
+        plan = merge_epoch_plan(current, manifest)
         if plan != current:
             write_yaml(plan_path, plan)
     return plan_path

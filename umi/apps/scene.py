@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from umi.apps.command_help import command, expert_help
 from umi.config import operational_settings as settings
 from umi.config import user_settings as user_config
 
@@ -23,48 +24,51 @@ from umi.workflows.scene.maps import epoch_selection as map_epoch_selection
 from umi.workflows.scene.errors import ITEM_FAILURES
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog='umi-scene', description=__doc__,
+def build_parser(*, maintenance: bool = False) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog='umi-maint scene' if maintenance else 'umi-scene', description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='示例：\n  umi-scene run scenes/test_shelf/20261120_002\n'
                '  umi-scene run scenes/test_shelf/20261120_002 --dry-run\n'
                '  umi-scene run <批次>\n'
-               '参数帮助：umi-scene <子命令> --help；完整参数参考：docs/命令行参数.md；操作说明：docs/03-场景处理.md。')
-    commands = parser.add_subparsers(dest='command', required=True)
-    commands.add_parser('check', help='检查场景轨迹处理环境')
-    build = commands.add_parser('build', help='按 collection.yaml 和批次 mapping/ 单独构建地图')
-    build.add_argument('batch', type=Path, help='批次目录、collection.yaml 或批次 .pipeline/manifest.yaml；普通建图需 mapping/，--epochs 可由清单提供 recording')
-    build.add_argument('--epochs', action='store_true', help='逐个构建多地图批次中尚未构建的 epoch 地图（计划来源与 run 相同）')
+               '参数帮助：umi-scene <子命令> --help；维护与排障：umi-maint scene --help。')
+    commands = parser.add_subparsers(dest='command', required=True,
+                                     metavar=None if maintenance else '{run,status,review,export}')
+    command(commands, 'check', '检查场景轨迹处理环境', visible=maintenance)
+    build = command(commands, 'build', '单独构建批次地图，自动识别多地图计划', visible=maintenance)
+    build.add_argument('batch', type=Path, help='批次目录或批次配置；建图原片来自 mapping/ 或多地图清单')
+    build.add_argument('--epochs', action='store_true', help=argparse.SUPPRESS)
     run = commands.add_parser('run', help='读取批次配置和视频：登记原片、音频同步、建图（含多地图 epoch）并抽取轨迹')
     run.add_argument('paths', nargs='+', type=Path, metavar='路径', help=(
-        '一个或多个场景、批次、任务目录，或 collection.yaml / 批次 .pipeline/manifest.yaml / .pipeline/tasks/<任务>/episode.yaml'))
-    for command in (build, run):
-        configuration = command.add_argument_group('专家配置', '仅排障或算法实验使用；日常配置统一读取 config/user.yaml')
-        execution = command.add_argument_group('执行与检查', '只影响本次运行，不写入 YAML')
-        configuration.add_argument('--expert-config', dest='config', type=Path, help='本次专家算法 YAML 覆盖；只含 trajectory / parameters')
-        configuration.add_argument('--show-config', action='store_true', help='只输出生效配置和来源 JSON，不检查原片、不执行处理；优先于 --dry-run')
-        execution.add_argument('--force', action='store_true', help=(
-            '强制构建新的地图版本（解码、建图、定位缓存全部重算），保留已有版本' if command is build else
-            '重算任务结果，跳过运行前的解码、定位和检测缓存；本次新生成的缓存和有效的音频同步记录仍可复用。'
-            '重建已有地图用 umi-scene build --force'))
-        execution.add_argument('--cores', default='', help='限制算法子进程可用 CPU，例如 0-7 或 0-3,8；默认不额外限制')
+        '一个或多个场景、批次或任务目录'))
+    for subparser in (build, run):
+        configuration = subparser.add_argument_group('专家配置')
+        execution = subparser.add_argument_group('执行与检查', '只影响本次运行，不写入 YAML')
+        configuration.add_argument('--expert-config', dest='config', type=Path, help=expert_help(maintenance, '本次专家算法 YAML 覆盖；只含 trajectory / parameters'))
+        configuration.add_argument('--show-config', action='store_true', help=expert_help(maintenance, '只输出生效配置和来源 JSON；优先于 --dry-run'))
+        execution.add_argument('--recompute', dest='force', action='store_true', help=(
+            '单地图批次生成新地图版本；多地图批次重算待构建地图，保留已绑定版本' if subparser is build else
+            '重新计算任务结果，跳过运行前的解码、定位和检测缓存；已有地图和有效的音频同步记录仍可复用'))
+        execution.add_argument('--force', dest='force', action='store_true', help=argparse.SUPPRESS)
+        execution.add_argument('--cores', default='',
+                               help=expert_help(maintenance, '限制算法子进程可用 CPU，例如 0-7 或 0-3,8'))
         execution.add_argument('--dry-run', action='store_true', help='只检查输入（含原片预检）并显示计划，不创建清单、锁、地图、缓存或结果')
-        if command is build:
+        if subparser is build:
             execution.add_argument('--keep-work', action='store_true', help='成功后保留建图中间文件；默认清理，失败现场保留')
         else:
-            execution.add_argument('--jobs', '-j', type=int, default=None, help='同时处理的任务数，必须 ≥1；省略时读取 config/user.yaml')
-            execution.add_argument('--skip-preflight', action='store_true', help='仅排障时跳过任务原片预检；批次入库时的配对、设备和可读性检查仍执行')
+            execution.add_argument('--jobs', '-j', type=int, default=None, help=expert_help(maintenance, '同时处理的任务数，必须 ≥1；默认由 config/user.yaml 决定'))
+            execution.add_argument('--skip-preflight', action='store_true', help=expert_help(maintenance, '跳过任务原片预检；批次入库时仍检查配对、设备和可读性'))
             execution.add_argument('--json', action='store_true', help='以 JSON 输出批量处理结果；默认输出终端汇总表')
-    tags = commands.add_parser('detect-tags', help='检测原片环境镜头的 ArUco 海报，输出角点和可见性报告，不改变轨迹')
+    tags = command(commands, 'detect-tags', '检测原片环境镜头的 ArUco 海报，输出角点和可见性报告，不改变轨迹', visible=maintenance)
     tags.add_argument('video', type=Path, help='X3 3840×1920 4K60 原片')
     tags.add_argument('--out', required=True, type=Path, help='独立的检测缓存与报告目录')
     tags.add_argument('--layout', type=Path, help='海报布局 JSON；默认使用已核对 PDF 的 77 标签海报')
-    tags.add_argument('--border-bits', type=int, help='可选核对黑边格数，须与布局一致；默认海报为 1')
+    tags.add_argument('--border-bits', type=int, help=argparse.SUPPRESS)
     tags.add_argument('--frame-step', type=int, default=2, help='每 N 个源帧检测一次，N 必须为正整数（默认 %(default)s）')
     tags.add_argument('--full-frame-every', type=int, default=15,
                       help='每 N 个采样帧做一次全图检测，其余帧跟随上次标签窗口（默认 %(default)s）')
     tags.add_argument('--minimum-side-px', type=float, default=0., help='几何可用观测的最短投影边长，单位原片像素，须为有限非负数；默认 %(default)g，不按尺寸过滤')
-    tags.add_argument('--force', action='store_true', help='重新计算检测；默认复用匹配的原片角点缓存')
+    tags.add_argument('--recompute', dest='force', action='store_true', help='重新计算检测；默认复用匹配的原片角点缓存')
+    tags.add_argument('--force', dest='force', action='store_true', help=argparse.SUPPRESS)
     status = commands.add_parser('status', help='查看批次绑定的地图（含各 epoch 地图是否已构建）和任务的处理、验收状态')
     status.add_argument('paths', nargs='+', type=Path, help='任务、批次、场景或套件目录，可一次指定多个')
     status.add_argument('--json', action='store_true', help='以 JSON 输出状态；默认逐条显示')
@@ -80,20 +84,19 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument('--out', required=True, type=Path, help='导出目录；已有目录拒绝覆盖')
     export.add_argument('--with-video', action='store_true', help='仅 trajectory：同时复制工作镜头视频；training 已包含视频，与此选项同时使用会报错')
     export.add_argument('--format', choices=['trajectory', 'training'], default='trajectory', help='默认轨迹交付包；training 为训练中间包')
-    export.add_argument('--fps', type=float, default=30., help='仅 training：目标采样帧率，范围 (0, 120] Hz，默认 %(default)g Hz；trajectory 忽略此项')
-    export.add_argument('--max-gap-s', type=float, default=.25, help='仅 training：最大插值间隔，须为有限正秒数，默认 %(default)g 秒；trajectory 忽略此项')
+    export.add_argument('--profile', type=Path, help='训练导出 YAML，可设置采样频率、插值间隔和质量策略')
+    export.add_argument('--fps', type=float, help=argparse.SUPPRESS)
+    export.add_argument('--max-gap-s', type=float, help=argparse.SUPPRESS)
     export.add_argument('--start-s', type=float, help='仅 training：人工确认的任务窗口起点，单位秒')
     export.add_argument('--end-s', type=float, help='仅 training：人工确认的任务窗口终点，单位秒')
     from umi.dataset.schema import QUALITY_POLICIES, UNKNOWN_SUPPORT_POLICIES
-    export.add_argument('--quality-policy', choices=QUALITY_POLICIES, default='all',
-                        help='仅 training：all 保留全部有效采样；position_supported 要求所有手插值两端均有位置支持')
-    export.add_argument('--unknown-support', choices=UNKNOWN_SUPPORT_POLICIES, default='drop',
-                        help='严格质量筛选遇到未知位置支持时 drop 剔除或 error 拒绝；默认 drop')
-    clean = commands.add_parser('clean', help='删除已被取代的运行、地图版本和中断残留；当前结果、最近一次尝试和验收记录保留')
+    export.add_argument('--quality-policy', choices=QUALITY_POLICIES, help=argparse.SUPPRESS)
+    export.add_argument('--unknown-support', choices=UNKNOWN_SUPPORT_POLICIES, help=argparse.SUPPRESS)
+    clean = command(commands, 'clean', '删除已被取代的运行、地图版本和中断残留；当前结果、最近一次尝试和验收记录保留', visible=maintenance)
     clean.add_argument('paths', nargs='+', type=Path, help='批次、场景或上层目录，可一次指定多个')
     clean.add_argument('--cache', action='store_true', help='同时清空全部可重建缓存；下次运行会重新解码、建图和定位')
     clean.add_argument('--dry-run', action='store_true', help='只列出将删除的内容和可释放空间，不做修改')
-    relative = commands.add_parser('evaluate-relative', help='用实测固定夹具参考评估双手相对位姿；不更新人工验收')
+    relative = command(commands, 'evaluate-relative', '用实测固定夹具参考评估双手相对位姿；不更新人工验收', visible=maintenance)
     relative.add_argument('path', type=Path, help='任务目录或冻结的运行结果目录')
     relative.add_argument('--reference', required=True, type=Path, help='umi_rigid_pair_reference v1 JSON')
     relative.add_argument('--out', required=True, type=Path, help='评估报告 JSON，必须位于源运行结果目录外')
@@ -149,8 +152,8 @@ def _prepare_execution(args):
     return overrides, False
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def main(argv: list[str] | None = None, *, maintenance: bool = False) -> int:
+    args = build_parser(maintenance=maintenance).parse_args(argv)
     interrupts = {'count': 0}
 
     def handle_interrupt(signum, frame):
@@ -207,7 +210,9 @@ def _detect_tags(args, overrides):
     from umi.perception.poster.detection import DetectionSettings, cached
     from umi.perception.poster.layout import DEFAULT_LAYOUT, load
     board = load(args.layout or DEFAULT_LAYOUT)
-    detection_settings = DetectionSettings(border_bits=board.border_bits if args.border_bits is None else args.border_bits,
+    if args.border_bits is not None and args.border_bits != board.border_bits:
+        raise ValueError('--border-bits 与海报布局的黑边格数不一致')
+    detection_settings = DetectionSettings(border_bits=board.border_bits,
         dictionary=board.dictionary, ids=board.ids, frame_step=args.frame_step,
         full_frame_every=args.full_frame_every, minimum_side_px=args.minimum_side_px)
     return cached(args.video, args.out, detection_settings, force=args.force,
@@ -268,16 +273,18 @@ def _review(args, overrides):
 
 
 def _export(args, overrides):
+    settings = {name: getattr(args, name) for name in ('fps', 'max_gap_s', 'quality_policy', 'unknown_support')
+                if getattr(args, name) is not None}
     if args.format == 'training':
         if args.with_video:
-            raise ValueError('training 包已包含视频，不需要 --with-video')
+            raise ValueError('训练包已包含视频，请去掉 --with-video')
         if (args.start_s is None) != (args.end_s is None):
             raise ValueError('--start-s 和 --end-s 必须同时提供')
-        from umi.dataset.export import build
-        return build(args.paths, args.out, fps=args.fps, max_gap_s=args.max_gap_s,
-                     quality_policy=args.quality_policy, unknown_support=args.unknown_support,
+        from umi.dataset.export import build, training_options
+        options = training_options(args.profile, settings)
+        return build(args.paths, args.out, **options,
                      time_window_s=None if args.start_s is None else (args.start_s, args.end_s))
-    if args.quality_policy != 'all' or args.unknown_support != 'drop' or args.start_s is not None or args.end_s is not None:
+    if args.profile is not None or settings or args.start_s is not None or args.end_s is not None:
         raise ValueError('训练采样选项只适用于 --format training')
     return episodes.export(episode_paths(args.paths), args.out, with_video=args.with_video)
 

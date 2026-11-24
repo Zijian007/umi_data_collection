@@ -11,7 +11,7 @@ from umi.store import layout
 from umi.workflows.scene import batch_snapshot as batches
 from umi.workflows.scene import ingest, batch_processing as processing
 from umi.config.collection_schema import normalize_collection
-from umi.workflows.scene.inputs import scene as kit_inputs, batch as batch_inputs, batch as episode_inputs, scene as scene_inputs
+from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs
 from umi.workflows.scene import recordings
 from umi.infra.file_store import write_yaml
 import test_scene as fixtures

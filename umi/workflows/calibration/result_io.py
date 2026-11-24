@@ -116,6 +116,11 @@ def load_result(output, *, complete=False):
     doc = read(output)
     if not doc:
         raise ValueError('没有当前格式的运行记录；旧结果需重新运行')
+    validate_evidence(output, doc, complete=complete)
+    return doc
+
+
+def validate_evidence(output, doc, *, complete=False):
     if complete and doc['execution']['status'] != 'complete':
         raise ValueError('本次标定尚未完成，不能安装或重新验收')
     if doc.get('evaluation'):
@@ -123,7 +128,6 @@ def load_result(output, *, complete=False):
             raise ValueError('验收与当前证据不一致')
     if doc['subject'].get('parameter_sha256'):
         validate_subject(output, doc)
-    return doc
 
 
 def archive_evaluation(doc):

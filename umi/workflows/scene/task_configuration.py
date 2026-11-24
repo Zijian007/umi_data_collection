@@ -115,7 +115,8 @@ class ResolvedTaskConfiguration:
 def resolve_task_configuration(root: Path, scene: Scene, batch_arms: tuple[str, ...],
                                batch_map_version: str | None = None, *,
                                map_epoch_override: str | None = None,
-                               collection: dict | None = None) -> ResolvedTaskConfiguration:
+                               collection: dict | None = None,
+                               epoch_plan: epoch_selection.EpochPlan | None = None) -> ResolvedTaskConfiguration:
     """Read declarations and the epoch plan, never recordings or map assets."""
     if (root / 'task.yaml').is_file():
         layout.reject_legacy_user_file(root / 'task.yaml')
@@ -143,9 +144,10 @@ def resolve_task_configuration(root: Path, scene: Scene, batch_arms: tuple[str, 
     selection = None
     if mode not in ('poster_independent', 'poster_vio'):
         plan_path = layout.metadata(root.parent, 'map_epochs.yaml')
-        plan = epoch_selection.read_plan(plan_path) if plan_path.is_file() else None
+        if epoch_plan is None and plan_path.is_file():
+            epoch_plan = epoch_selection.read_plan(plan_path)
         try:
-            selection = epoch_selection.resolve_task_map(plan, root.name,
+            selection = epoch_selection.resolve_task_map(epoch_plan, root.name,
                 task_map_version=map_request.get('map_version'), task_map_epoch=map_request.get('map_epoch'),
                 batch_map_version=collection.get('map_version') or batch_map_version)
             if selection and selection['status'] == 'pending':

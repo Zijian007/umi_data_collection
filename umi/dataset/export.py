@@ -16,7 +16,38 @@ from umi.dataset.schema import EPISODE_FORMAT, FORMAT, SCHEMA_VERSION, reference
 from umi.workflows.scene import episodes
 from umi.workflows.scene.inputs.batch import read_episode
 from umi.store.result_io import result_paths, read_arm_settings, scene_reference
-from umi.infra.file_store import locked, write_json
+from umi.infra.file_store import locked, read_yaml, write_json
+
+
+DEFAULT_FPS = 30.
+DEFAULT_MAX_GAP_S = .25
+DEFAULT_QUALITY_POLICY = 'all'
+DEFAULT_UNKNOWN_SUPPORT = 'drop'
+
+
+def training_options(profile: Path | None, overrides: dict) -> dict:
+    options = dict(fps=DEFAULT_FPS, max_gap_s=DEFAULT_MAX_GAP_S,
+                   quality_policy=DEFAULT_QUALITY_POLICY, unknown_support=DEFAULT_UNKNOWN_SUPPORT)
+    if profile is not None:
+        if overrides:
+            raise ValueError('--profile 与旧版训练采样参数不能同时使用')
+        explicit = read_yaml(profile.expanduser())
+        unknown = set(explicit) - options.keys()
+        if unknown:
+            raise ValueError(f'训练导出配置包含未知字段：{sorted(unknown, key=str)}')
+        options.update(explicit)
+    else:
+        options.update(overrides)
+    _validate_training_options(**options)
+    return options
+
+
+def _validate_training_options(fps, max_gap_s, quality_policy, unknown_support):
+    if type(fps) not in (int, float) or not math.isfinite(fps) or not 0 < fps <= 120:
+        raise ValueError('fps 必须为 (0, 120] 内的有限数值')
+    if type(max_gap_s) not in (int, float) or not math.isfinite(max_gap_s) or max_gap_s <= 0:
+        raise ValueError('max_gap_s 必须为有限正秒数')
+    validate_quality_policy(quality_policy, unknown_support)
 
 
 @dataclass(frozen=True)
@@ -111,18 +142,14 @@ def _write_episode(item: AcceptedEpisode, staging: Path, *, fps: float, max_gap_
                 missing_channels=metadata['missing_channels'], not_ready_reasons=metadata['not_ready_reasons'])
 
 
-def build(paths: list[Path], output: Path, *, fps: float = 30., max_gap_s: float = .25,
-          quality_policy: str = 'all', unknown_support: str = 'drop',
+def build(paths: list[Path], output: Path, *, fps: float = DEFAULT_FPS, max_gap_s: float = DEFAULT_MAX_GAP_S,
+          quality_policy: str = DEFAULT_QUALITY_POLICY, unknown_support: str = DEFAULT_UNKNOWN_SUPPORT,
           time_window_s: tuple[float, float] | None = None) -> dict:
-    if not math.isfinite(fps) or not 0 < fps <= 120:
-        raise ValueError('fps 必须为 (0, 120] 内的有限数值')
-    if not math.isfinite(max_gap_s) or max_gap_s <= 0:
-        raise ValueError('max_gap_s 必须为有限正秒数')
+    _validate_training_options(fps, max_gap_s, quality_policy, unknown_support)
     if time_window_s is not None and (
             len(time_window_s) != 2 or not all(math.isfinite(value) for value in time_window_s)
             or time_window_s[1] <= time_window_s[0]):
         raise ValueError('time_window_s 必须是有限的 [start, end] 秒区间，且 end 大于 start')
-    validate_quality_policy(quality_policy, unknown_support)
     selected = select_accepted_episodes(paths)
     output = output.expanduser().resolve()
     if any(output.is_relative_to(item.scene_root) or item.scene_root.is_relative_to(output) for item in selected):

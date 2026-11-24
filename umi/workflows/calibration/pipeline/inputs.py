@@ -86,7 +86,7 @@ def parse_run_args(args: Namespace) -> CalibrationRequest:
         tag_size_mm=args.tag_size_mm, cores=args.cores, keep_work=args.keep_work,
         force=args.force, install=args.install, compare_sample=args.compare_sample,
         config=args.config, dry_run=args.dry_run,
-        resume=getattr(args, 'resume', False), workers=getattr(args, 'workers', None),
+        workers=getattr(args, 'workers', None),
         lens=lens,
         intrinsics_source=getattr(args, 'intrinsics_source', 'measured'),
     )
@@ -97,7 +97,7 @@ def parse_verify_args(args: Namespace) -> VerificationRequest:
         video=Path(args.video).expanduser(), output=Path(args.out).expanduser() if args.out else None,
         tag_size_mm=args.tag_size_mm, cores=args.cores, keep_work=args.keep_work, force=args.force,
         config=args.config, dry_run=args.dry_run,
-        resume=getattr(args, 'resume', False), workers=getattr(args, 'workers', None),
+        workers=getattr(args, 'workers', None),
     )
 
 

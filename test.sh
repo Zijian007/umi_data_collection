@@ -126,8 +126,8 @@ fi
 if [ "$RUN_CHECKS" -eq 1 ]; then
     echo ""
     echo "[自检] 运行 CLI 运行时自检..."
-    ./umi-calib check
-    ./umi-scene check
+    ./umi-maint calib check
+    ./umi-maint scene check
     if command -v c++ >/dev/null 2>&1; then
         KB4_TEST=$(mktemp)
         c++ -std=c++14 -DNDEBUG -I setup/trajectory/orbslam3 tests/cpp/test_kb4_bearing.cpp -o "$KB4_TEST"
