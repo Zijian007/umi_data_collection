@@ -36,7 +36,7 @@ def format_audio_evidence(record: dict) -> str:
 def resolve_audio_sync(recordings: dict[str, Path], path: Path, *,
                        algorithm: str = DEFAULT_AUDIO_SYNC_ALGORITHM, force: bool = False,
                        dry_run: bool = False, on_estimate: Callable[[], None] | None = None) -> tuple[dict, bool]:
-    """Resolve one pair for the standalone command and trajectory workflow."""
+    """Resolve one pair for the trajectory workflow (``umi-scene run``)."""
     parameters = sync_config.load(algorithm)
     try:
         cached = load_ready_audio_sync(path, recordings, algorithm=algorithm, parameters=parameters)

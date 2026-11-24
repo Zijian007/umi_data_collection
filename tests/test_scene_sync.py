@@ -1,4 +1,4 @@
-"""Audio-only scene command and cache reuse by the full workflow."""
+"""双手音频同步记录（sync.json）的复用与失效；umi-scene run 处理任务时调用同一实现。"""
 
 from contextlib import redirect_stdout
 from dataclasses import replace
@@ -12,7 +12,6 @@ from unittest.mock import patch
 from umi.devices import registry
 from umi.config import audio_sync as sync_config
 from umi.infra.file_store import read_yaml, write_yaml
-from umi.apps import scene as cli
 from umi.store import layout
 from umi.workflows.scene import workflow
 from umi.workflows.scene.inputs import scene as kit
@@ -49,109 +48,46 @@ class SceneSyncTests(unittest.TestCase):
         self.estimate = self.enterContext(patch.object(synchronization, 'estimate_offset_from_files',
                                                       return_value=ESTIMATE))
 
-    def invoke(self, path, *options):
-        output = io.StringIO()
-        with redirect_stdout(output):
-            status = cli.main(['sync', str(path), '--json', *options])
-        return status, json.loads(output.getvalue())
+    def resolve(self, algorithm='specialist', *, dry_run=False):
+        output = layout.metadata(self.task, 'sync.json')
+        return synchronization.resolve_audio_sync(self.recordings, output, algorithm=algorithm, dry_run=dry_run)
 
-    def test_batch_sync_works_before_registration_and_does_not_change_map_or_results(self):
-        plan = layout.metadata(self.batch, 'map_epochs.yaml')
-        plan.parent.mkdir()
-        plan.write_text('invalid plan deliberately outside audio sync')
-        code, [result] = self.invoke(self.batch)
-        self.assertEqual(code, 0)
-        self.assertEqual(result['status'], 'ready')
-        self.assertEqual(result['offsets_s'], dict(left=0., right=-.25))
-        self.assertEqual(result['common_interval_s'], [0., 3.75])
-        self.assertEqual(result['recording_intervals_s'], dict(left=[0., 4.], right=[-.25, 3.75]))
-        self.assertEqual(result['common_video_intervals_s'], dict(left=[0., 3.75], right=[.25, 4.]))
-        sync = layout.metadata(self.task, 'sync.json')
-        self.assertEqual(Path(result['output']), sync)
-        self.assertEqual(plan.read_text(), 'invalid plan deliberately outside audio sync')
-        self.assertFalse(layout.manifest(self.batch, 'manifest.yaml').exists())
-        self.assertFalse(layout.manifest(self.task, 'episode.yaml').exists())
-        self.assertFalse(layout.maps(self.batch).exists())
-        self.assertFalse((self.task / 'results').exists())
-        self.assertEqual([path.read_text() for path in self.recordings.values()], ['left', 'right'])
+    def test_estimate_is_recorded_once_and_then_reused(self):
+        sync, reused = self.resolve()
+        self.assertFalse(reused)
+        self.assertEqual(sync['offsets_s'], dict(left=0., right=-.25))
+        self.assertTrue(layout.metadata(self.task, 'sync.json').is_file())
         self.estimate.assert_called_once_with(self.recordings['left'], self.recordings['right'],
                                              parameters=sync_config.load('specialist'))
-
-        code, [again] = self.invoke(self.task)
-        self.assertEqual((code, again['status']), (0, 'reused'))
+        self.assertTrue(self.resolve()[1])
         self.estimate.assert_called_once()
 
-    def test_read_only_preview_and_non_audio_tasks_do_not_write_records(self):
-        _, [preview] = self.invoke(self.task, '--dry-run')
-        self.assertEqual(preview['status'], 'planned')
-        self.assertFalse(layout.metadata(self.batch, 'tasks').exists())
-        self.estimate.reset_mock()
-        for declaration in (dict(arms=['right']), dict(synchronization='assumed_simultaneous'),
-                            dict(synchronization=dict(mode='manual', offsets_s=dict(left=0., right=.1),
-                                                      confirmed=False))):
-            self.collection['tasks'] = {'take_001': declaration}
-            write_yaml(self.batch / 'collection.yaml', self.collection)
-            code, [result] = self.invoke(self.batch)
-            self.assertEqual((code, result['status']), (0, 'skipped'))
-        self.estimate.assert_not_called()
+    def test_read_only_preview_does_not_write_a_record(self):
+        sync, reused = self.resolve(dry_run=True)
+        self.assertEqual((reused, sync['offsets_s']), (False, dict(left=0., right=-.25)))
         self.assertFalse(layout.metadata(self.task, 'sync.json').exists())
 
-    def test_incomplete_take_fails_without_blocking_other_takes(self):
-        incomplete = self.batch / 'take_002' / 'left'
-        incomplete.mkdir(parents=True)
-        (incomplete / 'left.insv').write_text('left')
-        code, results = self.invoke(self.batch)
-        self.assertEqual(code, 1)
-        self.assertEqual([result['status'] for result in results], ['ready', 'failed'])
-        self.assertEqual(results[1]['reason'], '缺少右手原片')
-        self.estimate.assert_called_once()
-
-    def test_terminal_reports_start_and_stop_order_with_shared_clip_ranges(self):
-        for lag, start_line, stop_line in (
-            (.25, '右手先开录，左手晚了 0.250 秒', '右手先停录，左手又录了 0.250 秒'),
-            (-.25, '左手先开录，右手晚了 0.250 秒', '左手先停录，右手又录了 0.250 秒'),
-            (0., '两手几乎同时开录', '两手几乎同时停录'),
-        ):
-            with self.subTest(lag=lag), redirect_stdout(io.StringIO()) as output:
-                self.estimate.return_value = replace(ESTIMATE, other_started_later_s=lag)
-                self.assertEqual(cli.main(['sync', str(self.task), '--dry-run']), 0)
-                text = output.getvalue()
-                self.assertIn('[只读预览]', text)
-                self.assertIn(start_line, text)
-                self.assertIn(stop_line, text)
-                self.assertIn('预计共同录制', text)
-                self.assertIn('左手原片', text)
-                self.assertIn('右手原片', text)
-
     def test_switching_algorithms_recomputes_and_dry_run_keeps_the_record(self):
-        _, [specialist] = self.invoke(self.batch)
-        self.assertEqual(specialist['algorithm'], 'specialist')
-        output = Path(specialist['output'])
+        self.resolve('specialist')
+        output = layout.metadata(self.task, 'sync.json')
         previous_bytes = output.read_bytes()
-        self.collection['recording']['audio_sync']['algorithm'] = 'kiwi'
-        write_yaml(self.batch / 'collection.yaml', self.collection)
-
         with patch.object(synchronization.landmark_audio, 'estimate_offset_from_files',
                           return_value=KIWI_ESTIMATE) as kiwi:
-            code, [preview] = self.invoke(self.batch, '--dry-run')
-            self.assertEqual((code, preview['status'], preview['algorithm']), (0, 'planned', 'kiwi'))
+            preview, reused = self.resolve('kiwi', dry_run=True)
+            self.assertFalse(reused)
             self.assertEqual(preview['offsets_s'], dict(left=0., right=.5))
             self.assertEqual(output.read_bytes(), previous_bytes)
             self.assertIsNone(preview['peak_ratio'])
             self.assertEqual(preview['diagnostics']['landmark_votes'], 80)
-            code, [ready] = self.invoke(self.batch)
-            self.assertEqual((code, ready['status']), (0, 'ready'))
+            self.assertFalse(self.resolve('kiwi')[1])
             record = json.loads(output.read_text())
             self.assertEqual(record['inputs']['recipe'], AUDIO_SYNC_RECIPES['kiwi'])
             self.assertEqual(record['video_offset_status'], 'kiwi_same_model_mode_av_delay_cancels')
-            code, [cached] = self.invoke(self.batch)
-            self.assertEqual((code, cached['status']), (0, 'reused'))
+            self.assertTrue(self.resolve('kiwi')[1])
             self.assertEqual(kiwi.call_count, 2)
         self.estimate.assert_called_once()
 
     def test_previous_kiwi_recipe_is_recomputed_even_after_failure(self):
-        self.collection['recording']['audio_sync']['algorithm'] = 'kiwi'
-        write_yaml(self.batch / 'collection.yaml', self.collection)
         output = layout.metadata(self.task, 'sync.json')
         previous = dict(kind='umi_audio_sync', status='failed', inputs=dict(
             recipe='kiwi_audio_landmarks_gcc_phat_v1'))
@@ -159,8 +95,7 @@ class SceneSyncTests(unittest.TestCase):
         output.write_text(json.dumps(previous))
         with patch.object(synchronization.landmark_audio, 'estimate_offset_from_files',
                           return_value=KIWI_ESTIMATE) as kiwi:
-            code, [ready] = self.invoke(self.task)
-        self.assertEqual((code, ready['status']), (0, 'ready'))
+            self.assertFalse(self.resolve('kiwi')[1])
         self.assertEqual(json.loads(output.read_text())['inputs']['recipe'], AUDIO_SYNC_RECIPES['kiwi'])
         kiwi.assert_called_once()
 
@@ -175,22 +110,20 @@ class SceneSyncTests(unittest.TestCase):
                 ('kiwi', 'min_votes', 15, 12, kiwi),
                 ('specialist', 'min_peak_ratio', 1.3, 1.5, self.estimate)):
             with self.subTest(algorithm=name):
-                self.collection['recording']['audio_sync']['algorithm'] = name
-                write_yaml(self.batch / 'collection.yaml', self.collection)
-                code, [first] = self.invoke(self.task)
-                self.assertEqual((code, first['status'], first['parameters'][field]), (0, 'ready', initial))
-                output = Path(first['output'])
+                first, _ = self.resolve(name)
+                self.assertEqual(first['parameters'][field], initial)
+                output = layout.metadata(self.task, 'sync.json')
                 previous = output.read_bytes()
                 config_path = directory / f'{name}.local.yaml'
                 write_yaml(config_path, {field: initial})
-                self.assertEqual(self.invoke(self.task)[1][0]['status'], 'reused')
+                self.assertTrue(self.resolve(name)[1])
                 write_yaml(config_path, {field: modified})
-                code, [preview] = self.invoke(self.task, '--dry-run')
-                self.assertEqual((code, preview['status'], preview['parameters'][field]), (0, 'planned', modified))
+                preview, reused = self.resolve(name, dry_run=True)
+                self.assertEqual((reused, preview['parameters'][field]), (False, modified))
                 self.assertEqual(preview['parameters'], {**first['parameters'], field: modified})
                 self.assertEqual(output.read_bytes(), previous)
-                code, [ready] = self.invoke(self.task)
-                self.assertEqual((code, ready['status'], ready['parameters'][field]), (0, 'ready', modified))
+                ready, _ = self.resolve(name)
+                self.assertEqual(ready['parameters'][field], modified)
                 self.assertEqual(getattr(estimator.call_args.kwargs['parameters'], field), modified)
                 self.assertEqual(json.loads(output.read_text())['inputs']['parameters'], ready['parameters'])
                 self.assertEqual(estimator.call_count, 3)
@@ -199,16 +132,14 @@ class SceneSyncTests(unittest.TestCase):
         directory = self.root / 'audio_sync'
         write_yaml(directory / 'specialist.yaml', read_yaml(sync_config.source_path('specialist')))
         write_yaml(directory / 'specialist.local.yaml', {'min_peak_ratio': True})
-        with patch.object(sync_config, 'DIRECTORY', directory):
-            code, [result] = self.invoke(self.task)
-        self.assertEqual((code, result['status']), (1, 'failed'))
-        self.assertIn('min_peak_ratio', result['reason'])
+        with patch.object(sync_config, 'DIRECTORY', directory), self.assertRaisesRegex(ValueError, 'min_peak_ratio'):
+            self.resolve()
         self.assertFalse(layout.metadata(self.task, 'sync.json').exists())
         self.estimate.assert_not_called()
 
 
 class SceneSyncWorkflowTests(unittest.TestCase):
-    def test_registered_task_sync_is_reused_by_scene_run(self):
+    def test_scene_run_records_audio_sync_once_and_reuses_it(self):
         from test_scene import SceneWorkflowTests
         fixture = SceneWorkflowTests()
         fixture.setUp()
@@ -223,9 +154,9 @@ class SceneSyncWorkflowTests(unittest.TestCase):
         with patch.object(synchronization.landmark_audio, 'estimate_offset_from_files',
                           return_value=replace(KIWI_ESTIMATE, other_started_later_s=.25)) as estimate, \
              patch.object(recordings, 'video_duration_s', return_value=8.), redirect_stdout(io.StringIO()):
-            self.assertEqual(cli.main(['sync', str(fixture.episode_path)]), 0)
             fixture.build_scene()
-            result = workflow.run_episode(fixture.episode_path)
+            workflow.run_episode(fixture.episode_path)
+            result = workflow.run_episode(fixture.episode_path, force=True)
         self.assertEqual(result['synchronization']['offsets_s'], dict(left=0., right=-.25))
         self.assertEqual(result['synchronization']['algorithm'], 'kiwi')
         estimate.assert_called_once()

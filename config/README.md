@@ -104,7 +104,7 @@ map_max_points: 20000
 - `kiwi.yaml` 包含指纹提取、投票门槛、GCC-PHAT 精对齐和长录制漂移参数。项目采用 48 kHz 音频、4096 点频谱窗、1024 点步长，每个锚峰最多配对 16 个指纹。 [Kiwi 参数](algorithms/audio_sync/kiwi.yaml)
 - `specialist.yaml` 包含采样率、包络低通、降采样、搜索范围和峰值比参数。 [Specialist 参数](algorithms/audio_sync/specialist.yaml)
 
-`umi-scene sync` 和 `umi-scene run` 都从所选算法的 YAML 读取完整默认值。需要只调整部分参数时，在同目录新建 `kiwi.local.yaml` 或 `specialist.local.yaml`，只写需要覆盖的键。旧配置中修改过的值也可移入对应的本机覆盖文件。用 `run --show-config` 查看来源和实际参数，用 `sync --dry-run --json` 查看同步预览。`sync.json` 的 `inputs.parameters` 保存实际参数，数值变化后会重新估计偏移。
+`umi-scene run` 从所选算法的 YAML 读取完整默认值。需要只调整部分参数时，在同目录新建 `kiwi.local.yaml` 或 `specialist.local.yaml`，只写需要覆盖的键。旧配置中修改过的值也可移入对应的本机覆盖文件。用 `run --show-config` 查看来源和实际参数。`sync.json` 的 `inputs.parameters` 保存实际参数，数值变化后会重新估计偏移。
 
 ### 轨迹与标定
 

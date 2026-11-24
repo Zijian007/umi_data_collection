@@ -21,7 +21,7 @@ umi/workflows/scene/
 ├── ingest.py / import_manifest.py  原片登记、配对与 Organizer 交接
 ├── episodes.py / cleanup.py  任务状态、人工验收、成果导出与 .pipeline 保留规则
 ├── recordings.py             原片归档、录像准备与预检
-├── synchronization.py / audio_sync.py  双手时间同步
+├── synchronization.py  双手时间同步
 ├── camera_assets.py          按设备绑定选择并冻结镜头标定与夹爪资产
 ├── parameters.py             本次专家参数覆盖（SceneOverrides）
 ├── task_configuration.py     任务使用手、后端、同步与地图选择的统一解析
@@ -202,7 +202,7 @@ run → workflow.run_episode()
 
 求解节点时间为 `t_video + cam_time_offset`，处于该相机本机 IMU 时钟。输出时间为 `t_video + 跨相机偏移`。手动同步直接来自任务配置。双手 `audio_auto` 以第一路录像为参考，`recording.audio_sync.algorithm` 选择 `specialist` 的音量包络互相关或 `kiwi` 的频谱指纹投票与 GCC-PHAT 精对齐。两者都将同一常量偏移作用于视频、IMU 和曝光时间轴。`trajectory_writers.write_bimanual_trajectory()` 裁取已经应用偏移后的共同区间并插值。场景地图结果的 `frame_id` 来自固定地图版本。海报结果使用 `poster:<run_id>`，旧单手局部回退使用 `local:<run_id>`。
 
-`umi/workflows/scene/audio_sync.py` 负责 `umi-scene sync` 的批次与任务发现。它读取套件的设备序列号，解析同步方式，并找到已分组或已登记的两路原片。`umi/workflows/scene/synchronization.py` 为 `sync` 和 `run` 共用算法选择、原片和算法版本校验以及 `sync.json` 读写。
+`umi/workflows/scene/synchronization.py` 负责 `run` 的音频同步：算法选择、原片和算法版本校验以及 `sync.json` 读写。
 
 时间转换统一调用 `umi/core/timing.py`；EuRoC 文件的人工 +1 秒在读入准备数据时去掉，算法中不混入文件时钟。任务时间列统一为 `t_episode_s`。
 

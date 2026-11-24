@@ -50,7 +50,7 @@ kit 声明设备序列号、逐镜头 `intrinsics` 来源和 `gripper` 资产。
 
 `--show-config` 指定 take 时展示该 take 的使用手、后端与同步配置；来源报告区分 user.yaml 和 CLI。
 
-地图规划快照由 Organizer 交接或 plan-epochs 登记，不是手工配置文件。
+地图规划快照由 Organizer 交接或 `run` 按录像时间戳登记，不是手工配置文件。
 
 ## 地图选择规则
 

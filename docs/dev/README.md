@@ -60,7 +60,7 @@
 
 缓存和结果复用**只依据数据输入**：原片内容、所选标定与资产、参数与配置。代码和外部引擎的版本不参与判断，也不需要维护任何源文件清单。
 
-- 改了算法、重编 ORB-SLAM3/Basalt 或升级依赖后，用 `--force` 重算。`umi-scene run --force` 让本次运行开始前完成的缓存全部失效（解码、定位、检测、任务结果），本次运行中新生成的仍可复用；已绑定的地图不变，连地图一起重建用 `build --force` 或 `pipeline --force`。实现见 `umi/infra/file_store.py` 的 `recompute()` / `is_current()`。
+- 改了算法、重编 ORB-SLAM3/Basalt 或升级依赖后，用 `--force` 重算。`umi-scene run --force` 让本次运行开始前完成的缓存全部失效（解码、定位、检测、任务结果），本次运行中新生成的仍可复用；已绑定的地图不变，连地图一起重建用 `build --force`。实现见 `umi/infra/file_store.py` 的 `recompute()` / `is_current()`。
 - 结果、地图清单、逐段引擎设置和标定记录写入 `code_revision`（git 提交号及 `umi/` 是否有未提交改动），只用于追溯。
 - 原片、设备资产、配置及结果文件的完整性用 `file_hash()` 的原始字节 SHA256 校验。数组缓存统一用 `file_store.read_npz_cache()` / `write_npz_cache()`：完成标记记录输入身份（按 JSON 规范形式比较）和数组文件哈希。
 

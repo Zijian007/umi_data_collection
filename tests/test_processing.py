@@ -399,27 +399,65 @@ class ProcessingTests(unittest.TestCase):
         manifest = json.loads((self.batch / '.pipeline/maps/versions' / version / 'manifest.json').read_text())
         self.assertEqual(manifest['map_epoch'], 'epoch_001')
 
-    def test_epoch_pipeline_prepares_once_and_uses_the_built_map(self):
+    def test_run_builds_pending_epoch_maps_once_and_uses_them(self):
         plan_path = self.batch / '.pipeline/map_epochs.yaml'
         write_yaml(plan_path, dict(schema_version=1,
             maps=[dict(epoch='epoch_001', map_version=None, sequence=0, recording='mapping/map.INSV')],
             tasks=[dict(task='take_001', sequence=1)]))
         initial_plan = plan_path.read_bytes()
         with patch.object(ingest, 'register_recordings', wraps=ingest.register_recordings) as register:
-            preview = processing.run_epoch_pipeline(self.batch, dry_run=True)
+            preview = processing.run([self.batch], dry_run=True)
             self.assertEqual(register.call_count, 1)
-            self.assertEqual(preview['run'][0]['status'], 'planned')
+            self.assertEqual(preview[0]['status'], 'planned')
             self.assertEqual(plan_path.read_bytes(), initial_plan)
             self.assertFalse((self.batch / '.pipeline/manifest.yaml').exists())
             register.reset_mock()
-            result = processing.run_epoch_pipeline(self.batch)
+            result = processing.run([self.batch])
             self.assertEqual(register.call_count, 1)
-        self.assertEqual(result['status'], 'ok')
-        version = result['build']['epochs'][0]['version']
-        self.assertEqual(read_yaml(plan_path)['maps'][0]['map_version'], version)
-        self.assertEqual(result['run'][0]['frame_id'], result['build']['epochs'][0]['frame_id'])
+        self.assertEqual(result[0]['status'], 'ok')
+        version = read_yaml(plan_path)['maps'][0]['map_version']
+        self.assertIsNotNone(version)
+        manifest = json.loads((self.batch / '.pipeline/maps/versions' / version / 'manifest.json').read_text())
+        self.assertEqual(result[0]['frame_id'], manifest['frame_id'])
+        # 再次运行复用已构建的 epoch 地图
+        with patch.object(processing, 'build_epochs') as build:
+            processing.run([self.batch])
+        build.assert_not_called()
 
-    def test_inspect_reports_unbound_default_map_and_pending_epochs(self):
+    def test_run_turns_organizer_handoff_into_an_epoch_plan_and_builds_it(self):
+        sha = artifact_identity.file_hash
+        take = {arm: dict(path=f'take_001/{arm}/VID.insv', sha256=sha(self.batch / f'take_001/{arm}/VID.insv'))
+                for arm in ('left', 'right')}
+        (self.batch / 'import_manifest.json').write_text(json.dumps(dict(
+            schema_version=1, kind='umi_insv_import', batch=self.batch.name,
+            maps=[dict(epoch='epoch_001', sequence=0, recording='mapping/map.INSV',
+                       sha256={'mapping/map.INSV': sha(self.batch / 'mapping/map.INSV')})],
+            tasks=[dict(task='take_001', sequence=1, recordings=take)])))
+        preview = processing.run([self.batch], dry_run=True)
+        self.assertEqual(preview[0]['status'], 'planned')
+        self.assertFalse((self.batch / '.pipeline/map_epochs.yaml').exists())
+        result = processing.run([self.batch])
+        self.assertEqual(result[0]['status'], 'ok')
+        plan = read_yaml(self.batch / '.pipeline/map_epochs.yaml')
+        self.assertEqual([item['epoch'] for item in plan['maps']], ['epoch_001'])
+        self.assertIsNotNone(plan['maps'][0]['map_version'])
+
+    def test_multiple_mapping_recordings_without_reliable_order_stop_before_building(self):
+        second = self.batch / 'mapping/second.INSV'  # 文件名没有 VID_ 时间戳，无法排序
+        second.write_text('left_mapping_second')
+        self.bind_fake_video(second, 'left')
+        with patch.object(processing, 'build_epochs') as build:
+            result = processing.run([self.batch])
+        build.assert_not_called()
+        self.assertEqual(result[0]['status'], 'failed')
+        self.assertIn('无法自动确定地图 epoch 顺序', result[0]['error'])
+        self.assertFalse((self.batch / '.pipeline/map_epochs.yaml').exists())
+
+    def test_status_reports_unbound_default_map_and_pending_epochs(self):
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(cli.main(['status', str(self.batch), '--json']), 0)
+        self.assertEqual(json.loads(output.getvalue())['batches'][0]['map_status'],
+                         '批次尚未登记；运行 umi-scene run 后生成')
         processing.prepare_batch(self.batch)
         write_yaml(self.batch / '.pipeline/map_epochs.yaml', dict(
             schema_version=1,
@@ -427,11 +465,16 @@ class ProcessingTests(unittest.TestCase):
                        recording='mapping/map.INSV')],
             tasks=[dict(task='take_001', sequence=1)]))
         with redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(cli.main(['inspect', str(self.batch)]), 0)
+            self.assertEqual(cli.main(['status', str(self.batch), '--json']), 0)
         report = json.loads(output.getvalue())
-        self.assertEqual(report['map_status'], '默认地图尚未绑定')
-        self.assertFalse(report['map_epochs']['map_status'][0]['available'])
-        self.assertEqual(report['map_epochs']['assignments']['take_001']['status'], 'pending')
+        batch = report['batches'][0]
+        self.assertEqual(batch['map_status'], '默认地图尚未绑定')
+        self.assertFalse(batch['map_epochs']['map_status'][0]['available'])
+        self.assertEqual(batch['map_epochs']['assignments']['take_001']['status'], 'pending')
+        self.assertEqual(len(report['tasks']), 1)
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(cli.main(['status', str(self.batch)]), 0)
+        self.assertIn('地图 epoch：epoch_001 地图尚未构建', output.getvalue())
 
     def test_preview_and_registration_agree_when_all_clips_are_already_registered(self):
         processing.prepare_batch(self.batch)

@@ -5,7 +5,6 @@ from __future__ import annotations
 from umi.config import operational_settings as settings
 from umi.config import user_settings as user_config
 
-from dataclasses import asdict
 from pathlib import Path
 import argparse
 import json
@@ -16,12 +15,11 @@ import signal
 from umi.store import layout
 from umi.workflows.scene import workflow
 from umi.workflows.scene import episodes, batch_processing as processing
-from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs
-from umi.store.layout import batch_root
+from umi.workflows.scene.inputs import batch as batch_inputs
+from umi.store.layout import configured_batches
 from umi.workflows.scene.episodes import episode_paths
 from umi.workflows.scene.maps import repository as map_repository
 from umi.workflows.scene.maps import epoch_selection as map_epoch_selection
-from umi.workflows.scene import recordings as recording_checks
 from umi.workflows.scene.errors import ITEM_FAILURES
 
 
@@ -36,31 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser('check', help='检查场景轨迹处理环境')
     build = commands.add_parser('build', help='按 collection.yaml 和批次 mapping/ 单独构建地图')
     build.add_argument('batch', type=Path, help='批次目录、collection.yaml 或批次 .pipeline/manifest.yaml；普通建图需 mapping/，--epochs 可由清单提供 recording')
-    build.add_argument('--epochs', action='store_true', help='按 .pipeline/map_epochs.yaml 逐个构建未发布的多张地图')
-    plan_epochs = commands.add_parser('plan-epochs', help='根据录像内嵌时间戳生成多地图 epoch 草案')
-    plan_epochs.add_argument('batch', type=Path, help='采集批次目录、collection.yaml 或批次 .pipeline/manifest.yaml')
-    plan_epochs.add_argument('--write', action='store_true', help='仅在规划状态为 ready 时写入 .pipeline/map_epochs.yaml')
-    plan_epochs.add_argument('--force', action='store_true', help='允许覆盖已有 .pipeline/map_epochs.yaml')
-    plan_epochs.add_argument('--expert-config', dest='config', type=Path, help='专家算法 YAML 覆盖；只含 trajectory / parameters')
-    pipeline = commands.add_parser('pipeline', help='一键规划、构建并处理多地图 epoch 批次')
-    pipeline.add_argument('batch', type=Path, help='包含 collection.yaml 和 mapping/、take_*/ 的采集批次目录')
-    pipeline.add_argument('--expert-config', dest='config', type=Path, help='本次专家算法 YAML 覆盖；只含 trajectory / parameters')
-    pipeline.add_argument('--show-config', action='store_true', help='只输出生效配置和来源 JSON，不执行处理')
-    pipeline.add_argument('--force', action='store_true', help='全部重算：生成新的地图版本和任务结果，中间缓存不复用；已有 epoch 计划不会自动覆盖')
-    pipeline.add_argument('--cores', default='', help='限制算法子进程可用 CPU，例如 0-7 或 0-3,8')
-    pipeline.add_argument('--jobs', '-j', type=int, default=None, help='同时处理的任务数，省略时读取 config/user.yaml')
-    pipeline.add_argument('--keep-work', action='store_true', help='成功后保留建图中间文件')
-    pipeline.add_argument('--skip-preflight', action='store_true', help='仅排障时跳过任务原片预检')
-    pipeline.add_argument('--dry-run', action='store_true', help='只检查规划和构建计划，不创建地图、缓存或结果')
-    pipeline.add_argument('--json', action='store_true', help='以 JSON 输出完整阶段结果')
-    run = commands.add_parser('run', help='读取批次配置和视频，自动登记、建图并抽取轨迹')
-    sync = commands.add_parser('sync', help='只同步已分组的双手任务原片')
-    for command in (run, sync):
-        command.add_argument('paths', nargs='+', type=Path, metavar='路径', help=(
-            '一个或多个场景、批次、任务目录，或 collection.yaml / 批次 .pipeline/manifest.yaml / .pipeline/tasks/<任务>/episode.yaml'))
-    sync.add_argument('--force', action='store_true', help='重试失败或失效的同步记录；匹配记录仍复用')
-    sync.add_argument('--dry-run', action='store_true', help='只读估计同步偏移，不写入结果')
-    sync.add_argument('--json', action='store_true', help='以 JSON 输出每个任务的同步结果')
+    build.add_argument('--epochs', action='store_true', help='逐个构建多地图批次中尚未构建的 epoch 地图（计划来源与 run 相同）')
+    run = commands.add_parser('run', help='读取批次配置和视频：登记原片、音频同步、建图（含多地图 epoch）并抽取轨迹')
+    run.add_argument('paths', nargs='+', type=Path, metavar='路径', help=(
+        '一个或多个场景、批次、任务目录，或 collection.yaml / 批次 .pipeline/manifest.yaml / .pipeline/tasks/<任务>/episode.yaml'))
     for command in (build, run):
         configuration = command.add_argument_group('专家配置', '仅排障或算法实验使用；日常配置统一读取 config/user.yaml')
         execution = command.add_argument_group('执行与检查', '只影响本次运行，不写入 YAML')
@@ -69,18 +46,15 @@ def build_parser() -> argparse.ArgumentParser:
         execution.add_argument('--force', action='store_true', help=(
             '强制构建新的地图版本（解码、建图、定位缓存全部重算），保留已有版本' if command is build else
             '全部重算：解码、定位、检测缓存与任务结果都不复用（改了算法或重编引擎后使用）；'
-            '已绑定的地图不变，重建地图用 umi-scene build --force 或 pipeline --force'))
+            '已构建的地图不变，重建地图用 umi-scene build --force'))
         execution.add_argument('--cores', default='', help='限制算法子进程可用 CPU，例如 0-7 或 0-3,8；默认不额外限制')
-        execution.add_argument('--dry-run', action='store_true', help='只检查输入并显示计划，不创建清单、锁、地图、缓存或结果')
+        execution.add_argument('--dry-run', action='store_true', help='只检查输入（含原片预检）并显示计划，不创建清单、锁、地图、缓存或结果')
         if command is build:
             execution.add_argument('--keep-work', action='store_true', help='成功后保留建图中间文件；默认清理，失败现场保留')
         else:
             execution.add_argument('--jobs', '-j', type=int, default=None, help='同时处理的任务数，必须 ≥1；省略时读取 config/user.yaml')
             execution.add_argument('--skip-preflight', action='store_true', help='仅排障时跳过任务原片预检；批次入库时的配对、设备和可读性检查仍执行')
             execution.add_argument('--json', action='store_true', help='以 JSON 输出批量处理结果；默认输出终端汇总表')
-    qa = commands.add_parser('preflight', help='检查原片或任务完整性，不启动重建')
-    qa.add_argument('target', type=Path, help='原始 .insv，或任务目录 / episode.yaml')
-    qa.add_argument('--json', action='store_true', help='以 JSON 输出检查结果')
     tags = commands.add_parser('detect-tags', help='检测原片环境镜头的 ArUco 海报，输出角点和可见性报告，不改变轨迹')
     tags.add_argument('video', type=Path, help='X3 3840×1920 4K60 原片')
     tags.add_argument('--out', required=True, type=Path, help='独立的检测缓存与报告目录')
@@ -91,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help='每 N 个采样帧做一次全图检测，其余帧跟随上次标签窗口（默认 %(default)s）')
     tags.add_argument('--minimum-side-px', type=float, default=0., help='几何可用观测的最短投影边长，单位原片像素，须为有限非负数；默认 %(default)g，不按尺寸过滤')
     tags.add_argument('--force', action='store_true', help='重新计算检测；默认复用匹配的原片角点缓存')
-    status = commands.add_parser('status', help='查看待补齐、待处理、失败、成功和验收状态')
+    status = commands.add_parser('status', help='查看批次绑定的地图（含各 epoch 地图是否已构建）和任务的处理、验收状态')
     status.add_argument('paths', nargs='+', type=Path, help='任务、批次、场景或套件目录，可一次指定多个')
     status.add_argument('--json', action='store_true', help='以 JSON 输出状态；默认逐条显示')
     review = commands.add_parser('review', help='对当前成功结果进行人工验收（支持单个任务或批量批次目录）')
@@ -119,8 +93,6 @@ def build_parser() -> argparse.ArgumentParser:
     clean.add_argument('paths', nargs='+', type=Path, help='批次、场景或上层目录，可一次指定多个')
     clean.add_argument('--cache', action='store_true', help='同时清空全部可重建缓存；下次运行会重新解码、建图和定位')
     clean.add_argument('--dry-run', action='store_true', help='只列出将删除的内容和可释放空间，不做修改')
-    inspect = commands.add_parser('inspect', help='核对批次当前绑定的地图')
-    inspect.add_argument('batch', type=Path, help='批次目录、collection.yaml 或批次 .pipeline/manifest.yaml；读取 manifest.yaml 绑定的地图')
     relative = commands.add_parser('evaluate-relative', help='用实测固定夹具参考评估双手相对位姿；不更新人工验收')
     relative.add_argument('path', type=Path, help='任务目录或冻结的运行结果目录')
     relative.add_argument('--reference', required=True, type=Path, help='umi_rigid_pair_reference v1 JSON')
@@ -131,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _prepare_execution(args):
     """Load command overrides and configure process-wide runtime settings."""
     overrides = None
-    if args.command in ('run', 'build', 'plan-epochs', 'pipeline'):
+    if args.command in ('run', 'build'):
         from umi.workflows.scene.parameters import SceneOverrides
         from umi.workflows.scene.batch_snapshot import effective_report
         common = user_config.current().values
@@ -139,7 +111,7 @@ def _prepare_execution(args):
             args.jobs = common['runtime']['jobs']
         if hasattr(args, 'cores') and not args.cores and common['runtime']['cores'] != 'auto':
             args.cores = common['runtime']['cores']
-        if args.command in ('run', 'pipeline') and args.jobs < 1:
+        if args.command == 'run' and args.jobs < 1:
             raise ValueError('jobs 必须至少为 1')
         overrides = SceneOverrides.load(args.config) if args.config else None
         if getattr(args, 'show_config', False):
@@ -153,7 +125,7 @@ def _prepare_execution(args):
                 operational=settings.execution_report(cores=args.cores, jobs=getattr(args, 'jobs', 1)))
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return None, True
-    if args.command in ('run', 'build', 'pipeline', 'detect-tags'):
+    if args.command in ('run', 'build', 'detect-tags'):
         import cv2
 
         threads = settings.values('runtime')['opencv_threads']
@@ -172,7 +144,7 @@ def _prepare_execution(args):
                              for source in execution[kind]['sources'] if '.local.' in source]
             if local_sources:
                 workflow.console.write('本机覆盖 ' + ' · '.join(local_sources) + ' · 参数见 --show-config', state='配置')
-        elif args.command in ('build', 'pipeline'):
+        elif args.command == 'build':
             workflow.console.write(settings.summary(cores=args.cores, jobs=getattr(args, 'jobs', 1)))
     return overrides, False
 
@@ -223,44 +195,12 @@ def _build(args, overrides):
                             overrides=overrides, epochs=args.epochs)
 
 
-def _plan_epochs(args, overrides):
-    result = processing.plan_epoch_draft(args.batch, write=args.write, force=args.force,
-                                         overrides=overrides)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    return int(result['status'] != 'ready')
-
-
-def _pipeline(args, overrides):
-    result = processing.run_epoch_pipeline(args.batch, jobs=args.jobs, force=args.force,
-        keep_work=args.keep_work, cores=args.cores, dry_run=args.dry_run,
-        check_recordings=not args.skip_preflight, overrides=overrides)
-    print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else workflow.format_batch_summary(result.get('run', [])))
-    return int(result.get('status') not in ('ok', 'planned'))
-
-
 def _run(args, overrides):
     result = processing.run(args.paths, jobs=args.jobs, force=args.force,
         cores=args.cores, dry_run=args.dry_run, check_recordings=not args.skip_preflight,
         overrides=overrides)
     print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else workflow.format_batch_summary(result))
     return int(any(item['status'] not in ('ok', 'skipped', 'local_ok', 'local_skipped', 'planned') for item in result))
-
-
-def _sync(args, overrides):
-    from umi.workflows.scene import audio_sync
-
-    result = audio_sync.run(args.paths, force=args.force, dry_run=args.dry_run)
-    print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
-          if args.json else audio_sync.format_summary(result, dry_run=args.dry_run))
-    return int(any(item['status'] == 'failed' for item in result))
-
-
-def _preflight(args, overrides):
-    target = args.target.expanduser().resolve()
-    result = recording_checks.check_video(target) if target.suffix.lower() == '.insv' else recording_checks.check_episode(
-        episode_inputs.read_episode(target))
-    print(json.dumps(asdict(result), ensure_ascii=False, indent=2) if args.json else recording_checks.format_report(result))
-    return int(not result.passed)
 
 
 def _detect_tags(args, overrides):
@@ -275,17 +215,36 @@ def _detect_tags(args, overrides):
 
 
 def _status(args, overrides):
-    result = []
+    maps = []
+    for batch in configured_batches(args.paths):
+        try:
+            maps.append(dict(batch=str(batch), **_batch_maps(batch)))
+        except ITEM_FAILURES as error:
+            maps.append(dict(batch=str(batch), map_status='invalid', reason=str(error)))
+    tasks = []
     for path in episode_paths(args.paths):
         try:
-            result.append(episodes.task_status(path))
+            tasks.append(episodes.task_status(path))
         except ITEM_FAILURES as error:
-            result.append(dict(path=str(path), status='invalid', reason=str(error)))
-    if not args.json:
-        for item in result:
-            print(f'{item["path"]}: {item["status"]} / {item.get("review", "unreviewed")} {item.get("reason", "")}')
-        return 0
-    return result
+            tasks.append(dict(path=str(path), status='invalid', reason=str(error)))
+    if args.json:
+        return dict(batches=maps, tasks=tasks)
+    for item in maps:
+        print(f'{item["batch"]}: {_format_batch_maps(item)}')
+    for item in tasks:
+        print(f'{item["path"]}: {item["status"]} / {item.get("review", "unreviewed")} {item.get("reason", "")}')
+    return 0
+
+
+def _format_batch_maps(item: dict) -> str:
+    if item.get('reason'):
+        return f'地图 {item["map_status"]}（{item["reason"]}）'
+    epochs = item.get('map_epochs')
+    if epochs:
+        states = [f'{entry["epoch"]} {"已构建" if entry["available"] else entry.get("error", "不可用")}'
+                  for entry in epochs['map_status']]
+        return '地图 epoch：' + '，'.join(states)
+    return f'地图 {item.get("version") or item.get("map_status", "未绑定")}'
 
 
 def _review(args, overrides):
@@ -340,10 +299,10 @@ def _evaluate_relative(args, overrides):
     return 0 if result['status'] == 'passed' else 1
 
 
-def _inspect(args, overrides):
-    batch = batch_root(args.batch)
-    if not layout.is_batch(batch):
-        raise ValueError(f'不是采集批次目录：{batch}')
+def _batch_maps(batch: Path) -> dict:
+    """批次当前绑定的默认地图和各 epoch 地图的构建状态。"""
+    if not layout.metadata(batch, 'manifest.yaml').is_file():
+        return dict(directory=None, version=None, maps=[], map_status='批次尚未登记；运行 umi-scene run 后生成')
     session = batch_inputs.read_batch(layout.manifest(batch, 'manifest.yaml'))
     scene = session.scene
     try:
@@ -392,10 +351,8 @@ def _inspect_epochs(scene, epoch_plan_path: Path) -> dict:
 
 
 COMMANDS = {
-    'check': _check, 'build': _build, 'plan-epochs': _plan_epochs, 'pipeline': _pipeline, 'run': _run,
-    'sync': _sync, 'preflight': _preflight, 'detect-tags': _detect_tags, 'status': _status,
+    'check': _check, 'build': _build, 'run': _run, 'detect-tags': _detect_tags, 'status': _status,
     'review': _review, 'export': _export, 'clean': _clean, 'evaluate-relative': _evaluate_relative,
-    'inspect': _inspect,
 }
 
 

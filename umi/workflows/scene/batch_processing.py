@@ -24,8 +24,7 @@ from umi.workflows.scene.maps import build as map_build
 from umi.workflows.scene.maps import epoch_selection as map_epoch_selection, repository as map_repository
 
 # 批次处理的对外入口；cli 与配置展示只从这里导入。
-__all__ = ['build', 'build_epochs', 'clean', 'configured_batches', 'plan_epoch_draft',
-           'prepare_batch', 'run', 'run_epoch_pipeline']
+__all__ = ['build', 'build_epochs', 'clean', 'configured_batches', 'prepare_batch', 'run']
 
 
 class _BatchInputError(ValueError):
@@ -39,9 +38,60 @@ class _BatchInputError(ValueError):
 
 
 def _prepare_for_run(batch: Path, *, dry_run: bool, intrinsics_source: str | None,
-                     overrides: SceneOverrides | None) -> dict:
-    return _require_ready_recordings(prepare_batch(batch, dry_run=dry_run,
-        intrinsics_source=intrinsics_source, overrides=overrides))
+                     overrides: SceneOverrides | None, cores: str = '') -> dict:
+    """准备一个批次：epoch 计划 → 登记原片 → 构建尚未构建的 epoch 地图。
+
+    多地图批次的计划来源依次为已有的 .pipeline/map_epochs.yaml、Organizer 的
+    import_manifest.json、按录像时间戳起草（有歧义时停止）。只读预览不写计划也不建图。
+    """
+    plan = _epoch_plan(batch, dry_run=dry_run, overrides=overrides)
+    imported = _require_ready_recordings(prepare_batch(batch, dry_run=dry_run, intrinsics_source=intrinsics_source,
+                                                       overrides=overrides, epoch_mode=plan is not None))
+    if plan is not None:
+        _build_pending_epochs(batch, plan, dry_run=dry_run, cores=cores,
+                              intrinsics_source=intrinsics_source, overrides=overrides)
+    return imported
+
+
+def _epoch_plan(batch: Path, *, dry_run: bool, overrides: SceneOverrides | None) -> dict | None:
+    """返回多地图计划 {'source', 'maps'}；单地图批次或不需要场景地图时返回 None。"""
+    from umi.workflows.scene.import_manifest import ensure_epoch_plan, read_manifest
+
+    _, _, collection = batches.read_collection(batch)
+    mapping_clips = recordings.insv_files(batch / 'mapping') if (batch / 'mapping').is_dir() else []
+    plan_path = layout.metadata(batch, 'map_epochs.yaml')
+    map_required, _ = batches.mapping_requirements(collection, has_mapping=bool(mapping_clips) or plan_path.is_file())
+    if not map_required:
+        return None
+    organizer = read_manifest(batch, verify=False)
+    if organizer is not None:
+        if dry_run:
+            current = read_yaml(plan_path).get('maps', []) if plan_path.is_file() else []
+            built = {item['epoch']: item.get('map_version') for item in current}
+            maps = [dict(item, map_version=built.get(item['epoch'])) for item in organizer['maps']]
+            return dict(source='organizer', maps=maps)
+        ensure_epoch_plan(batch)
+        return dict(source='organizer', maps=read_yaml(plan_path)['maps'])
+    if plan_path.is_file():
+        return dict(source='existing', maps=read_yaml(plan_path)['maps'])
+    if len(mapping_clips) < 2:
+        return None  # 单张地图：任务运行时由 bind_map 按需构建
+    draft = _draft_epoch_plan(batch, write=not dry_run, overrides=overrides)
+    if draft['status'] != 'ready':
+        raise ValueError('mapping/ 有多段建图录像，但无法自动确定地图 epoch 顺序：' + '；'.join(draft['reasons']))
+    return dict(source='draft', maps=draft['plan']['maps'])
+
+
+def _build_pending_epochs(batch: Path, plan: dict, *, dry_run: bool, cores: str,
+                          intrinsics_source: str | None, overrides: SceneOverrides | None) -> None:
+    pending = [item['epoch'] for item in plan['maps'] if item.get('map_version') is None]
+    if not pending:
+        return
+    if dry_run:
+        workflow.console.write(f'将构建 {len(pending)} 张地图：{"、".join(pending)}', recording=batch.name, state='预览')
+        return
+    workflow.console.write(f'构建 {len(pending)} 张地图：{"、".join(pending)}', recording=batch.name, state='建图')
+    build_epochs(batch, cores=cores, intrinsics_source=intrinsics_source, overrides=overrides)
 
 
 def _require_ready_recordings(imported: dict) -> dict:
@@ -85,7 +135,7 @@ def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '
             if _prepared is not None and batch in _prepared:
                 imported = _require_ready_recordings(_prepared[batch])
             else:
-                imported = _prepare_for_run(batch, dry_run=dry_run,
+                imported = _prepare_for_run(batch, dry_run=dry_run, cores=cores,
                                             intrinsics_source=intrinsics_source, overrides=overrides)
             registered = episodes.episode_paths([batch])
             new_count = len(imported['episodes'])
@@ -124,7 +174,7 @@ def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '
         if not (batch / 'collection.yaml').is_file():
             continue
         try:
-            _prepare_for_run(batch, dry_run=dry_run,
+            _prepare_for_run(batch, dry_run=dry_run, cores=cores,
                              intrinsics_source=intrinsics_source, overrides=overrides)
             if dry_run:
                 summaries.extend(dict(path=str(path), name=task_roots[path].name, status='planned') for path in selected)
@@ -167,23 +217,25 @@ def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '
     return summaries
 
 
-def prepare_batch(batch: Path, *, dry_run: bool = False, intrinsics_source: str | None = None, overrides: SceneOverrides | None = None) -> dict:
+def prepare_batch(batch: Path, *, dry_run: bool = False, intrinsics_source: str | None = None,
+                  overrides: SceneOverrides | None = None, epoch_mode: bool = False) -> dict:
     _, report = _prepare_batch(batch, dry_run=dry_run, intrinsics_source=intrinsics_source,
-                               overrides=overrides)
+                               overrides=overrides, epoch_mode=epoch_mode)
     return report
 
 
 def _prepare_batch(batch: Path, *, dry_run: bool, overrides: SceneOverrides | None,
-                   intrinsics_source: str | None = None) -> tuple[Session, dict]:
-    """预览与实际运行共用原片规划；预览只构造内存中的批次快照。"""
+                   intrinsics_source: str | None = None, epoch_mode: bool = False) -> tuple[Session, dict]:
+    """预览与实际运行共用原片规划；预览只构造内存中的批次快照。
+
+    epoch_mode 表示批次按多地图计划处理（预览时计划可能尚未写入磁盘）；建图原片由计划声明，
+    不再按单张地图登记 mapping/。
+    """
     collection_source = batches.read_collection(batch)
     _, _, collection = collection_source
     mapping_clips = recordings.insv_files(batch / 'mapping')
-    map_required, uses_scene_map = batches.mapping_requirements(collection, has_mapping=bool(mapping_clips))
-    if not dry_run and uses_scene_map:
-        from umi.workflows.scene.import_manifest import ensure_epoch_plan
-        ensure_epoch_plan(batch)
-    epoch_mode = layout.metadata(batch, 'map_epochs.yaml').is_file()
+    map_required, _ = batches.mapping_requirements(collection, has_mapping=bool(mapping_clips))
+    epoch_mode = epoch_mode or layout.metadata(batch, 'map_epochs.yaml').is_file()
     # 普通批次建图后，mapping/ 可能已经整理或清理；内部清单中的冻结地图
     # 指针足以支持后续 take。此时再次强制要求建图原片，会让有效地图的
     # 批量 CLI 运行无故失败。
@@ -217,6 +269,8 @@ def build(batch: Path, *, force: bool = False, keep_work: bool = False,
         layout.reject_legacy_user_file(batch / 'batch.yaml')
     if epochs:
         require_collection(batch, 'build --epochs')
+        if not dry_run:
+            _epoch_plan(batch, dry_run=False, overrides=overrides)  # 计划尚未生成时与 run 相同地生成
         batch_inputs = batches.read_inputs(batch, require_mapping=False, include_mapping=False,
                                            intrinsics_source=intrinsics_source, overrides=overrides)
         if dry_run:
@@ -332,17 +386,16 @@ def build_epochs(batch: Path, *, force: bool = False, keep_work: bool = False,
         return dict(status='ok', plan=str(plan_path), epochs=results)
 
 
-def plan_epoch_draft(batch: Path, *, write: bool = False, force: bool = False,
-                     intrinsics_source: str | None = None,
-                     overrides: SceneOverrides | None = None) -> dict:
-    """Infer a multi-map plan from embedded recording timestamps.
+def _draft_epoch_plan(batch: Path, *, write: bool = False,
+                      intrinsics_source: str | None = None,
+                      overrides: SceneOverrides | None = None) -> dict:
+    """按录像内嵌时间戳为手工整理的多轮建图批次起草地图 epoch 计划。
 
-    Planning is intentionally separate from ``build --epochs``.  A draft is
-    always safe to inspect; it is written only with ``write=True`` and only
-    when every event has an unambiguous timestamp and camera pairing.
+    只在每个事件的时间和相机配对都无歧义时写入（write=True）。注意：时间戳取自各相机自己的
+    时钟，两台相机的时钟可能不对齐；经 Organizer 整理的批次使用 import_manifest.json，不走这里。
     """
     batch = batch_root(batch)
-    require_collection(batch, 'plan-epochs')
+    require_collection(batch, 'run')
     batch_inputs = batches.read_inputs(batch, require_mapping=False, include_mapping=False,
                                       intrinsics_source=intrinsics_source, overrides=overrides)
     mapping_records, mapping_errors = ingest.scan_raw_videos([batch / 'mapping'])
@@ -371,14 +424,10 @@ def plan_epoch_draft(batch: Path, *, write: bool = False, force: bool = False,
     result['batch'] = str(batch)
     result['plan_path'] = str(plan_path)
     result['scan_errors'] = scan_errors
-    if write:
-        if result['status'] != 'ready':
-            raise ValueError('自动规划结果需要人工复核，未写入 map_epochs.yaml：' + '；'.join(result['reasons']))
-        if plan_path.exists() and not force:
-            raise ValueError(f'已有地图 epoch 清单：{plan_path}；需要 --force 才能覆盖')
+    if write and result['status'] == 'ready':
         with layout.locked(batch, blocking=True):
-            if plan_path.exists() and not force:
-                raise ValueError(f'已有地图 epoch 清单：{plan_path}；需要 --force 才能覆盖')
+            if plan_path.exists():
+                raise ValueError(f'已有地图 epoch 清单：{plan_path}')
             write_yaml(plan_path, result['plan'])
         result['written'] = True
     else:
@@ -386,35 +435,3 @@ def plan_epoch_draft(batch: Path, *, write: bool = False, force: bool = False,
     return result
 
 
-@recompute_when_forced
-def run_epoch_pipeline(batch: Path, *, jobs: int = 1, force: bool = False,
-                       keep_work: bool = False, cores: str = '', dry_run: bool = False,
-                       check_recordings: bool = True,
-                       overrides: SceneOverrides | None = None) -> dict:
-    """Plan, build and process a multi-map batch in one deterministic command.
-
-    An existing epoch plan is treated as the reviewed source of truth.  When
-    it is absent, the timestamp-based draft is written only if it is
-    unambiguous; ambiguous ordering still stops before any map or task result
-    is created.
-    """
-    batch = batch_root(batch)
-    # Materialize the batch snapshot before epoch planning/building.  This is
-    # also the handoff point for Organizer's import_manifest.json.
-    snapshot, imported = _prepare_batch(batch, dry_run=dry_run, overrides=overrides)
-    plan_path = layout.metadata(batch, 'map_epochs.yaml')
-    planning = None
-    if not plan_path.is_file():
-        planning = plan_epoch_draft(batch, write=not dry_run, overrides=overrides)
-        if planning.get('status') != 'ready':
-            return dict(status='needs_review', planning=planning, build=None, run=[])
-        if dry_run:
-            return dict(status='planned', planning=planning, build=None, run=[])
-    build_result = build_epochs(batch, force=force, keep_work=keep_work, cores=cores,
-                                dry_run=dry_run, overrides=overrides, session=snapshot if dry_run else None)
-    run_result = run([batch], jobs=jobs, force=force, cores=cores, dry_run=dry_run,
-                     check_recordings=check_recordings, overrides=overrides, _prepared={batch: imported})
-    failed = any(item.get('status') not in ('ok', 'skipped', 'local_ok', 'local_skipped', 'planned')
-                 for item in run_result)
-    return dict(status='failed' if failed else 'ok', planning=planning,
-                build=build_result, run=run_result)
