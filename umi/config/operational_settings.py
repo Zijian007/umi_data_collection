@@ -9,9 +9,9 @@ import json
 import os
 
 from ruamel.yaml.error import YAMLError
+from umi.core.frame import validate_roi
 from umi.infra.file_store import read_yaml
 from umi.infra.paths import CONFIG_ROOT
-from umi.perception.gripper import validate_roi
 
 DIRECTORY = CONFIG_ROOT / 'operations'
 SNAPSHOT_ENV = 'UMI_SETTINGS_SNAPSHOT'

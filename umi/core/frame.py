@@ -57,6 +57,16 @@ def crop_xywh(half: str, crop=None) -> tuple[int, int, int, int]:
     return margin + (SRC_H if half == "right" else 0) + x, margin + y, size, size
 
 
+def validate_roi(roi, shape: tuple[int, int] = (SRC_H, SRC_H)) -> tuple[int, int, int, int]:
+    """验证工作镜头半幅上的原始像素坐标。"""
+    if not isinstance(roi, (tuple, list)) or len(roi) != 4 or any(type(value) is not int for value in roi):
+        raise ValueError('ROI 需要 LEFT TOP RIGHT BOTTOM 四个原始像素坐标')
+    left, top, right, bottom = roi
+    if not (0 <= left < right <= shape[1] and 0 <= top < bottom <= shape[0]):
+        raise ValueError(f'ROI 必须位于 {shape[1]}×{shape[0]} 工作镜头半幅内，且 RIGHT > LEFT、BOTTOM > TOP')
+    return left, top, right, bottom
+
+
 def calibrated_crop_xywh(crop=None) -> tuple[int, int, int, int]:
     """裁切坐标以已标定的 1440 方图为基准，拒绝越出已标定视野。"""
     if crop is None:
