@@ -250,6 +250,7 @@ def measure(episode: Episode, arm: str, recording: PreparedRecording,
                                   parameters.tag_distance_max_center_ambiguity_mm),
             min_valid_fraction=parameters.tag_distance_min_valid_fraction,
             max_missing_frames=parameters.tag_distance_max_missing_frames,
+            verified_gap_recovery=parameters.tag_distance_verified_gap_recovery,
             roi_px=tuple(parameters.tag_distance_roi_px),
             detection_times_s=recording.full_video_times_s)
         try:

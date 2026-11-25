@@ -132,6 +132,7 @@ class SceneParameters:
     recording_max_static_acc_std_m_s2: float
     recording_max_shutter_s: float
     recording_max_exposure_cv: float
+    tag_distance_verified_gap_recovery: bool = False
 
     def for_algorithm(self, parameter_type: type[_AlgorithmParameters]) -> _AlgorithmParameters:
         """Project the resolved configuration onto the algorithm's declared fields."""

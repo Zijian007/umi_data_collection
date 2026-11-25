@@ -18,6 +18,8 @@
 
 质量参数在 `scene_parameters.yaml` 的 `measurements.gripper_tags`：`max_reprojection_error_px` 默认 2.0（每角点二维残差的 RMS），`max_center_ambiguity_mm` 默认 2.0；实验性覆盖写入 `--expert-config` 的 `parameters.measurements.gripper_tags`。原片测量按最近的实际帧对齐轨迹时钟，限制在半个源帧周期内；不补缺口或用前帧值代替当前缺失。`trajectory.csv` 增加 `tag_distance_mm`、`tag_distance_valid`、`tag_distance_source`，无效数值留空；来源包括 `two_tags`、`missing`、`outside_calibration`、`invalid_geometry`、`pose_failed`、`high_reprojection_error`、`ambiguous_pose`、`ambiguous_detection`、`unmatched_time`。
 
+专家配置 `parameters.measurements.gripper_tags.verified_gap_recovery` 默认关闭。开启后，常规测距未达标时，程序仅复查超过连续缺失上限且两端都有有效双标签测量的区间。在原片 ROI 内进行局部对比度增强解码，并从两端分别用理想标签模板定位四角。模板结果要求两个方向的对应角点相差至多 1.5 个原始像素。两种方法都须从当帧原片复核标签编码并通过 KB4 测距门槛。重复 ID、位置冲突及无法复核的候选保持无效。测距报告的 `detection.verified_gap_recovery` 记录各区间的接受行号、方法计数和角点缓存键。
+
 `TagDistanceRequest` 将原片、尺寸、相机、哈希、`TagPoseQuality`、ROI 和验收要求组合为具名输入。`detection/sampling.py` 按真实 PTS 为每个最终轨迹帧选择最近源帧，裁剪到配置 ROI 后检测，不缩小检测像素；解码仍读取压缩视频，非输出时间点不执行标签检测。超出源时钟范围或帧间隔过大时保持 `unmatched_time`。
 
 先用快速模式扫描全段全部输出帧并完成三维检查。每只手同时满足两项才通过：`two_tags` 有效帧数除以最终 CSV 总帧数达到 `parameters.measurements.gripper_tags.minimum_valid_fraction`（默认 0.5，范围 `(0, 1]`），且连续没有有效三维中心距的帧数不超过 `parameters.measurements.gripper_tags.max_missing_frames`（默认 15，非负整数，0 表示不允许缺失）。恰好等于上限通过；开头、结尾、所有无效原因都计入连续缺失。该上限按最终输出帧计数，当前约 30 帧/秒时 15 帧约为 0.5 秒；调整输出频率后帧数上限不自动改变。

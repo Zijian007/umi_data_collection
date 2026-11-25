@@ -107,6 +107,7 @@ fusion:  # 固定场景任务的视觉融合权重；海报约束策略由 colle
 
 measurements:  # 夹爪标签中心距和开口宽度测量。
   gripper_tags:  # 两枚夹爪标签中心距的几何质量规则。
+    verified_gap_recovery: false  # 常规测距超出缺口上限时，用原片增强和双向模板补检。
     max_reprojection_error_px: 2.0  # 标签角点重投影 RMS 上限，单位 px。
     max_center_ambiguity_mm: 2.0  # 平面两解中心距离超过此值才接受，单位 mm。
     minimum_valid_fraction: 0.5  # 有效中心距帧的最低比例。

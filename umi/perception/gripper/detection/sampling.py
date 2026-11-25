@@ -258,8 +258,8 @@ class SampledDetectionCache:
     def corners(self) -> np.ndarray:
         return np.where(self.attempted[:, None, None, None], self.recovered_corners, self.quick_corners)
 
-    def recover(self, indices: np.ndarray, *,
-                is_needed: Callable[[int], bool]) -> Iterator[tuple[int, np.ndarray]]:
+    def recovery_detector(self):
+        """Build the same native-image detector used by the conventional recovery pass."""
         visible = self.quick_corners[np.isfinite(self.quick_corners).all(axis=(2, 3))]
         bounds = self.roi_px
         if len(visible):
@@ -274,14 +274,22 @@ class SampledDetectionCache:
         search_interval = parameters['full_search_interval']
         local = FrameDetector(bounds, candidate_limit=candidate_limit)
         full = FrameDetector(self.roi_px, candidate_limit=candidate_limit) if bounds != self.roi_px else local
+
+        def detect(index, frame):
+            return (full if index % search_interval == 0 else local).detect(frame)
+
+        return detect
+
+    def recover(self, indices: np.ndarray, *,
+                is_needed: Callable[[int], bool]) -> Iterator[tuple[int, np.ndarray]]:
+        detect = self.recovery_detector()
         try:
             for index, native_time, frame in sampled_frames(self.video, self.query_times_s, indices):
                 if not is_needed(index):
                     continue
                 if frame is None or abs(native_time - self.native_times_s[index]) > 1e-8:
                     raise ValueError('标签补检与快速检测的原片时间戳不一致')
-                detector = full if index % search_interval == 0 else local
-                detected = detector.detect(frame)
+                detected = detect(index, frame)
                 reconciled = reconcile_detections(_frame_detection(self.quick_corners[index]), detected)
                 self.recovered_corners[index] = reconciled.target_corners()
                 self.attempted[index] = True

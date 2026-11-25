@@ -243,6 +243,11 @@ def episode_inputs(episode, cameras, map_manifest) -> dict:
     collection = normalize_collection(document)
     current_configuration = configuration_identity(episode.session.root, collection=collection)
     epoch_plan = layout.metadata(episode.session.root, 'map_epochs.yaml')
+    parameters = {key: value for key, value in asdict(episode.scene.parameters).items()
+                  if not key.startswith(('recording_', 'pairing_'))}
+    # Keep historical input fingerprints when opt-in algorithms are disabled.
+    if not parameters['tag_distance_verified_gap_recovery']:
+        del parameters['tag_distance_verified_gap_recovery']
     return dict(configuration=current_configuration, map_mode=map_manifest['mode'] if map_manifest else 'shared_front',
         scene_map_sha256=scene_map_identity(map_manifest) if map_manifest else None,
         scene_assets=map_manifest['assets'] if map_manifest else {},
@@ -264,5 +269,4 @@ def episode_inputs(episode, cameras, map_manifest) -> dict:
         synchronization_sha256=artifact_identity.canonical_hash(episode.synchronization),
         gripper_width=width_assets, tag_distance=tag_distance_assets,
         environment_tags=load_tag_board(episode.scene.tag_layout).record() if episode.scene.tag_layout else None,
-        parameters={key: value for key, value in asdict(episode.scene.parameters).items()
-                    if not key.startswith(('recording_', 'pairing_'))}, trajectory_parameters=episode.scene.trajectory.snapshot()['values'])
+        parameters=parameters, trajectory_parameters=episode.scene.trajectory.snapshot()['values'])

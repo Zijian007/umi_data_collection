@@ -43,6 +43,7 @@ class TagDistanceRequest:
     max_missing_frames: int = 15
     roi_px: tuple[int, int, int, int] = field(default_factory=default_tag_roi)
     detection_times_s: NDArray[np.float64] | None = None
+    verified_gap_recovery: bool = False
 
     def __post_init__(self) -> None:
         if not np.isfinite(self.min_valid_fraction) or not 0 < self.min_valid_fraction <= 1:
@@ -228,6 +229,15 @@ def process(request: TagDistanceRequest, cache: Path, *,
         measurements_path, completion_path = _cache_paths(cache, fingerprint)
     if not completion_path.is_file():
         write_npz_cache(measurements_path, completion_path, fingerprint, distance_mm=distances_mm, source=sources)
+    gap_reports = []
+    if request.verified_gap_recovery and stop_reason != 'accepted':
+        from umi.perception.gripper.distance import gap_recovery
+        gaps = missing_runs(valid)
+        overlong = gaps[gaps[:, 1] - gaps[:, 0] > request.max_missing_frames]
+        gap_reports = gap_recovery.recover(detections, overlong, valid, estimator, distances_mm, sources,
+                                           fingerprint, progress)
+        if gap_reports:
+            stop_reason = 'accepted' if acceptance_report(valid, request)['passed'] else 'verified_gaps_insufficient'
     aligned_series = TagDistanceSeries(np.asarray(request.video_times_s) + request.episode_offset_s,
                                        distances_mm, sources)
     source_names, source_counts = np.unique(aligned_series.source, return_counts=True)
@@ -239,6 +249,8 @@ def process(request: TagDistanceRequest, cache: Path, *,
         acceptance=acceptance_report(valid, request),
         detection=dict(output_frames=len(distances_mm), recovery_attempted=int(detections.attempted.sum()),
                        stop_reason=stop_reason, elapsed_s=time.monotonic() - started))
+    if request.verified_gap_recovery:
+        report['detection']['verified_gap_recovery'] = gap_reports
     if progress:
         progress(f'夹爪标签中心距验收：{report["acceptance"]["valid_rows"]}/{len(distances_mm)} 帧'
                  f'（{report["valid_fraction"]:.1%}），最长连续缺失 '

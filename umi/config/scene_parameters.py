@@ -106,6 +106,7 @@ FIELD_PATHS: dict[tuple[str, ...], str] = {
     ('measurements', 'gripper_tags', 'max_reprojection_error_px'): 'tag_distance_max_reprojection_error_px',
     ('measurements', 'gripper_tags', 'max_center_ambiguity_mm'): 'tag_distance_max_center_ambiguity_mm',
     ('measurements', 'gripper_tags', 'minimum_valid_fraction'): 'tag_distance_min_valid_fraction',
+    ('measurements', 'gripper_tags', 'verified_gap_recovery'): 'tag_distance_verified_gap_recovery',
     ('measurements', 'gripper_tags', 'max_missing_frames'): 'tag_distance_max_missing_frames',
     ('measurements', 'gripper_width', 'max_gap_s'): 'gripper_width_max_gap_s',
     ('measurements', 'gripper_width', 'closed_threshold_mm'): 'gripper_width_closed_threshold_mm',
