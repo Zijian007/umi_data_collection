@@ -94,7 +94,7 @@ def read_episode(directory: Path, contains) -> tuple[dict, dict[str, Path]]:
             or not isinstance(episode_manifest.get('arms'), dict) or not episode_manifest['arms']
             or episode_manifest['arms'].keys() - {'left', 'right'}):
         raise ViewerDataError('共享场景任务清单无效')
-    if local or episode_manifest.get('kind') == 'umi_poster_episode':
+    if local or episode_manifest.get('kind') == 'umi_poster_episode' or episode_manifest['scene'].get('scope') == 'task_poster':
         scene_reference(episode_manifest)
     arms = {}
     for arm, relative in episode_manifest['arms'].items():
@@ -258,7 +258,7 @@ class RecordingCatalog:
                     kit = capture.get('kit') or metadata.get('kit', {}).get('id')
                     label = '/'.join(filter(None, (metadata.get('scene', {}).get('name'), kit, session, metadata.get('name', directory.name))))
                     entries.append(dict(id=key, name=label, path=str(episode.relative_to(self.root)),
-                        serial=('任务海报轨迹' if metadata.get('kind') == 'umi_poster_episode' else
+                        serial=('任务海报轨迹' if metadata['scene'].get('scope') == 'task_poster' else
                                 '独立局部轨迹' if metadata.get('kind') == 'umi_local_episode' else
                                 '双手场景' if len(arms) == 2 else '场景任务'), status=capture.get('status', metadata['status']),
                         review=capture.get('review', {}).get('decision', 'unreviewed'), available=True, duration=interval[1]-interval[0],

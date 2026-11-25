@@ -5,6 +5,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import numpy as np
+
+from umi.estimation.models import FusedTrajectory
 from umi.workflows.scene.tasks import scene_map as episode_execution, scene_map as scene_reconstruction
 from umi.workflows.scene.tasks import measurements
 from umi.workflows.scene.tasks import trajectory_writers
@@ -13,14 +16,22 @@ from umi.store.models import TaskInputs
 
 
 class SharedPosterExecutionTests(unittest.TestCase):
-    def run_arms(self, *, tag_fusion_enabled: bool):
+    def run_arms(self, *, tag_fusion_enabled: bool, observed=('left', 'right')):
         scene = SimpleNamespace(name='scene', environment_tag_detection=True,
                                 parameters=SimpleNamespace(tag_fusion_enabled=tag_fusion_enabled))
         episode = SimpleNamespace(expected_arms=('left', 'right'), session=SimpleNamespace(name='batch'),
-                                  scene=scene, root=Path('take'))
+                                  scene=scene, root=Path('take'),
+                                  recording_refs={'left': {'sha256': 'a'}, 'right': {'sha256': 'b'}})
         baselines = {arm: SimpleNamespace(name=f'{arm}-baseline') for arm in ('left', 'right')}
         inputs = {arm: SimpleNamespace(arm=arm) for arm in ('left', 'right')}
-        refined = {arm: SimpleNamespace(name=f'{arm}-refined') for arm in ('left', 'right')}
+        board = np.eye(4)
+        board[:3, 3] = [1., 2., 3.]
+        refined = {arm: FusedTrajectory(np.eye(4)[None], np.ones(1, bool), np.ones(1, bool),
+                       dict(environment_poster=dict(status='fused', T_scene_board=board.tolist(),
+                                                    layout=dict(asset_hash='fixture'))))
+                   for arm in ('left', 'right')}
+        for arm in refined.keys() - set(observed):
+            refined[arm].evidence['environment_poster'] = dict(status='not_observed_shared_board')
         calls = []
 
         def reconstruct(episode, arm, *args, defer_poster_fusion, **kwargs):
@@ -49,9 +60,20 @@ class SharedPosterExecutionTests(unittest.TestCase):
         result, calls, written, shared, inputs, refined, _ = self.run_arms(tag_fusion_enabled=True)
         self.assertEqual(calls, [('left', True), ('right', True)])
         shared.assert_called_once_with([inputs['left'], inputs['right']])
-        self.assertEqual(written, refined)
+        for arm in refined:
+            np.testing.assert_allclose(written[arm].T_reference_imu[0, :3, 3], [-1., -2., -3.])
         self.assertEqual(result.tracks, {'left': 'left-track', 'right': 'right-track'})
-        self.assertEqual(result.coordinate_record, dict(frame_id='scene/v1'))
+        self.assertEqual(result.coordinate_record['scope'], 'task_poster')
+
+    def test_one_observing_hand_places_both_trajectories(self):
+        result, _, written, *_ = self.run_arms(tag_fusion_enabled=True, observed=('left',))
+        self.assertEqual(result.coordinate_record['scope'], 'task_poster')
+        np.testing.assert_allclose(written['right'].T_reference_imu[0, :3, 3], [-1., -2., -3.])
+        self.assertEqual(written['right'].evidence['environment_poster']['status'], 'not_observed_shared_board')
+
+    def test_missing_alignment_rejects_map_candidate(self):
+        with self.assertRaises(episode_execution.SceneFusionQualityError):
+            self.run_arms(tag_fusion_enabled=True, observed=())
 
     def test_without_poster_fusion_each_arm_writes_its_own_result(self):
         _, calls, written, shared, _, _, baselines = self.run_arms(tag_fusion_enabled=False)

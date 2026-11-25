@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import product
 from pathlib import Path
 import hashlib
 import json
@@ -18,6 +19,7 @@ from umi.workflows.segment.reporting import map_data
 from umi.workflows.segment.reporting.artifacts import result_path
 from umi.config import operational_settings as settings
 from umi.apps.viewer.resources import cache
+from umi.apps.viewer.results.trajectory_reader import compose_quaternions, rotation_quaternion
 from umi.infra.paths import PROJECT_ROOT, deps_root, python_executable
 from umi.perception import atlas
 from umi.infra.orb_install import exporter_paths
@@ -163,10 +165,35 @@ def load_shared(directory: Path, summary: dict) -> dict:
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     if (manifest.get('kind') != 'umi_scene' or manifest.get('name') != scene.get('name')
             or manifest.get('version') != scene['version']
-            or manifest.get('frame_id') != scene.get('frame_id')
+            or manifest.get('frame_id') != reference.get('frame_id', scene.get('frame_id'))
             or manifest.get('assets', {}).get('map.json') != reference['sha256']):
         raise ValueError('场景地图版本、坐标系或内容身份不一致')
     display_map = path.read_bytes()
     if hashlib.sha256(display_map).hexdigest() != reference['sha256']:
         raise ValueError('场景地图内容已变化')
-    return validate(json.loads(display_map))
+    document = validate(json.loads(display_map))
+    if 'T_board_scene' in scene:
+        for item in document['maps']:
+            if item['coordinates'] == 'trajectory':
+                _place_in_poster_frame(item, scene['T_board_scene'])
+    return document
+
+
+def _place_in_poster_frame(item: dict, matrix: list) -> None:
+    rotation = [row[:3] for row in matrix[:3]]
+    quaternion = rotation_quaternion(rotation)
+
+    def position(point):
+        return [sum(a*b for a, b in zip(row, point)) + row[3] for row in matrix[:3]]
+
+    item['points'] = [position(p) for p in item['points']]
+    for keyframe in item['keyframes']:
+        keyframe['position'] = position(keyframe['position'])
+        keyframe['quaternion'] = compose_quaternions(quaternion, keyframe['quaternion'])
+    if item.get('bounds'):
+        corners = [position(p) for p in product(*zip(*item['bounds']))]
+        item['bounds'] = [[op(axis) for axis in zip(*corners)] for op in (min, max)]
+    alignment = item['alignment']
+    alignment['translation'] = position(alignment['translation'])
+    columns = list(zip(*alignment['rotation']))
+    alignment['rotation'] = [[sum(a*b for a, b in zip(row, col)) for col in columns] for row in rotation]

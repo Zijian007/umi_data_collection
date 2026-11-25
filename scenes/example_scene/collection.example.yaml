@@ -29,7 +29,7 @@ backend:  # 必填：批次默认任务轨迹后端，take 可覆盖。
   mode: scene_map  # scene_map=场景地图；poster_independent=独立引擎+海报；poster_vio=海报/自然点/IMU 联合图；auto=有 mapping 原片时先建/复用地图。
   # scene_map:
   #   poster_constraint:
-  #     enabled: true  # true=地图定位后加入海报约束；省略默认 false。
+  #     enabled: true  # 有布局且允许检测时默认 true，轨迹输出为任务海报坐标；false 使用地图坐标。
   #     method: staged  # staged=地图+IMU 基线后优化；joint=视觉种子直接联合；默认 staged。
   poster_vio:
     base_tag:

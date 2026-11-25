@@ -109,7 +109,8 @@ class SceneSchedulingTests(unittest.TestCase):
         collection = read_yaml(path)
         collection['environment_poster'] = dict(layout_path=str(
             Path(__file__).resolve().parents[1] / 'hardware/environment_poster/environment_poster.json'))
-        collection['backend'] = dict(mode='auto', poster_edge_trim=dict(enabled=True))
+        collection['backend'] = dict(mode='auto', poster_edge_trim=dict(enabled=True),
+                                     scene_map=dict(poster_constraint=dict(enabled=False)))
         collection['tasks'] = dict(
             take_001=dict(backend=dict(mode='scene_map', scene_map=dict(
                 poster_constraint=dict(enabled=True, method='joint')))),

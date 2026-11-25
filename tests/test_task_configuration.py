@@ -147,10 +147,13 @@ class TaskConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '冲突'):
             self.preview()
 
-    def test_task_backend_derivation_does_not_enable_other_map_tasks(self):
+    def test_map_uses_declared_layout_by_default_and_respects_explicit_opt_out(self):
         self.configure(poster=True, task=dict(backend=dict(mode='poster_vio')))
         self.assertTrue(read_episode(self.helper.episode_path, verify=False).scene.parameters.tag_fusion_enabled)
-        self.configure(poster=True)
+        document = self.configure(poster=True)
+        self.assertTrue(read_episode(self.helper.episode_path, verify=False).scene.parameters.tag_fusion_enabled)
+        document['backend']['scene_map'] = dict(poster_constraint=dict(enabled=False))
+        write_yaml(self.collection, document)
         self.assertFalse(read_episode(self.helper.episode_path, verify=False).scene.parameters.tag_fusion_enabled)
 
     def test_base_tag_switch_inherits_and_task_can_override(self):

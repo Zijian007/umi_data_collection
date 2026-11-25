@@ -15,6 +15,7 @@ from umi.store.models import TaskInputs, ArmExecutionResult
 from umi.estimation.models import FusedTrajectory
 from umi.config.collection_schema import require_poster
 from umi.workflows.scene.tasks import trajectory_writers
+from umi.workflows.scene.inputs.batch import task_poster_frame
 from umi.workflows.scene.errors import PosterVioQualityError
 from umi.estimation.poster_vio import ArmSolveInput, PosterVioPolicy, assess_observations, solve_joint_poster_imu, validate_problem
 from umi.estimation.constraint_quality import longest_gap, maximum_support_gap
@@ -74,7 +75,7 @@ def _solve_task(inputs: TaskInputs, request, arms, board_seed, *, fallback,
     if solved.quality.status != 'solved':
         detail = _quality_rejection_detail(solved)
         raise PosterVioQualityError(f'poster_vio 联合图质量拒绝：{solved.quality.status}；{detail}')
-    coordinate = dict(request.coordinate_record, scope='task_poster', axes='board_layout', units='metres',
+    coordinate = dict(request.coordinate_record, **task_poster_frame(episode, request.board_asset_hash),
                        reconstruction_backend='poster_vio', quality=asdict(solved.quality))
     if fallback:
         coordinate['fallback'] = dict(fallback)

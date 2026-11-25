@@ -7,12 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 import csv
 import json
+import math
 import os
 from umi.infra import provenance as artifact_identity, provenance
 
 
 TCP_COLUMNS = ('t_episode_s', 'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw')
-SCENE_RESULT_VERSIONS = (4, 5)
+SCENE_RESULT_VERSIONS = (4, 5, 6)
 
 
 @dataclass(frozen=True)
@@ -71,7 +72,7 @@ def read_result(paths: ResultPaths) -> dict:
 
 def validate_result(paths: ResultPaths, manifest: dict) -> None:
     validate_assets(paths.published, manifest['assets'])
-    if manifest.get('schema_version') == 5:
+    if manifest.get('schema_version') in (5, 6):
         validate_assets(paths.run, manifest['evidence_assets'])
 
 
@@ -84,6 +85,23 @@ def is_poster_scene(coordinate_record: dict) -> bool:
     return coordinate_record.get('scope') == 'task_poster'
 
 
+def uses_scene_map(scene: dict) -> bool:
+    return not is_local_scene(scene) and (not is_poster_scene(scene) or 'T_board_scene' in scene)
+
+
+def _validate_poster_placement(matrix) -> None:
+    if (not isinstance(matrix, list) or len(matrix) != 4
+            or any(not isinstance(row, list) or len(row) != 4 for row in matrix)
+            or any(type(x) not in (float, int) or not math.isfinite(x) for row in matrix for x in row)
+            or matrix[3] != [0, 0, 0, 1]):
+        raise ValueError('海报坐标变换无效')
+    x, y, z = [row[:3] for row in matrix[:3]]
+    cross = [x[1]*y[2]-x[2]*y[1], x[2]*y[0]-x[0]*y[2], x[0]*y[1]-x[1]*y[0]]
+    if (any(abs(math.hypot(*axis)-1) > 1e-6 for axis in (x, y, z))
+            or abs(sum(a*b for a, b in zip(x, y))) > 1e-6 or math.dist(cross, z) > 1e-6):
+        raise ValueError('海报坐标旋转必须为右手正交矩阵')
+
+
 def scene_map_identity(map_manifest: dict) -> str:
     """固定地图的坐标身份和全部资产共同参与任务复用。"""
     return artifact_identity.canonical_hash({key: map_manifest[key]
@@ -93,6 +111,8 @@ def scene_map_identity(map_manifest: dict) -> str:
 def scene_reference(manifest: dict) -> dict:
     """读取唯一的场景坐标声明，并核对它与输入摘要中的地图身份一致。"""
     scene = manifest['scene']
+    if 'T_board_scene' in scene and (manifest.get('kind') != 'umi_scene_episode' or not is_poster_scene(scene)):
+        raise ValueError('地图到海报变换与结果坐标声明不一致')
     if manifest.get('kind') == 'umi_poster_episode':
         if (manifest.get('schema_version') not in SCENE_RESULT_VERSIONS or not is_poster_scene(scene)
                 or not scene.get('frame_id', '').startswith('poster:')
@@ -111,7 +131,19 @@ def scene_reference(manifest: dict) -> dict:
         return scene
     if manifest.get('schema_version') not in SCENE_RESULT_VERSIONS:
         raise ValueError('任务清单需要受支持的结果版本')
-    identity = scene_map_identity(dict(version=scene['version'], frame_id=scene['frame_id'],
+    reference = scene
+    if is_poster_scene(scene):
+        reference = manifest['inputs'].get('scene_map_reference')
+        if (manifest.get('schema_version') != 6 or not uses_scene_map(scene)
+                or not scene.get('frame_id', '').startswith('poster:')
+                or scene.get('axes') != 'board_layout' or scene.get('units') != 'metres'
+                or scene.get('reconstruction_backend') != 'scene_map' or not manifest.get('map')
+                or not reference or reference['version'] != scene['version']
+                or not any(item['fusion'].get('environment_poster', {}).get('status') == 'fused'
+                           for item in manifest['arm_results'].values())):
+            raise ValueError('地图定位的任务海报坐标声明无效')
+        _validate_poster_placement(scene['T_board_scene'])
+    identity = scene_map_identity(dict(version=reference['version'], frame_id=reference['frame_id'],
         mode=manifest['inputs']['map_mode'], assets=manifest['inputs']['scene_assets']))
     if identity != manifest['inputs']['scene_map_sha256']:
         raise ValueError('任务声明的场景坐标或地图资产与输入摘要不一致')
@@ -147,15 +179,16 @@ def read_arm_summary(directory: Path, manifest: dict | None = None) -> dict:
     if manifest.get('kind') == 'umi_local_episode':
         summary.update(mode='local', notes=[*summary['notes'], '独立回退：局部坐标，不与场景共享。'])
         return summary
-    if is_poster_scene(summary['scene']):
+    if not uses_scene_map(summary['scene']):
         summary.update(mode='poster', notes=[*summary['notes'], '任务海报坐标；无预建场景地图，不跨任务共享。'])
         return summary
     reference = manifest['map']
     if not isinstance(reference.get('path'), str) or Path(reference['path']).is_absolute():
         raise ValueError('场景地图引用必须为相对路径')
     # 清单中的地图路径相对于任务运行目录。
+    map_frame = manifest['inputs'].get('scene_map_reference') or summary['scene']
     summary.update(mode='scene', map=dict(path=os.path.relpath(published_arm_run(directory) / reference['path'], directory),
-                                          sha256=reference['sha256']))
+                                          sha256=reference['sha256'], frame_id=map_frame['frame_id']))
     return summary
 
 

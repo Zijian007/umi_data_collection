@@ -34,7 +34,7 @@
         <select id="map-select" aria-label="工作镜头子地图" disabled><option>尚未加载</option></select>
         <label><input id="show-keyframes" type="checkbox" checked disabled> 关键帧</label>
         <label title="显示所选子地图的原点与 X/Y/Z 轴；已对齐时与地图点使用同一展示变换"><input id="show-map-axes" type="checkbox" checked disabled> 地图坐标轴</label>
-        <label title="显示轨迹世界原点与 X/Y/Z 轴，Z 朝上，单位为米；未对齐的地图不能叠加世界轴"><input id="show-world-axes" type="checkbox" checked disabled> 世界坐标轴</label>
+        <label title="显示轨迹参考系原点与 X/Y/Z 轴，单位为米；未对齐的地图不能叠加世界轴"><input id="show-world-axes" type="checkbox" checked disabled> 世界坐标轴</label>
         <span class="axes-note">世界轴：虚线 · 米　地图轴：实线 · 地图单位</span>
         <span id="map-status" role="status">选择录像后加载地图</span>
       </div>
@@ -72,7 +72,7 @@
     </section>
     <section class="panel speed-panel"><div class="panel-header"><div class="panel-title"><span class="panel-dot amber"></span><h2>运动速度</h2><span class="muted">m/s</span></div><div class="chart-tools"><span id="chart-hand-legend" class="chart-hand-legend" hidden><i class="legend-dot mint"></i><span data-primary>左手</span><i class="legend-dot orange"></i><span data-companion>右手</span></span><span class="chart-hint">点击曲线跳转 · 与三维和视频联动</span></div></div><div class="speed-stage"><canvas id="speed-canvas" aria-label="速度随时间变化曲线，点击定位时间"></canvas></div></section>
   </div>
-  <footer class="inspection-footer"><span><i class="local-dot"></i> 本地世界坐标 · Z 轴朝上</span><span>跟踪完整度不等于真实精度 · TCP 使用 CAD 名义几何</span><button id="details-button" class="text-button">查看本次记录 ↗</button></footer>
+  <footer class="inspection-footer"><span><i class="local-dot"></i> <span id="frame-description">轨迹参考系</span></span><span>跟踪完整度不等于真实精度 · TCP 使用 CAD 名义几何</span><button id="details-button" class="text-button">查看本次记录 ↗</button></footer>
 </main>
 </div>
 <section class="playback-bar" aria-label="轨迹回放控制">

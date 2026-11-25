@@ -1,6 +1,7 @@
 """坐标身份与时钟边界：拒绝未放置/重复缩放和跨场景拼接。"""
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 
@@ -11,12 +12,23 @@ from umi.config import loader as config
 from umi.core.timing import canonical_to_video_seconds, euroc_ns_to_seconds, video_to_canonical_seconds, video_to_imu_seconds
 from umi.estimation.fixed_map import fusion
 from umi.workflows.scene.inputs import scene as scene_inputs
+from umi.workflows.scene.inputs.batch import task_poster_frame
 from umi.workflows.scene.tasks import trajectory_writers
 from umi.estimation.fixed_map.geometry import VisualObservations
 from umi.store.models import ArmTrajectory
 
 
 class CoordinateContractTests(unittest.TestCase):
+    def test_poster_frame_follows_raw_recordings_and_layout_across_runs(self):
+        def frame(left, layout, backend):
+            refs = dict(left=dict(sha256=left, path=f'{backend}/left.insv'), right=dict(sha256='right'))
+            return task_poster_frame(SimpleNamespace(recording_refs=refs), layout)['frame_id']
+
+        expected = frame('left', 'layout', 'scene_map')
+        self.assertEqual(expected, frame('left', 'layout', 'poster_vio'))
+        self.assertNotEqual(expected, frame('other take', 'layout', 'scene_map'))
+        self.assertNotEqual(expected, frame('left', 'other layout', 'scene_map'))
+
     def test_nonzero_camera_offset_is_applied_once_at_the_clock_boundary(self):
         video_s = np.array([0., .125, 1.5])
         offset_ns = -12_500_000
@@ -37,6 +49,25 @@ class CoordinateContractTests(unittest.TestCase):
             placed.placed(dict(scale=2., T_scene_metric_map=np.eye(4)), reference_frame='scene')
         sampled = fusion.sample_observations(placed, placed.imu_times_s, .2)
         self.assertEqual(sampled.reference_frame, 'scene')
+
+    def test_viewer_places_points_keyframes_and_map_axes_in_board_frame(self):
+        from umi.apps.viewer.resources.maps import _place_in_poster_frame
+        from scipy.spatial.transform import Rotation
+        matrix = np.eye(4)
+        matrix[:3, :3] = Rotation.from_euler('z', 90, degrees=True).as_matrix()
+        matrix[:3, 3] = [1, 2, 3]
+        item = dict(points=[[2, 0, 0]], bounds=[[0, 0, 0], [2, 1, 0]],
+                    keyframes=[dict(position=[2, 0, 0], quaternion=[0, 0, 0, 1])],
+                    alignment=dict(rotation=np.eye(3).tolist(), translation=[1, 0, 0], scale=2))
+        _place_in_poster_frame(item, matrix.tolist())
+        np.testing.assert_allclose(item['points'], [[1, 4, 3]])
+        np.testing.assert_allclose(item['keyframes'][0]['position'], [1, 4, 3])
+        np.testing.assert_allclose(Rotation.from_quat(item['keyframes'][0]['quaternion']).as_matrix(),
+                                   matrix[:3, :3], atol=1e-12)
+        np.testing.assert_allclose(item['bounds'], [[0, 2, 3], [1, 4, 3]], atol=1e-12)
+        np.testing.assert_allclose(item['alignment']['translation'], [1, 3, 3])
+        np.testing.assert_allclose(item['alignment']['rotation'], matrix[:3, :3])
+        self.assertEqual(item['alignment']['scale'], 2)
 
     def test_scene_fusion_rejects_raw_visual_map_coordinates(self):
         times = np.arange(3.)

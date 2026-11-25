@@ -23,6 +23,7 @@ from umi.config.parameter_models import EnvironmentTagParameters
 from umi.estimation.models import FusedTrajectory, RecordingPaths, ReconstructionContext
 from umi.workflows.segment import reconstruction
 from umi.estimation.constraint_quality import longest_gap, maximum_support_gap
+from umi.workflows.scene.inputs.batch import task_poster_frame
 from umi.perception.recordings import write_times_csv
 
 
@@ -63,8 +64,7 @@ def solve_task(episode, prepared_recordings, directory, *, parallel=False, detec
         raise ValueError(f'双手海报锚定的重力方向不一致：{gravity_difference_deg:.2f} deg')
 
     coordinate_record = dict(name=episode.scene.name, session=episode.session.name, version=None,
-                      frame_id=f'poster:{directory.name}', scope='task_poster',
-                      axes='board_layout', units='metres',
+                      **task_poster_frame(episode, expected_layout['asset_hash']),
                       gravity_difference_deg=gravity_difference_deg)
     for arm, result in trajectories.items():
         trajectories[arm] = replace(result, evidence=dict(result.evidence,

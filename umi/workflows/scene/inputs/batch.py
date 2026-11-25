@@ -225,6 +225,13 @@ def configuration_identity(batch_root: Path, *, collection: dict | None = None) 
     return artifact_identity.canonical_hash(dict(batch=collection, kit=kit))
 
 
+def task_poster_frame(episode: Episode, layout_hash: str) -> dict:
+    """同一组原片和布局共享任务海报参考系，包括换后端或换地图重新求解。"""
+    recordings = {arm: ref['sha256'] for arm, ref in episode.recording_refs.items()}
+    identity = artifact_identity.canonical_hash(dict(recordings=recordings, layout=layout_hash))
+    return dict(frame_id=f'poster:{identity}', scope='task_poster', axes='board_layout', units='metres')
+
+
 def episode_inputs(episode, cameras, map_manifest) -> dict:
     from umi.perception.poster.layout import load as load_tag_board
 

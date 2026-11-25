@@ -200,7 +200,7 @@ run → workflow.run_episode()
 3. `fusion.fuse()` 使用各镜头 `T_cam_imu` 与原始 IMU 求 `T_scene_imu`；物理杆臂不乘地图尺度，不按任务重新置零。
 4. `trajectory_writers.write_arm_result()` 输出 `T_scene_cam = T_scene_imu T_imu_cam` 和 `T_scene_tcp = T_scene_cam T_cam_tcp`。
 
-求解节点时间为 `t_video + cam_time_offset`，处于该相机本机 IMU 时钟。输出时间为 `t_video + 跨相机偏移`。手动同步直接来自任务配置。双手 `audio_auto` 以第一路录像为参考，`recording.audio_sync.algorithm` 选择 `specialist` 的音量包络互相关或 `kiwi` 的频谱指纹投票与 GCC-PHAT 精对齐。两者都将同一常量偏移作用于视频、IMU 和曝光时间轴。`trajectory_writers.write_bimanual_trajectory()` 裁取已经应用偏移后的共同区间并插值。场景地图结果的 `frame_id` 来自固定地图版本。海报结果使用 `poster:<run_id>`，旧单手局部回退使用 `local:<run_id>`。
+求解节点时间为 `t_video + cam_time_offset`，处于该相机本机 IMU 时钟。输出时间为 `t_video + 跨相机偏移`。手动同步直接来自任务配置。双手 `audio_auto` 以第一路录像为参考，`recording.audio_sync.algorithm` 选择 `specialist` 的音量包络互相关或 `kiwi` 的频谱指纹投票与 GCC-PHAT 精对齐。两者都将同一常量偏移作用于视频、IMU 和曝光时间轴。`trajectory_writers.write_bimanual_trajectory()` 裁取已经应用偏移后的共同区间并插值。地图系结果的 `frame_id` 来自固定地图版本。三个后端的海报系结果使用 `poster:<原片与布局摘要>`，旧单手局部回退使用 `local:<run_id>`。
 
 `umi/workflows/scene/synchronization.py` 负责 `run` 的音频同步：算法选择、原片和算法版本校验以及 `sync.json` 读写。
 

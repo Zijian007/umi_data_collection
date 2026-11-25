@@ -31,6 +31,7 @@ from umi.perception.poster import detection
 from umi.perception.poster.geometry import camera_model
 from umi.perception.poster.quality import cull_threshold
 from umi.store import layout
+from umi.workflows.scene.inputs.batch import task_poster_frame
 from umi.store.models import TaskInputs
 from umi.workflows.scene.tasks import measurements
 
@@ -128,8 +129,7 @@ def prepare_task_inputs(inputs: TaskInputs):
         inputs, prepared_arms, tracked, parameters)
     solve_inputs, shared_gravity, difference = _share_gravity(solve_inputs, scene)
     coordinate = dict(name=scene.name, session=episode.session.name, version=None,
-                       scope='task_poster', frame_id=f'poster:{inputs.directory.name}',
-                       axes='board_layout', units='metres', gravity_difference_deg=difference)
+                       **task_poster_frame(episode, board.asset_hash), gravity_difference_deg=difference)
     # Native IMU -> common task clock. Lens calibration offset must be removed
     # before applying the cross-camera video-clock shift.
     clock_offsets = {arm: float(inputs.offsets_s[arm])

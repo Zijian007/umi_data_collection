@@ -545,6 +545,7 @@ class PosterWorkflowTests(unittest.TestCase):
         declaration_path = helper.batch_root / 'collection.yaml'
         declaration = read_yaml(declaration_path)
         declaration['environment_poster'] = dict(layout_path=str(original), detection=dict(enabled=True))
+        declaration['backend']['scene_map'] = dict(poster_constraint=dict(enabled=False))
         write_yaml(declaration_path, declaration)
         identities = []
 

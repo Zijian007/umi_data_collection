@@ -21,7 +21,7 @@ from umi.infra.concurrency import daemon_map
 from umi.infra.file_store import write_tum
 from umi.store.models import ArmExecutionResult, ArmTrajectory, PreparedRecording, TaskInputs
 from umi.estimation.models import FusedTrajectory
-from umi.store.result_io import is_local_scene, is_poster_scene
+from umi.store.result_io import is_local_scene, is_poster_scene, uses_scene_map
 
 if TYPE_CHECKING:
     from umi.perception.gripper.distance.measurement import TagDistanceResult
@@ -41,8 +41,7 @@ def write_arm_result(inputs: TaskInputs, arm: str, fusion_result: FusedTrajector
         recording, fusion_result, video_offset_s, coordinate_record, directory,
         width=measured.width, tag_distance=measured.tag_distance,
         export_auxiliary_trajectories=scene.parameters.export_auxiliary_trajectories,
-        localization_lenses=('front',) if is_local_scene(coordinate_record) or is_poster_scene(coordinate_record)
-        else scene.localization_lenses(arm),
+        localization_lenses=scene.localization_lenses(arm) if uses_scene_map(coordinate_record) else ('front',),
     )
     return (
         track,
@@ -200,7 +199,7 @@ def write_arm_trajectory(recording: PreparedRecording, result: FusedTrajectory,
 
 def write_bimanual_trajectory(tracks: dict[str, ArmTrajectory], directory: Path) -> list[float]:
     if len({track.frame_id for track in tracks.values()}) != 1:
-        raise ValueError('双手轨迹必须使用同一个固定场景坐标系')
+        raise ValueError('双手轨迹必须使用同一个参考坐标系')
     start = max(track.episode_times_s[0] for track in tracks.values())
     end = min(track.episode_times_s[-1] for track in tracks.values())
     primary = tracks.get('left', next(iter(tracks.values()))).episode_times_s

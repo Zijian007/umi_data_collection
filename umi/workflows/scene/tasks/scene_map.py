@@ -17,9 +17,10 @@ import shutil
 import uuid
 import numpy as np
 from umi.infra import provenance as artifact_identity
-from umi.core.geometry import imu_from_camera
+from umi.core.geometry import imu_from_camera, validate_transform
 from umi.core.timing import video_to_imu_seconds
 from umi.store import layout
+from umi.workflows.scene.inputs.batch import task_poster_frame
 from umi.estimation import mapping as slam
 from umi.workflows.scene import camera_assets
 from umi.estimation.fixed_map import fusion
@@ -42,7 +43,6 @@ def execute_task(inputs: TaskInputs, *, map_dir: Path, map_manifest: dict,
     scene, name = episode.scene, episode.root.name
     prepared_recordings, run_dir = inputs.recordings, inputs.directory
     cache_audit, console = inputs.cache_audit, inputs.console
-    written = {}
     # 双手共享同一张海报：各手先只做 map+IMU，最后在一张图里联合求解海报位姿。
     shared_poster = (
         len(prepared_recordings) > 1
@@ -50,8 +50,7 @@ def execute_task(inputs: TaskInputs, *, map_dir: Path, map_manifest: dict,
         and scene.parameters.tag_fusion_enabled
     )
 
-    def write(arm, fusion_result, coordinate_record):
-        written[arm] = trajectory_writers.write_arm_result(inputs, arm, fusion_result, coordinate_record)
+    written = {}
 
     def run_arm(arm):
         recording = prepared_recordings[arm]
@@ -91,11 +90,8 @@ def execute_task(inputs: TaskInputs, *, map_dir: Path, map_manifest: dict,
                 ),
             )
 
-        # Single-arm runs publish each successful arm immediately so a failed
-        # peer still leaves useful diagnostics. Shared poster refinement waits
-        # until every arm has supplied its observation context.
-        if not shared_poster:
-            write(arm, fusion_result, arm_coordinate_record)
+        if not scene.parameters.tag_fusion_enabled or is_local_scene(arm_coordinate_record):
+            written[arm] = trajectory_writers.write_arm_result(inputs, arm, fusion_result, arm_coordinate_record)
         return _ArmSolveResult(arm, fusion_result, arm_coordinate_record, poster_inputs)
 
     if inputs.arm_cpu_sets:
@@ -104,19 +100,33 @@ def execute_task(inputs: TaskInputs, *, map_dir: Path, map_manifest: dict,
     else:
         arm_results = [run_arm(arm) for arm in prepared_recordings]
 
+    coordinate_record = arm_results[0].coordinate_record
+    if written:
+        return trajectory_writers.collect_arm_results(written.items(), coordinate_record)
+    trajectories = {result.arm: result.trajectory for result in arm_results}
     if shared_poster:
         from umi.estimation.fixed_map import poster
 
-        refined = poster.refine_shared_poster_pose(
-            [result.poster_inputs for result in arm_results if result.poster_inputs is not None])
-        for result in arm_results:
-            write(result.arm, refined.get(result.arm, result.trajectory), result.coordinate_record)
+        trajectories.update(poster.refine_shared_poster_pose(
+            [result.poster_inputs for result in arm_results if result.poster_inputs is not None]))
 
-    # 只有单手任务会独立回退，此时整个任务改用该手的局部坐标记录。
-    for result in arm_results:
-        if is_local_scene(result.coordinate_record):
-            coordinate_record = result.coordinate_record
-    return trajectory_writers.collect_arm_results(written.items(), coordinate_record)
+    posters = [result.evidence.get('environment_poster', {}) for result in trajectories.values()]
+    fused = [p for p in posters if p.get('status') == 'fused']
+    if not fused:
+        raise SceneFusionQualityError('本次任务没有可用的海报位姿，无法发布海报坐标轨迹')
+    board = validate_transform(fused[0]['T_scene_board'])
+    layout_hash = fused[0]['layout']['asset_hash']
+    for p in fused[1:]:
+        if (p['layout']['asset_hash'] != layout_hash
+                or not np.allclose(validate_transform(p['T_scene_board']), board, rtol=0, atol=1e-8)):
+            raise ValueError('双手海报位姿或布局不一致')
+    to_board = np.linalg.inv(board)
+    coordinate_record = dict(coordinate_record, **task_poster_frame(episode, layout_hash),
+                             reconstruction_backend='scene_map', T_board_scene=to_board.tolist())
+    trajectories = {arm: replace(result, T_reference_imu=to_board @ result.T_reference_imu)
+                    for arm, result in trajectories.items()}
+    return trajectory_writers.write_task_results(inputs, trajectories, coordinate_record,
+                                                parallel=bool(inputs.arm_cpu_sets))
 
 
 def _restore_localization(cache_dir: Path, key: str, cache_audit) -> VisualObservations | None:

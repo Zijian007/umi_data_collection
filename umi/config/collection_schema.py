@@ -68,8 +68,6 @@ def _backend(record, label, *, batch=False):
     constraint = _fields(scene_map.get('poster_constraint', {}), constraint_label, {'enabled', 'method'})
     if batch or constraint:
         policy = _enabled(constraint, constraint_label)
-        if batch:
-            policy.setdefault('enabled', False)
         if 'method' in constraint:
             if constraint['method'] not in ('staged', 'joint'):
                 raise ValueError(f'{constraint_label}.method 必须为 staged 或 joint')
@@ -157,6 +155,7 @@ def normalize_collection(document: dict) -> dict:
     description = _scene_section(document['scene'])
     layout, reference_arm, policy, version = _map_section(document.get('map', {}))
     tags, disabled_poster_switches = _environment_poster_section(document)
+    reconstruction['scene_map_poster_constraint'].setdefault('enabled', tags is not None and not disabled_poster_switches)
     tasks = _mapping(document.get('tasks', {}), 'tasks')
     normalized_tasks = {name: _task_section(name, task, arms) for name, task in tasks.items()}
 

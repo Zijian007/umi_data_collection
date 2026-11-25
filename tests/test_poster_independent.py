@@ -305,7 +305,9 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
 
         def scene_solve(episode, arm, recording, *args, **kwargs):
             trajectory = self.solved(episode, arm, recording, h.root, require_poster=True)
-            trajectory = replace(trajectory, evidence=dict(trajectory.evidence, visual_consistency_rms_m=0.))
+            trajectory.evidence['environment_poster']['T_scene_board'] = np.eye(4).tolist()
+            trajectory = replace(trajectory, evidence=dict(trajectory.evidence, scene_map_priors_used=True,
+                                                          visual_consistency_rms_m=0.))
             return scene_reconstruction.ArmReconstruction(trajectory)
 
         with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=scene_solve), \
@@ -316,6 +318,9 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         manifest = json.loads((h.task_root / 'results/data/episode.json').read_text())
         self.assertEqual(manifest['kind'], 'umi_scene_episode')
         self.assertIsNotNone(manifest['map'])
+        self.assertEqual(scene_reference(manifest)['scope'], 'task_poster')
+        self.assertEqual(manifest['scene']['reconstruction_backend'], 'scene_map')
+        self.assertNotEqual(manifest['scene']['frame_id'], manifest['inputs']['scene_map_reference']['frame_id'])
 
     def test_missing_poster_arm_never_replaces_previous_success(self):
         self.configure()

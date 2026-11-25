@@ -26,7 +26,7 @@ def _unit_quaternion(quaternion: list[float]) -> list[float]:
     return [component / norm for component in quaternion]
 
 
-def _rotation_quaternion(rotation: list[list[float]]) -> list[float]:
+def rotation_quaternion(rotation: list[list[float]]) -> list[float]:
     if len(rotation) != 3 or any(len(row) != 3 for row in rotation):
         raise ValueError('TCP 外参需要 3×3 旋转矩阵')
     if any(not math.isfinite(component) for row in rotation for component in row):
@@ -68,25 +68,26 @@ def _inverse_pose(quaternion: list[float], translation: list[float]) -> tuple[li
     return inverse, _rotate(inverse, [-component for component in translation])
 
 
+def compose_quaternions(left, right):
+    x, y, z, w = left
+    a, b, c, d = right
+    return _unit_quaternion([w*a + x*d + y*c - z*b, w*b - x*c + y*d + z*a,
+                             w*c + x*b - y*a + z*d, w*d - x*a - y*b - z*c])
+
+
 def _transform_track(times: list[float], track: dict, offset: tuple[list[float], list[float]]) -> dict:
     rotation, translation = offset
-    right_x, right_y, right_z, right_w = rotation
     positions, quaternions = [], []
     for position, quaternion in zip(track['position'], track['quaternion']):
         rotated = _rotate(quaternion, translation)
         positions.append([position[axis] + rotated[axis] for axis in range(3)])
-        left_x, left_y, left_z, left_w = quaternion
-        quaternions.append(_unit_quaternion([
-            left_w * right_x + left_x * right_w + left_y * right_z - left_z * right_y,
-            left_w * right_y - left_x * right_z + left_y * right_w + left_z * right_x,
-            left_w * right_z + left_x * right_y - left_y * right_x + left_z * right_w,
-            left_w * right_w - left_x * right_x - left_y * right_y - left_z * right_z]))
+        quaternions.append(compose_quaternions(quaternion, rotation))
     return trajectory_from_poses(times, positions, quaternions)
 
 
 def derive_body_tracks(times: list[float], tcp: dict, settings: dict) -> dict:
     tcp_geometry = settings['T_camera_tcp']
-    camera_offset = _inverse_pose(_rotation_quaternion(tcp_geometry['R_rows']), tcp_geometry['t_m'])
+    camera_offset = _inverse_pose(rotation_quaternion(tcp_geometry['R_rows']), tcp_geometry['t_m'])
     camera = _transform_track(times, tcp, camera_offset)
     measured = settings['measurements']['front']
     imu_offset = _inverse_pose(_unit_quaternion(measured['q_xyzw']), measured['p'])

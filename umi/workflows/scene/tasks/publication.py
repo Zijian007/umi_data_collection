@@ -14,7 +14,7 @@ from umi.infra import provenance as artifact_identity, provenance
 from umi.infra.file_store import publish_link, read_yaml, write_json
 from umi.store import layout
 from umi.workflows.scene import cleanup, episodes
-from umi.store.result_io import (artifact_hashes, is_local_scene, is_poster_scene, quality_summary,
+from umi.store.result_io import (artifact_hashes, is_local_scene, is_poster_scene, uses_scene_map, quality_summary,
                                  read_result, recording_identity, result_paths, scene_reference, validate_result)
 from umi.store.models import ArmExecutionResult, Episode, EpisodeRunResult, ArmTrajectory
 from umi.workflows.scene.tasks import trajectory_writers
@@ -108,6 +108,9 @@ def reuse_episode(episode: Episode, input_identity: dict, *, force: bool) -> Epi
             continue
         old = read_result(paths)
         if old.get('kind') not in kinds or old.get('inputs') != input_identity:
+            continue
+        if old.get('schema_version', 4) < 6 and (is_poster_scene(old['scene']) or
+                (old['kind'] == 'umi_scene_episode' and episode.scene.scene_map_poster_constraint_enabled)):
             continue
         reference = scene_reference(old)
         validate_result(paths, old)
@@ -236,9 +239,9 @@ def _format_episode_report(episode: Episode, tracks: dict[str, ArmTrajectory], *
     hand = {'left': '左手', 'right': '右手'}
     local = is_local_scene(coordinate_record)
     poster_frame = is_poster_scene(coordinate_record)
-    mapless = local or poster_frame
+    mapless = not uses_scene_map(coordinate_record)
     backend = ('独立局部重建' if local else
-               coordinate_record.get('reconstruction_backend', 'poster_independent' if poster_frame else 'scene_map'))
+               coordinate_record.get('reconstruction_backend', 'poster_independent' if mapless else 'scene_map'))
     scope = ('本录像局部米制坐标' if local else
              '任务海报米制坐标' if poster_frame else '共享场景米制坐标')
     start, end = common_interval_s
@@ -321,13 +324,15 @@ def write_episode_result(episode: Episode, tracks: dict[str, ArmTrajectory], dir
     """写任务报告与资产清单；不更新 results 指针或人工验收状态。"""
     local = is_local_scene(coordinate_record)
     poster_frame = is_poster_scene(coordinate_record)
-    mapless = local or poster_frame
-    if poster_frame and map_path is not None:
+    mapless = not uses_scene_map(coordinate_record)
+    if mapless and poster_frame and map_path is not None:
         raise ValueError('任务海报结果不能引用共享场景地图')
     if local and (len(tracks) != 1 or map_path is not None):
         raise ValueError('局部回退只允许单手且不能引用共享地图')
+    if not mapless and map_path is None:
+        raise ValueError('场景地图定位结果需要记录地图来源')
     if 'reconstruction_backend' not in coordinate_record:
-        backend = 'independent' if local else 'poster_independent' if poster_frame else 'scene_map'
+        backend = 'independent' if local else 'poster_independent' if mapless else 'scene_map'
         coordinate_record = dict(coordinate_record, reconstruction_backend=backend)
     report = _format_episode_report(
         episode, tracks, common_interval_s=common_interval_s, coordinate_record=coordinate_record,
@@ -341,7 +346,8 @@ def write_episode_result(episode: Episode, tracks: dict[str, ArmTrajectory], dir
         'reconstruction.json', 'tag_trim.json', 'fallback.json', 'reconstruction_attempts'))
     preflight_path = directory / 'preflight_report.json'
     primary_times = tracks.get('left', next(iter(tracks.values()))).episode_times_s
-    metadata = dict(kind='umi_local_episode' if local else 'umi_poster_episode' if poster_frame else 'umi_scene_episode', schema_version=5,
+    metadata = dict(kind='umi_local_episode' if local else 'umi_poster_episode' if poster_frame and mapless else 'umi_scene_episode',
+        schema_version=6 if poster_frame else 5,
         code_revision=artifact_identity.git_revision(),
         status='local_ok' if local else 'ok', name=episode.root.name, session=episode.session.name,
         kit=dict(id=episode.session.kit['id'], arms={arm: episode.session.kit['arms'][arm] for arm in tracks}),

@@ -26,7 +26,7 @@ import shutil
 import uuid
 from umi.infra import provenance as artifact_identity
 from umi.infra.file_store import recompute_when_forced, write_json
-from umi.store.result_io import validate_assets, is_local_scene, is_poster_scene
+from umi.store.result_io import validate_assets, is_local_scene, uses_scene_map
 from umi.store.cache import CacheAudit
 from umi.workflows.scene import recordings, synchronization
 from umi.workflows.scene.tasks.publication import RunAudit
@@ -415,8 +415,7 @@ def execute_episode(resolved: ResolvedInputs, task_console: Console, *, cores: s
         coordinate_record = arm_execution.coordinate_record
         run_console.write(_backend_summary(arm_execution, mode), step=(2, 3), state='完成')
         # 局部回退结果不引用共享地图。
-        display_map_path = (None if is_local_scene(coordinate_record) or is_poster_scene(coordinate_record)
-                            else map_dir / 'map.json')
+        display_map_path = (map_dir / 'map.json' if uses_scene_map(coordinate_record) else None)
         if mode == 'auto' and display_map_path is not None:
             validate_assets(map_dir, map_manifest['assets'])
 

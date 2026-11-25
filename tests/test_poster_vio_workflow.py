@@ -64,6 +64,7 @@ class PosterVioWorkflowTests(unittest.TestCase):
             name='fixture', reconstruction_mode='poster_vio')
         episode = SimpleNamespace(root=self.root / 'take_001', scene=scene,
                                   expected_arms=('left', 'right'), recordings=paths,
+                                  recording_refs={arm: dict(sha256=arm) for arm in paths},
                                   session=SimpleNamespace(name='batch'))
         self.inputs = TaskInputs(episode, recordings, dict(left=0., right=.12), self.root / 'run',
                                 None, None, SimpleNamespace(write=lambda *a, **k: None))

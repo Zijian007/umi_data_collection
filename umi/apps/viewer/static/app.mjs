@@ -64,7 +64,7 @@ async function load(id) {
     const summary = recording.summary, selection = summary.calibration_used || {};
     $('record-title').textContent = recordingLabel(recording.name); $('record-title').title = recording.name;
     $('record-meta').textContent = `${recording.name} · ${summary.scene?.frame_id || summary.mode || 'handheld'}`;
-    $('status-badge').textContent = summary.mode === 'poster' ? '海报轨迹 · 任务坐标' : summary.mode === 'local' ? '独立回退 · 局部坐标' : summary.status === 'ok' ? '抽取成功' : summary.status === 'failed' ? '抽取失败' : '已加载轨迹';
+    $('status-badge').textContent = summary.scene?.scope === 'task_poster' ? '海报轨迹 · 任务坐标' : summary.mode === 'local' ? '独立回退 · 局部坐标' : summary.status === 'ok' ? '抽取成功' : summary.status === 'failed' ? '抽取失败' : '已加载轨迹';
     $('status-badge').classList.toggle('failed', summary.status === 'failed');
     $('stat-duration').replaceChildren(document.createTextNode((recording.times.at(-1) - recording.times[0]).toFixed(1)), unit(' s'));
     $('detail-serial').textContent = selection.serial || '未记录'; $('detail-calibration').textContent = selection.id || '未记录';
@@ -123,21 +123,24 @@ function selectMap() {
   scene.setMap(map);
   const count = `${map.points.length.toLocaleString()} 点${map.point_count > map.points.length ? `（原始 ${map.point_count.toLocaleString()}）` : ''} · ${map.keyframes.length} 关键帧`;
   const alignment = map.alignment;
-  const detail = map.alignment.source === 'fixed_scene' ? '固定场景坐标 · 验收残差不是真实误差' : map.coordinates === 'trajectory'
+  const detail = map.alignment.source === 'fixed_scene' ? (state.recording.summary.scene?.scope === 'task_poster' ? '固定地图已转换到任务海报坐标' : '固定场景坐标 · 验收残差不是真实误差') : map.coordinates === 'trajectory'
     ? `展示拟合 ${(alignment.rmse_m*1000).toFixed(1)} mm · 非真实误差`
     : `原始地图坐标 · 不叠加轨迹：${alignment.reason}`;
   $('map-status').textContent = `${count} · ${detail}`;
   updateMapLegend();
 }
 function updateMapLegend() {
-  $('scene-scale').textContent = scene.rawMap ? '地图单位 · 朝向未对齐' : '单位 m · Z ↑';
+  const poster = state.recording?.summary?.scene?.scope === 'task_poster';
+  const axes = poster ? '任务海报坐标 · Z 指入纸面' : '世界坐标 · Z 朝上';
+  $('frame-description').textContent = axes;
+  $('scene-scale').textContent = scene.rawMap ? '地图单位 · 朝向未对齐' : `单位 m · ${axes}`;
   $('legend-track').parentElement.hidden = scene.rawMap;
   $('legend-current').hidden = scene.rawMap;
   $('legend-companion').hidden = scene.rawMap || !state.recording?.companion_tracks?.[state.track];
   $('legend-map').hidden = !scene.showMap || !scene.map;
   $('show-map-axes').disabled = !scene.showMap || !scene.map;
   $('show-world-axes').disabled = !state.recording || scene.rawMap;
-  $('show-world-axes').title = scene.rawMap ? '此子地图未对齐，不能叠加世界坐标轴' : '轨迹世界原点与坐标轴，单位为米，Z 轴朝上';
+  $('show-world-axes').title = scene.rawMap ? '此子地图未对齐，不能叠加世界坐标轴' : `轨迹原点与坐标轴，单位为米 · ${axes}`;
 }
 function setTrack(track) {
   if (!state.recording?.tracks[track]) return;
