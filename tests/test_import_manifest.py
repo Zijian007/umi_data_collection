@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 
 from umi.infra import provenance
-from umi.infra.file_store import read_yaml, write_yaml
-from umi.workflows.scene.import_manifest import ensure_epoch_plan, read_manifest
+from umi.infra.file_store import write_yaml
+from umi.workflows.scene.collection_recordings import read_recordings, save_epoch_plan
 
 
 class ImportManifestTests(unittest.TestCase):
@@ -36,9 +36,10 @@ class ImportManifestTests(unittest.TestCase):
     def test_handoff_materializes_internal_plan(self):
         with tempfile.TemporaryDirectory() as directory:
             batch = self.make_batch(Path(directory))
-            self.assertEqual(read_manifest(batch)['maps'][0]['epoch'], 'epoch_001')
-            plan = ensure_epoch_plan(batch)
-            self.assertEqual(read_yaml(plan)['tasks'], [{'task': 'take_001', 'sequence': 1}])
+            capture = read_recordings(batch)
+            self.assertEqual(capture['maps'][0]['epoch'], 'epoch_001')
+            plan = save_epoch_plan(batch, capture)
+            self.assertEqual(plan['tasks'], [{'task': 'take_001', 'sequence': 1}])
 
     def append_commit(self, batch: Path, *, mutate=None) -> None:
         """模拟 Organizer 的第二次提交：新增一张地图和一个任务。"""
@@ -61,12 +62,12 @@ class ImportManifestTests(unittest.TestCase):
     def test_later_commit_appends_and_keeps_built_map_versions(self):
         with tempfile.TemporaryDirectory() as directory:
             batch = self.make_batch(Path(directory))
-            plan_path = ensure_epoch_plan(batch)
-            plan = read_yaml(plan_path)
+            plan_path = batch / '.pipeline/map_epochs.yaml'
+            plan = save_epoch_plan(batch, read_recordings(batch))
             plan['maps'][0]['map_version'] = '20261117_100000-a1b2c3d4'  # build --epochs 已构建
             write_yaml(plan_path, plan)
             self.append_commit(batch)
-            plan = read_yaml(ensure_epoch_plan(batch))
+            plan = save_epoch_plan(batch, read_recordings(batch))
             self.assertEqual([(item['epoch'], item['map_version']) for item in plan['maps']],
                              [('epoch_001', '20261117_100000-a1b2c3d4'), ('epoch_002', None)])
             self.assertEqual([item['task'] for item in plan['tasks']], ['take_001', 'take_002'])
@@ -82,11 +83,12 @@ class ImportManifestTests(unittest.TestCase):
                                 (drop_task, '删除了已登记的任务 take_001')):
             with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
                 batch = self.make_batch(Path(directory))
-                plan_path = ensure_epoch_plan(batch)
+                save_epoch_plan(batch, read_recordings(batch))
+                plan_path = batch / '.pipeline/map_epochs.yaml'
                 before = plan_path.read_text()
                 self.append_commit(batch, mutate=mutate)
                 with self.assertRaisesRegex(ValueError, message):
-                    ensure_epoch_plan(batch)
+                    save_epoch_plan(batch, read_recordings(batch))
                 self.assertEqual(plan_path.read_text(), before)
 
     def test_changed_hash_is_rejected(self):
@@ -94,7 +96,7 @@ class ImportManifestTests(unittest.TestCase):
             batch = self.make_batch(Path(directory))
             (batch / 'mapping/epoch_001/map.insv').write_bytes(b'changed')
             with self.assertRaisesRegex(ValueError, 'SHA256'):
-                read_manifest(batch)
+                read_recordings(batch)
 
 
 if __name__ == '__main__':

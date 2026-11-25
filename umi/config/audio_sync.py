@@ -22,6 +22,12 @@ AUDIO_SYNC_RECIPES = {
 DIRECTORY = ALGORITHM_DIRECTORY / 'audio_sync'
 
 
+def validate_algorithm(value: object, label: str) -> str:
+    if not isinstance(value, str) or value not in AUDIO_SYNC_RECIPES:
+        raise ValueError(f'{label} 必须为 {" 或 ".join(AUDIO_SYNC_RECIPES)}')
+    return value
+
+
 @dataclass(frozen=True)
 class SpecialistParameters:
     sample_rate_hz: int

@@ -61,7 +61,7 @@ A/B 只求解和返回测量；验收策略决定是否可用；安装是独立�
 
 函数显式接收所需的板、IMU、重力或轨迹参数组。A/B 的两个公开入口共用一个内部执行函数，执行器统一记录异常所属步骤。
 
-板几何由 `pipeline/inputs.load_board()` 将唯一布局 [`hardware/calibration_targets/aprilgrid.json`](../../../hardware/calibration_targets/aprilgrid.json) 与本次 `--tag-size-mm` 实测边长合并。布局中的标签族和黑边需符合当前 Basalt/OpenCV 检测器；传给 Basalt 的板文件只含 `tagCols`、`tagRows`、`tagSpacing`、`tagSize`（米）。A4/A3 打印资产与自检记录放在 `prints/`，不作为求解配置；`umi-maint calib check` 核对这些记录与布局是否一致。详见 [标定板说明](../../../hardware/calibration_targets/README.md)。
+板几何由 `pipeline/inputs.load_board()` 将唯一布局 [`hardware/calibration_targets/aprilgrid.json`](../../../hardware/calibration_targets/aprilgrid.json) 与本次 `--tag-size-mm` 实测边长合并。布局中的标签族和黑边需符合当前 Basalt/OpenCV 检测器；传给 Basalt 的板文件只含 `tagCols`、`tagRows`、`tagSpacing`、`tagSize`（米）。A4/A3 打印资产与自检记录放在 `prints/`，不作为求解配置；`umi-calib check` 核对这些记录与布局是否一致。详见 [标定板说明](../../../hardware/calibration_targets/README.md)。
 
 C 的轨迹配置在板几何解析后通过 `Configuration.load_trajectory_validation(tag_size_m=...)` 生成，将实测尺寸派生到 `orb.initial_tag_size_m`；run、verify、环境镜头 Scene 与 recheck 使用同一规则，配置快照和检查点均记录派生后的值。板参考通过球面 KB4 反投影保留超 90° 的射线方向，再由 `minimum_bearing_z` 筛选可用于前向 PnP 的角点；不再调用会截断半径的 `cv2.fisheye.undistortPoints`。拟合诊断仍单独记录 OpenCV 和自带 ORB-SLAM3 反投影限制，不把它们当成全视野真值。时间匹配/退化的数值保护在 `trajectory_metrics.py`，覆盖归一化半径由相机规格推导，不再作为 YAML 调参项。
 
@@ -81,7 +81,7 @@ C 同时显式覆盖 `input.mode: handheld`、`environment_tags.tag_fusion_enabl
 
 `PASS`、`FAIL`、中文阶段名只用于展示。断点使用 `estimate_intrinsics`、`estimate_camera_imu`、`measure_gravity`、`validate_trajectory` 等稳定 ID。环境镜头登记文件需要的 PASS 文案在发布边界转换。
 
-必需步骤失败、中断，或 C 证据无效/不足 → `incomplete`；有完整证据但质量不合格 → `rejected`。二者都不自动安装。`umi-maint calib install --allow-rejected` 只允许覆盖完整结果的质量拒绝，不能覆盖缺证据、错误身份或已变化参数。
+必需步骤失败、中断，或 C 证据无效/不足 → `incomplete`；有完整证据但质量不合格 → `rejected`。二者都不自动安装。`umi-calib install --allow-rejected` 只允许覆盖完整结果的质量拒绝，不能覆盖缺证据、错误身份或已变化参数。
 
 D 工具以 REPORT_ONLY 调用，重力残差超过默认 0.3 m/s² 给 WARN；无静止窗口也给诊断提醒。工具失败、缺输出、非法 JSON、输入哈希或参数不符都是执行错误。每次重算使用唯一工作目录，不回读旧成功文件。
 
@@ -112,9 +112,9 @@ calibration_result/
 
 `recheck` 校验现有证据与参数绑定，只允许改变验收门限，保留完整先前验收记录。不调用算法、不安装、不依赖当前 registry 默认参数。安装重新校验操作类型、设备/镜头、参数与清单、证据指纹和完成状态。run/recheck/install 共用输出旁的锁；安装在持有结果锁时再进入 registry 锁。
 
-成功且可用的结果默认清理 work；失败、不完整和中断保留现场。中断保存状态后继续传播信号。工作镜头与环境镜头都支持自动续跑。维护入口可用 `--workers`、`--cores` 和 `--keep-work`。
+成功且可用的结果默认清理 work；失败、不完整和中断保留现场。中断保存状态后继续传播信号。工作镜头与环境镜头都支持自动续跑。`umi-calib run` 支持 `--workers`、`--cores` 和 `--keep-work`。
 
-A/C 的独立板角点分别缓存到 `work/{A,C}_board.npz`。缓存绑定录像准备身份、抽帧、上采样、检测代码与 OpenCV 版本，与相机参数无关；求解参数改变时可复用角点，PnP 仍使用本次参数重算。先查角点缓存，再按需准备图像；同轮已准备的数据不重复校验。要保留这些中间数据用于调参，用维护入口运行并加 `--keep-work`。
+A/C 的独立板角点分别缓存到 `work/{A,C}_board.npz`。缓存绑定录像准备身份、抽帧、上采样、检测代码与 OpenCV 版本，与相机参数无关；求解参数改变时可复用角点，PnP 仍使用本次参数重算。先查角点缓存，再按需准备图像；同轮已准备的数据不重复校验。要保留这些中间数据用于调参，给 `umi-calib run` 加 `--keep-work`。
 
 首次或尚未完成 A/B 求解时，可在后台提前检测 C 角点。限定到至少 8 个可用核心、至少 2 个检测线程才启用；后台最多使用可用核心的四分之一、上限 8 个线程，且降低调度优先级。`--cores` 生效后才计算线程预算。仅重跑 C 或执行 `verify` 时使用正常检测预算。后台只返回角点和耗时，主流程统一提交记录；失败、中断时取消剩余帧并等待线程退出，再释放输出锁。
 

@@ -1,0 +1,13 @@
+diff --git a/src/KeyFrameDatabase.cc b/src/KeyFrameDatabase.cc
+--- a/src/KeyFrameDatabase.cc
++++ b/src/KeyFrameDatabase.cc
+@@ -804,7 +804,8 @@
+         for(vector<KeyFrame*>::iterator vit=vpNeighs.begin(), vend=vpNeighs.end(); vit!=vend; vit++)
+         {
+             KeyFrame* pKF2 = *vit;
+-            if(pKF2->mnRelocQuery!=F->mnId)
++            // Only neighbors above this query's shared-word cutoff received a score.
++            if(pKF2->mnRelocQuery!=F->mnId || pKF2->mnRelocWords<=minCommonWords)
+                 continue;
+ 
+             accScore+=pKF2->mRelocScore;

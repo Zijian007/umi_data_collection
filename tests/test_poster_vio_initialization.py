@@ -172,6 +172,60 @@ class PosterVioInitializationTests(unittest.TestCase):
         self.assertEqual(velocities.shape, (len(times), 3))
         self.assertLess(evidence['acceleration_fit_rms_m_s2'], .02)
 
+    def test_robust_seed_limits_an_isolated_position_jump_without_losing_motion(self):
+        from test_scene import motion
+        from umi.config.loader import load
+        from umi.estimation.poster_vio.inertial_seed import fit_training_seed
+
+        times, truth, imu = motion()
+        poses = truth.copy()
+        poses[60, :3, 3] += [.4, -.25, 0.]
+        original = poses.copy()
+        seed, gravity, bias, speeds, report = fit_training_seed(times, poses, imu, load('trajectory').values.fusion)
+        np.testing.assert_array_equal(original, poses)
+        np.testing.assert_allclose(gravity, [0, 0, -9.81], atol=.04)
+        self.assertLess(np.linalg.norm(bias), .05)
+        np.testing.assert_allclose(seed[:, :3, 3], truth[:, :3, 3], atol=.01)
+        np.testing.assert_allclose(speeds[2:-2], np.gradient(truth[:, :3, 3], times, axis=0)[2:-2], atol=.04)
+        self.assertIn(times[60], report['downweighted_pose_imu_times_s'])
+
+    def test_imu_bridge_recovers_motion_within_gap_and_preserves_anchors(self):
+        from test_scene import motion
+        from umi.estimation.poster_vio.inertial_seed import bridge_training_gaps
+
+        times, poses, imu = motion()
+        velocities = np.gradient(poses[:, :3, 3], times, axis=0)
+        anchors = np.array([20, 21, 41, 42])
+        seed, speeds = poses.copy(), velocities.copy()
+        seed[22:41, :3], speeds[22:41] = np.nan, np.nan
+        count = bridge_training_gaps(times[anchors], poses[anchors], velocities[anchors], times,
+                                     seed, speeds, imu, np.array([0., 0., -9.81]), np.zeros(3), np.zeros(3))
+        self.assertEqual(count, 19)
+        np.testing.assert_array_equal(seed[anchors], poses[anchors])
+        np.testing.assert_array_equal(speeds[anchors], velocities[anchors])
+        np.testing.assert_allclose(seed[22:41], poses[22:41], atol=.001)
+        np.testing.assert_allclose(speeds[22:41], velocities[22:41], atol=.002)
+
+    def test_robust_seed_rejects_weak_excitation_large_bias_and_missing_support(self):
+        from test_scene import motion
+        from umi.config.loader import load
+        from umi.estimation.poster_vio.inertial_seed import fit_training_seed
+
+        times, poses, imu = motion()
+        parameters = load('trajectory').values.fusion
+        bad_imu = imu.copy()
+        bad_imu[:, 4] += 1.5
+        with self.assertRaisesRegex(ValueError, '零偏.*超限'):
+            fit_training_seed(times, poses, bad_imu, parameters)
+        with self.assertRaisesRegex(ValueError, '窗口不足'):
+            fit_training_seed(times[::15], poses[::15], imu, parameters)
+        with self.assertRaisesRegex(ValueError, 'IMU 缺口'):
+            fit_training_seed(times, poses, imu[(imu[:, 0] < 2.) | (imu[:, 0] > 2.4)], parameters)
+        still = np.tile(np.eye(4), (len(times), 1, 1))
+        imu[:, 1:7] = [0., 0., 0., 0., 0., 9.81]
+        with self.assertRaisesRegex(ValueError, '运动激励不足'):
+            fit_training_seed(times, still, imu, parameters)
+
     def test_slow_rotation_is_not_mistaken_for_gyro_bias(self):
         from umi.config.loader import load
         from scipy.spatial.transform import Rotation

@@ -246,8 +246,9 @@ def episode_inputs(episode, cameras, map_manifest) -> dict:
     parameters = {key: value for key, value in asdict(episode.scene.parameters).items()
                   if not key.startswith(('recording_', 'pairing_'))}
     # Keep historical input fingerprints when opt-in algorithms are disabled.
-    if not parameters['tag_distance_verified_gap_recovery']:
-        del parameters['tag_distance_verified_gap_recovery']
+    for optional in ('poster_vio_per_tag_huber', 'poster_vio_robust_inertial_seed', 'tag_distance_verified_gap_recovery'):
+        if not parameters[optional]:
+            del parameters[optional]
     return dict(configuration=current_configuration, map_mode=map_manifest['mode'] if map_manifest else 'shared_front',
         scene_map_sha256=scene_map_identity(map_manifest) if map_manifest else None,
         scene_assets=map_manifest['assets'] if map_manifest else {},
@@ -263,7 +264,7 @@ def episode_inputs(episode, cameras, map_manifest) -> dict:
         task_configuration_sha256=artifact_identity.canonical_hash(collection['tasks'].get(episode.root.name, {})),
         # Scene.path 总是 collection.yaml（read_scene 已强制）。
         scene_manifest_sha256=artifact_identity.canonical_hash(scene_definition(
-            document['scene'], episode.scene.name)),
+            {'description': collection['scene']['description']}, episode.scene.name)),
         recordings={arm: recording_identity(video) for arm, video in episode.recordings.items()},
         cameras={arm: camera_assets.camera_identity(camera) for arm, camera in cameras.items()},
         synchronization_sha256=artifact_identity.canonical_hash(episode.synchronization),

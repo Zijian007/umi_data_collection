@@ -179,6 +179,8 @@ def localize_with_cache(episode, arm, recording, lens, map_archive, map_index, m
         camera=camera_assets.camera_identity(recording.camera), map_version=map_manifest['version'], index=map_index,
         video=asdict(episode.scene.trajectory.values.video), orb=asdict(episode.scene.trajectory.values.orb),
         policy=relocalization.policy(localization_parameters), metric_scale=metric_scale)
+    if localization_parameters.localization_bidirectional:
+        identity['prefix_recovery'] = 'forward_warmup'
     if recording.full_video_times_s is not None:
         identity['frame_window'] = [recording.source_frame_start, len(recording.video_times_s)]
     key = artifact_identity.canonical_hash(identity)[:20]

@@ -70,6 +70,16 @@ class CurrentConfigurationTests(unittest.TestCase):
         self.assertEqual(processing.run([self.batch / 'take_001'])[0]['status'], 'ok')
         self.assertEqual(batch_inputs.read_batch(self.batch).kit['arms']['left']['calibration'], 'updated')
 
+    def test_organizer_batch_with_optional_scene_and_instruction_can_run(self):
+        path = self.batch / 'collection.yaml'
+        document = read_yaml(path)
+        document.pop('scene', None)
+        write_yaml(path, document)
+        self.assertEqual(processing.run([self.batch])[0]['status'], 'ok')
+        document['scene'] = dict(instruction='Pick up the cup')
+        write_yaml(path, document)
+        self.assertEqual(processing.run([self.batch])[0]['status'], 'ok')
+
     def test_width_only_change_reuses_map(self):
         self.assertEqual(processing.run([self.batch])[0]['status'], 'ok')
         version = batch_inputs.read_batch(self.batch).map_version

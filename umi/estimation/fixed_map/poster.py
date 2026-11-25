@@ -16,7 +16,7 @@ from umi.estimation.fixed_map.geometry import VisualObservations
 from umi.estimation.fixed_map.parameters import MapInertialParameters, MappedPosterParameters, PosterScaleParameters
 from umi.estimation.inertial import InertialGraphKeys, build_inertial_graph
 from umi.perception.poster.geometry import PosterGeometryError, camera_model, estimate_board, project_observations, residual_metrics
-from umi.perception.poster.quality import position_support_metrics, corner_sigma_px, cull_threshold, isolated_cull, without_sightings, culling_record, cull_decision
+from umi.perception.poster.quality import position_support_metrics, corner_sigma_px, cull_threshold, isolated_cull, without_sightings, culling_record, cull_decision, cumulative_culling_record
 from umi.estimation.factors.poster import add_rear_seat as _add_rear_seat, add_tag_factors as _add_tag_factors, solved_rear_extrinsic as _solved_rear_extrinsic, rear_rotation_evidence
 
 
@@ -298,7 +298,7 @@ def _prepare_shared_poster_arms(contexts: list[PosterInputs], *, allow_cull: boo
     return active, initial_cull
 
 
-def refine_shared_poster_pose(contexts: list[PosterInputs], *, _allow_cull=True):
+def refine_shared_poster_pose(contexts: list[PosterInputs]):
     """Jointly refine multiple arms against one rigid poster pose.
 
     Each context owns its IMU, map priors and observation clock.  The poster
@@ -309,26 +309,51 @@ def refine_shared_poster_pose(contexts: list[PosterInputs], *, _allow_cull=True)
     """
     if not contexts:
         return {}
-    import gtsam
-
-    def retry_without(plan):
-        filtered = [replace(context, detections=plan[context.arm]['detections'])
-                    if context.arm in plan else context for context in contexts]
-        refined = refine_shared_poster_pose(filtered, _allow_cull=False)
-        for arm, item in plan.items():
-            evidence = dict(refined[arm].evidence.get('environment_poster', {}), **item['audit'])
-            refined[arm] = replace(refined[arm], evidence=dict(refined[arm].evidence, environment_poster=evidence))
-        return refined
-
-    active, initial_cull = _prepare_shared_poster_arms(contexts, allow_cull=_allow_cull)
-
     if len({context.board.asset_hash for context in contexts}) != 1:
         raise PosterGeometryError('双手环境海报布局不一致，不能共享海报位姿')
-    if initial_cull:
-        return retry_without(initial_cull)
+    active, initial_cull = _prepare_shared_poster_arms(contexts, allow_cull=True)
     if not active:
         return {context.arm: _unfused(context, status='insufficient_observations', pose_scope='this_recording')
                 for context in contexts}
+
+    original = {item['context'].arm: item for item in active}
+    audits = {}
+
+    def apply_plan(current, plan):
+        filtered = []
+        for context in current:
+            arm = context.arm
+            if arm in plan:
+                change = plan[arm]
+                audit = change['audit']
+                if arm in audits:
+                    # Validate the union on the original observations and time span.
+                    source = original[arm]
+                    ids = source['selected']
+                    detections = source['context'].detections
+                    total = cumulative_culling_record([audits[arm], audit], ids, detections.sample_indices[ids],
+                                                     detections.tag_ids[ids], source['used_times'], context.parameters)
+                    audit = dict(audits[arm], **total)
+                audits[arm] = audit
+                context = replace(context, detections=change['detections'])
+            filtered.append(context)
+        prepared, _ = _prepare_shared_poster_arms(filtered, allow_cull=False)
+        return filtered, prepared
+
+    if initial_cull:
+        contexts, active = apply_plan(contexts, initial_cull)
+    output, post_cull = _solve_shared_poster(contexts, active, allow_cull=True)
+    if post_cull:
+        contexts, active = apply_plan(contexts, post_cull)
+        output, _ = _solve_shared_poster(contexts, active, allow_cull=False)
+    for arm, audit in audits.items():
+        evidence = dict(output[arm].evidence['environment_poster'], **audit)
+        output[arm] = replace(output[arm], evidence=dict(output[arm].evidence, environment_poster=evidence))
+    return output
+
+
+def _solve_shared_poster(contexts, active, *, allow_cull):
+    import gtsam
 
     first = active[0]['context']
     # Use the arm with the most observations as the shared initialization.
@@ -346,12 +371,12 @@ def refine_shared_poster_pose(contexts: list[PosterInputs], *, _allow_cull=True)
     final_board = optimized.atPose3(board_key).matrix()
     cull_plan = {}
     for item in solved:
-        plan = _measure_shared_arm(item, optimized, final_board, first.parameters, allow_cull=_allow_cull)
+        plan = _measure_shared_arm(item, optimized, final_board, item['context'].parameters, allow_cull=allow_cull)
         if plan is not None:
             cull_plan[item['context'].arm] = plan
     # 先完成所有手的剔除计划，再做最终门槛；坏观测不能在剔除前触发全图 RMS 拒绝。
     if cull_plan:
-        return retry_without(cull_plan)
+        return {}, cull_plan
     output = {}
     for item in solved:
         output[item['context'].arm] = _accept_shared_arm(
@@ -360,7 +385,7 @@ def refine_shared_poster_pose(contexts: list[PosterInputs], *, _allow_cull=True)
         if context.arm not in output:
             output[context.arm] = _unfused(context, status='not_observed_shared_board', pose_scope='shared_task',
                                            shared_board_arms=sorted(c.arm for c in contexts))
-    return output
+    return output, {}
 
 
 def _unfused(context: PosterInputs, *, status: str, pose_scope: str, **extra) -> FusedTrajectory:
@@ -461,7 +486,7 @@ def _accept_shared_arm(item: dict, contexts, first: PosterInputs, seed_item: dic
     poses, final_ext, rear_correction_deg = item['poses'], item['final_ext'], item['rear_correction_deg']
     metrics, camera_points = item['metrics'], item['camera_points']
     if np.any(item['cull_mask']):
-        raise PosterGeometryError('双手海报优化后异常观测无法在单轮预算内剔除', metrics=dict(metrics,
+        raise PosterGeometryError(f'{context.arm} 共享海报优化后仍有 {int(item["cull_mask"].sum())} 条超限观测', metrics=dict(metrics,
             culling=cull_decision(item['cull_mask'], context.detections.sample_indices[item['selected']],
                                  item['used_times'], context.parameters)))
     if (not np.isfinite(poses).all() or not np.isfinite(metrics['rms_px'])

@@ -216,7 +216,7 @@ def _run_lm_optimizer(graph, initial_values, maximum_iterations):
 def _build_optimization_evidence(optimization, nodes, observation_counts, rotation_counts,
                                  continuity_counts, zupt_frame_count, lenses,
                                  rear_lever_enabled, front_lever_enabled,
-                                 effective_parameters, factor_parameters, poster=None):
+                                 effective_parameters, factor_parameters):
     """Build the stable evidence schema emitted with an optimized graph."""
     optimized_values = optimization['values']
     evidence = dict(
@@ -236,12 +236,6 @@ def _build_optimization_evidence(optimization, nodes, observation_counts, rotati
         effective_parameters=effective_parameters,
         params=factor_parameters,
     )
-    if poster is not None:
-        evidence['environment_poster'] = poster.measure(
-            optimized_values,
-            optimization['initial_error'],
-            optimization['final_error'],
-        )
     return evidence
 
 
@@ -257,7 +251,8 @@ class TrajectoryOptimizationResult:
 
 
 def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacements,
-                              parameters: parameter_models.TrajectoryParameters, *, log=print, poster=None) -> TrajectoryOptimizationResult:
+                              parameters: parameter_models.TrajectoryParameters, *, log=print, poster=None,
+                              warm_start=None) -> TrajectoryOptimizationResult:
     """按照固定插入顺序构图和优化，保留原求解器的数值行为。"""
     fusion_parameters, zupt_parameters = parameters.fusion, parameters.zupt
     frame_rate_hz = float(output_frame_rate(parameters.video.frame_step))
@@ -395,6 +390,8 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
     observation_counts, rotation_only_counts = add_nodes_and_factors()
     if poster is not None:
         poster.add_factors(graph, init)
+        if warm_start is not None:
+            warm_start.apply(init, node_times)
     log("graph", {"factors": graph.size(), "lens": observation_counts, "rot_only": rotation_only_counts, "cont": continuity_factor_counts, "zupt_frames": int(zupt.sum())}, flush=True)
     optimization = _run_lm_optimizer(graph, init, fusion_parameters.lm_iterations)
     evidence = _build_optimization_evidence(
@@ -427,8 +424,18 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
             "zupt": use_zero_velocity,
             "lever_sigma": lever_sigma_m,
         },
-        poster=poster,
     )
+    if poster is not None:
+        from umi.estimation.fusion.poster import PosterCullRequest, PosterWarmStart
+
+        log("poster_lm", {"warm_started": warm_start is not None, "iterations": optimization['iterations'],
+                          "elapsed_s": round(optimization['finished_s'] - optimization['started_s'], 2)}, flush=True)
+        try:
+            evidence['environment_poster'] = poster.measure(
+                optimization['values'], optimization['initial_error'], optimization['final_error'])
+        except PosterCullRequest as request:
+            request.warm_start = PosterWarmStart(optimization['values'], node_times)
+            raise
     return TrajectoryOptimizationResult(
         optimization['values'],
         nodes,

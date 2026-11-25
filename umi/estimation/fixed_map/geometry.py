@@ -244,6 +244,22 @@ def reverse_window(forward: VisualObservations, video_times_s: np.ndarray,
     return (start, end) if end - start < .75 * len(video_times_s) else None
 
 
+def prefix_backtrack_window(forward: VisualObservations, times: np.ndarray,
+                            parameters: RelocalizationParameters) -> tuple[int, int] | None:
+    """A leading gap followed by continuous tracking supplies a reproducible turnaround."""
+    if not len(forward.indices):
+        return None
+    first = int(forward.indices[0])
+    if first == 0 or len(forward.indices) != len(times) - first:
+        return None
+    # The pivot itself is a forward observation, excluded from overlap validation.
+    minimum_pivot = first + parameters.localization_minimum_overlap_frames
+    if minimum_pivot >= len(times):
+        return None
+    context_end = np.searchsorted(times, times[first-1] + parameters.localization_reverse_context_s, side='right')
+    return 0, min(len(times) - 1, max(minimum_pivot, int(context_end)))
+
+
 def merge(forward: VisualObservations, reverse: VisualObservations, *, metric_scale: float,
           parameters: RelocalizationParameters) -> tuple[VisualObservations, dict]:
     """Keep forward poses; admit reverse-only frames from consistent continuous runs.

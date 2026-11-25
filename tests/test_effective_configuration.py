@@ -8,13 +8,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from umi.config import loader as config
+from umi.config import loader as config, user_settings
 from umi.apps import calib as calibration_cli
 from umi.apps import scene as scene_cli
 from umi.workflows.scene.parameters import SceneOverrides, apply_overrides
 from umi.config.scene_parameters import nested_snapshot
 from umi.workflows.scene.inputs import batch as episode_inputs, scene as scene_inputs
-from umi.infra.file_store import write_yaml
+from umi.infra.file_store import read_yaml, write_yaml
 from umi.apps.viewer import server
 
 
@@ -23,6 +23,34 @@ class EffectiveConfigurationTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+
+    def test_processing_options_report_the_winning_layer_per_switch(self):
+        from umi.workflows.scene.batch_snapshot import effective_report
+        collection = self.root / 'batch/collection.yaml'
+        doc = dict(kit='kit_001', recording=dict(arms=['left']))
+        write_yaml(collection, doc)
+        user_path = self.root / 'user.yaml'
+        preferences = read_yaml(user_settings.DEFAULT_PATH)
+        preferences['reconstruction']['backend']['poster_vio']['initialization'] = dict(robust_inertial_seed=False)
+        preferences['measurements'] = dict(gripper_tags=dict(verified_gap_recovery=True))
+        write_yaml(user_path, preferences)
+        with patch.object(user_settings, 'current', return_value=user_settings.load(user_path)):
+            def options(expert=None):
+                return effective_report([collection], overrides=expert)[0]['effective']['processing_options']
+
+            self.assertEqual(options(), dict(robust_inertial_seed=dict(value=False, source='user'),
+                                             verified_gap_recovery=dict(value=True, source='user')))
+            doc['measurements'] = dict(gripper_tags=dict(verified_gap_recovery=False))
+            write_yaml(collection, doc)
+            self.assertEqual(options(), dict(robust_inertial_seed=dict(value=False, source='user'),
+                                             verified_gap_recovery=dict(value=False, source='collection')))
+            expert_path = self.root / 'expert.yaml'
+            write_yaml(expert_path, dict(parameters=dict(
+                poster_vio=dict(initialization=dict(robust_inertial_seed=True)),
+                measurements=dict(gripper_tags=dict(verified_gap_recovery=True)))))
+            self.assertEqual(options(SceneOverrides.load(expert_path)),
+                             dict(robust_inertial_seed=dict(value=True, source='expert'),
+                                  verified_gap_recovery=dict(value=True, source='expert')))
 
     def test_scene_precedence_and_immutable_loaded_overlay(self):
         scene_path = self.root/'batch/collection.yaml'

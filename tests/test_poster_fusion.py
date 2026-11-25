@@ -155,6 +155,84 @@ class PosterGeometryTests(unittest.TestCase):
                     actual = np.concatenate([graph.at(i).unwhitenedError(state) for i in range(graph.size())])
                 np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-10)
 
+    def test_native_independent_poster_factors_match_python_linearization(self):
+        native = poster_factors.native_factors()
+        if not hasattr(native, 'PosterCornerFactor'):
+            self.skipTest('Optional native poster factors are unavailable')
+        data = fixture()
+        model = poster_pose.camera_model(data[9])
+        body = pose((.1, -.2, .03), (.2, -.1, .04))
+        board = pose((-.2, .3, -.1), (-.3, .2, .1))
+        ext = data[4]['rear']
+        body_key, board_key, rear_key = (gtsam.symbol(char, 0) for char in 'xbs')
+        state = gtsam.Values()
+        state.insert(body_key, gtsam.Pose3(body))
+        state.insert(board_key, gtsam.Pose3(board))
+        correction = gtsam.Rot3.RzRyRx(.03, -.04, .02)
+        state.insert(rear_key, correction)
+        # Exercise off-axis negative depth, an active barrier on each side of
+        # its minimum, and an inactive barrier. Nine sightings span two batches.
+        camera_points = np.array([[.1, -.2, -.03], [.03, .02, .0008],
+                                  [-.02, .04, .0013], [.05, -.14, .9]])
+        camera_from_board = ext @ np.linalg.inv(body) @ board
+        corners = poster_pose.transform(np.linalg.inv(camera_from_board), camera_points)
+        points = np.tile(corners, (9, 1, 1))
+        pixels = np.tile(model.project(camera_points), (9, 1, 1))
+        pixels[:8] += [10., -16.]  # One downweighted batch, one exact observation.
+        for refine in (False, True):
+            graphs = []
+            for extension in (None, native):
+                graph = gtsam.NonlinearFactorGraph()
+                common = dict(pose_key=lambda _: body_key, board_key=board_key, base_ext=ext,
+                              points=points, tag_indices=np.zeros(9, int), native=extension)
+                poster_factors.add_tag_factors(graph, **common, rear_key=rear_key, model=model,
+                    pixels=pixels, parameters=replace(data[6], tag_rear_rotation_refinement_enabled=refine))
+                poster_factors.add_tag_depth_barrier_factors(graph, **common)
+                graphs.append(graph)
+            self.assertEqual([g.size() for g in graphs], [3, 3])
+            for i, cls in enumerate((native.PosterCornerFactor, native.PosterCornerFactor, native.PosterDepthFactor)):
+                reference, optimized = (g.at(i) for g in graphs)
+                self.assertIsInstance(optimized, cls)
+                self.assertEqual(reference.keys(), optimized.keys())
+                np.testing.assert_allclose(optimized.unwhitenedError(state), reference.unwhitenedError(state),
+                                           atol=2e-10)
+                np.testing.assert_allclose(optimized.error(state), reference.error(state), atol=1e-9)
+                for actual, expected in zip(optimized.linearize(state).jacobian(), reference.linearize(state).jacobian()):
+                    np.testing.assert_allclose(actual, expected, rtol=1e-9, atol=1e-8)
+
+    def test_per_tag_batches_match_native_huber_cost_gradient_and_curvature(self):
+        data = fixture()
+        board, model, ext = data[-1], poster_pose.camera_model(data[9]), data[4]['rear']
+        body = data[-2][0]
+        corners = np.array([data[8].corners_m[tag] for tag in (12, 48, 88) * 3])
+        _, camera_points = poster_factors.tag_camera_points(body, board, ext, corners.reshape(-1, 3))
+        observed = model.project(camera_points).reshape(-1, 4, 2)
+        observed[1::3, :, 0] += .1
+        observed[2::3, :, 1] += 25.
+        x, h = gtsam.symbol('x', 0), gtsam.symbol('h', 0)
+        state = gtsam.Values()
+        state.insert(x, gtsam.Pose3(body))
+        state.insert(h, gtsam.Pose3(board))
+
+        def add(graph, indices, per_tag):
+            poster_factors.add_tag_factors(graph, pose_key=lambda _: x, board_key=h, rear_key=None,
+                base_ext=ext, model=model, points=corners[indices], pixels=observed[indices],
+                tag_indices=np.zeros(len(indices), dtype=int),
+                parameters=replace(data[6], tag_rear_rotation_refinement_enabled=False), per_tag_huber=per_tag)
+
+        native = gtsam.NonlinearFactorGraph()
+        for row in range(len(corners)):
+            add(native, [row], False)
+        expected_h, expected_g = native.linearize(state).hessian()
+        for order in (np.arange(len(corners)), np.roll(np.arange(len(corners)), 2)):
+            graph = gtsam.NonlinearFactorGraph()
+            add(graph, order, True)
+            self.assertEqual(graph.size(), 2)
+            self.assertAlmostEqual(graph.error(state), native.error(state), places=9)
+            hessian, gradient = graph.linearize(state).hessian()
+            np.testing.assert_allclose(hessian, expected_h, atol=1e-7, rtol=1e-10)
+            np.testing.assert_allclose(gradient, expected_g, atol=1e-7, rtol=1e-10)
+
     def test_seed_recovers_pose_with_changing_visible_ids(self):
         data = fixture()
         detections, board, measured, truth, expected = data[7:]
@@ -425,6 +503,34 @@ class PosterFusionTests(unittest.TestCase):
         self.assertLess(evidence['final_reprojection_rms_px'], context.parameters.tag_maximum_reprojection_rms_px)
         self.assertEqual(len(evidence['culling']['removed']), 1)
         self.assertNotIn('culling', results['right'].evidence['environment_poster'])
+
+    def test_shared_two_stage_culling_uses_original_per_arm_budget(self):
+        data = fixture()
+        right = make_poster_inputs('right', *data[:10])
+        pixels = right.detections.corners_half_px.copy()
+        pixels[:2] += [60., 0.]
+        left = replace(right, arm='left', detections=replace(right.detections, corners_half_px=pixels))
+        # Only the first bad sighting is detected by initialization.
+        initial_errors = poster._initial_sighting_errors
+        def mark_first(*args):
+            errors = initial_errors(*args)
+            errors[1:] = 0.
+            return errors
+
+        with patch.object(poster, '_initial_sighting_errors', side_effect=mark_first):
+            result = poster.refine_shared_poster_pose([left, right])
+            evidence = result['left'].evidence['environment_poster']
+            self.assertEqual(evidence['culled_observations'], 2)
+            audit = evidence['culling']
+            self.assertEqual(audit['passes'], 2)
+            self.assertEqual(audit['original_observations'], len(pixels))
+            self.assertEqual([r['observation'] for r in audit['removed']], [0, 1])
+            self.assertNotIn('culling', result['right'].evidence['environment_poster'])
+            # Both single-stage proposals fit a one-observation budget. Their union does not.
+            limited = replace(left, parameters=replace(left.parameters, tag_maximum_cull_fraction=.9/len(pixels)))
+            with self.assertRaisesRegex(poster.PosterGeometryError, '累计剔除') as rejected:
+                poster.refine_shared_poster_pose([limited, right])
+            self.assertEqual(rejected.exception.metrics['culling']['reason'], 'count_budget')
 
     def test_shared_fusion_with_fixed_rear_extrinsics(self):
         data = list(fixture()[:10])

@@ -76,8 +76,7 @@ class DocumentationContractsTests(unittest.TestCase):
         import re
         paths = [* (ROOT / 'config').rglob('*.yaml'),
                  * KITS_ROOT.glob('*/kit.yaml'),
-                 * (ROOT / 'scenes').rglob('collection.yaml'),
-                 ROOT / 'scenes/example_scene/collection.example.yaml']
+                 * (ROOT / 'scenes/example_scene').rglob('collection*.yaml')]
         for path in paths:
             if '.pipeline' in path.parts or path.name.endswith('.local.yaml'):
                 continue

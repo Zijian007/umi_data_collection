@@ -18,7 +18,7 @@ umi/workflows/scene/
 ├── workflow.py               任务预检、输入解析、隔离运行（execute_episode）与调度
 ├── batch_processing.py       普通批次与多地图（epoch）批次的准备、建图和运行
 ├── batch_snapshot.py         配置预览与设备/建图资产冻结
-├── ingest.py / import_manifest.py  原片登记、配对与 Organizer 交接
+├── ingest.py / collection_recordings.py  原片登记、配对与 Organizer 交接
 ├── episodes.py / cleanup.py  任务状态、人工验收、成果导出与 .pipeline 保留规则
 ├── recordings.py             原片归档、录像准备与预检
 ├── synchronization.py  双手时间同步
@@ -140,7 +140,7 @@ run → workflow.run_episode()
 
 场景写入锁内，`StageCache.stage()` 先验证缓存清单和资产哈希，再将产物复制到本次工作目录；读写不会共享可修改文件。准备缓存只保存数据集和镜头视频，当前相机设置、遮手图、时间偏移与算法上下文重新生成；视觉缓存使用实际镜头视频、相机设置、ORB 参数与遮手图（仅建图）；定位另包含地图内容和子地图索引。尺度与放置每次重新验收，不缓存最终数值解。
 
-阶段正常完成后才发布 `ready.json`；缓存损坏重算。单地图批次的 `umi-maint scene build --recompute` 重算建图和定位，验收失败后的重试也刷新视觉建图和定位，避免重复读取同一失败候选。成功阶段缓存独立于版本 `work/`，后续阶段失败或清理工作目录不会丢失它。`manifest.json` / `error.json` 中的 `timings` 记录实际耗时与缓存状态。
+阶段正常完成后才发布 `ready.json`；缓存损坏重算。单地图批次的 `umi-scene build --recompute` 重算建图和定位，验收失败后的重试也刷新视觉建图和定位，避免重复读取同一失败候选。成功阶段缓存独立于版本 `work/`，后续阶段失败或清理工作目录不会丢失它。`manifest.json` / `error.json` 中的 `timings` 记录实际耗时与缓存状态。
 
 `retry.max_tries` 是最大尝试次数。连续两轮若同一相机/镜头的全部被拒子地图，其帧索引、IMU 时间、位姿以及拒绝原因都相同，建图会提前停止，避免继续重建同一失败结果。轨迹变化、拒绝原因变化、没有候选轨迹证据或引擎暂时退出时不按重复轨迹提前停止，仍保留配置的重试次数。尺度门限保持原值；失败现场和已有成功地图均保留。
 

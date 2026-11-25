@@ -275,13 +275,7 @@ def estimate_static_tag_extrinsic(corners, camera_from_imu, model, size_m, *,
                        seed_only=True, observations_discarded=0)
 
 
-def align_inertial(times, poses, imu, parameters):
-    """Estimate gravity and accelerometer bias in the arbitrary poster frame.
-
-    Eliminate velocities between consecutive metric pose intervals.  The only
-    regularizer is the configured accelerometer-bias prior; report and reject
-    gravity or bias inconsistent with the existing inertial limits.
-    """
+def fit_poster_gyro_bias(times, poses, imu, parameters):
     # Low angular speed does not prove stationarity. Fit bias against the
     # measured PnP rotations, using distributed intervals to bound startup cost.
     selected = np.unique(np.linspace(0, len(times) - 2, min(24, len(times) - 1)).astype(int))
@@ -296,7 +290,26 @@ def align_inertial(times, poses, imu, parameters):
                         f_scale=np.radians(parameters.visual_rotation_sigma_deg), max_nfev=30)
     if not fit.success or not np.isfinite(fit.x).all():
         raise ValueError('poster_vio 陀螺仪零偏初始化未收敛')
-    gyro_bias = fit.x
+    return fit.x
+
+
+class InertialAlignmentLimitError(ValueError):
+    """Finite estimates outside the configured gravity or accelerometer bias limits."""
+
+    def __init__(self, gravity_norm, bias_norm):
+        super().__init__('poster_vio 惯性初始化的重力或加速度零偏超限')
+        self.gravity_norm = float(gravity_norm)
+        self.bias_norm = float(bias_norm)
+
+
+def align_inertial(times, poses, imu, parameters):
+    """Estimate gravity and accelerometer bias in the arbitrary poster frame.
+
+    Eliminate velocities between consecutive metric pose intervals.  The only
+    regularizer is the configured accelerometer-bias prior; report and reject
+    gravity or bias inconsistent with the existing inertial limits.
+    """
+    gyro_bias = fit_poster_gyro_bias(times, poses, imu, parameters)
     intervals = [preintegrate_samples(imu[:, 0], imu[:, 1:4], imu[:, 4:7],
                  start, end, gyro_bias, np.zeros(3)) for start, end in zip(times[:-1], times[1:])]
     matrices, vectors = [], []
@@ -319,10 +332,11 @@ def align_inertial(times, poses, imu, parameters):
     estimate = np.linalg.lstsq(np.vstack((matrix, prior)), np.r_[vector, np.zeros(3)], rcond=None)[0]
     gravity, acc_bias = estimate[:3], estimate[3:]
     magnitude = np.linalg.norm(gravity)
-    if (not np.isfinite(estimate).all() or magnitude < 1.
-            or abs(magnitude - parameters.gravity_m_s2) > parameters.gravity_tolerance_m_s2
+    if not np.isfinite(estimate).all():
+        raise ValueError('poster_vio 惯性初始化的重力或加速度零偏非有限')
+    if (magnitude < 1. or abs(magnitude - parameters.gravity_m_s2) > parameters.gravity_tolerance_m_s2
             or np.linalg.norm(acc_bias) > parameters.maximum_acc_bias_m_s2):
-        raise ValueError('poster_vio 惯性初始化的重力或加速度零偏超限')
+        raise InertialAlignmentLimitError(magnitude, np.linalg.norm(acc_bias))
     gravity *= parameters.gravity_m_s2 / magnitude
     velocities = []
     for index, (_, delta_velocity, delta_position, _, position_jac, dt) in enumerate(intervals):

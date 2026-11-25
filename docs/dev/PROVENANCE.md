@@ -24,6 +24,7 @@ ORB-SLAM3 与 Pangolin 先从组织下的镜像仓库拉取，失败时退回原
 | `orbslam3_map_select.patch` | 用环境变量 `ORB_MAP_INDEX` 选择定位使用的子地图 |
 | `orbslam3_offline_sync.patch` | 离线单目逐帧完成局部建图与闭环，使结果不受线程调度影响 |
 | `orbslam3_stable_order.patch` | 按稳定 ID 处理平分、观测与优化输入，保证同一输入重复运行结果一致 |
+| `orbslam3_relocalization_score.patch` | 重定位候选只累加通过当前帧共享词数门槛的共视邻居分数 |
 | `orbslam3_tag_init.patch` | 标签已校正坐标的畸变向量显式清零 |
 | `orbslam3_kb4_forward.patch` | 修复前向 KB4 投影并限制射线 ≤ 85°（默认启用，`UMI_ORB_KB4_FORWARD`） |
 | `orbslam3_feature_parallel.patch` | ORB 金字塔层并行提取，初始化后跳过无用途的标签检测 |

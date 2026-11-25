@@ -80,6 +80,8 @@ elif ! "$ENV/bin/python" -c "import ruamel.yaml" 2>/dev/null; then
 fi
 "$ENV/bin/python" -c "import gtsam, numpy, scipy, av, matplotlib, ruamel.yaml; print('gtsam ok, numpy', numpy.__version__, 'yaml', ruamel.yaml.__version__)"
 
+run_logged "$DEPS/logs/3_gtsam_factors.log" bash "$T/gtsam/build.sh" "$DEPS"
+
 step "4/5 编译 Pangolin + ORB-SLAM3（首次 10-30 分钟；已装好时只做增量构建和自检）"
 O=$DEPS/src/ORB_SLAM3
 # 构建脚本自身可重入：已打的补丁和已编译的目标会跳过。每次都调用，

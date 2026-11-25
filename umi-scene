@@ -2,7 +2,7 @@
 # umi-scene：从 collection.yaml 和原片建图、抽取轨迹、验收与导出。
 #   ./umi-scene run scenes/test_shelf/20261109_002
 #   ./umi-scene run scenes/test_shelf/20261109_002 --dry-run
-#   ./umi-maint scene run scenes/test_shelf/20261109_002 --show-config
+#   ./umi-scene run scenes/test_shelf/20261109_002 --show-config
 #   ./umi-scene run --help
 # 套件和标定来源写法见 hardware/kits/README.md；操作说明见 docs/03-场景处理.md。
 # 日常跨入口配置统一写入 config/user.yaml；专家算法覆盖使用 --expert-config，见 config/README.md。

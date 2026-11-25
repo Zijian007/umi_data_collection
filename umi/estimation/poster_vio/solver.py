@@ -111,6 +111,7 @@ class ArmSolveInput:
     depth_barrier_points_m: np.ndarray | None = None
     depth_barrier_indices: np.ndarray | None = None
     single_tag_factor_mask: np.ndarray | None = None
+    recovered_inertial_seed: bool = False
 
 
 def _validate_arm_input(item: ArmSolveInput) -> None:
@@ -383,7 +384,8 @@ def _add_arm(graph, values, item, arm_index: int, keys: InertialGraphKeys, board
     factors.add_tag_factors(
         graph, pose_key=keys.pose, board_key=board_key, rear_key=None,
         base_ext=item.T_cam_imu, model=item.camera_model, points=item.board_points_m,
-        pixels=item.pixels, tag_indices=item.tag_indices, parameters=fixed_parameters)
+        pixels=item.pixels, tag_indices=item.tag_indices, parameters=fixed_parameters,
+        per_tag_huber=item.parameters.poster_vio_per_tag_huber)
     barrier_points = (item.board_points_m if item.depth_barrier_points_m is None
                       else item.depth_barrier_points_m)
     barrier_indices = (item.tag_indices if item.depth_barrier_indices is None
@@ -557,8 +559,7 @@ def _natural_evidence(item, arm_index: int, poses, optimized) -> _NaturalEvidenc
             rejected |= rms > item.parameters.tag_maximum_reprojection_rms_px
         rejected |= camera_evidence['invalid_depth_observations'] > 0
         # Require three landmarks in one camera, without mixing lens pixels.
-        unique, node_counts = np.unique(camera_evidence['nodes'], return_counts=True)
-        nodes = unique[node_counts >= 3].astype(int)
+        nodes = refinement.natural_support_nodes(camera_evidence['nodes'])
         supported_nodes.extend(nodes.tolist())
         by_camera[camera_name] = dict(tracks=camera_evidence['tracks'], observations=len(errors),
             invalid_depth_observations=camera_evidence['invalid_depth_observations'],
@@ -606,6 +607,10 @@ def _refine(request, arms, observations, board_seed, *, max_rounds: int, progres
     graph_nodes = {item.arm: graph_indices(item) for item in arms}
     warm, damping = None, None
     full_iterations = arms[0].fusion_parameters.lm_iterations
+    # A recovered seed can be far from the pixel optimum. Judge culling budgets
+    # after fitting the original joint graph with the usual full iteration limit.
+    initial_iterations = (full_iterations if any(item.recovered_inertial_seed for item in arms)
+                          else min(full_iterations, arms[0].parameters.poster_vio_precull_iterations))
     if progress is not None:
         progress('联合图规模：' + '；'.join(
             f'{item.arm} 节点={len(graph_nodes[item.arm])}，标签观测={len(item.pixels)}，'
@@ -614,8 +619,7 @@ def _refine(request, arms, observations, board_seed, *, max_rounds: int, progres
     for round_index in range(max_rounds + 1):
         training = [refinement.subset(item, observations[item.arm], selections[item.arm]) for item in arms]
         training_request = replace(request, observations=tuple(pair[1] for pair in training))
-        limit = (min(full_iterations, arms[0].parameters.poster_vio_precull_iterations)
-                 if round_index == 0 else full_iterations)
+        limit = initial_iterations if round_index == 0 else full_iterations
         while True:
             stage = '首轮预优化' if limit < full_iterations else '完整优化'
             started = time.monotonic()

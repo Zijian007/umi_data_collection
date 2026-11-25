@@ -2,6 +2,7 @@
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from umi.devices.x3.factory_geometry import Kb4Model
 from umi.perception.poster.geometry import PosterGeometryError, residual_and_jacobians, rotation_correction_jacobian, tag_camera_points, transform
 from umi.perception.poster.quality import corner_sigma_px
 
@@ -50,6 +51,25 @@ def natural_track_error(state, pose_key, point_key, T_camera_imu, model, observe
     return residual, pose_jacobian, point_jacobian
 
 
+def native_factors():
+    try:
+        import _umi_gtsam_factors
+    except ModuleNotFoundError as error:
+        if error.name != '_umi_gtsam_factors':
+            raise
+        return None
+    except ImportError as error:
+        # An upgraded wheel can no longer supply the extension's hashed shared library.
+        import warnings
+        warnings.warn(f'GTSAM 视觉因子扩展加载失败，使用 Python 实现：{error}', RuntimeWarning)
+        return None
+    return _umi_gtsam_factors
+
+
+def _kb4_intrinsics(model):
+    return (model.fx, model.fy, model.cx, model.cy, model.k1, model.k2, model.k3, model.k4)
+
+
 def add_natural_track_factors(graph, values, *, pose_key_fn, point_key_fn,
                               T_camera_imu, model, tracks, sigma_px=1.5,
                               huber=2.0):
@@ -61,13 +81,15 @@ def add_natural_track_factors(graph, values, *, pose_key_fn, point_key_fn,
     """
     import gtsam
 
+    native = native_factors() if type(model) is Kb4Model else None
+    intrinsics = _kb4_intrinsics(model) if native is not None else None
+
     for track in tracks:
         point_key = point_key_fn(int(track['track_id']))
         values.insert(point_key, gtsam.Point3(*np.asarray(track['initial_point_m'], dtype=float)))
         nodes = np.asarray(track['node_indices'], dtype=int)
         pixels = np.asarray(track['pixels'], dtype=float)
-        # Bound each factor to a short temporal batch. This cuts Python
-        # callback count while retaining sparse pose-to-point connectivity.
+        # Both implementations apply one robust weight per batch of up to four observations.
         for start in range(0, len(nodes), 4):
             batch_nodes = nodes[start:start + 4]
             batch_pixels = pixels[start:start + 4]
@@ -75,6 +97,11 @@ def add_natural_track_factors(graph, values, *, pose_key_fn, point_key_fn,
             noise = gtsam.noiseModel.Robust.Create(
                 gtsam.noiseModel.mEstimator.Huber.Create(float(huber)),
                 gtsam.noiseModel.Isotropic.Sigma(2 * len(batch_nodes), float(sigma_px)))
+
+            if intrinsics is not None:
+                graph.add(native.NaturalTrackFactor(noise, pose_keys + [point_key],
+                                                    T_camera_imu, intrinsics, batch_pixels))
+                continue
 
             def error(factor, state, jacobians, batch_pixels=batch_pixels,
                       pose_keys=pose_keys, point_key=point_key,
@@ -127,10 +154,34 @@ def add_rear_seat(graph, values, rear_key, parameters):
             gtsam.noiseModel.Isotropic.Sigma(3, parameters.tag_rear_rotation_prior_sigma_rad)))
 
 
+def _per_tag_huber_error(project, sigmas, threshold):
+    """Use one Huber weight per whitened 8-vector with batched projection.
+
+    For s = ||r|| and w = min(1, k/s), 2*Huber(s) = w*s² + k*max(s-k, 0).
+    The extra scalar per tag accounts for the cost offset. During a GTSAM
+    linearization the IRLS weights and offsets are frozen, so the normal
+    equations match independent native Robust(Huber) factors.
+    """
+    def error(factor, state, jacobians):
+        blocks = None if jacobians is None else [None] * len(jacobians)
+        whitened = (project(factor, state, blocks) / sigmas).reshape(-1, 8)
+        norms = np.linalg.norm(whitened, axis=1)
+        sqrt_weight = np.sqrt(threshold / np.maximum(norms, threshold))
+        if blocks is not None:
+            scale = np.repeat(sqrt_weight, 8) / sigmas
+            for index, block in enumerate(blocks):
+                jacobians[index] = np.vstack((scale[:, None] * block,
+                                              np.zeros((len(norms), block.shape[1]))))
+        offset = np.sqrt(threshold * np.maximum(norms - threshold, 0.0))
+        return np.concatenate(((sqrt_weight[:, None] * whitened).ravel(), offset))
+    return error
+
+
 def add_tag_factors(graph, *, pose_key, board_key, rear_key, base_ext, model, points, pixels,
-                    tag_indices, parameters):
+                    tag_indices, parameters, per_tag_huber=False, native=None):
     import gtsam
     enabled = parameters.tag_rear_rotation_refinement_enabled
+    corner_factor = getattr(native, 'PosterCornerFactor', None) if type(model) is Kb4Model else None
     points, pixels = np.asarray(points), np.asarray(pixels)
     # A frame usually contains several board tags.  They share one pose key,
     # so one small factor per frame batch avoids entering the Python callback
@@ -146,14 +197,18 @@ def add_tag_factors(graph, *, pose_key, board_key, rear_key, base_ext, model, po
             sigmas = np.concatenate([
                 np.repeat(corner_sigma_px(pixels[row], model, parameters), 2)
                 for row in rows])
-            noise = gtsam.noiseModel.Robust.Create(
-                gtsam.noiseModel.mEstimator.Huber.Create(parameters.tag_huber),
-                gtsam.noiseModel.Diagonal.Sigmas(sigmas))
-
             corners = points[rows].reshape(-1, 3)
             observed = pixels[rows].reshape(-1, 2)
             body_key = pose_key(int(tag_indices[rows[0]]))
             keys = [body_key, board_key] + ([rear_key] if enabled else [])
+
+            if not per_tag_huber:
+                noise = gtsam.noiseModel.Robust.Create(
+                    gtsam.noiseModel.mEstimator.Huber.Create(parameters.tag_huber),
+                    gtsam.noiseModel.Diagonal.Sigmas(sigmas))
+                if corner_factor is not None:
+                    graph.add(corner_factor(noise, keys, base_ext, _kb4_intrinsics(model), corners, observed))
+                    continue
 
             def error(factor, state, jacobians, corners=corners, observed=observed, body_key=body_key):
                 if enabled and jacobians is not None:
@@ -175,6 +230,9 @@ def add_tag_factors(graph, *, pose_key, board_key, rear_key, base_ext, model, po
                     body, board, base_ext, corners, observed, model)
                 return residual
 
+            if per_tag_huber:
+                error = _per_tag_huber_error(error, sigmas, parameters.tag_huber)
+                noise = gtsam.noiseModel.Unit.Create(len(sigmas) + len(rows))
             graph.add(gtsam.CustomFactor(noise, keys, error))
 
 
@@ -224,17 +282,23 @@ def depth_barrier_and_jacobians(body, board, T_camera_imu, points):
     return residual, derivative[:, None] * depth_body, derivative[:, None] * depth_board
 
 
-def add_tag_depth_barrier_factors(graph, *, pose_key, board_key, base_ext, points, tag_indices):
+def add_tag_depth_barrier_factors(graph, *, pose_key, board_key, base_ext, points, tag_indices, native=None):
     """Add depth-only factors for training tag rows without using held pixels."""
     import gtsam
 
     rows_by_node = {}
     for row, node in enumerate(tag_indices):
         rows_by_node.setdefault(int(node), []).append(row)
-    for node_rows in rows_by_node.values():
-        rows = tuple(node_rows)
+    depth_factor = getattr(native, 'PosterDepthFactor', None)
+    for node, rows in rows_by_node.items():
         row_indices = np.asarray(rows, dtype=int)
+        keys = [pose_key(node), board_key]
         noise = gtsam.noiseModel.Isotropic.Sigma(len(rows) * 4, 1.0)
+        if depth_factor is not None:
+            graph.add(depth_factor(noise, keys, base_ext, points[row_indices].reshape(-1, 3),
+                                   _TAG_DEPTH_BARRIER_Z_MIN_M, _TAG_DEPTH_BARRIER_TAU_M,
+                                   _TAG_DEPTH_BARRIER_SIGMA_M))
+            continue
 
         def error(factor, state, jacobians, row_indices=row_indices):
             body = state.atPose3(factor.keys()[0]).matrix()
@@ -246,7 +310,7 @@ def add_tag_depth_barrier_factors(graph, *, pose_key, board_key, base_ext, point
                 jacobians[1] = board_jacobians
             return residuals
 
-        graph.add(gtsam.CustomFactor(noise, [pose_key(int(tag_indices[rows[0]])), board_key], error))
+        graph.add(gtsam.CustomFactor(noise, keys, error))
 
 
 def base_tag_corners_m(size_m):

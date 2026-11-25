@@ -61,7 +61,7 @@ class PosterVioWorkflowTests(unittest.TestCase):
             paths[arm].write_bytes(arm.encode())
         scene = SimpleNamespace(parameters=parameters, trajectory=SimpleNamespace(values=trajectory),
             environment_tag_detection=True, tag_layout=tag_board.DEFAULT_LAYOUT,
-            name='fixture', reconstruction_mode='poster_vio')
+            name='fixture', reconstruction_mode='poster_vio', poster_vio_base_tag_enabled=True)
         episode = SimpleNamespace(root=self.root / 'take_001', scene=scene,
                                   expected_arms=('left', 'right'), recordings=paths,
                                   recording_refs={arm: dict(sha256=arm) for arm in paths},

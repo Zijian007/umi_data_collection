@@ -218,7 +218,9 @@ python -m umi.apps.segment /path/to/task.insv --mode dual --rear-calibration rea
 
 `environment_assets.py` 选择环境镜头标定，并冻结标定、海报布局和原始角点；`umi/estimation/fusion/poster.py` 在原生图中添加单板角点因子。原有地图分段尺度仍是变量，不把上一轮融合轨迹作为固定地图先验再平滑一次。真实 rear 观测时刻插入 IMU 节点；恢复全帧轨迹时使用这些实际时间节点。dual 地图定位也按镜头时差重采样，不跨丢帧/地图切换。没有海报观测时保持原图输出；仍需通过惯性初始化和原有质量验收。
 
-海报数量/时间剔除规则位于 `umi/perception/poster/quality.py`；`umi/estimation/factors/poster.py` 从原场景实现提取旋转 seat、鲁棒角点因子及解析 Jacobian，场景与独立图共同使用。rear 修正可严格关闭，开启时检查修正角上限；单轮剔除可发生在种子或优化后，优化后重求解复用已有对齐、地图放置和基线，不重跑 SLAM。`umi.estimation.constraint_quality.position_support_summary()` 将真实观测时刻的共同支持缺口传给重试；证据不全时保留原视觉覆盖规则，尺度硬保护继续生效。
+海报数量/时间剔除规则位于 `umi/perception/poster/quality.py`；`umi/estimation/factors/poster.py` 从原场景实现提取旋转 seat、鲁棒角点因子及解析 Jacobian，场景与独立图共同使用。rear 修正可严格关闭，开启时检查修正角上限；独立海报图在初始化后可剔除一次，优化后最多两次，第二次的异常数须少于第一次。各轮共用原始观测的数量与时间覆盖预算，优化后重求解复用已有对齐、地图放置和基线，不重跑 SLAM。`umi.estimation.constraint_quality.position_support_summary()` 将真实观测时刻的共同支持缺口传给重试；证据不全时保留原视觉覆盖规则，尺度硬保护继续生效。
+
+在项目锁定的 Linux x86_64 GTSAM 环境，`install.sh` 会编译独立融合使用的 KB4 角点和深度因子。角点按同一时刻每组最多八个标签共用 Huber 权重，深度因子按该时刻全部训练角点计算。没有原生扩展时使用 Python 实现。
 
 输出 `environment_poster/` 保存布局、rear 标定、角点和哈希清单，默认清理 debug 后仍保留。结果的 `fusion.environment_poster` 记录初始/最终像素残差、板位姿和状态，`actual_error` 仍为 `not_measured`。单手共享失败回退自动继承场景中的海报参数及冻结资产，结果仍使用独立局部坐标。
 

@@ -51,7 +51,7 @@ def _installable(output, lens, *, force=False, camera_serial=None):
     if decision == Decision.INCOMPLETE:
         raise ValueError('证据不完整，--allow-rejected 也不能安装')
     if not decision.installable and not force:
-        raise RejectedResult('验收未通过，完整且有效的结果可用 umi-maint calib install --allow-rejected 登记')
+        raise RejectedResult('验收未通过，完整且有效的结果可用 umi-calib install --allow-rejected 登记')
     return doc
 
 

@@ -15,7 +15,6 @@ from umi.config.collection_schema import normalize_collection
 from umi.workflows.scene.inputs.scene import require_keys, validate_episode_name
 from umi.workflows.scene.maps import epoch_selection
 from umi.config.collection_schema import apply_backend_options, apply_task_backend
-from umi.perception.audio.specialist_audio import DEFAULT_AUDIO_SYNC_ALGORITHM
 
 if TYPE_CHECKING:
     from umi.store.models import Scene
@@ -34,7 +33,7 @@ def independent_retry_gap(scene: Scene, *, require_poster: bool) -> tuple[float,
 
 def read_synchronization(synchronization_record: dict | str | None, arms: tuple[str, ...], *,
                          audio_sync_enabled: bool | None = None,
-                         audio_sync_algorithm: str = DEFAULT_AUDIO_SYNC_ALGORITHM) -> dict:
+                         audio_sync_algorithm: str | None = None) -> dict:
     """任务视频时钟：t_episode = t_video + offset；首只手为零偏移参考。"""
     if synchronization_record is None:
         synchronization_record = dict(offsets_s={arm: 0. for arm in arms}, confirmed=False, note='')
@@ -84,8 +83,9 @@ def read_synchronization(synchronization_record: dict | str | None, arms: tuple[
     if len(arms) == 1:
         return dict(method='single_camera', offsets_s={arms[0]: 0.}, confirmed=True, note=note)
     if mode == 'audio_auto':
+        algorithm = user_config.audio_sync_algorithm() if audio_sync_algorithm is None else audio_sync_algorithm
         return dict(method='audio_auto', mode='audio_auto', offsets_s={arm: float(offsets[arm]) for arm in arms},
-                    confirmed=False, note=note, algorithm=audio_sync_algorithm)
+                    confirmed=False, note=note, algorithm=algorithm)
     if confirmed and not note.strip():
         raise ValueError('确认双手同步时需要填写 note，说明核验依据')
     method = 'manual' if mode == 'manual' or confirmed or any(offsets.values()) else 'assumed_simultaneous'
@@ -131,7 +131,7 @@ def resolve_task_configuration(root: Path, scene: Scene, batch_arms: tuple[str, 
     arms = resolve_arms(declaration, batch_arms)
     synchronization = read_synchronization(declaration.get('synchronization'), arms,
         audio_sync_enabled=collection.get('audio_sync_enabled'),
-        audio_sync_algorithm=collection.get('audio_sync_algorithm', DEFAULT_AUDIO_SYNC_ALGORITHM))
+        audio_sync_algorithm=collection['audio_sync_algorithm'])
     map_request = {key: declaration[key] for key in ('map_version', 'map_epoch') if key in declaration}
     if map_epoch_override is not None:
         if not isinstance(map_epoch_override, str) or not map_epoch_override.strip():
@@ -156,5 +156,5 @@ def resolve_task_configuration(root: Path, scene: Scene, batch_arms: tuple[str, 
             selection = dict(status='unavailable', map_version=None, reason=str(error))
         if selection and selection['map_version'] is not None:
             registry.validate_id(selection['map_version'])
-    return ResolvedTaskConfiguration(scene, arms, declaration.get('instruction', ''),
+    return ResolvedTaskConfiguration(scene, arms, declaration.get('instruction', collection['instruction']),
                                      synchronization, selection, map_request)

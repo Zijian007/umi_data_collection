@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from umi.apps.command_help import command, expert_help
+from umi.apps.command_help import grouped_help
 from umi.config import operational_settings as settings
 from umi.config import user_settings as user_config
 
@@ -24,41 +24,41 @@ from umi.workflows.scene.maps import epoch_selection as map_epoch_selection
 from umi.workflows.scene.errors import ITEM_FAILURES
 
 
-def build_parser(*, maintenance: bool = False) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog='umi-maint scene' if maintenance else 'umi-scene', description=__doc__,
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog='umi-scene', description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='示例：\n  umi-scene run scenes/test_shelf/20261120_002\n'
                '  umi-scene run scenes/test_shelf/20261120_002 --dry-run\n'
                '  umi-scene run <批次>\n'
-               '参数帮助：umi-scene <子命令> --help；维护与排障：umi-maint scene --help。')
+               '参数帮助：umi-scene <子命令> --help。')
     commands = parser.add_subparsers(dest='command', required=True,
-                                     metavar=None if maintenance else '{run,status,review,export}')
-    command(commands, 'check', '检查场景轨迹处理环境', visible=maintenance)
-    build = command(commands, 'build', '单独构建批次地图，自动识别多地图计划', visible=maintenance)
+                                     metavar='子命令')
+    commands.add_parser('check', description='检查场景轨迹处理环境')
+    build = commands.add_parser('build', description='单独构建批次地图，自动识别多地图计划')
     build.add_argument('batch', type=Path, help='批次目录或批次配置；建图原片来自 mapping/ 或多地图清单')
     build.add_argument('--epochs', action='store_true', help=argparse.SUPPRESS)
-    run = commands.add_parser('run', help='读取批次配置和视频：登记原片、音频同步、建图（含多地图 epoch）并抽取轨迹')
+    run = commands.add_parser('run', description='读取批次配置和视频：登记原片、音频同步、建图（含多地图 epoch）并抽取轨迹')
     run.add_argument('paths', nargs='+', type=Path, metavar='路径', help=(
         '一个或多个场景、批次或任务目录'))
     for subparser in (build, run):
         configuration = subparser.add_argument_group('专家配置')
         execution = subparser.add_argument_group('执行与检查', '只影响本次运行，不写入 YAML')
-        configuration.add_argument('--expert-config', dest='config', type=Path, help=expert_help(maintenance, '本次专家算法 YAML 覆盖；只含 trajectory / parameters'))
-        configuration.add_argument('--show-config', action='store_true', help=expert_help(maintenance, '只输出生效配置和来源 JSON；优先于 --dry-run'))
+        configuration.add_argument('--expert-config', dest='config', type=Path, help='本次专家算法 YAML 覆盖；只含 trajectory / parameters')
+        configuration.add_argument('--show-config', action='store_true', help='只输出生效配置和来源 JSON；优先于 --dry-run')
         execution.add_argument('--recompute', dest='force', action='store_true', help=(
             '单地图批次生成新地图版本；多地图批次重算待构建地图，保留已绑定版本' if subparser is build else
             '重新计算任务结果，跳过运行前的解码、定位和检测缓存；已有地图和有效的音频同步记录仍可复用'))
         execution.add_argument('--force', dest='force', action='store_true', help=argparse.SUPPRESS)
         execution.add_argument('--cores', default='',
-                               help=expert_help(maintenance, '限制算法子进程可用 CPU，例如 0-7 或 0-3,8'))
+                               help='限制算法子进程可用 CPU，例如 0-7 或 0-3,8')
         execution.add_argument('--dry-run', action='store_true', help='只检查输入（含原片预检）并显示计划，不创建清单、锁、地图、缓存或结果')
         if subparser is build:
             execution.add_argument('--keep-work', action='store_true', help='成功后保留建图中间文件；默认清理，失败现场保留')
         else:
-            execution.add_argument('--jobs', '-j', type=int, default=None, help=expert_help(maintenance, '同时处理的任务数，必须 ≥1；默认由 config/user.yaml 决定'))
-            execution.add_argument('--skip-preflight', action='store_true', help=expert_help(maintenance, '跳过任务原片预检；批次入库时仍检查配对、设备和可读性'))
+            execution.add_argument('--jobs', '-j', type=int, default=None, help='同时处理的任务数，必须 ≥1；默认由 config/user.yaml 决定')
+            execution.add_argument('--skip-preflight', action='store_true', help='跳过任务原片预检；批次入库时仍检查配对、设备和可读性')
             execution.add_argument('--json', action='store_true', help='以 JSON 输出批量处理结果；默认输出终端汇总表')
-    tags = command(commands, 'detect-tags', '检测原片环境镜头的 ArUco 海报，输出角点和可见性报告，不改变轨迹', visible=maintenance)
+    tags = commands.add_parser('detect-tags', description='检测原片环境镜头的 ArUco 海报，输出角点和可见性报告，不改变轨迹')
     tags.add_argument('video', type=Path, help='X3 3840×1920 4K60 原片')
     tags.add_argument('--out', required=True, type=Path, help='独立的检测缓存与报告目录')
     tags.add_argument('--layout', type=Path, help='海报布局 JSON；默认使用已核对 PDF 的 77 标签海报')
@@ -69,17 +69,17 @@ def build_parser(*, maintenance: bool = False) -> argparse.ArgumentParser:
     tags.add_argument('--minimum-side-px', type=float, default=0., help='几何可用观测的最短投影边长，单位原片像素，须为有限非负数；默认 %(default)g，不按尺寸过滤')
     tags.add_argument('--recompute', dest='force', action='store_true', help='重新计算检测；默认复用匹配的原片角点缓存')
     tags.add_argument('--force', dest='force', action='store_true', help=argparse.SUPPRESS)
-    status = commands.add_parser('status', help='查看批次绑定的地图（含各 epoch 地图是否已构建）和任务的处理、验收状态')
+    status = commands.add_parser('status', description='查看批次绑定的地图（含各 epoch 地图是否已构建）和任务的处理、验收状态')
     status.add_argument('paths', nargs='+', type=Path, help='任务、批次、场景或套件目录，可一次指定多个')
     status.add_argument('--json', action='store_true', help='以 JSON 输出状态；默认逐条显示')
-    review = commands.add_parser('review', help='对当前成功结果进行人工验收（支持单个任务或批量批次目录）')
+    review = commands.add_parser('review', description='对当前成功结果进行人工验收（支持单个任务或批量批次目录）')
     review.add_argument('paths', nargs='+', type=Path, help='任务目录、批次目录、套件目录或场景目录')
     decision = review.add_mutually_exclusive_group(required=True)
     decision.add_argument('--accept', action='store_true', help='将当前有效的成功结果标记为人工接收')
     decision.add_argument('--reject', action='store_true', help='将当前结果标记为人工拒收')
     review.add_argument('--reviewer', required=True, help='验收人姓名或标识，写入验收记录')
     review.add_argument('--reason', default='', help='验收说明或拒收原因；默认不填写')
-    export = commands.add_parser('export', help='导出当前有效且已人工接收的结果')
+    export = commands.add_parser('export', description='导出当前有效且已人工接收的结果')
     export.add_argument('paths', nargs='+', type=Path, help='待导出的任务、批次、场景或套件目录')
     export.add_argument('--out', required=True, type=Path, help='导出目录；已有目录拒绝覆盖')
     export.add_argument('--with-video', action='store_true', help='仅 trajectory：同时复制工作镜头视频；training 已包含视频，与此选项同时使用会报错')
@@ -92,14 +92,15 @@ def build_parser(*, maintenance: bool = False) -> argparse.ArgumentParser:
     from umi.dataset.schema import QUALITY_POLICIES, UNKNOWN_SUPPORT_POLICIES
     export.add_argument('--quality-policy', choices=QUALITY_POLICIES, help=argparse.SUPPRESS)
     export.add_argument('--unknown-support', choices=UNKNOWN_SUPPORT_POLICIES, help=argparse.SUPPRESS)
-    clean = command(commands, 'clean', '删除已被取代的运行、地图版本和中断残留；当前结果、最近一次尝试和验收记录保留', visible=maintenance)
+    clean = commands.add_parser('clean', description='删除已被取代的运行、地图版本和中断残留；当前结果、最近一次尝试和验收记录保留')
     clean.add_argument('paths', nargs='+', type=Path, help='批次、场景或上层目录，可一次指定多个')
     clean.add_argument('--cache', action='store_true', help='同时清空全部可重建缓存；下次运行会重新解码、建图和定位')
     clean.add_argument('--dry-run', action='store_true', help='只列出将删除的内容和可释放空间，不做修改')
-    relative = command(commands, 'evaluate-relative', '用实测固定夹具参考评估双手相对位姿；不更新人工验收', visible=maintenance)
+    relative = commands.add_parser('evaluate-relative', description='用实测固定夹具参考评估双手相对位姿；不更新人工验收')
     relative.add_argument('path', type=Path, help='任务目录或冻结的运行结果目录')
     relative.add_argument('--reference', required=True, type=Path, help='umi_rigid_pair_reference v1 JSON')
     relative.add_argument('--out', required=True, type=Path, help='评估报告 JSON，必须位于源运行结果目录外')
+    parser.epilog = grouped_help(commands.choices, ('run', 'status', 'review', 'export')) + "\n\n" + parser.epilog
     return parser
 
 
@@ -152,8 +153,8 @@ def _prepare_execution(args):
     return overrides, False
 
 
-def main(argv: list[str] | None = None, *, maintenance: bool = False) -> int:
-    args = build_parser(maintenance=maintenance).parse_args(argv)
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     interrupts = {'count': 0}
 
     def handle_interrupt(signum, frame):

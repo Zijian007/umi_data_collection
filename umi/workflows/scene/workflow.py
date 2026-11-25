@@ -30,7 +30,6 @@ from umi.store.result_io import validate_assets, is_local_scene, uses_scene_map
 from umi.store.cache import CacheAudit
 from umi.workflows.scene import recordings, synchronization
 from umi.workflows.scene.tasks.publication import RunAudit
-from umi.perception.audio.specialist_audio import DEFAULT_AUDIO_SYNC_ALGORITHM
 
 
 console = Console('场景')
@@ -242,7 +241,7 @@ def resolve_synchronization(episode, task_console: Console, *, force: bool, dry_
         return episode, 'not_applicable', '任务未启用 audio_auto'
 
     sync_path = layout.metadata(episode.root, 'sync.json')
-    algorithm = episode.synchronization.get('algorithm', DEFAULT_AUDIO_SYNC_ALGORITHM)
+    algorithm = episode.synchronization['algorithm']
     with nullcontext() if dry_run else locked(episode.root):
         resolved, reused = synchronization.resolve_audio_sync(
             episode.recordings, sync_path, algorithm=algorithm, force=force, dry_run=dry_run,

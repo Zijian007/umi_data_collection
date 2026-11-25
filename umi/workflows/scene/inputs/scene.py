@@ -14,7 +14,8 @@ from umi.workflows.scene.parameters import SceneOverrides, apply_overrides
 from umi.store.models import Scene, SceneParameters
 from umi.infra.file_store import read_yaml
 from umi.infra.paths import KITS_ROOT as KITS, PROJECT_ROOT
-from umi.config.collection_schema import normalize_collection
+from umi.config import user_settings
+from umi.config.collection_schema import PROCESSING_FIELDS, normalize_collection
 from umi.devices import registry, calibration_source
 from umi.core.arms import ARMS
 from umi.perception.gripper import default_tag_roi, validate_roi
@@ -242,12 +243,19 @@ def read_scene(path: Path, *, overrides: SceneOverrides | None = None, collectio
     # 用途开关来自 collection；当前 expert-config 只覆盖算法参数。历史覆盖按冻结值复现。
     gap_sources: dict[str, str] = {}
     parameters = load_scene_parameters(gap_sources=gap_sources)
+    user = user_settings.current()
+    sources = dict.fromkeys(PROCESSING_FIELDS.values(), 'project')
+    for layer, switches in (('user', user.values['processing_options']),
+                            ('collection', collection['reconstruction'].get('processing_options', {}))):
+        if switches:
+            parameters = replace(parameters, **switches)
+            sources.update(dict.fromkeys(switches, layer))
     tag_layout = None
     environment_tags_enabled = False
     if 'tags' in scene_document:
         parameters, tag_layout, environment_tags_enabled = _read_tags(scene_document['tags'], base, parameters)
     trajectory_config, parameters = apply_overrides(config.load('trajectory'), parameters, overrides,
-                                                    gap_sources=gap_sources)
+                                                    gap_sources=gap_sources, processing_sources=sources)
     if parameters.tag_fusion_enabled or parameters.tag_mapping_enabled:
         if tag_layout is None:
             raise ValueError('启用环境标签需要 collection.yaml 的 scene.tags.layout')
@@ -258,7 +266,7 @@ def read_scene(path: Path, *, overrides: SceneOverrides | None = None, collectio
     scene = Scene(path, scene_document['name'], scene_document['mode'], scene_document['reference_arm'],
                   recordings={}, rear_calibrations={}, trajectory=trajectory_config, parameters=parameters,
                   tag_layout=tag_layout, overrides=overrides, environment_tags_enabled=environment_tags_enabled,
-                  position_support_gap_sources=gap_sources)
+                  position_support_gap_sources=gap_sources, processing_option_sources=sources)
     return apply_backend_options(scene, collection['reconstruction'], source=f'{path}:backend')
 
 

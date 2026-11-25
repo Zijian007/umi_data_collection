@@ -141,6 +141,7 @@ class ProcessingTests(unittest.TestCase):
         result_path = self.batch/'take_001/results/data/episode.json'
         result = json.loads(result_path.read_text())
         self.assertEqual(result['inputs']['parameters']['gripper_width_max_gap_s'], .7)
+        self.assertNotIn('poster_vio_per_tag_huber', result['inputs']['parameters'])
         self.assertEqual(result['runtime_overrides']['values']['parameters']['mapping']['alignment']['maximum_scale_relative_std'], .2)
         self.assertEqual({path: path.read_bytes() for path in originals}, originals)
         # Equivalent YAML at a different path does not invalidate computed results.
@@ -447,22 +448,28 @@ class ProcessingTests(unittest.TestCase):
 
     def test_run_turns_organizer_handoff_into_an_epoch_plan_and_builds_it(self):
         sha = artifact_identity.file_hash
+        mapping = self.batch / 'mapping/epoch_001/map.INSV'
+        mapping.parent.mkdir()
+        (self.batch / 'mapping/map.INSV').rename(mapping)
+        self.bind_fake_video(mapping, 'left')
         take = {arm: dict(path=f'take_001/{arm}/VID.insv', sha256=sha(self.batch / f'take_001/{arm}/VID.insv'))
                 for arm in ('left', 'right')}
-        (self.batch / 'import_manifest.json').write_text(json.dumps(dict(
-            schema_version=1, kind='umi_insv_import', batch=self.batch.name,
-            maps=[dict(epoch='epoch_001', sequence=0, recording='mapping/map.INSV',
-                       sha256={'mapping/map.INSV': sha(self.batch / 'mapping/map.INSV')})],
-            tasks=[dict(task='take_001', sequence=1, recordings=take)])))
+        collection = self.batch / 'collection.yaml'
+        document = read_yaml(collection)
+        document['backend']['scene_map'] = dict(poster_constraint=dict(enabled=False))
+        document.update(mapping=dict(epoch_001=dict(sequence=0, recordings=dict(
+            shared=dict(path='mapping/epoch_001/map.INSV', sha256=sha(mapping))))),
+            tasks=dict(take_001=dict(sequence=1, recordings=take)))
+        write_yaml(collection, document)
         preview = processing.run([self.batch], dry_run=True)
         self.assertEqual(preview[0]['status'], 'planned')
         self.assertFalse((self.batch / '.pipeline/map_epochs.yaml').exists())
         build_preview = processing.build(self.batch, dry_run=True)
         self.assertEqual(build_preview['epochs'], [
-            dict(epoch='epoch_001', status='planned', recording='mapping/map.INSV')])
+            dict(epoch='epoch_001', status='planned', recording='mapping/epoch_001/map.INSV')])
         self.assertFalse((self.batch / '.pipeline').exists())
         result = processing.run([self.batch])
-        self.assertEqual(result[0]['status'], 'ok')
+        self.assertEqual(result[0]['status'], 'ok', result)
         plan = read_yaml(self.batch / '.pipeline/map_epochs.yaml')
         self.assertEqual([item['epoch'] for item in plan['maps']], ['epoch_001'])
         self.assertIsNotNone(plan['maps'][0]['map_version'])
@@ -643,10 +650,10 @@ class ProcessingTests(unittest.TestCase):
                     self.assertEqual(cli.main(arguments), 2)
             build.assert_not_called()
 
-    def test_root_programs_include_the_shared_maintenance_entry_point(self):
+    def test_root_programs_match_the_public_entry_points(self):
         project = Path(__file__).resolve().parents[1]
         self.assertEqual(sorted(path.name for path in project.glob('umi*') if path.is_file()),
-                         ['umi-calib', 'umi-maint', 'umi-scene', 'umi-view'])
+                         ['umi-calib', 'umi-scene', 'umi-view'])
 
     def test_task_discovery_skips_batches_already_handled_by_processor(self):
         from umi.workflows.scene import episodes

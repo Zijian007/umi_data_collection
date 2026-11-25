@@ -73,12 +73,16 @@ def read_atlas_maps(log: Path, *, lens: str) -> tuple[AtlasMap, ...]:
     return items
 
 
+class WarmReverseUnavailable(RuntimeError):
+    """The installed ORB driver predates forward warm-up for reverse playback."""
+
+
 def localize_map(atlas: MapAtlas, index: int, output: Path,
                   context: VisualContext, directory: Path, *, reverse: bool = False,
-                  frame_range: tuple[int, int] | None = None) -> None:
+                  frame_range: tuple[int, int] | None = None, warm_reverse: bool = False) -> None:
     run_orb(atlas.video, output, context, directory, stage=f'定位（{atlas.video.lens}，地图 {index}）',
              extra=['--load_map', str(atlas.archive), '--localization_only'], map_index=index,
-             reverse=reverse, frame_range=frame_range)
+             reverse=reverse, frame_range=frame_range, warm_reverse=warm_reverse)
     if not (output / 'frames.csv').is_file():
         raise ProcessingError(f'定位（{atlas.video.lens}，地图 {index}）',
                                   f'未生成逐帧定位结果；日志：{output / "log.txt"}')
@@ -86,10 +90,12 @@ def localize_map(atlas: MapAtlas, index: int, output: Path,
 
 def run_orb(video: LensVideo, output: Path, context: VisualContext, directory: Path, *,
              stage: str, extra: list[str], mask: Path | None = None, map_index: int = 0,
-             reverse: bool = False, frame_range: tuple[int, int] | None = None) -> None:
+             reverse: bool = False, frame_range: tuple[int, int] | None = None, warm_reverse: bool = False) -> None:
     start, end = frame_range if frame_range is not None else (0, context.frame_count)
     if not (type(start) is int and type(end) is int and 0 <= start < end <= context.frame_count):
         raise ValueError('ORB 处理范围必须是视频内非空的 [start, end) 帧区间')
+    if warm_reverse and (not reverse or end >= context.frame_count):
+        raise ValueError('带正向预热的回追需要反向模式，并在视频内保留折返点')
     expected_frames = end - start
     output.mkdir(parents=True)
     settings = context.settings
@@ -110,11 +116,14 @@ def run_orb(video: LensVideo, output: Path, context: VisualContext, directory: P
         command += ['--mask_img', str(mask)]
     if reverse:
         command += ['--reverse']
+    if warm_reverse:
+        command.append('--warm_reverse')
     if frame_range is not None:
         command += ['--frame_start', str(start), '--frame_end', str(end)]
     command += extra
     budget = operational.values('runtime')
-    timeout_s = expected_frames // 30 * budget['slam_timeout_per_30_frames_s'] + budget['slam_timeout_base_s']
+    warmup_frames = end + 1 if warm_reverse else 0
+    timeout_s = (expected_frames + warmup_frames) // 30 * budget['slam_timeout_per_30_frames_s'] + budget['slam_timeout_base_s']
     # 已有引擎曾在 Shutdown/析构阶段以 SIGSEGV 退出；只有完成全部帧且
     # 写出终结统计的 139/-11 可进入兼容验收。超时和其他错误一律失败。
     return_code = runtime.run_logged(runtime.engine_command(context, command, timeout_s=timeout_s), output / 'log.txt',
@@ -125,7 +134,7 @@ def run_orb(video: LensVideo, output: Path, context: VisualContext, directory: P
     append_run(directory, f'{output.name}: rc={return_code} ' + ' '.join(tracked))
     record = dict(stage=stage, lens=video.lens, return_code=return_code, expected_frames=expected_frames,
                   video_frames=context.frame_count, frame_range=[start, end],
-                  compatibility_exit=return_code in (139, -11), accepted=False, reverse=reverse)
+                  compatibility_exit=return_code in (139, -11), accepted=False, reverse=reverse, warmup_frames=warmup_frames)
     scheduling = re.findall(r'^offline_sync=([01])$', text, re.MULTILINE)
     record['offline_sync'] = bool(int(scheduling[-1])) if scheduling else None
     cadence = re.findall(r'^offline_keyframe_interval_s=(\S+) minimum_frames=(\d+)$', text, re.MULTILINE)
@@ -140,6 +149,9 @@ def run_orb(video: LensVideo, output: Path, context: VisualContext, directory: P
             stderr_path = output / 'stderr.txt'
             lines = [line.strip() for line in stderr_path.read_text(encoding='utf-8', errors='replace').splitlines()
                      if line.strip()] if stderr_path.is_file() else []
+            # CLI11 ExtrasError from older drivers. Other engine failures must surface.
+            if warm_reverse and return_code == 109 and any('--warm_reverse' in line for line in lines):
+                raise WarmReverseUnavailable('已安装的 ORB 驱动不支持 --warm_reverse')
             cause = f'；{lines[-1][:500]}' if lines else ''
             raise ProcessingError(stage, f'ORB 退出码 {return_code}{cause}；日志：{output / "log.txt"}；错误日志：{stderr_path}',
                                   return_code=return_code)

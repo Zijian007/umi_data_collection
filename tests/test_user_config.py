@@ -16,13 +16,19 @@ class UserConfigTests(unittest.TestCase):
     def test_reads_only_user_facing_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'user.yaml'
+            backend = dict(mode='poster_vio', poster_vio=dict(base_tag=dict(enabled=False)))
             write_yaml(path, dict(schema_version=2,
-                                  features=dict(audio_sync=dict(enabled=True), factory_intrinsics=dict(enabled=True)),
+                                  features=dict(audio_sync=dict(enabled=True, algorithm='kiwi'),
+                                                factory_intrinsics=dict(enabled=True)),
+                                  reconstruction=dict(backend=backend, map=dict(layout='shared', reference_arm='right')),
                                   runtime=dict(parallel_tasks=dict(enabled=True, jobs=2), cores='auto')))
             config = user_config.load(path)
         self.assertEqual(config.values['scene']['sync_policy'], 'audio_auto')
+        self.assertEqual(config.values['scene']['audio_sync_algorithm'], 'kiwi')
         self.assertEqual(config.values['calibration']['intrinsics_source'], 'factory')
         self.assertEqual(config.values['runtime']['jobs'], 2)
+        self.assertEqual(config.values['reconstruction'], dict(backend=backend,
+                                                               map=dict(layout='shared', reference_arm='right')))
 
     def test_rejects_algorithm_parameters_in_user_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -36,6 +42,10 @@ class UserConfigTests(unittest.TestCase):
         for path, value in (
                 (('schema_version',), 1), (('calibration',), {'intrinsics_source': 'factory'}),
                 (('features', 'audio_sync', 'enabled'), 1), (('runtime', 'parallel_tasks', 'jobs'), 0),
+                (('features', 'audio_sync', 'algorithm'), 'bogus'),
+                (('reconstruction', 'backend', 'mode'), 'bogus'),
+                (('reconstruction', 'backend', 'poster_vio', 'base_tag', 'enabled'), 1),
+                (('reconstruction', 'map', 'reference_arm'), 'both'),
                 (('viewer',), {'port': 9000})):
             document = deepcopy(default)
             section = document
@@ -61,14 +71,15 @@ class UserConfigTests(unittest.TestCase):
     def test_v2_feature_switches_normalize_to_internal_choices(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'user.yaml'
-            write_yaml(path, dict(
-                schema_version=2,
+            values = read_yaml(user_config.DEFAULT_PATH)
+            values.update(
                 features=dict(
-                    audio_sync=dict(enabled=True),
+                    audio_sync=dict(enabled=True, algorithm='specialist'),
                     factory_intrinsics=dict(enabled=True),
                 ),
                 runtime=dict(parallel_tasks=dict(enabled=True, jobs=3), cores='0-7'),
-            ))
+            )
+            write_yaml(path, values)
             config = user_config.load(path)
         self.assertEqual(config.values['scene']['sync_policy'], 'audio_auto')
         self.assertEqual(config.values['calibration']['intrinsics_source'], 'factory')

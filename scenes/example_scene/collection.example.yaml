@@ -5,12 +5,13 @@ kit: kit_001  # 必填：hardware/kits/ 下已有目录名；字母/数字/中�
 recording:  # 必填：批次默认采集使用手；不能由缺失录像推断为单手。
   arms: [left, right]  # 必填：候选 [left] / [right] / [left, right]；必须是 kit 设备绑定的非空子集。
 
-scene:  # 必填配置表；场景身份来自目录名，此处不放算法参数。
+scene:  # 可选；场景身份来自目录名。
   description: example scene  # 任意文本字符串，可为 ""；省略为空，不影响几何定义。
+  # instruction: 拿起物体并放到指定位置  # 批次通用指令，任务可覆盖。
 
 map:  # 可选：scene_map/auto 的地图布局和默认绑定；无地图后端忽略地图选择。
-  layout: auto  # auto=由建图录像/已有记录推断；shared=共享工作镜头地图；per_arm=各手 front + 参考 rear 地图。
-  reference_arm: left  # 候选 left / right，默认 left；多路建图时必须属于实际建图录像的手。
+  layout: auto  # 省略继承 config/user.yaml；auto=推断，shared=共享，per_arm=分手建图。
+  reference_arm: left  # 省略继承 config/user.yaml；多路建图时必须属于实际建图录像的手。
   selection:  # 可选：任务未显式选图时的默认规则。
     policy: latest_prior  # 当前唯一候选 latest_prior：按登记采集顺序选不晚于任务的最近地图。
     version: null  # null=按规划/已登记批次默认选择；或填写已发布版本 ID（字母/数字/_/-）。
@@ -25,7 +26,7 @@ environment_poster:  # 可选：海报布局和用途；poster_vio/poster_indepe
   #   scale_correction:  # 可选：是否把海报尺度用于米制建图。
   #     enabled: true  # true=应用尺度修正，必须同时 mapping.enabled:true；false=仅诊断，省略为 false。
 
-backend:  # 必填：批次默认任务轨迹后端，take 可覆盖。
+backend:  # 可选；省略 mode 时继承 config/user.yaml，take 可覆盖。
   mode: scene_map  # scene_map=场景地图；poster_independent=独立引擎+海报；poster_vio=海报/自然点/IMU 联合图；auto=有 mapping 原片时先建/复用地图。
   # scene_map:
   #   poster_constraint:

@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import math
 from umi.core.arms import ARMS, read_arms, resolve_arms
-from umi.config.audio_sync import AUDIO_SYNC_RECIPES
+from umi.config.audio_sync import validate_algorithm
 from umi.config.scene_parameters import DEFAULT_POSTER_FUSION_METHOD
+from umi.infra.paths import ENVIRONMENT_POSTER_LAYOUT
 from dataclasses import replace
 
 
@@ -54,6 +55,27 @@ def _enabled(record, label):
     return {'enabled': record['enabled']}
 
 
+PROCESSING_FIELDS = {
+    'robust_inertial_seed': 'poster_vio_robust_inertial_seed',
+    'verified_gap_recovery': 'tag_distance_verified_gap_recovery',
+}
+
+
+def _processing_switch(section, key, label):
+    if key not in section:
+        return {}
+    if type(section[key]) is not bool:
+        raise ValueError(f'{label}.{key} 必须为 true 或 false')
+    return {PROCESSING_FIELDS[key]: section[key]}
+
+
+def measurement_switches(record, label):
+    record = _fields(record, label, {'gripper_tags'})
+    group = f'{label}.gripper_tags'
+    tags = _fields(record.get('gripper_tags', {}), group, {'verified_gap_recovery'})
+    return _processing_switch(tags, 'verified_gap_recovery', group)
+
+
 def _backend(record, label, *, batch=False):
     record = _fields(record, label, {'mode', 'scene_map', 'poster_vio', 'poster_independent', 'poster_edge_trim'})
     normalized = {}
@@ -79,7 +101,12 @@ def _backend(record, label, *, batch=False):
     tag = _fields(vio.get('base_tag', {}), f'{vio_label}.base_tag', {'enabled'})
     if tag:
         normalized['base_tag'] = _enabled(tag, f'{vio_label}.base_tag')
-    initialization = _fields(vio.get('initialization', {}), f'{vio_label}.initialization', {'max_observation_gap_s'})
+    init_label = f'{vio_label}.initialization'
+    allowed_init = {'max_observation_gap_s', 'robust_inertial_seed'} if batch else {'max_observation_gap_s'}
+    initialization = _fields(vio.get('initialization', {}), init_label, allowed_init)
+    switches = _processing_switch(initialization, 'robust_inertial_seed', init_label)
+    if switches:
+        normalized['processing_options'] = switches
     independent_label = f'{label}.poster_independent'
     independent = _fields(record.get('poster_independent', {}), independent_label,
                           {'max_position_support_gap_s', 'max_gravity_difference_deg'})
@@ -140,33 +167,50 @@ def _synchronization(record, arms, label):
 
 def normalize_collection(document: dict) -> dict:
     """Validate the public layout and return the compact declaration consumed internally."""
+    from umi.config import user_settings
+
     document = _mapping(document, 'collection.yaml')
     if 'schema_version' in document:
         raise ValueError('collection.yaml 不再使用 schema_version；请直接使用当前字段布局')
-    allowed = {'kit', 'recording', 'scene', 'map',
-               'environment_poster', 'backend', 'tasks'}
+    allowed = {'kit', 'recording', 'scene', 'map', 'mapping',
+               'environment_poster', 'backend', 'measurements', 'tasks'}
     unknown = set(document) - allowed
     if unknown:
         raise ValueError(f'collection.yaml 含未知字段：{sorted(unknown, key=str)}')
-    if not {'kit', 'scene', 'backend'} <= set(document):
-        raise ValueError('collection.yaml 需要 kit、scene 和 backend')
-    reconstruction = _backend(document['backend'], 'backend', batch=True)
+    if 'kit' not in document:
+        raise ValueError('collection.yaml 需要 kit')
+    user = user_settings.current().values
+    defaults = user['reconstruction']
+    backend = _mapping(document.get('backend', {}), 'backend')
+    reconstruction = _backend({'mode': defaults['backend']['mode'], **backend}, 'backend', batch=True)
+    measurements = measurement_switches(document.get('measurements', {}), 'measurements')
+    if measurements:
+        reconstruction.setdefault('processing_options', {}).update(measurements)
+    base_tag_default = defaults['backend']['poster_vio']['base_tag']['enabled']
+    reconstruction.setdefault('base_tag', {}).setdefault('enabled', base_tag_default)
     arms, audio_sync = _recording_section(document)
-    description = _scene_section(document['scene'])
-    layout, reference_arm, policy, version = _map_section(document.get('map', {}))
-    tags, disabled_poster_switches = _environment_poster_section(document)
+    description, instruction = _scene_section(document.get('scene', {}))
+    map_options = _mapping(document.get('map', {}), 'map')
+    layout, reference_arm, policy, version = _map_section({**defaults['map'], **map_options})
+    poster = document.get('environment_poster')
+    if 'environment_poster' not in document and ('mapping' in document or 'mode' not in backend):
+        poster = {'layout_path': str(ENVIRONMENT_POSTER_LAYOUT)}
+    tags, disabled_poster_switches = _environment_poster_section(poster)
     reconstruction['scene_map_poster_constraint'].setdefault('enabled', tags is not None and not disabled_poster_switches)
     tasks = _mapping(document.get('tasks', {}), 'tasks')
-    normalized_tasks = {name: _task_section(name, task, arms) for name, task in tasks.items()}
+    if 'mapping' in document:
+        _mapping(document['mapping'], 'mapping')
+    elif any(isinstance(task, dict) and {'sequence', 'recordings'} & task.keys() for task in tasks.values()):
+        raise ValueError('任务提供 sequence 或 recordings 时，collection.yaml 需要 mapping（无建图时填 {}）')
+    normalized_tasks = {name: _task_section(name, task, arms, instruction) for name, task in tasks.items()}
 
-    result = dict(kit=document['kit'], arms=arms,
+    result = dict(kit=document['kit'], arms=arms, instruction=instruction,
                   map_policy=policy, scene=dict(layout=layout,
                   map_reference_arm=reference_arm, description=description),
-                  reconstruction=reconstruction, tasks=normalized_tasks)
+                  reconstruction=reconstruction, tasks=normalized_tasks,
+                  audio_sync_algorithm=audio_sync.get('algorithm', user['scene']['audio_sync_algorithm']))
     if 'enabled' in audio_sync:
         result['audio_sync_enabled'] = audio_sync['enabled']
-    if 'algorithm' in audio_sync:
-        result['audio_sync_algorithm'] = audio_sync['algorithm']
     if version is not None:
         result['map_version'] = version
     if tags is not None:
@@ -183,37 +227,47 @@ def _recording_section(document: dict):
     audio_sync = _fields(recording.get('audio_sync', {}), 'recording.audio_sync', {'enabled', 'algorithm'})
     audio_sync_policy = _enabled(audio_sync, 'recording.audio_sync')
     if 'algorithm' in audio_sync:
-        algorithm = audio_sync['algorithm']
-        if not isinstance(algorithm, str) or algorithm not in AUDIO_SYNC_RECIPES:
-            raise ValueError('recording.audio_sync.algorithm 必须为 specialist 或 kiwi')
-        audio_sync_policy['algorithm'] = algorithm
+        audio_sync_policy['algorithm'] = validate_algorithm(audio_sync['algorithm'], 'recording.audio_sync.algorithm')
     return arms, audio_sync_policy
 
 
-def _scene_section(record) -> str:
-    """scene：只承载描述文字；算法参数走 --expert-config。"""
+def _scene_section(record) -> tuple[str, str]:
+    """scene：描述与采集时的批次指令。"""
     scene = _mapping(record, 'scene')
     if {'trajectory', 'parameters'} & set(scene):
         raise ValueError('collection.yaml 的 scene 不承载算法参数；请使用 --expert-config')
-    if set(scene) - {'description'}:
-        raise ValueError('scene 只允许 description')
+    if set(scene) - {'description', 'instruction'}:
+        raise ValueError('scene 只允许 description、instruction')
     description = scene.get('description', '')
     if not isinstance(description, str):
         raise ValueError('scene.description 必须为文本')
-    return description
+    instruction = scene.get('instruction', '')
+    if not isinstance(instruction, str):
+        raise ValueError('scene.instruction 必须为文本')
+    return description, instruction
 
 
-def _map_section(record):
+def validate_reconstruction_defaults(record):
+    label = 'user.reconstruction'
+    record = _fields(record, label, {'backend', 'map'})
+    backend = _fields(record.get('backend'), f'{label}.backend', {'mode', 'poster_vio'})
+    options = _backend(backend, f'{label}.backend', batch=True)
+    if 'enabled' not in options.get('base_tag', {}):
+        raise ValueError(f'{label}.backend.poster_vio.base_tag.enabled 必须为布尔值')
+    map_record = _fields(record.get('map'), f'{label}.map', {'layout', 'reference_arm'})
+    _map_section(map_record, label=f'{label}.map')
+    return record, options.get('processing_options', {})
+
+
+def _map_section(record, label='map'):
     """map：地图拓扑、参考手与版本选择。"""
-    map_record = _mapping(record, 'map')
-    if set(map_record) - {'layout', 'reference_arm', 'selection'}:
-        raise ValueError('map 只允许 layout、reference_arm、selection')
-    layout = map_record.get('layout', 'auto')
+    map_record = _fields(record, label, {'layout', 'reference_arm', 'selection'})
+    layout = map_record.get('layout')
     if layout not in ('auto', 'shared', 'per_arm'):
-        raise ValueError('map.layout 必须为 auto、shared 或 per_arm')
-    reference_arm = map_record.get('reference_arm', 'left')
+        raise ValueError(f'{label}.layout 必须为 auto、shared 或 per_arm')
+    reference_arm = map_record.get('reference_arm')
     if reference_arm not in ARMS:
-        raise ValueError('map.reference_arm 必须为 left 或 right')
+        raise ValueError(f'{label}.reference_arm 必须为 left 或 right')
     selection = _mapping(map_record.get('selection', {}), 'map.selection')
     if set(selection) - {'policy', 'version'}:
         raise ValueError('map.selection 只允许 policy、version')
@@ -226,9 +280,8 @@ def _map_section(record):
     return layout, reference_arm, policy, version
 
 
-def _environment_poster_section(document: dict):
+def _environment_poster_section(poster):
     """environment_poster：布局、检测与各用途开关；返回规范化开关和被显式关闭的项。"""
-    poster = document.get('environment_poster')
     if poster is None:
         return None, []
     poster = _mapping(poster, 'environment_poster')
@@ -263,10 +316,10 @@ def _environment_poster_section(document: dict):
     return tags, disabled_poster_switches
 
 
-def _task_section(name: str, task, arms) -> dict:
+def _task_section(name: str, task, arms, instruction: str) -> dict:
     """tasks.<name>：指令、使用手子集、同步覆盖、地图选择与后端覆盖。"""
     task = _mapping(task, f'tasks.{name}')
-    allowed_task = {'instruction', 'arms', 'synchronization', 'map', 'backend'}
+    allowed_task = {'instruction', 'arms', 'synchronization', 'map', 'backend', 'sequence', 'recordings'}
     if set(task) - allowed_task:
         raise ValueError(f'tasks.{name} 含未知字段')
     normalized = {}
@@ -274,7 +327,15 @@ def _task_section(name: str, task, arms) -> dict:
         if not isinstance(task['instruction'], str):
             raise ValueError(f'tasks.{name}.instruction 必须为文本')
         normalized['instruction'] = task['instruction']
-    if 'arms' in task:
+    elif instruction:
+        normalized['instruction'] = instruction
+    if 'recordings' in task:
+        recordings = _mapping(task['recordings'], f'tasks.{name}.recordings')
+        expected_arms = _arms(list(recordings), f'tasks.{name}.recordings', arms)
+        if 'arms' in task and set(_arms(task['arms'], f'tasks.{name}.arms', arms)) != set(expected_arms):
+            raise ValueError(f'tasks.{name}.arms 与 recordings 的侧别不一致')
+        normalized['expected_arms'] = expected_arms
+    elif 'arms' in task:
         normalized['expected_arms'] = _arms(task['arms'], f'tasks.{name}.arms', arms)
     if 'synchronization' in task:
         normalized['synchronization'] = _synchronization(

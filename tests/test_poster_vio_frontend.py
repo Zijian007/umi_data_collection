@@ -299,6 +299,58 @@ class PosterVioFrontendTests(unittest.TestCase):
             actual = np.concatenate([graph.at(i).unwhitenedError(values) for i in range(graph.size())])
         np.testing.assert_array_equal(actual, expected)
 
+    def test_native_natural_factor_matches_reference_cost_and_linearization(self):
+        import gtsam
+        try:
+            from _umi_gtsam_factors import NaturalTrackFactor
+        except ModuleNotFoundError as error:
+            if error.name != '_umi_gtsam_factors':
+                raise
+            self.skipTest('Native GTSAM extension is optional')
+        from umi.estimation.factors.poster import add_natural_track_factors
+
+        class ReferenceCamera(Kb4Model):
+            pass
+
+        intrinsics = (512., 487., 712., 723., -.12, .035, -.004, .0003)
+        camera = Kb4Model(*intrinsics)
+        point = np.zeros(3)
+        pose_key = lambda i: gtsam.symbol('x', i)
+        point_key = lambda i: gtsam.symbol('p', i)
+        transformed = gtsam.Pose3(gtsam.Rot3.RzRyRx(.1, -.2, .3), [.04, -.03, .01])
+        for rotated in (False, True):
+            extrinsic = transformed if rotated else gtsam.Pose3()
+            body_rotation = transformed.rotation() if rotated else gtsam.Rot3()
+            values = gtsam.Values()
+            camera_points = [[.3, .5, 1.1], [0., 0., 1.], [1e-10, 2e-10, .8],
+                             [.3, .2, -.2], [.2, -.4, .002 if rotated else .001], [.1, .2, .0005], [-.5, .2, 1.4]]
+            for i, q in enumerate(camera_points):
+                t = -body_rotation.rotate(extrinsic.transformTo(np.array(q)))
+                values.insert(pose_key(i), gtsam.Pose3(body_rotation, t))
+            pixels = camera.project(camera_points)
+            pixels[0] += [28., -12.]  # First batch is downweighted by Huber.
+            pixels[-1] += [.2, .1]     # Final partial batch stays in the quadratic region.
+            track = dict(track_id=0, node_indices=np.arange(len(pixels)), pixels=pixels,
+                         initial_point_m=point)
+            graphs = []
+            for model in (camera, ReferenceCamera(*intrinsics)):
+                graph = gtsam.NonlinearFactorGraph()
+                state = gtsam.Values(values)
+                add_natural_track_factors(graph, state, pose_key_fn=pose_key, point_key_fn=point_key,
+                    T_camera_imu=extrinsic.matrix(), model=model, tracks=[track])
+                graphs.append(graph)
+            self.assertEqual([g.size() for g in graphs], [2, 2])
+            for i in range(2):
+                native, reference = (graph.at(i) for graph in graphs)
+                self.assertIsInstance(native, NaturalTrackFactor)
+                self.assertIsInstance(reference, gtsam.CustomFactor)
+                self.assertEqual(native.keys(), reference.keys())
+                np.testing.assert_allclose(native.unwhitenedError(state), reference.unwhitenedError(state),
+                                           rtol=1e-11, atol=1e-10)
+                self.assertAlmostEqual(native.error(state), reference.error(state), places=9)
+                for actual, expected in zip(native.linearize(state).jacobian(), reference.linearize(state).jacobian()):
+                    np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-9)
+
     def test_natural_factor_keeps_negative_depth_finite_for_refinement(self):
         import gtsam
         from umi.estimation.factors.poster import natural_track_error

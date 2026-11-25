@@ -87,6 +87,32 @@ class IndependentPosterTests(unittest.TestCase):
         with self.assertRaisesRegex(poster_pose.PosterGeometryError, '旋转修正超限'):
             self.solve(inputs, limited)
 
+    def test_warm_start_tracks_renumbered_exposures_and_preserves_new_seeds(self):
+        import gtsam
+        from gtsam.symbol_shorthand import B, V, X
+
+        def states(times):
+            values = gtsam.Values()
+            for k, t in times.items():
+                xyz = np.full(3, t)
+                values.insert(X(k), gtsam.Pose3(gtsam.Rot3(), xyz))
+                values.insert(V(k), xyz)
+                values.insert(B(k), gtsam.imuBias.ConstantBias(xyz, xyz))
+            return values
+
+        old_times = {0: 0., 8: .12, 9: .24}
+        new_times = {0: 0., 8: .24, 9: .36}
+        old = states(old_times)
+        initial = states({k: -1. for k in new_times})
+        old.insert(fusion_poster.BOARD_KEY, gtsam.Pose3(gtsam.Rot3(), np.ones(3)))
+        initial.insert(fusion_poster.BOARD_KEY, gtsam.Pose3())
+        fusion_poster.PosterWarmStart(old, old_times).apply(initial, new_times)
+        for k, expected in [(0, 0.), (8, .24), (9, -1.)]:
+            np.testing.assert_allclose(initial.atPose3(X(k)).translation(), expected)
+            np.testing.assert_allclose(initial.atVector(V(k)), expected)
+            np.testing.assert_allclose(initial.atConstantBias(B(k)).accelerometer(), expected)
+        np.testing.assert_array_equal(initial.atPose3(fusion_poster.BOARD_KEY).translation(), np.ones(3))
+
     def test_post_solve_cull_reuses_the_initialization_and_keeps_one_budget(self):
         inputs, parameters = fixture()
         corners = inputs.poster.observations.corners_half_px.copy()
@@ -108,6 +134,63 @@ class IndependentPosterTests(unittest.TestCase):
         self.assertEqual(evidence['culled_observations'], 1)
         self.assertEqual(evidence['culling']['stage'], 'optimization')
         self.assertEqual(evidence['culling']['passes'], 1)
+
+    def test_initial_and_post_solve_culls_use_the_original_budget_and_mask(self):
+        inputs, parameters = fixture()
+        tags = inputs.poster.observations
+        corners = tags.corners_half_px.copy()
+        corners[[0, -1]] += [25., 0.]
+        inputs = replace(inputs, poster=replace(inputs.poster, observations=replace(tags, corners_half_px=corners)))
+        original = fusion_poster.isolated_cull
+        for maximum, should_pass in [(0.15, True), (0.9/len(corners), False)]:
+            current = replace(parameters, environment_tags=replace(parameters.environment_tags,
+                                                                   tag_maximum_cull_fraction=maximum))
+            initial = True
+            def first_sighting_at_initialization(mask, *args, **kwargs):
+                nonlocal initial
+                if initial:
+                    mask[1:] = False
+                    initial = False
+                return original(mask, *args, **kwargs)
+
+            with self.subTest(maximum=maximum), patch.object(fusion_poster, 'isolated_cull',
+                                                              side_effect=first_sighting_at_initialization):
+                if should_pass:
+                    evidence = self.solve(inputs, current).evidence['environment_poster']
+                    audit = evidence['culling']
+                    self.assertEqual(audit['passes'], 2)
+                    self.assertEqual([entry['observation'] for entry in audit['removed']], [0, len(corners)-1])
+                    self.assertEqual(evidence['observations'], audit['original_observations'] - 2)
+                    self.assertTrue(evidence['final_checks']['positive_depth'])
+                else:
+                    with self.assertRaisesRegex(poster_pose.PosterGeometryError, '累计剔除') as rejected:
+                        self.solve(inputs, current)
+                    self.assertEqual(rejected.exception.metrics['culling']['reason'], 'count_budget')
+
+    def test_post_solve_culls_require_progress_and_stop_at_two(self):
+        inputs, parameters = fixture()
+        measure = fusion_poster.PosterContext.measure
+        for proposals, accepted in [([2, 1], True), ([2, 2], False), ([3, 2, 1], False)]:
+            pending = iter(proposals)
+            def propose(context, *args):
+                count = next(pending, 0)
+                if not count:
+                    return measure(context, *args)
+                mask = np.arange(len(context.selected)) < count
+                audit = fusion_poster.culling_record(mask, context.selected, context.frame_ids, context.tag_ids,
+                                                     context.times, context.parameters, stage='optimization')
+                audit.update(pre_cull_reprojection_rms_px=1., pre_cull_reprojection_metrics={},
+                             pre_cull_invalid_depth_sightings=0)
+                raise fusion_poster.PosterCullRequest(audit)
+
+            with self.subTest(proposals=proposals), patch.object(fusion_poster.PosterContext, 'measure', propose):
+                if accepted:
+                    audit = self.solve(inputs, parameters).evidence['environment_poster']['culling']
+                    self.assertEqual([row['observation'] for row in audit['removed']], [0, 1, 2])
+                    self.assertEqual([step['observations'] for step in audit['stages']], proposals)
+                else:
+                    with self.assertRaisesRegex(poster_pose.PosterGeometryError, '有限轮次'):
+                        self.solve(inputs, parameters)
 
     def test_conflicting_board_rejects_and_missing_assets_cannot_silently_disable(self):
         inputs,parameters = fixture()

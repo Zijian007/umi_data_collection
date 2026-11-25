@@ -61,7 +61,8 @@ class SceneOverrides:
 
 def apply_overrides(trajectory: config.Configuration, parameters: SceneParameters,
                     overrides: SceneOverrides | None, *,
-                    gap_sources: dict[str, str] | None = None) -> tuple[config.Configuration, SceneParameters]:
+                    gap_sources: dict[str, str] | None = None,
+                    processing_sources: dict[str, str] | None = None) -> tuple[config.Configuration, SceneParameters]:
     if overrides is None:
         return trajectory, parameters
     from umi.workflows.scene.inputs.scene import load_scene_parameters
@@ -72,5 +73,7 @@ def apply_overrides(trajectory: config.Configuration, parameters: SceneParameter
     effective_trajectory = replace(effective_trajectory, sources=(*trajectory.sources, str(overrides.path)))
     parameter_overlay = flatten(declared.get('parameters', {}),
                                 label=f'{overrides.path}:parameters', gap_sources=gap_sources, historical=True)
+    if processing_sources is not None:
+        processing_sources.update(dict.fromkeys(processing_sources.keys() & parameter_overlay.keys(), 'expert'))
     parameter_values = config.merge_overrides(asdict(parameters), parameter_overlay, 'parameters.')
     return effective_trajectory, load_scene_parameters(overrides=parameter_values)

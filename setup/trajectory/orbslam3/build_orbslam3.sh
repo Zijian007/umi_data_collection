@@ -10,6 +10,7 @@
 #      + orbslam3_map_select.patch（环境变量 ORB_MAP_INDEX 选定位用的地图）
 #      + orbslam3_offline_sync.patch（离线单目逐帧完成建图/闭环，避免调度影响结果）
 #      + orbslam3_stable_order.patch（按稳定 ID 处理平分、观测和优化输入）
+#      + orbslam3_relocalization_score.patch（重定位只累加当前帧已评分的共视邻居）
 #      + orbslam3_tag_init.patch（标签已校正坐标的畸变向量显式清零）
 #      + orbslam3_kb4_forward.patch（默认启用，修复前向 KB4 并限制 <=85° 射线）
 #      + orbslam3_feature_parallel.patch（并行 ORB 层，初始化后跳过无用途标签检测）
@@ -100,7 +101,7 @@ if [ ! -f "$O/.umi_patched" ]; then
 fi
 
 # Existing installations must also receive driver and lifecycle updates.
-for PATCH_NAME in orbslam3_offline_sync.patch orbslam3_stable_order.patch; do
+for PATCH_NAME in orbslam3_offline_sync.patch orbslam3_stable_order.patch orbslam3_relocalization_score.patch; do
   if git -C "$O" apply --check "$HERE/$PATCH_NAME" 2>/dev/null; then
     git -C "$O" apply "$HERE/$PATCH_NAME"
   elif ! git -C "$O" apply --reverse --check "$HERE/$PATCH_NAME"; then

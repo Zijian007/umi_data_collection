@@ -3,24 +3,47 @@ from dataclasses import dataclass, replace
 
 import gtsam
 import numpy as np
-from gtsam.symbol_shorthand import X
+from gtsam.symbol_shorthand import B, V, X
 
 from umi.core.geometry import imu_from_camera, resample_pose_series
 from umi.perception.poster.geometry import camera_model, estimate_board, project_observations, residual_metrics, PosterGeometryError
 from umi.perception.poster.quality import position_support_metrics, cull_threshold, isolated_cull, without_sightings, culling_record, cull_decision
-from umi.estimation.factors.poster import add_rear_seat, add_tag_depth_barrier_factors, add_tag_factors, solved_rear_extrinsic, rear_rotation_evidence
+from umi.estimation.factors.poster import add_rear_seat, add_tag_depth_barrier_factors, add_tag_factors, native_factors, solved_rear_extrinsic, rear_rotation_evidence
 
 BOARD_KEY = gtsam.symbol('h', 0)  # l0 已被独立图的 rear 杆臂占用。
 REAR_SEAT_KEY = gtsam.symbol('s', 0)
 _MIN_VALID_DEPTH_M = 1e-3
 
 
+@dataclass(frozen=True)
+class PosterWarmStart:
+    values: gtsam.Values
+    node_times: dict[int, float]
+
+    def apply(self, initial, node_times):
+        # Rear exposure nodes can be renumbered when an entire exposure is
+        # culled. The map segments, lever arms, board and seat retain their keys.
+        seed = gtsam.Values(self.values)
+        previous_by_time = {t: k for k, t in self.node_times.items()}
+        for k in self.node_times:
+            for key in (X(k), V(k), B(k)):
+                seed.erase(key)
+        for k, t in node_times.items():
+            old = previous_by_time.get(t)
+            if old is not None:
+                seed.insert(X(k), self.values.atPose3(X(old)))
+                seed.insert(V(k), self.values.atVector(V(old)))
+                seed.insert(B(k), self.values.atConstantBias(B(old)))
+        initial.update(seed)
+
+
 class PosterCullRequest(PosterGeometryError):
     """只重建当前海报图；复用同一本录像的视觉/IMU 对齐与基线。"""
 
-    def __init__(self, selected, audit):
+    def __init__(self, audit):
         super().__init__('海报优化后剔除稀疏异常并重求解')
-        self.selected, self.audit = selected, audit
+        self.audit = audit
+        self.warm_start: PosterWarmStart | None = None
 
 
 @dataclass(frozen=True)
@@ -66,14 +89,15 @@ class PosterContext:
         return sorted(node_times,key=node_times.get), node_times
 
     def add_factors(self, graph, values):
+        native = native_factors()
         values.insert(BOARD_KEY,gtsam.Pose3(self.board_pose))
         add_rear_seat(graph, values, REAR_SEAT_KEY, self.parameters)
         add_tag_factors(graph, pose_key=X, board_key=BOARD_KEY, rear_key=REAR_SEAT_KEY,
                         base_ext=self.camera_from_imu, model=self.model, points=self.points,
-                        pixels=self.pixels, tag_indices=self.node_keys, parameters=self.parameters)
+                        pixels=self.pixels, tag_indices=self.node_keys, parameters=self.parameters, native=native)
         add_tag_depth_barrier_factors(
             graph, pose_key=X, board_key=BOARD_KEY, base_ext=self.camera_from_imu,
-            points=self.points, tag_indices=np.asarray(self.node_keys, dtype=int))
+            points=self.points, tag_indices=np.asarray(self.node_keys, dtype=int), native=native)
 
     def measure(self, values, initial_error, final_error):
         board = values.atPose3(BOARD_KEY).matrix()
@@ -116,14 +140,14 @@ class PosterContext:
         depth_mask = np.any(depths < _MIN_VALID_DEPTH_M, axis=1)
         mask = reprojection_mask | depth_mask
         if np.any(mask):
-            if (not self.evidence.get('culled_observations') and isolated_cull(mask, self.frame_ids,
-                    self.parameters.tag_minimum_frames, times=self.times, parameters=self.parameters)):
+            if isolated_cull(mask, self.frame_ids, self.parameters.tag_minimum_frames,
+                             times=self.times, parameters=self.parameters):
                 audit = dict(**culling_record(mask, self.selected, self.frame_ids, self.tag_ids,
                     self.times, self.parameters, stage='optimization'),
                     pre_cull_reprojection_rms_px=rms, pre_cull_reprojection_metrics=metrics)
                 audit['pre_cull_invalid_depth_sightings'] = int(np.count_nonzero(depth_mask))
-                raise PosterCullRequest(self.selected[mask], audit)
-            raise PosterGeometryError('独立海报优化后异常观测无法在单轮预算内剔除', metrics=dict(metrics,
+                raise PosterCullRequest(audit)
+            raise PosterGeometryError('独立海报优化后异常观测超出剔除预算', metrics=dict(metrics,
                 culling=cull_decision(mask, self.frame_ids, self.times, self.parameters)))
         if not checks['reprojection_passed'] or not checks['positive_depth']:
             raise PosterGeometryError('独立海报融合未通过正深度或像素残差检查', metrics=diagnostics)
@@ -139,17 +163,23 @@ class PosterContext:
                     rear_rotation_refinement=rear_rotation_evidence(correction_deg, self.parameters))
 
 
+def eligible_sightings(inputs, baseline, parameters):
+    tags = inputs.poster
+    observations = tags.observations
+    # 独立图的 IMU 已减去 front offset；rear 原片 PTS 需加两镜头 offset 之差。
+    times = observations.imu_times_s(tags.measured['cam_time_offset_ns']) - inputs.camera['cam_time_offset_ns']/1e9
+    valid = observations.usable & (observations.side_px >= parameters.tag_minimum_side_px)
+    valid &= (times >= baseline.video_times_s[0]) & (times <= baseline.video_times_s[-1])
+    selected = np.flatnonzero(valid)
+    return selected, times[selected]
+
+
 def prepare(inputs, baseline, parameters, *, _allow_cull=True):
     tags = inputs.poster
     observations = tags.observations
     observations.validate()
     p = parameters.environment_tags
-    # 独立图的 IMU 已减去 front offset；rear 原片 PTS 需加两镜头 offset 之差。
-    times = observations.imu_times_s(tags.measured['cam_time_offset_ns'])-inputs.camera['cam_time_offset_ns']/1e9
-    valid = observations.usable & (observations.side_px >= p.tag_minimum_side_px)
-    valid &= (times >= baseline.video_times_s[0]) & (times <= baseline.video_times_s[-1])
-    selected = np.flatnonzero(valid)
-    times = times[selected]
+    selected, times = eligible_sightings(inputs, baseline, p)
     evidence = dict(status='insufficient_observations',enabled=p.tag_fusion_enabled,layout=tags.board.record(),
                     frames=len(np.unique(times)),observations=len(times),actual_error='not_measured',
                     pose_scope='this_recording',timestamp_policy='exact_rear_imu_nodes',timestamp_tolerance_s=1e-9,

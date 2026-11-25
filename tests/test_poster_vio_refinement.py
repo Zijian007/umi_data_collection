@@ -45,6 +45,51 @@ class PosterVioRefinementTests(unittest.TestCase):
         self.assertLess(audit['rounds'][1]['tag_metrics']['rms_px'], 1e-4)
         self.assertEqual(result.arm_evidence['left']['holdout']['status'], 'passed')
 
+    def test_possible_training_support_excludes_holdouts_and_keeps_lenses_separate(self):
+        from types import SimpleNamespace
+
+        arm = SimpleNamespace(node_times=np.arange(7.), raw_times=np.array([2., 4.]),
+                              holdout=np.array([True, False]), initialization_mask=np.array([True, True]),
+                              single_tag_mask=np.array([False, False]))
+        track = dict(node_indices=np.array([1, 2]), holdout_mask=np.array([True, False]))
+        lenses = dict(front=[track] * 2, rear=[track])
+        self.assertEqual(poster_vio_inputs._potential_support_gap(arm, lenses), 4.)
+        lenses['front'].append(track)
+        self.assertEqual(poster_vio_inputs._potential_support_gap(arm, lenses), 2.)
+
+    def test_partner_retry_uses_scene_coverage_limit_and_requires_sufficient_training_coverage(self):
+        from copy import deepcopy
+        from types import SimpleNamespace
+
+        def arm(name):
+            return SimpleNamespace(arm=name, inertial={}, node_times=np.arange(5.), raw_times=np.empty(0),
+                                   holdout=np.empty(0, bool), initialization_mask=np.empty(0, bool),
+                                   single_tag_mask=np.empty(0, bool))
+
+        track = dict(node_indices=np.array([2]), holdout_mask=np.array([False]))
+        params = self.inputs.episode.scene.parameters
+        self.assertEqual(params.poster_vio_maximum_position_support_gap_s, 2.)
+        for count in (2, 3):
+            recovered, original = arm('left'), arm('right')
+            recovered.inertial['recovery_trigger'] = dict(acc_bias_norm_m_s2=1.5)
+            candidate = deepcopy(original)
+            arms, tracked = [recovered, original], [({}, {}), ({}, {})]
+            alternative = (dict(front=[track] * count), {})
+            with patch.object(poster_vio_inputs, '_prepare_arm', return_value=candidate), \
+                    patch.object(poster_vio_inputs, '_track_features', return_value=[alternative]):
+                poster_vio_inputs._recover_partner_coverage(
+                    self.inputs, arms, tracked, [None, None], None, None, None, {}, {})
+            self.assertIs(arms[1], candidate if count == 3 else original)
+            self.assertEqual(arms[1].inertial['partner_coverage_recovery']['accepted'], count == 3)
+
+    def test_recovered_arm_gets_full_joint_fit_before_culling(self):
+        request, arms, seed = self.prepared()
+        arms = (arms[0], replace(arms[1], recovered_inertial_seed=True))
+        result = solve_joint_poster_imu(request.problem(), arms, seed)
+        for evidence in result.arm_evidence.values():
+            self.assertEqual(evidence['refinement']['rounds'][0]['stage'], 'full')
+        self.assertEqual(result.quality.status, 'solved')
+
     def test_excessive_tag_outliers_are_rejected_without_partial_budget_trimming(self):
         request, arms, seed = self.prepared()
         candidates = np.flatnonzero(~arms[0].tag_holdout_mask)

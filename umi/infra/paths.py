@@ -15,6 +15,7 @@ import os
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_ROOT = PROJECT_ROOT / 'config'
 HARDWARE_ROOT = PROJECT_ROOT / 'hardware'
+ENVIRONMENT_POSTER_LAYOUT = HARDWARE_ROOT / 'environment_poster/environment_poster.json'
 KITS_ROOT = HARDWARE_ROOT / 'kits'
 REGISTRY_ROOT = HARDWARE_ROOT / '.registry'
 SCENES_ROOT = PROJECT_ROOT / 'scenes'

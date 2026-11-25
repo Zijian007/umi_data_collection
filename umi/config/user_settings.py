@@ -11,6 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
 
+from umi.config.audio_sync import validate_algorithm
 from umi.infra.file_store import read_yaml
 from umi.infra.paths import CONFIG_ROOT
 
@@ -18,7 +19,13 @@ from umi.infra.paths import CONFIG_ROOT
 DEFAULT_PATH = CONFIG_ROOT / 'user.yaml'
 _USER_FIELDS = {
     'schema_version': None,
-    'features': {'audio_sync': {'enabled': None}, 'factory_intrinsics': {'enabled': None}},
+    'features': {'audio_sync': {'enabled': None, 'algorithm': None}, 'factory_intrinsics': {'enabled': None}},
+    'reconstruction': {
+        'backend': {'mode': None, 'poster_vio': {'base_tag': {'enabled': None},
+                                                'initialization': {'robust_inertial_seed': None}}},
+        'map': {'layout': None, 'reference_arm': None},
+    },
+    'measurements': {'gripper_tags': {'verified_gap_recovery': None}},
     'runtime': {'parallel_tasks': {'enabled': None, 'jobs': None}, 'cores': None},
 }
 
@@ -26,8 +33,10 @@ _USER_FIELDS = {
 def _validate(values: dict) -> dict:
     """Validate and normalize the complete preferences document."""
     from umi.config.loader import merge_overrides
+    from umi.config.collection_schema import measurement_switches, validate_reconstruction_defaults
     if not isinstance(values, dict):
         raise ValueError('config/user.yaml 顶层必须是配置表')
+    declared = values
     values = merge_overrides(_USER_FIELDS, values, 'user.')
     if type(values['schema_version']) is not int or values['schema_version'] != 2:
         raise ValueError('config/user.yaml 需要 schema_version: 2；旧格式请改为 features 和 runtime')
@@ -43,9 +52,17 @@ def _validate(values: dict) -> dict:
     cores = runtime['cores']
     if not isinstance(cores, str) or not cores.strip():
         raise ValueError('user.runtime.cores 必须是 auto 或 CPU 范围字符串')
+    reconstruction, switches = validate_reconstruction_defaults(declared.get('reconstruction'))
+    switches.update(measurement_switches(declared.get('measurements', {}), 'user.measurements'))
+    audio = features['audio_sync']
     return {
-        'scene': {'sync_policy': 'audio_auto' if features['audio_sync']['enabled'] else 'assumed_simultaneous'},
+        'scene': {
+            'sync_policy': 'audio_auto' if audio['enabled'] else 'assumed_simultaneous',
+            'audio_sync_algorithm': validate_algorithm(audio['algorithm'], 'user.features.audio_sync.algorithm'),
+        },
         'calibration': {'intrinsics_source': 'factory' if features['factory_intrinsics']['enabled'] else None},
+        'reconstruction': reconstruction,
+        'processing_options': switches,
         'runtime': {'jobs': parallel['jobs'] if parallel['enabled'] else 1, 'cores': cores},
     }
 
@@ -67,3 +84,11 @@ def load(path: Path | None = None) -> UserConfig:
 @lru_cache(maxsize=None)
 def current() -> UserConfig:
     return load()
+
+
+def audio_sync_algorithm() -> str:
+    return current().values['scene']['audio_sync_algorithm']
+
+
+def poster_vio_base_tag_enabled() -> bool:
+    return current().values['reconstruction']['backend']['poster_vio']['base_tag']['enabled']

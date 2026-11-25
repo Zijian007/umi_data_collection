@@ -23,9 +23,6 @@ from umi.config import audio_sync as sync_config
 from umi.config.audio_sync import SpecialistParameters
 
 
-DEFAULT_AUDIO_SYNC_ALGORITHM = 'specialist'
-
-
 class AudioSyncError(RuntimeError):
     """The audio pair cannot provide a trustworthy synchronization estimate."""
 
@@ -44,7 +41,7 @@ class AudioSyncEstimate:
     peak_value: float
     sample_rate_hz: int
     max_offset_s: float | None
-    method: str = AUDIO_SYNC_RECIPES[DEFAULT_AUDIO_SYNC_ALGORITHM]
+    method: str = AUDIO_SYNC_RECIPES['specialist']
     coarse_offset_s: float | None = None
     diagnostics: dict[str, object] = field(default_factory=dict)
 

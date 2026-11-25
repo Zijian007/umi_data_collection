@@ -24,7 +24,7 @@ class EntrypointPathTests(unittest.TestCase):
         environment.pop('PYTHONPATH', None)
         with tempfile.TemporaryDirectory() as folder:
             directory = Path(folder)
-            for command in ('umi-view', 'umi-scene', 'umi-calib', 'umi-maint'):
+            for command in ('umi-view', 'umi-scene', 'umi-calib'):
                 with self.subTest(command=command):
                     shortcut = directory / command
                     shortcut.symlink_to(project / command)
@@ -156,25 +156,23 @@ class SolverEnvironmentTests(unittest.TestCase):
 
 
 class CommandHelpTests(unittest.TestCase):
-    def test_daily_help_omits_maintenance_commands_and_old_options(self):
+    def test_help_groups_daily_and_maintenance_commands(self):
         for module, daily, tools, options in (
-            (scene_cli, '{run,status,review,export}', ('clean', 'detect-tags'), ('--skip-preflight', '--jobs')),
-            (calibration_cli, '{run,verify,install,devices}', ('recheck', 'preview-width'), ('--install', '--workers')),
+            (scene_cli, ('run', 'status', 'review', 'export'),
+             ('check', 'build', 'detect-tags', 'clean', 'evaluate-relative'), ('--skip-preflight', '--jobs')),
+            (calibration_cli, ('run', 'verify', 'install', 'devices'),
+             ('check', 'recheck', 'retire', 'preview-width', 'detect-width'), ('--install', '--workers')),
         ):
             parser = module.build_parser()
-            self.assertIn(daily, parser.format_help())
-            maintenance = module.build_parser(maintenance=True)
-            for name in tools:
-                self.assertNotIn(name, parser.format_help())
-                self.assertIn(name, maintenance.format_help())
+            daily_help, maintenance_help = parser.format_help().split('日常操作\n')[1].split('维护与诊断\n')
+            self.assertEqual(tuple(line.split()[0] for line in daily_help.splitlines() if line.strip()), daily)
+            self.assertCountEqual(tuple(line.split()[0] for line in maintenance_help.split('\n\n', 1)[0].splitlines()),
+                                  tools)
             with redirect_stdout(io.StringIO()) as output, self.assertRaises(SystemExit):
                 parser.parse_args(['run', '--help'])
             for option in options:
-                self.assertNotIn(option, output.getvalue())
-            with redirect_stdout(io.StringIO()) as output, self.assertRaises(SystemExit):
-                maintenance.parse_args(['run', '--help'])
-            for option in options:
                 self.assertIn(option, output.getvalue())
+            self.assertNotIn('--force', output.getvalue())
 
     def test_all_user_arguments_have_help(self):
         def check_parser(parser):

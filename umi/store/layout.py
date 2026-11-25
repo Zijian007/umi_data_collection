@@ -88,7 +88,9 @@ def task_configuration(root: Path) -> dict:
     collection = batch / 'collection.yaml'
     if not collection.is_file():
         return {}
-    return normalize_collection(read_yaml(collection))['tasks'].get(root.name, {})
+    declaration = normalize_collection(read_yaml(collection))
+    fallback = {'instruction': declaration['instruction']} if declaration['instruction'] else {}
+    return declaration['tasks'].get(root.name, fallback)
 
 
 def task_configuration_hash(root: Path) -> str:

@@ -110,7 +110,7 @@ def _validate_frozen_request(inputs: TaskInputs, request, arms) -> None:
         if len(observation.base_tag_times_s):
             used_cameras.add('front')
         base_spec = (getattr(recording.camera, 'base_tag', None)
-                      if getattr(episode.scene, 'poster_vio_base_tag_enabled', True) else None)
+                      if episode.scene.poster_vio_base_tag_enabled else None)
         expected_spec = (None if base_spec is None else dict(id=base_spec['id'],
             size_m=base_spec['size_mm'] / 1000., dictionary=base_spec.get('dictionary', 'DICT_4X4_100')))
         if request.base_tag_specs.get(item.arm) != expected_spec:

@@ -282,16 +282,18 @@ def build(recording: PreparedRecording, lens: str, directory: Path, *,
 
 def localize(recording: PreparedRecording, lens: str, archive: Path, index: int, directory: Path,
              *, reverse: bool = False, frame_range: tuple[int, int] | None = None,
-             cache: StageCache | None = None, refresh: bool = False) -> VisualObservations:
+             warm_reverse: bool = False, cache: StageCache | None = None, refresh: bool = False) -> VisualObservations:
     identity = dict(visual_inputs(recording, lens), archive=artifact_identity.file_hash(archive),
                     index=index, reverse=reverse, frame_range=list(frame_range) if frame_range else None) if cache else {}
+    if cache and warm_reverse:
+        identity['warm_reverse'] = True
     with (cache.stage('localize', f'{lens} 地图 {index} 定位', identity, directory,
                       roots=('localization', 'logs'), refresh=refresh) if cache else nullcontext(False)) as reused:
         if not reused:
             directory.mkdir(parents=True)
             (directory / 'logs').mkdir()
             visual_slam.localize_map(MapAtlas(recording.lens_video(lens), archive), index, directory / 'localization',
-                                     recording.context, directory, reverse=reverse, frame_range=frame_range)
+                                     recording.context, directory, reverse=reverse, frame_range=frame_range, warm_reverse=warm_reverse)
         return read_visual_observations(directory / 'localization/frames.csv', recording.video_times_s,
                                  recording.camera.measurements[lens]['cam_time_offset_ns'])
 
@@ -305,21 +307,42 @@ def localize_with_recovery(recording: PreparedRecording, lens: str, archive: Pat
                       added_frames=0, merged_frames=len(forward.indices))
         result = forward
     else:
-        window = relocalization.reverse_window(forward, recording.video_times_s, parameters)
-        attempts = []
+        times = recording.video_times_s
+        window = relocalization.reverse_window(forward, times, parameters)
+        passes = []
         if window is not None:
-            reverse = localize(recording, lens, archive, index, directory / 'reverse_window',
-                               reverse=True, frame_range=window)
-            result, report = relocalization.merge(forward, reverse, metric_scale=metric_scale, parameters=parameters)
-            attempts.append(dict(frame_range=list(window), **report))
-        if window is None or len(result.indices) != len(recording.video_times_s):
-            # 短窗口没完全补齐时，仍以原始正向观测验收整段反向结果。
-            # 不使用窗口恢复帧作为新锚点，避免扩大未经正向独立核验的轨迹段。
-            reverse = localize(recording, lens, archive, index, directory / 'reverse', reverse=True)
-            result, report = relocalization.merge(forward, reverse, metric_scale=metric_scale, parameters=parameters)
-            attempts.append(dict(frame_range=[0, len(recording.video_times_s)], **report))
-        report.update(reverse_attempts=attempts, full_reverse_fallback=len(attempts) > 1,
-                      reverse_processed_frames=sum(a['frame_range'][1] - a['frame_range'][0] for a in attempts))
+            passes.append(('reverse_window', window))
+        prefix_window = relocalization.prefix_backtrack_window(forward, times, parameters)
+        if prefix_window is not None:
+            passes.append(('reverse_warm', prefix_window))
+        passes.append(('reverse', None))
+
+        attempts = []
+        result = forward
+        for name, bounds in passes:
+            options = {'reverse': True}
+            if bounds is not None:
+                options['frame_range'] = bounds
+            if name == 'reverse_warm':
+                options['warm_reverse'] = True
+            start, end = bounds or (0, len(times))
+            try:
+                reverse = localize(recording, lens, archive, index, directory / name, **options)
+            except visual_slam.WarmReverseUnavailable as error:
+                attempts.append(dict(mode=name, frame_range=[start, end], status='unsupported', reason=str(error)))
+                continue
+            # 每次独立对照原始正向观测，不能用上一轮补入的帧给下一轮作锚。
+            candidate, evidence = relocalization.merge(forward, reverse, metric_scale=metric_scale, parameters=parameters)
+            attempts.append(dict(mode=name, frame_range=[start, end], **evidence))
+            if len(candidate.indices) >= len(result.indices):
+                result, report = candidate, dict(evidence, selected_pass=name)
+            if len(result.indices) == len(times):
+                break
+        report.update(reverse_attempts=attempts, full_reverse_fallback=len(attempts) > 1 and attempts[-1]['mode'] == 'reverse',
+                      reverse_processed_frames=sum(a['frame_range'][1] - a['frame_range'][0] for a in attempts
+                                                   if a['status'] == 'completed'),
+                      warmup_frames=sum(a['frame_range'][1] + 1 for a in attempts
+                                        if a['mode'] == 'reverse_warm' and a['status'] == 'completed'))
     write_json(directory / 'recovery.json', report)
     return result
 

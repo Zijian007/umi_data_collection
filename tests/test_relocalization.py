@@ -156,16 +156,51 @@ class RecoveryTests(unittest.TestCase):
             forward = observations(range(10, 300))
             window = observations(range(5, 40), shift=.001)
             whole = observations(range(300), shift=.002)
-            with patch.object(slam, 'localize', side_effect=[forward, window, whole]) as localize:
+            with patch.object(slam, 'localize', side_effect=[forward, window, observations(range(40), shift=.1), whole]) as localize:
                 output = slam.localize_with_recovery(recording, 'front', directory/'map.osa', 0,
                                                      directory, 1., self.parameters)
-            self.assertEqual(localize.call_count, 3)
+            self.assertEqual(localize.call_count, 4)
             self.assertEqual(localize.call_args.kwargs, {'reverse': True})
             np.testing.assert_array_equal(output.T_reference_camera[:10], whole.T_reference_camera[:10])
             report = json.loads((directory/'recovery.json').read_text())
-            self.assertEqual(report['reverse_processed_frames'], 340)
+            self.assertEqual(report['reverse_processed_frames'], 380)
+            self.assertEqual(report['reverse_attempts'][1]['segments'][0]['status'], 'inconsistent')
             self.assertEqual(report['reverse_attempts'][0]['added_frames'], 5)
             self.assertTrue(report['full_reverse_fallback'])
+
+    def test_warm_prefix_uses_original_anchors_and_keeps_original_timestamps(self):
+        forward = observations(range(279, 702))
+        recording = SimpleNamespace(video_times_s=np.arange(702) * 1001/30000)
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            with patch.object(slam, 'localize', side_effect=[
+                    forward, observations([281]), observations(range(308), shift=.001)]) as localize:
+                output = slam.localize_with_recovery(recording, 'front', directory/'map.osa', 1,
+                                                     directory, 1., self.parameters)
+            self.assertEqual(localize.call_args.kwargs, {'reverse': True, 'frame_range': (0, 308), 'warm_reverse': True})
+            np.testing.assert_array_equal(output.indices, np.arange(702))
+            np.testing.assert_array_equal(output.imu_times_s, observations(range(702)).imu_times_s)
+            np.testing.assert_array_equal(output.T_reference_camera[279:], forward.T_reference_camera)
+            report = json.loads((directory/'recovery.json').read_text())
+            self.assertEqual(report['selected_pass'], 'reverse_warm')
+            self.assertEqual(report['warmup_frames'], 309)
+            self.assertEqual(report['segments'][0]['overlap_frames'], 29)
+            self.assertFalse(report['full_reverse_fallback'])
+
+    def test_older_engine_falls_back_and_keeps_best_independently_verified_run(self):
+        recording = SimpleNamespace(video_times_s=np.arange(300)/30)
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            with patch.object(slam, 'localize', side_effect=[
+                    observations(range(10, 300)), observations(range(5, 40)),
+                    visual_slam.WarmReverseUnavailable('older driver'), observations([10])]):
+                output = slam.localize_with_recovery(recording, 'front', directory/'map.osa', 0,
+                                                     directory, 1., self.parameters)
+            np.testing.assert_array_equal(output.indices, np.arange(5,300))
+            report = json.loads((directory/'recovery.json').read_text())
+            self.assertEqual(report['selected_pass'], 'reverse_window')
+            self.assertEqual(report['reverse_attempts'][1]['status'], 'unsupported')
+            self.assertEqual(report['warmup_frames'], 0)
 
 
 class ReverseRuntimeTests(unittest.TestCase):
@@ -177,10 +212,11 @@ class ReverseRuntimeTests(unittest.TestCase):
             context = SimpleNamespace(settings=settings, parameters=config.load('trajectory').values,
                                       frame_count=10, cores='')
             video = SimpleNamespace(lens='front', settings=root/'settings', path=root/'input.mp4')
-            for case, reverse, indices in [('reverse', True, [5,4,3]), ('forward', False, [3,4,5]),
+            for case, reverse, indices in [('warm', True, [5,4,3]), ('reverse', True, [5,4,3]), ('forward', False, [3,4,5]),
                                            ('renumbered', True, [2,1,0]), ('missing', True, [5,3])]:
                 output = root/case
                 def run(command, log, **kwargs):
+                    self.assertEqual('--warm_reverse' in command, case == 'warm')
                     self.assertEqual(command[command.index('--frame_start') + 1], '3')
                     self.assertEqual(command[command.index('--frame_end') + 1], '6')
                     log.write_text('TRACKED 3 / 3\n')
@@ -188,10 +224,13 @@ class ReverseRuntimeTests(unittest.TestCase):
                         ''.join(f'{i},{i/30},2,1,0,0,0,0,0,0,1\n' for i in indices))
                     return 0
                 with patch.object(visual_slam.runtime, 'run_logged', side_effect=run):
-                    if case in ('reverse', 'forward'):
+                    if case in ('warm', 'reverse', 'forward'):
                         visual_slam.run_orb(video, output, context, root, stage=case,
-                                           extra=['--localization_only'], reverse=reverse, frame_range=(3,6))
-                        self.assertEqual(json.loads((output/'execution.json').read_text())['rows'], 3)
+                                           extra=['--localization_only'], reverse=reverse, frame_range=(3,6),
+                                           warm_reverse=case == 'warm')
+                        record = json.loads((output/'execution.json').read_text())
+                        self.assertEqual(record['rows'], 3)
+                        self.assertEqual(record['warmup_frames'], 7 if case == 'warm' else 0)
                     else:
                         with self.assertRaises(visual_slam.ProcessingError):
                             visual_slam.run_orb(video, output, context, root, stage=case,

@@ -1,6 +1,11 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from umi.config import user_settings
 from umi.config.collection_schema import normalize_collection
+from umi.infra.file_store import read_yaml, write_yaml
 
 
 class CollectionSchemaTests(unittest.TestCase):
@@ -14,6 +19,24 @@ class CollectionSchemaTests(unittest.TestCase):
                 mapping=dict(enabled=False, scale_correction=dict(enabled=False))),
             backend=dict(mode='auto', scene_map=dict(poster_constraint=dict(enabled=True, method='staged'))))
 
+    def test_reads_reconstruction_defaults_from_user_yaml_and_honors_explicit_overrides(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'user.yaml'
+            options = read_yaml(user_settings.DEFAULT_PATH)
+            options['reconstruction']['backend']['mode'] = 'poster_vio'
+            options['reconstruction']['map'] = dict(layout='per_arm', reference_arm='right')
+            write_yaml(path, options)
+            with patch.object(user_settings, 'current', return_value=user_settings.load(path)):
+                document = dict(kit='kit', recording=dict(arms=['left']), mapping={})
+                inherited = normalize_collection(document)
+                overridden = normalize_collection({**document, 'backend': {'mode': 'auto'},
+                                                   'map': {'layout': 'shared'}})
+        self.assertEqual(inherited['reconstruction']['backend'], 'poster_vio')
+        self.assertEqual(inherited['scene']['layout'], 'per_arm')
+        self.assertEqual(inherited['scene']['map_reference_arm'], 'right')
+        self.assertEqual(overridden['reconstruction']['backend'], 'auto')
+        self.assertEqual(overridden['scene']['layout'], 'shared')
+        self.assertEqual(overridden['scene']['map_reference_arm'], 'right')
     def test_normalizes_map_poster_reconstruction_and_task_override(self):
         document = self.base()
         document['backend']['poster_vio'] = dict(base_tag=dict(enabled=False))

@@ -80,11 +80,11 @@ detect-width 的快速模式针对小标签使用 7～23 像素、步长 4 的�
 无标定的任务继续只输出轨迹；已配置的标定缺失、格式无效或检测出错时任务失败，保留上次成功入口。没有找到标记会保存缺失值，不会当作闭合。超出最大标定开口的结果不作为有效测量，不用短缺口插值掩盖。
 
 
-像素距离预览入口为 `./umi-maint calib preview-width INPUT.insv [--out OUTPUT.mp4]`，使用基础环境，无需宽度 JSON 或 Basalt。预览使用完整模式，与场景共用灰度转换和基础检测实现；场景级联优先使用快速模式，检出帧和距离可能略有差别。保留原片帧间时间，输出的 960×960 画面标注原始 1920×1920 像素距离；缺失/重复目标 ID 显示 N/A。编码失败不发布半成品，已有目标文件拒绝覆盖。
+像素距离预览入口为 `./umi-calib preview-width INPUT.insv [--out OUTPUT.mp4]`，使用基础环境，无需宽度 JSON 或 Basalt。预览使用完整模式，与场景共用灰度转换和基础检测实现；场景级联优先使用快速模式，检出帧和距离可能略有差别。保留原片帧间时间，输出的 960×960 画面标注原始 1920×1920 像素距离；缺失/重复目标 ID 显示 N/A。编码失败不发布半成品，已有目标文件拒绝覆盖。
 
 预览支持 `--roi LEFT TOP RIGHT BOTTOM`，默认 `600 980 1350 1250`，以原始工作镜头半幅坐标固定检测区域；先裁剪再检测，恢复范围偏移后叠加到完整预览。固定范围不自动扩展或全图重定位。CLI 覆盖仅影响此次运行，不写入套件或场景参数。
 
-无界面检测使用 `./umi-maint calib detect-width INPUT.insv [--roi LEFT TOP RIGHT BOTTOM] [--hz 30] [--out OUTPUT.csv] [--video-out OUTPUT.mp4 | --no-video] [--benchmark]`，ROI 默认 `600 980 1350 1250`。默认按原片 PTS 以目标频率采样，按原速输出；落后时跳过过期采样，缺失值不沿用前帧。`--benchmark` 不等待、不丢弃计划采样，用来测量包含解码和可选编码的吞吐量。CSV 默认写标准输出，统计摘要写标准错误。
+无界面检测使用 `./umi-calib detect-width INPUT.insv [--roi LEFT TOP RIGHT BOTTOM] [--hz 30] [--out OUTPUT.csv] [--video-out OUTPUT.mp4 | --no-video] [--benchmark]`，ROI 默认 `600 980 1350 1250`。默认按原片 PTS 以目标频率采样，按原速输出；落后时跳过过期采样，缺失值不沿用前帧。`--benchmark` 不等待、不丢弃计划采样，用来测量包含解码和可选编码的吞吐量。CSV 默认写标准输出，统计摘要写标准错误。
 
 CLI 默认在原片旁保存 `<原名>_width_detect.mp4`，可指定视频路径或关闭视频。MP4 与 CSV 共用同次检测，逐帧显示标签框、ID、中心距离、原片时间和蓝色 ROI 框。检测坐标恢复为原始半幅，显示单独缩小至 960×960；采样或丢样的 PTS 保留，首帧时间归零。CSV 和视频均使用临时文件，成功后发布，拒绝覆盖已有输出。Python `video_tools.monitor()` 的 `video_output=None` 可供只需 CSV 的调用者使用。
 

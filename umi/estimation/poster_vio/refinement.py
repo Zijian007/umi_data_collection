@@ -31,6 +31,12 @@ def track_key(track):
     return track.get('camera', 'rear'), track['track_id']
 
 
+def natural_support_nodes(nodes):
+    """A single exposure needs three landmarks from the same camera."""
+    unique, counts = np.unique(nodes, return_counts=True)
+    return unique[counts >= 3].astype(int)
+
+
 def natural_training(track):
     return (~np.asarray(track['holdout_mask']) if 'holdout_mask' in track
             else np.ones(len(track['pixels']), dtype=bool))

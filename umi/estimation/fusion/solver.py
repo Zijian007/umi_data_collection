@@ -21,6 +21,7 @@ from umi.estimation.fusion.alignment import AlignmentResult, align_recording, su
 from umi.estimation.fusion.data import FusionInputs, FusionSolution, MapPlacements, retime_rear
 from umi.estimation.fusion.graph import TrajectoryOptimizationResult, logR, optimize_fused_trajectory, segment_variable_keys
 from umi.estimation.constraint_quality import scale_consistency
+from umi.perception.poster.quality import cumulative_culling_record
 
 
 def solve(inputs: FusionInputs, parameters: parameter_models.TrajectoryParameters, *, log=print,
@@ -46,18 +47,36 @@ def solve(inputs: FusionInputs, parameters: parameter_models.TrajectoryParameter
     poster, evidence = fusion_poster.prepare(inputs, baseline, parameters)
     if poster is None:
         return replace(baseline,evidence=dict(baseline.evidence,environment_poster=evidence))
-    try:
-        optimized = optimize_fused_trajectory(aligned, placements, parameters, log=log, poster=poster)
-    except fusion_poster.PosterCullRequest as request:
-        observations = inputs.poster.observations
-        usable = observations.usable.copy()
-        usable[request.selected] = False
-        filtered = replace(inputs, poster=replace(inputs.poster, observations=replace(observations, usable=usable)))
-        poster, _ = fusion_poster.prepare(filtered, baseline, parameters, _allow_cull=False)
-        if poster is None:
-            raise fusion_poster.PosterGeometryError('独立海报剔除后观测不足')
-        poster.evidence.update(request.audit)
-        optimized = optimize_fused_trajectory(aligned, placements, parameters, log=log, poster=poster)
+    stages = [evidence] if evidence.get('culled_observations') else []
+    observations = inputs.poster.observations
+    # One initial graph and at most two post-fit culls. Reuse the same alignment,
+    # placements and baseline. A second cull must be smaller than the first.
+    warm_start = None
+    for solve_index in range(3):
+        try:
+            optimized = optimize_fused_trajectory(aligned, placements, parameters, log=log, poster=poster,
+                                                  warm_start=warm_start)
+            break
+        except fusion_poster.PosterCullRequest as request:
+            warm_start = request.warm_start
+            step = request.audit
+            if solve_index == 2 or (solve_index and step['culled_observations'] >= stages[-1]['culled_observations']):
+                raise fusion_poster.PosterGeometryError('独立海报优化后异常观测未在有限轮次内消除',
+                                                       metrics=step) from request
+            stages.append(step)
+            selected, times = fusion_poster.eligible_sightings(inputs, baseline, parameters.environment_tags)
+            total = cumulative_culling_record(stages, selected, observations.sample_indices[selected],
+                                              observations.tag_ids[selected], times, parameters.environment_tags)
+            removed = [entry['observation'] for entry in total['culling']['removed']]
+            usable = observations.usable.copy()
+            usable[removed] = False
+            filtered = replace(inputs, poster=replace(inputs.poster, observations=replace(observations, usable=usable)))
+            poster, _ = fusion_poster.prepare(filtered, baseline, parameters, _allow_cull=False)
+            if poster is None:
+                raise fusion_poster.PosterGeometryError('独立海报剔除后观测不足')
+            poster.evidence.update(total, pre_cull_reprojection_rms_px=stages[0]['pre_cull_reprojection_rms_px'],
+                                   pre_cull_reprojection_metrics=stages[0]['pre_cull_reprojection_metrics'],
+                                   pre_cull_invalid_depth_sightings=step['pre_cull_invalid_depth_sightings'])
     result = recover_trajectory(aligned, placements, optimized, parameters)
     if not np.isfinite(result.T_world_imu).all():
         raise ValueError('独立海报融合输出非有限位姿')

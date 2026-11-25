@@ -19,11 +19,12 @@ from umi.core.geometry import imu_from_camera
 from umi.core.timing import video_to_imu_seconds
 from umi.estimation.poster_vio import ArmSolveInput, NaturalCamera, PosterVioObservation, PosterVioProblem, base_tags
 from umi.estimation.poster_vio.frontend import FeatureCameraInput, track_cameras
-from umi.estimation.poster_vio.initialization import (align_inertial, estimate_static_tag_extrinsic,
-                                                      inertial_tail_seed, robust_seed_poses, select_keyframes,
-                                                      select_observations, single_tag_geometry)
+from umi.estimation.poster_vio.initialization import (InertialAlignmentLimitError, align_inertial,
+                                                      estimate_static_tag_extrinsic, inertial_tail_seed,
+                                                      robust_seed_poses, select_keyframes, select_observations,
+                                                      single_tag_geometry)
 from umi.estimation.poster_vio.models import FeatureTrackingParameters, PosterVioParameters
-from umi.estimation.poster_vio.refinement import select_holdout
+from umi.estimation.poster_vio.refinement import natural_support_nodes, natural_training, select_holdout
 from umi.infra.concurrency import daemon_map
 from umi.infra.file_store import write_json
 from umi.infra.provenance import file_hash
@@ -125,6 +126,8 @@ def prepare_task_inputs(inputs: TaskInputs):
         for arm, snapshot in zip(arms, snapshots)]
 
     tracked = _track_features(inputs, prepared_arms, tracking)
+    _recover_partner_coverage(inputs, prepared_arms, tracked, snapshots, board, parameters, tracking,
+                              base_tag_cache_dirs, owners_by_tag_id)
     observations, solve_inputs, camera_assets, imu_assets, diagnostics = _assemble(
         inputs, prepared_arms, tracked, parameters)
     solve_inputs, shared_gravity, difference = _share_gravity(solve_inputs, scene)
@@ -156,7 +159,7 @@ def _base_tag_specs(inputs: TaskInputs, arms: tuple[str, ...]) -> dict[str, dict
     specs = {}
     for arm in arms:
         spec = (getattr(inputs.recordings[arm].camera, 'base_tag', None)
-                if getattr(scene, 'poster_vio_base_tag_enabled', True) else None)
+                if scene.poster_vio_base_tag_enabled else None)
         if spec is not None:
             specs[arm] = dict(id=int(spec['id']), size_m=float(spec['size_mm']) / 1000.,
                               dictionary=spec.get('dictionary', 'DICT_4X4_100'))
@@ -198,7 +201,7 @@ def _detect(inputs: TaskInputs, arms: tuple[str, ...], base_tag_specs: dict):
 
 
 def _prepare_arm(inputs: TaskInputs, arm: str, snapshot, board, parameters: PosterVioParameters, *,
-                 base_tag_cache_dir, owners_by_tag_id: dict) -> _PreparedArm:
+                 base_tag_cache_dir, owners_by_tag_id: dict, coverage_gap=None) -> _PreparedArm:
     """一只手：选取海报观测 → 留出与鲁棒初值 → 惯性对齐 → 求解采样 → 节点种子 → 特征流。"""
     scene = inputs.episode.scene
     recording = inputs.recordings[arm]
@@ -246,8 +249,25 @@ def _prepare_arm(inputs: TaskInputs, arm: str, snapshot, board, parameters: Post
         record['observation'] = int(training_rows[record['observation']])
         record['tag_id'] = int(ids[record['observation']])
         single_tag_mask[record['observation']] = record.get('single_tag_candidate', False)
-    gravity, acc_bias, velocities, inertial = align_inertial(
-        training_times, tag_seeds, recording.imu, scene.trajectory.values.fusion)
+    trigger = None
+    if coverage_gap is None:
+        try:
+            gravity, acc_bias, velocities, inertial = align_inertial(
+                training_times, tag_seeds, recording.imu, scene.trajectory.values.fusion)
+        except InertialAlignmentLimitError as limit:
+            if not parameters.poster_vio_robust_inertial_seed:
+                raise
+            trigger = dict(gravity_norm_m_s2=limit.gravity_norm, acc_bias_norm_m_s2=limit.bias_norm)
+    else:
+        trigger = dict(partner_training_support_gap_s=coverage_gap)
+    if trigger is not None:
+        from umi.estimation.poster_vio.inertial_seed import fit_training_seed
+        try:
+            tag_seeds, gravity, acc_bias, velocities, inertial = fit_training_seed(
+                training_times, tag_seeds, recording.imu, scene.trajectory.values.fusion)
+        except ValueError as error:
+            raise ValueError(f'{arm} poster_vio 鲁棒惯性初始化失败：{error}') from error
+        inertial['recovery_trigger'] = trigger
 
     # 联合图只保留按关键帧间隔采样的完整标签帧；种子不受影响。
     solver_keep = _solver_tag_selection(
@@ -273,6 +293,11 @@ def _prepare_arm(inputs: TaskInputs, arm: str, snapshot, board, parameters: Post
     seed, node_velocities, tail_seed = inertial_tail_seed(training_times, tag_seeds, velocities, node_times,
         recording.imu, gravity, np.asarray(inertial['initial_gyro_bias_rad_s']), acc_bias,
         parameters=parameters, fusion=scene.trajectory.values.fusion)
+    if 'recovery_trigger' in inertial:
+        from umi.estimation.poster_vio.inertial_seed import bridge_training_gaps
+        inertial['imu_bridged_nodes'] = bridge_training_gaps(
+            training_times, tag_seeds, velocities, node_times, seed, node_velocities, recording.imu,
+            gravity, np.asarray(inertial['initial_gyro_bias_rad_s']), acc_bias)
     inertial['tail_seed'] = tail_seed
     tag_indices = np.searchsorted(node_times, np.round(raw_times, 9))
     initialization['single_tag_geometry_rejections'] = _reject_single_tag_geometry(
@@ -351,6 +376,51 @@ def _feature_streams(scene, recording, camera, detections, feature_selected, all
     )
 
 
+def _recover_partner_coverage(inputs, prepared_arms, tracked, snapshots, board, parameters, tracking,
+                              base_tag_cache_dirs, owners_by_tag_id):
+    """Retry an uncovered partner once, selecting on training observations alone."""
+    if not any('recovery_trigger' in item.inertial for item in prepared_arms):
+        return
+    maximum_gap = inputs.episode.scene.parameters.poster_vio_maximum_position_support_gap_s
+    for index, (item, (tracks, _)) in enumerate(zip(prepared_arms, tracked)):
+        if 'recovery_trigger' in item.inertial:
+            continue
+        gap = _potential_support_gap(item, tracks)
+        if gap <= maximum_gap:
+            continue
+        # Even perfect reprojections cannot fill this training gap. Try the
+        # other seed once and retain it only if its training coverage suffices.
+        inputs.console.write(f'{item.arm} 训练位置支持缺口至少 {gap:.3f}s，尝试备用惯性初值',
+                             recording=inputs.episode.root.name, step=(2, 3))
+        attempt = dict(original_gap_s=gap)
+        item.inertial['partner_coverage_recovery'] = attempt
+        try:
+            candidate = _prepare_arm(inputs, item.arm, snapshots[index], board, parameters,
+                base_tag_cache_dir=base_tag_cache_dirs.get(item.arm), owners_by_tag_id=owners_by_tag_id,
+                coverage_gap=gap)
+            candidate_tracks = _track_features(inputs, [candidate], tracking)[0]
+        except ValueError as error:
+            attempt.update(accepted=False, reason=str(error))
+            continue
+        candidate_gap = _potential_support_gap(candidate, candidate_tracks[0])
+        attempt.update(candidate_gap_s=candidate_gap,
+                       accepted=candidate_gap <= maximum_gap)
+        if attempt['accepted']:
+            candidate.inertial['partner_coverage_recovery'] = attempt
+            prepared_arms[index], tracked[index] = candidate, candidate_tracks
+
+
+def _potential_support_gap(item, tracks_by_camera):
+    """Lower bound on the final support gap, counting every eligible training tag."""
+    tags = (~item.holdout) & (item.initialization_mask | item.single_tag_mask)
+    events = [item.node_times[[0, -1]], item.raw_times[tags]]
+    for tracks in tracks_by_camera.values():
+        if tracks:
+            nodes = np.concatenate([np.asarray(t['node_indices'])[natural_training(t)] for t in tracks])
+            events.append(item.node_times[natural_support_nodes(nodes)])
+    return float(np.diff(np.unique(np.concatenate(events))).max())
+
+
 def _track_features(inputs: TaskInputs, prepared_arms: list[_PreparedArm], tracking) -> list:
     """各手自然特征跟踪（双手并行）；返回每手 (按镜头的轨迹, 前端诊断)。"""
     episode, parameters = inputs.episode, inputs.episode.scene.parameters
@@ -395,7 +465,8 @@ def _assemble(inputs: TaskInputs, prepared_arms: list[_PreparedArm], tracked: li
             natural_tracks, gravity_m_s2=item.gravity, initial_acc_bias=item.acc_bias,
             seed_velocities=item.node_velocities, initial_gyro_bias=item.initial_gyro_bias,
             natural_cameras=item.natural_cameras, tag_holdout_mask=item.holdout,
-            tag_initialization_mask=item.initialization_mask, single_tag_factor_mask=item.single_tag_mask))
+            tag_initialization_mask=item.initialization_mask, single_tag_factor_mask=item.single_tag_mask,
+            recovered_inertial_seed='recovery_trigger' in item.inertial))
         camera_assets[item.arm] = dict(asset_hashes=item.camera.asset_hashes)
         imu = item.recording.imu
         imu_assets[item.arm] = dict(sample_count=len(imu), time_start=float(imu[0, 0]), time_end=float(imu[-1, 0]))

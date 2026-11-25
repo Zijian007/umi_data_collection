@@ -43,7 +43,7 @@
 
 `build_maps()` 允许更新地图并保存图集；`localize_map()` 加载固定图集，使用 `localization_only`，不扩建地图。二者共用底层可执行文件，分次调用。
 
-`localize_map(..., reverse=True)` 使用引擎的 `--reverse`，按约 64 MiB 的帧块逆序解码，不生成中间视频。CSV 按逆序写原始帧号和原始视频时间，视觉引擎内部使用递增时间；只允许加载固定地图的定位，不允许反向建图或导出建图轨迹。场景层负责排序、转换到相机–IMU 时间并复核两方向位姿。旧安装需要重编译 `x3_mono_slam`；`--capabilities` 的 `reverse_localization` 表明已支持。
+`localize_map(..., reverse=True)` 使用引擎的 `--reverse`，按约 64 MiB 的帧块逆序解码，不生成中间视频。CSV 按逆序写原始帧号和原始视频时间，视觉引擎内部使用递增时间；只允许加载固定地图的定位，不允许反向建图或导出建图轨迹。场景层负责排序、转换到相机–IMU 时间并复核两方向位姿。仅开头缺失时，短窗倒放未补齐会尝试 `--reverse --warm_reverse`。引擎从原片起点正向跟踪到折返点，再保留同一跟踪器状态回读；反向 CSV 排除折返点，只记录回读的帧。能力字段为 `warm_reverse_localization`，旧驱动仍可使用普通倒放。旧安装需要重编译 `x3_mono_slam`；`--capabilities` 的 `reverse_localization` 表明已支持。
 
 `frame_range=(start, end)` 可限制原始帧区间 `[start, end)`；运行验收按区间长度检查结束统计，CSV 必须保留绝对帧号。场景优先反向重放缺口及上下文；未完全补齐时回退整段反向，建图和逐图尺度求解继续使用全片。
 

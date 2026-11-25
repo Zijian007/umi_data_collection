@@ -98,7 +98,7 @@ void signal_callback_handler(int signum) {
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::string(argv[1]) == "--capabilities") {
-    cout << "{\"schema_version\":1,\"kb4_geometry\":\"forward_v1\",\"maximum_ray_angle_degrees\":85,\"offline_sync\":true,\"reverse_localization\":true}\n";
+    cout << "{\"schema_version\":1,\"kb4_geometry\":\"forward_v1\",\"maximum_ray_angle_degrees\":85,\"offline_sync\":true,\"reverse_localization\":true,\"warm_reverse_localization\":true}\n";
     return 0;
   }
   signal(SIGINT, signal_callback_handler);
@@ -126,6 +126,8 @@ int main(int argc, char **argv) {
   app.add_flag("--localization_only", localization_only);
   bool reverse = false;
   app.add_flag("--reverse", reverse, "Read frames backwards for fixed-map visual localization only");
+  bool warm_reverse = false;
+  app.add_flag("--warm_reverse", warm_reverse, "Track forward through the turnaround frame before --reverse");
   std::string mask_img_path;
   app.add_option("--mask_img", mask_img_path);
   int frame_start = 0;
@@ -143,6 +145,10 @@ int main(int argc, char **argv) {
     app.parse(argc, argv);
   } catch (const CLI::ParseError &e) {
     return app.exit(e);
+  }
+  if (warm_reverse && !reverse) {
+    cerr << "--warm_reverse requires --reverse" << endl;
+    return 2;
   }
   if (reverse && (!localization_only || load_map.empty() || !save_map.empty() || !output_trajectory_csv.empty())) {
     cerr << "--reverse requires --load_map and --localization_only; map/trajectory export is not allowed" << endl;
@@ -191,6 +197,24 @@ int main(int argc, char **argv) {
   cout << "frames " << nImages << " fps " << setprecision(12) << fps << " range [" << frame_start << ", "
        << frame_end << ")" << endl;
 
+  // The pivot is frame_end, just outside the requested reverse CSV interval.
+  // Keep its tracker state, then process frame_end-1 .. frame_start normally.
+  double reverse_clock_offset = 0.;
+  if (warm_reverse) {
+    if (frame_end >= nImages) {
+      cerr << "Warm reverse needs a turnaround frame inside the video" << endl;
+      return 2;
+    }
+    for (int i = 0; i <= frame_end; ++i) {
+      cv::Mat image;
+      if (!cap.read(image)) return 2;
+      if (image.size() != img_size) cv::resize(image, image, img_size);
+      if (!mask_img.empty()) image.setTo(cv::Scalar(0, 0, 0), mask_img);
+      SLAM.LocalizeMonocular(image, static_cast<double>(i) / fps);
+    }
+    reverse_clock_offset = (frame_end + 1.) / fps;
+  }
+
   ofstream fcsv(output_frames_csv);
   fcsv << "frame_idx,t,state,ok,tx,ty,tz,qx,qy,qz,qw\n";
   fcsv << fixed << setprecision(9);
@@ -215,7 +239,7 @@ int main(int argc, char **argv) {
     double t = (double)frame_idx / fps;
     // The tracker requires increasing time. CSV retains original frame indices
     // and video times; the IMU is fused later on the original ascending clock.
-    auto result = SLAM.LocalizeMonocular(im_track, reverse ? (double)step / fps : t);
+    auto result = SLAM.LocalizeMonocular(im_track, reverse ? reverse_clock_offset + (double)step / fps : t);
     int state = SLAM.GetTrackingState();
     n_proc++;
     write_frame_pose(fcsv, frame_idx, t, state, result);

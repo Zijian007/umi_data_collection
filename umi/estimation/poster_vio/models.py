@@ -47,6 +47,8 @@ class PosterVioParameters(PosterTagParameters):
     rear_position_sigma_m: float
     visual_rotation_sigma_deg: float
     huber: float
+    poster_vio_per_tag_huber: bool = False
+    poster_vio_robust_inertial_seed: bool = False
 
 
 @dataclass(frozen=True)

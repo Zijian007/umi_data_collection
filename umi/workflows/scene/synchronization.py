@@ -12,11 +12,12 @@ import json
 import math
 
 from umi.config import audio_sync as sync_config
+from umi.config import user_settings
 from umi.infra import provenance
 from umi.infra.file_store import write_json
 from umi.perception.audio import kiwi_audio as landmark_audio
 from umi.config.audio_sync import AUDIO_SYNC_RECIPES
-from umi.perception.audio.specialist_audio import DEFAULT_AUDIO_SYNC_ALGORITHM, AudioSyncError, estimate_offset_from_files
+from umi.perception.audio.specialist_audio import AudioSyncError, estimate_offset_from_files
 
 
 def format_offsets(offsets_s: dict[str, float]) -> str:
@@ -34,9 +35,10 @@ def format_audio_evidence(record: dict) -> str:
 
 
 def resolve_audio_sync(recordings: dict[str, Path], path: Path, *,
-                       algorithm: str = DEFAULT_AUDIO_SYNC_ALGORITHM, force: bool = False,
+                       algorithm: str | None = None, force: bool = False,
                        dry_run: bool = False, on_estimate: Callable[[], None] | None = None) -> tuple[dict, bool]:
     """Resolve one pair for the trajectory workflow (``umi-scene run``)."""
+    algorithm = user_settings.audio_sync_algorithm() if algorithm is None else algorithm
     parameters = sync_config.load(algorithm)
     try:
         cached = load_ready_audio_sync(path, recordings, algorithm=algorithm, parameters=parameters)
@@ -89,7 +91,7 @@ def _identity(recordings: dict[str, Path], algorithm: str,
                 reference_arm=arms[0], other_arm=arms[1])
 
 
-def estimate_audio_sync(recordings: dict[str, Path], *, algorithm: str = DEFAULT_AUDIO_SYNC_ALGORITHM,
+def estimate_audio_sync(recordings: dict[str, Path], *, algorithm: str | None = None,
                         output: Path | None = None,
                         force: bool = False,
                         parameters: sync_config.KiwiParameters | sync_config.SpecialistParameters | None = None) -> dict:
@@ -101,6 +103,7 @@ def estimate_audio_sync(recordings: dict[str, Path], *, algorithm: str = DEFAULT
     sign and shifts the video, IMU and exposure timelines equally.
     """
 
+    algorithm = user_settings.audio_sync_algorithm() if algorithm is None else algorithm
     parameters = parameters if parameters is not None else sync_config.load(algorithm)
     identity = _identity(recordings, algorithm, parameters)
     reference, other = identity['reference_arm'], identity['other_arm']
@@ -159,7 +162,7 @@ def _video_offset_status(algorithm: str) -> str:
 
 
 def load_ready_audio_sync(path: Path, recordings: dict[str, Path], *,
-                          algorithm: str = DEFAULT_AUDIO_SYNC_ALGORITHM,
+                          algorithm: str | None = None,
                           parameters: sync_config.KiwiParameters | sync_config.SpecialistParameters | None = None) -> dict | None:
     """Load a ready sync record if it matches the current recordings.
 
@@ -168,6 +171,7 @@ def load_ready_audio_sync(path: Path, recordings: dict[str, Path], *,
     """
     if not path.is_file():
         return None
+    algorithm = user_settings.audio_sync_algorithm() if algorithm is None else algorithm
     try:
         record = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError) as error:
@@ -191,7 +195,8 @@ def load_ready_audio_sync(path: Path, recordings: dict[str, Path], *,
         raise ValueError('sync.json 的录像输入指纹已变化，请重新同步')
     if inputs.get('parameters') != expected['parameters']:
         return None
-    if inputs != expected or record.get('algorithm', DEFAULT_AUDIO_SYNC_ALGORITHM) != algorithm:
+    # Old synchronization records without an algorithm were produced by Specialist.
+    if inputs != expected or record.get('algorithm', 'specialist') != algorithm:
         raise ValueError('sync.json 的算法或参考手记录不一致，请重新同步')
     offsets = record.get('offsets_s')
     arms = tuple(recordings)

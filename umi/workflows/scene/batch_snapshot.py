@@ -15,7 +15,7 @@ from umi.workflows.scene.parameters import SceneOverrides
 from umi.store.models import ARMS, Scene
 from umi.workflows.scene.maps import repository as map_repository
 from umi.workflows.scene import recordings
-from umi.config.collection_schema import task_modes, normalize_collection, apply_task_backend, scene_map_uses_poster, uses_edge_trim
+from umi.config.collection_schema import PROCESSING_FIELDS, task_modes, normalize_collection, apply_task_backend, scene_map_uses_poster, uses_edge_trim
 from umi.infra.file_store import read_yaml, write_yaml
 from umi.workflows.scene.inputs.scene import read_scene, require_keys, validate_batch_name, validate_episode_name, validate_name, read_kit, validate_kit, ROOT
 from umi.core.arms import read_arms, resolve_arms
@@ -24,7 +24,6 @@ from umi.workflows.scene import episodes
 from umi.workflows.scene.inputs import scene as kit_inputs
 from umi.store.layout import configured_batches
 from umi.workflows.scene.task_configuration import default_audio_sync_enabled, independent_retry_gap, resolve_task_configuration
-from umi.perception.audio.specialist_audio import DEFAULT_AUDIO_SYNC_ALGORITHM
 
 
 BATCH_FIELDS = {'kit', 'arms', 'map_version', 'map_policy'}
@@ -399,7 +398,7 @@ def _target_report(directory: Path, *, overrides: SceneOverrides | None,
     if frozen_mapping and scene.reconstruction_mode not in ('poster_independent', 'poster_vio'):
         scene = replace(scene, mode='shared_front' if len(frozen_mapping) == 1 else 'dual',
                         reference_arm=manifest.get('mapping_reference_arm', next(iter(frozen_mapping))))
-    audio_algorithm = collection.get('audio_sync_algorithm', DEFAULT_AUDIO_SYNC_ALGORITHM)
+    audio_algorithm = collection['audio_sync_algorithm']
     audio_parameters, audio_sources = sync_config.load_with_sources(audio_algorithm)
     audio_override = dict(audio_sync_override=str(audio_sources[1])) if len(audio_sources) > 1 else {}
     return dict(
@@ -410,6 +409,9 @@ def _target_report(directory: Path, *, overrides: SceneOverrides | None,
             override=overrides.snapshot() if overrides else None),
         effective=dict(mode=scene.mode, reconstruction_mode=scene.reconstruction_mode,
             backend=_backend_report(scene),
+            processing_options={name: dict(value=getattr(scene.parameters, field),
+                                           source=scene.processing_option_sources[field])
+                                for name, field in PROCESSING_FIELDS.items()},
             batch_audio_sync_enabled=default_audio_sync_enabled(collection.get('audio_sync_enabled')),
             batch_audio_sync_algorithm=audio_algorithm,
             audio_sync_parameters=sync_config.snapshot(audio_parameters),

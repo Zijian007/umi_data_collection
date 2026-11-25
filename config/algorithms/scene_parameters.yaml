@@ -60,6 +60,7 @@ poster_independent:  # 本录像独立引擎海报后端的重力验收。
   maximum_gravity_difference_deg: 5.0  # 两手在海报坐标中的重力夹角上限，单位 deg。
 
 poster_vio:  # 实验性联合图的观测门槛；与独立引擎后端分开配置。
+  per_tag_huber: false  # 实验选项；同帧角点批量投影，每个标签独立计算 Huber 权重。
   base_tag:  # 双手有效跨手观测使用的夹爪基座安装变量；kit 声明标签。
     prior_rotation_sigma_rad: 0.2  # 安装变量旋转先验标准差，单位 rad；正数，越小越贴近自身观测种子。
     prior_translation_sigma_m: 0.03  # 安装变量平移先验标准差，单位 m；正数，越小越限制安装修正。
@@ -71,6 +72,7 @@ poster_vio:  # 实验性联合图的观测门槛；与独立引擎后端分开�
   minimum_time_span_s: 1.0  # 每手标签观测的最小时间跨度，单位 s。
   maximum_gravity_difference_deg: 5.0  # 两手惯性初始化重力方向夹角上限，单位 deg。
   initialization:
+    robust_inertial_seed: true  # 实验：重力或加速度零偏超限时尝试鲁棒初始化，并检查双手训练观测覆盖。
     maximum_hypotheses: 32  # 每帧整板/标签子集 PnP 假设的确定性上限。
   keyframes:
     maximum_dt_s: 0.1  # 关键帧最大时间间隔；0 保留逐帧全图作对照。
@@ -90,7 +92,7 @@ poster_vio:  # 实验性联合图的观测门槛；与独立引擎后端分开�
       match_ratio: 0.75  # Hamming 最近/次近距离比上限。
       maximum_reprojection_px: 4.0  # 重关联需通过初值米制重投影门槛。
   culling:
-    maximum_rounds: 2  # 联合求解后最多剔除并重求解的轮数；0 关闭。
+    maximum_rounds: 3  # 联合求解后最多剔除并重求解的轮数；0 关闭。
     precull_iterations: 3  # 首轮先短求解判断异常；后续沿用已求解状态和阻尼。
     maximum_natural_fraction: 0.15  # 每手每镜头累计剔除比例；留出证据充足时，无效训练投影可额外剔除后重解。
     natural_threshold_px: 10.0  # 自然像素异常门槛，单位 px；标签沿用共享几何门槛及预算。
@@ -107,7 +109,7 @@ fusion:  # 固定场景任务的视觉融合权重；海报约束策略由 colle
 
 measurements:  # 夹爪标签中心距和开口宽度测量。
   gripper_tags:  # 两枚夹爪标签中心距的几何质量规则。
-    verified_gap_recovery: false  # 常规测距超出缺口上限时，用原片增强和双向模板补检。
+    verified_gap_recovery: true  # 常规测距超出缺口上限时，用原片增强和双向模板补检。
     max_reprojection_error_px: 2.0  # 标签角点重投影 RMS 上限，单位 px。
     max_center_ambiguity_mm: 2.0  # 平面两解中心距离超过此值才接受，单位 mm。
     minimum_valid_fraction: 0.5  # 有效中心距帧的最低比例。

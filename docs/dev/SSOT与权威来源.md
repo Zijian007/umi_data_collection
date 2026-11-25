@@ -9,8 +9,8 @@
 | 场景、批次和任务的用户声明 | 批次根目录 `collection.yaml` | `.pipeline/manifest.yaml` 是解析后的批次快照；`episode.yaml` 只登记原片身份 |
 | 相机、套件、TCP 和夹爪资产 | `hardware/kits/<kit>/kit.yaml` 选择资产，`hardware/.registry/` 保存测量资产 | 运行目录中的 `devices/` 是本次运行冻结的副本 |
 | 原始录像内容 | 批次目录中的 `.insv` 文件 | `episode.yaml`、`manifest.yaml` 只保存路径、设备身份和内容哈希 |
-| Organizer 原片交接 | 批次根目录 `import_manifest.json`（只追加的导入输入） | UMI 校验路径和 SHA256 后把新条目追加进 `.pipeline/map_epochs.yaml`，已登记条目不可改；它不是第二份用户配置 |
-| 本机通用设置 | `config/user.yaml` | 运行报告保存本次实际解析值 |
+| Organizer 原片交接 | 批次 `collection.yaml` 中的 `mapping` 和 `tasks` | UMI 校验原片路径和 SHA-256，生成内部地图计划 `.pipeline/map_epochs.yaml`（包括已构建的地图版本） |
+| 本机通用设置和重建默认值 | `config/user.yaml` | 运行报告保存本次实际解析值 |
 | 默认算法参数 | `config/algorithms/*.yaml` | 后端数值可在批次和任务中覆盖，`--expert-config` 的显式值优先用于本次运行 |
 | 多地图采集顺序与 epoch 规划 | `.pipeline/map_epochs.yaml` | 结果 `data/episode.json` 记录最终选择及选择理由 |
 | 当前批次绑定的默认地图 | `.pipeline/manifest.yaml.map` | 地图目录中的 `manifest.json` 是该不可变版本的完整身份和资产清单 |

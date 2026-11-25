@@ -156,18 +156,33 @@ class TaskConfigurationTests(unittest.TestCase):
         write_yaml(self.collection, document)
         self.assertFalse(read_episode(self.helper.episode_path, verify=False).scene.parameters.tag_fusion_enabled)
 
-    def test_base_tag_switch_inherits_and_task_can_override(self):
-        document = self.configure(backend='auto', poster=True)
-        document['backend']['poster_vio'] = dict(base_tag=dict(enabled=False))
-        write_yaml(self.collection, document)
-        episode = read_episode(self.helper.episode_path, verify=False)
-        self.assertFalse(episode.scene.poster_vio_base_tag_enabled)
+    def test_audio_algorithm_and_base_tag_use_global_defaults_and_explicit_overrides(self):
+        user_values = read_yaml(user_settings.DEFAULT_PATH)
+        user_values['features']['audio_sync'].update(enabled=True, algorithm='kiwi')
+        user_values['reconstruction']['backend']['poster_vio']['base_tag']['enabled'] = False
+        user_path = self.helper.root / 'user.yaml'
+        write_yaml(user_path, user_values)
 
-        document['tasks'] = dict(take_001=dict(
-            backend=dict(poster_vio=dict(base_tag=dict(enabled=True)))))
-        write_yaml(self.collection, document)
-        episode = read_episode(self.helper.episode_path, verify=False)
-        self.assertTrue(episode.scene.poster_vio_base_tag_enabled)
+        with patch.object(user_settings, 'current', return_value=user_settings.load(user_path)):
+            document = self.configure(backend='auto', poster=True)
+            document['recording'].pop('audio_sync', None)
+            document['backend']['poster_vio'] = dict(initialization=dict(max_observation_gap_s=4.))
+            write_yaml(self.collection, document)
+            for scope, algorithm, base_tag in (('global', 'kiwi', False), ('batch', 'specialist', True),
+                                               ('task', 'specialist', False)):
+                with self.subTest(scope=scope):
+                    if scope == 'batch':
+                        document['recording']['audio_sync'] = dict(algorithm='specialist')
+                        document['backend']['poster_vio']['base_tag'] = dict(enabled=True)
+                    if scope == 'task':
+                        document['tasks']['take_001']['backend'] = dict(poster_vio=dict(base_tag=dict(enabled=False)))
+                    write_yaml(self.collection, document)
+                    episode = read_episode(self.helper.episode_path, verify=False)
+                    report = self.preview()['effective']
+                    self.assertEqual(episode.synchronization['algorithm'], algorithm)
+                    self.assertIs(episode.scene.poster_vio_base_tag_enabled, base_tag)
+                    self.assertEqual(report['batch_audio_sync_algorithm'], algorithm)
+                    self.assertIs(report['poster_vio_base_tag_enabled'], base_tag)
 
     def test_invalid_epoch_selection_is_reported_and_execution_rejects_it(self):
         self.configure(task={'map': {'epoch': 'missing'}})

@@ -43,8 +43,7 @@ def _prepare_for_run(batch: Path, *, dry_run: bool, intrinsics_source: str | Non
                      map_epoch: str | None = None) -> dict:
     """准备一个批次：epoch 计划 → 登记原片 → 构建尚未构建的 epoch 地图。
 
-    多地图批次的计划来源依次为已有的 .pipeline/map_epochs.yaml、Organizer 的
-    import_manifest.json、按录像时间戳起草（有歧义时停止）。只读预览不写计划也不建图。
+    使用批次采集顺序生成地图计划，手工整理的批次可按录像时间起草。只读预览不写计划也不建图。
     """
     plan = _epoch_plan(batch, dry_run=dry_run, overrides=overrides, intrinsics_source=intrinsics_source)
     imported = _require_ready_recordings(prepare_batch(
@@ -58,17 +57,15 @@ def _prepare_for_run(batch: Path, *, dry_run: bool, intrinsics_source: str | Non
 def _epoch_plan(batch: Path, *, dry_run: bool, overrides: SceneOverrides | None,
                 intrinsics_source: str | None = None, build_only: bool = False) -> dict | None:
     """Return the multi-map plan when needed by the tasks or requested by build."""
-    from umi.workflows.scene.import_manifest import ensure_epoch_plan, merge_epoch_plan, read_manifest
+    from umi.workflows.scene.collection_recordings import merge_epoch_plan, read_recordings, save_epoch_plan
 
-    _, _, collection = batches.read_collection(batch)
+    _, document, collection = batches.read_collection(batch)
     mapping_clips = recordings.insv_files(batch / 'mapping') if (batch / 'mapping').is_dir() else []
     plan_path = layout.metadata(batch, 'map_epochs.yaml')
-    organizer = read_manifest(batch, verify=False)
+    organizer = read_recordings(batch, document=document, verify=not dry_run)
     if organizer is not None and not organizer['maps']:
         if mapping_clips or plan_path.is_file():
-            raise ValueError('import_manifest.json 声明没有建图，但批次已有建图原片或地图计划')
-        if not dry_run:
-            read_manifest(batch)
+            raise ValueError('批次采集记录声明没有建图，但批次已有建图原片或地图计划')
         return None
     has_mapping = bool(mapping_clips) or plan_path.is_file() or organizer is not None
     map_required, _ = batches.mapping_requirements(collection, has_mapping=has_mapping)
@@ -78,8 +75,7 @@ def _epoch_plan(batch: Path, *, dry_run: bool, overrides: SceneOverrides | None,
         if dry_run:
             current = read_yaml(plan_path) if plan_path.is_file() else {}
             return merge_epoch_plan(current, organizer)
-        ensure_epoch_plan(batch)
-        return read_yaml(plan_path)
+        return save_epoch_plan(batch, organizer)
     if plan_path.is_file():
         return read_yaml(plan_path)
     map_root = batch / 'mapping'
@@ -442,7 +438,7 @@ def _draft_epoch_plan(batch: Path, *, write: bool = False,
     """按录像内嵌时间戳为手工整理的多轮建图批次起草地图 epoch 计划。
 
     只在每个事件的时间和相机配对都无歧义时写入（write=True）。注意：时间戳取自各相机自己的
-    时钟，两台相机的时钟可能不对齐；经 Organizer 整理的批次使用 import_manifest.json，不走这里。
+    时钟，两台相机的时钟可能不对齐；经 Organizer 整理的批次使用已对齐的采集顺序。
     """
     batch = batch_root(batch)
     require_collection(batch, 'run')

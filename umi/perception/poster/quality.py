@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from umi.perception.poster.geometry import residual_and_jacobians
+from umi.perception.poster.geometry import PosterGeometryError, residual_and_jacobians
 
 
 @dataclass(frozen=True)
@@ -83,6 +83,20 @@ def culling_record(cull_mask, selected, frame_ids, tag_ids, times, parameters, *
     return dict(culled_observations=int(np.sum(cull_mask)), cull_threshold_px=float(cull_threshold(parameters)),
                 culling=decision)
 
+
+
+def cumulative_culling_record(stages, selected, frame_ids, tag_ids, times, parameters):
+    """Check the union against the eligible observations before the first cull."""
+    removed = [entry['observation'] for stage in stages for entry in stage['culling']['removed']]
+    mask = np.isin(selected, removed)
+    names = dict.fromkeys(step['culling']['stage'] for step in stages)
+    total = culling_record(mask, selected, frame_ids, tag_ids, times, parameters, stage='_and_'.join(names))
+    if not total['culling']['allowed']:
+        raise PosterGeometryError('海报累计剔除未通过验收', metrics=total)
+    total['culling'].update(passes=len(stages), stages=[
+        dict(stage=step['culling']['stage'], observations=step['culled_observations'],
+             pre_cull_rms_px=step['pre_cull_reprojection_rms_px']) for step in stages])
+    return total
 
 
 def position_support_metrics(bodies, board, camera_from_imu, points, pixels,

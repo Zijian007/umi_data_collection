@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Callable, TypeVar, TypedDict
 import numpy as np
 
 from umi.config import loader as config
+from umi.config import user_settings
 from umi.infra import provenance as artifact_identity
 from umi.store import layout
 from umi.core.arms import ARMS
@@ -132,6 +133,8 @@ class SceneParameters:
     recording_max_static_acc_std_m_s2: float
     recording_max_shutter_s: float
     recording_max_exposure_cv: float
+    poster_vio_per_tag_huber: bool = False
+    poster_vio_robust_inertial_seed: bool = False
     tag_distance_verified_gap_recovery: bool = False
 
     def for_algorithm(self, parameter_type: type[_AlgorithmParameters]) -> _AlgorithmParameters:
@@ -156,12 +159,13 @@ class Scene:
     batch_root: Path | None = None
     environment_tags_enabled: bool = False
     reconstruction_mode: str = 'scene_map'
-    poster_vio_base_tag_enabled: bool = True
+    poster_vio_base_tag_enabled: bool = field(default_factory=user_settings.poster_vio_base_tag_enabled)
     recording_trim: dict = field(default_factory=dict)
     scene_map_poster_constraint_enabled: bool | None = None
     scene_map_tag_detection_enabled: bool | None = None
     scene_map_edge_trim: bool = False
     position_support_gap_sources: dict[str, str] = field(default_factory=dict)
+    processing_option_sources: dict[str, str] = field(default_factory=dict)
 
     @property
     def root(self) -> Path:

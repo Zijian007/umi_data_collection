@@ -8,7 +8,7 @@
 
 | 层级 | 权威入口 | 负责内容 | 典型修改者 |
 |---|---|---|---|
-| 用户意图 | `config/user.yaml` | 音频同步、factory 内参和任务并发 | 日常用户 |
+| 用户意图 | `config/user.yaml` | 重建默认策略、音频同步、factory 内参和任务并发 | 日常用户 |
 | 采集声明 | 批次 `collection.yaml`、套件 `hardware/kits/<kit>/kit.yaml` | 场景、任务、使用手、环境标签布局、设备和实测资产 | 数据采集者 |
 | 算法默认值 | `algorithms/*.yaml`、`algorithms/audio_sync/*.yaml` | 视觉、惯性、建图、定位、海报几何、验收门限和音频同步 | 算法维护者 |
 | 执行与诊断 | `operations/runtime.yaml`、`operations/viewer.yaml`、`operations/gripper_tag_detection.yaml` | 线程、超时、查看器监听与缓存、夹爪标签 ROI 和检测预算 | 工程维护者 |
@@ -24,8 +24,18 @@ schema_version: 2
 features:
   audio_sync:
     enabled: true
+    algorithm: specialist
   factory_intrinsics:
     enabled: false
+reconstruction:
+  backend:
+    mode: auto
+    poster_vio:
+      base_tag:
+        enabled: true
+  map:
+    layout: auto
+    reference_arm: left
 runtime:
   parallel_tasks:
     enabled: false
@@ -33,25 +43,35 @@ runtime:
   cores: auto
 ```
 
-`features.audio_sync.enabled` 是双手任务的全局默认值。批次可在 `collection.yaml.recording.audio_sync.enabled` 覆盖，任务显式声明优先，单手任务使用本机时钟。`features.factory_intrinsics.enabled` 为 true 时全局优先选择 factory 内参，否则沿用 kit.yaml。`runtime.parallel_tasks.enabled` 为 false 时强制任务并发为 1，为 true 时使用 `jobs`。
+`features.audio_sync.enabled` 和 `features.audio_sync.algorithm` 设置双手音频同步的默认开关和算法。批次可在 `collection.yaml` 的 `recording.audio_sync` 覆盖。任务可显式选择同步方式，单手任务使用本机时钟。`features.factory_intrinsics.enabled` 为 true 时全局优先选择 factory 内参，否则沿用 kit.yaml。`runtime.parallel_tasks.enabled` 为 false 时强制任务并发为 1，为 true 时使用 `jobs`。
+
+`reconstruction` 提供重建后端、地图布局和参考手的全局默认值。批次显式设置的 `backend.mode`、`map.layout` 或 `map.reference_arm` 优先。Organizer 生成的批次继承全局配置，并默认使用项目的环境海报标定布局。
+`reconstruction.backend.poster_vio.base_tag.enabled` 设置是否使用 kit 中的夹爪基座标签，批次和任务可以显式覆盖，任务优先。
+
+Organizer 提交页的「处理选项」逐项写入当前批次。选择「继承 UMI 配置」会省略该字段。两个开关只接受 YAML 布尔值，按项目默认、本机、批次、单次专家覆盖的顺序生效。使用 `./umi-scene run <批次或任务> --show-config` 查看 `effective.processing_options` 下各项的值和来源。
+
+| 处理选项 | 本机 `config/user.yaml` | 批次 `collection.yaml` | 专家覆盖文件 |
+|---|---|---|---|
+| VIO 鲁棒惯性初始化 | `reconstruction.backend.poster_vio.initialization.robust_inertial_seed` | `backend.poster_vio.initialization.robust_inertial_seed` | `parameters.poster_vio.initialization.robust_inertial_seed` |
+| 夹爪标签缺口补检 | `measurements.gripper_tags.verified_gap_recovery` | `measurements.gripper_tags.verified_gap_recovery` | `parameters.measurements.gripper_tags.verified_gap_recovery` |
 
 日常运行先选输入目录；算法调参写 YAML；设备和实测几何写入各自的资产声明。三个程序的分工如下：
 
 | 入口 | 命令行输入 | YAML / 资产 |
 |---|---|---|
-| `umi-scene run` | 路径、`--dry-run`、`--recompute`、`--json`。单次 CPU、并发和预检选项见 `umi-maint scene run --help` | `algorithms/trajectory.yaml`、`algorithms/scene_parameters.yaml` 提供算法默认值；批次日常配置统一写 `collection.yaml`（场景、kit、手和任务）；专家调参使用 `--expert-config`；`kit.yaml` 选择每镜头当前参数来源与测量文件 |
-| `umi-calib run / verify` | 录像、输出路径、`--tag-size-mm`、`--dry-run`、`--recompute`。CPU 和线程选项见 `umi-maint calib run --help` | `algorithms/calibration.yaml` 保存求解与验收参数；C 验证读取 `algorithms/trajectory.yaml`；板布局和版本化测量是独立资产 |
+| `umi-scene run` | 路径、`--dry-run`、`--recompute`、`--json`。单次 CPU、并发和预检选项见 `umi-scene run --help` | `algorithms/trajectory.yaml`、`algorithms/scene_parameters.yaml` 提供算法默认值；批次日常配置统一写 `collection.yaml`（场景、kit、手和任务）；专家调参使用 `--expert-config`；`kit.yaml` 选择每镜头当前参数来源与测量文件 |
+| `umi-calib run / verify` | 录像、输出路径、`--tag-size-mm`、`--dry-run`、`--recompute`。CPU 和线程选项见 `umi-calib run --help` | `algorithms/calibration.yaml` 保存求解与验收参数；C 验证读取 `algorithms/trajectory.yaml`；板布局和版本化测量是独立资产 |
 | `umi-view` | 结果根目录、`--host`、`--port` | `operations/viewer.yaml` 管理服务、预览和缓存；读取已有结果，不重新计算轨迹 |
 
 `--expert-config` 仅用于本次专家算法实验；内参来源读取 `config/user.yaml`，地图阶段读取 `collection.yaml.tasks` 和 `.pipeline/map_epochs.yaml`。逐个子命令的完整选项、默认值与互斥关系见[命令行参数参考](../docs/命令行参数.md)，也可用 `<入口> <子命令> --help` 查阅。
 
-独立诊断工具的参数仍由该次命令传入：`umi-maint scene detect-tags` 的检测采样/投影尺寸、`umi-maint calib preview-width / detect-width` 的 ROI/对比度/检测频率。训练采样设置通过 `umi-scene export --profile 文件.yaml` 传入。它们只作用于本次诊断或导出，不改正式轨迹流程的 YAML。
+独立诊断工具的参数仍由该次命令传入：`umi-scene detect-tags` 的检测采样/投影尺寸、`umi-calib preview-width / detect-width` 的 ROI/对比度/检测频率。训练采样设置通过 `umi-scene export --profile 文件.yaml` 传入。它们只作用于本次诊断或导出，不改正式轨迹流程的 YAML。
 
 ## 先查看本次配置
 
 ```bash
-./umi-maint scene run scenes/test_shelf/20261120_002 --show-config
-./umi-maint calib run /path/to/front --show-config
+./umi-scene run scenes/test_shelf/20261120_002 --show-config
+./umi-calib run /path/to/front --show-config
 ./umi-view scenes/test_shelf --port 9092 --show-config
 ```
 
@@ -104,7 +124,7 @@ map_max_points: 20000
 - `kiwi.yaml` 包含指纹提取、投票门槛、GCC-PHAT 精对齐和长录制漂移参数。项目采用 48 kHz 音频、4096 点频谱窗、1024 点步长，每个锚峰最多配对 16 个指纹。 [Kiwi 参数](algorithms/audio_sync/kiwi.yaml)
 - `specialist.yaml` 包含采样率、包络低通、降采样、搜索范围和峰值比参数。 [Specialist 参数](algorithms/audio_sync/specialist.yaml)
 
-`umi-scene run` 从所选算法的 YAML 读取完整默认值。需要只调整部分参数时，在同目录新建 `kiwi.local.yaml` 或 `specialist.local.yaml`，只写需要覆盖的键。旧配置中修改过的值也可移入对应的本机覆盖文件。用维护入口的 `run --show-config` 查看来源和实际参数。`sync.json` 的 `inputs.parameters` 保存实际参数，数值变化后会重新估计偏移。
+`umi-scene run` 从所选算法的 YAML 读取完整默认值。需要只调整部分参数时，在同目录新建 `kiwi.local.yaml` 或 `specialist.local.yaml`，只写需要覆盖的键。旧配置中修改过的值也可移入对应的本机覆盖文件。用 `umi-scene run --show-config` 查看来源和实际参数。`sync.json` 的 `inputs.parameters` 保存实际参数，数值变化后会重新估计偏移。
 
 ### 轨迹与标定
 
@@ -190,8 +210,8 @@ trajectory:
 场景算法优先级为 **项目默认 YAML → 本次 `--expert-config` 文件**。临时实验不会修改场景声明：把上面的 `trajectory` / `parameters` 两部分保存为 `experiment.yaml`，然后运行：
 
 ```bash
-./umi-maint scene run scenes/test_shelf/20261120_002 --expert-config experiment.yaml --show-config
-./umi-maint scene run scenes/test_shelf/20261120_002 --expert-config experiment.yaml
+./umi-scene run scenes/test_shelf/20261120_002 --expert-config experiment.yaml --show-config
+./umi-scene run scenes/test_shelf/20261120_002 --expert-config experiment.yaml
 ```
 
 `build` 同样支持 `--expert-config`。覆盖文件顶层只允许 `trajectory` 和 `parameters`；不接受设备、地图模式、标签布局或运行选项。最终参数与覆盖文件的路径、内容和哈希记录在新地图/任务结果中，不回写 `collection.yaml` 或 `kit.yaml`。数值相同的配置换路径或改注释不会触发重算；只改变任务参数时仍复用兼容地图。复用结果保留其原计算记录。
@@ -355,7 +375,7 @@ ORB 引擎要求 `Camera.fps` 为整数，因此自动使用四舍五入且至�
 **标定**在输入匹配时自动续跑或复用结果。用 `--recompute` 建立新版本。只有验收规则变化时，可以单独重新验收。
 
 ```bash
-./umi-maint calib recheck hardware/calibration_runs/CAMERA_SERIAL/YYYYMMDD/front/calibration_result --expert-config umi-calib-checks.yaml
+./umi-calib recheck hardware/calibration_runs/CAMERA_SERIAL/YYYYMMDD/front/calibration_result --expert-config umi-calib-checks.yaml
 ```
 
 这里的覆盖文件需自行准备。`recheck` 校验算法设置与原运行一致，仅修改验收项、结论和报告，保存完整先前验收及配置历史。若原运行用了算法覆盖，重验时需包含相同的算法覆盖。不支持的记录格式、缺少完整原始指标或未完成的执行不能重验；拒绝时保留原报告，需先完成计算。验收使用原始指标，`recheck` 不启用设备标定。
@@ -375,7 +395,7 @@ Basalt/ORB/OpenCV/GTSAM 内部尚未暴露的参数随引擎版本固定；引�
 
 标定运行记录使用 schema 3，和 YAML 的 `schema_version`、资产清单 schema 3 分别管理。`checks.minimum_board_extent_m` 不足使验收为 INCOMPLETE。D 的 `checks.gravity_residual_m_s2` 只影响 WARN，工具始终以 REPORT_ONLY 测量，因此只改该阈值可直接 recheck。
 
-标定配置的 `factory` 负责工厂来源的转换和独立 A 验证：转换 RMS/P99 与原片射线一致性属于候选生成约束；`minimum_holdout_frames`、`holdout_warn_rms_px` 属于可通过 `umi-maint calib recheck` 重新判定的 A 证据/提醒规则。后两项不会改变已生成的参数，缺 A 证据不能安装。
+标定配置的 `factory` 负责工厂来源的转换和独立 A 验证：转换 RMS/P99 与原片射线一致性属于候选生成约束；`minimum_holdout_frames`、`holdout_warn_rms_px` 属于可通过 `umi-calib recheck` 重新判定的 A 证据/提醒规则。后两项不会改变已生成的参数，缺 A 证据不能安装。
 
 算法参数类型位于 [`umi/config/parameter_models.py`](../umi/config/parameter_models.py)；覆盖合并、校验和快照由 [`umi/config/loader.py`](../umi/config/loader.py) 管理。规范 JSON、文件内容哈希与 git 提交号统一由 [`umi/infra/provenance.py`](../umi/infra/provenance.py) 计算，修改结构时保留序列化字段和单位。
 
@@ -410,11 +430,11 @@ environment_poster:
 `environment_poster.detection.enabled` 控制环境标签检测。`environment_poster.mapping` 声明建图诊断与尺度修正，`backend.scene_map.poster_constraint` 声明地图定位的海报融合与初值选择。这些策略均在批次的 `collection.yaml` 中设置。检测开关省略时随用途开启。显式关闭检测与已开启用途冲突。尺度修正要求开启建图海报用途。
 `poster_vio`、`poster_independent` 和 `auto` 从后端模式推导海报能力，配置中需提供 `environment_poster.layout_path`。
 
-`tag_minimum_side_px` / `tag_minimum_pose_observation_times` 筛选像素尺寸和独立观测时刻；`tag_corner_sigma_px` / `tag_sigma_per_radius_px` 设置角点噪声；`tag_huber` 是每 ID 四角点共同的鲁棒核阈值；`tag_maximum_reprojection_rms_px` 检查初始化和最终像素残差。默认值只经合成数据验证。无足够观测保留基线，启用后的几何冲突明确失败。每段录像独立求解海报位姿，海报在录像内须静止、平整；任务融合本身不会改变已发布地图尺度；建图修正由下述开关单独控制。打印尺寸状态仍为 PDF 设计值，需核对成品尺寸后评估实拍效果。
+`tag_minimum_side_px` / `tag_minimum_pose_observation_times` 筛选像素尺寸和独立观测时刻；`tag_corner_sigma_px` / `tag_sigma_per_radius_px` 设置角点噪声；`tag_huber` 控制白化像素残差的鲁棒核阈值，默认由同一位姿下最多八个标签共享权重；`tag_maximum_reprojection_rms_px` 检查初始化和最终像素残差。默认值只经合成数据验证。无足够观测保留基线，启用后的几何冲突明确失败。每段录像独立求解海报位姿，海报在录像内须静止、平整；任务融合本身不会改变已发布地图尺度；建图修正由下述开关单独控制。打印尺寸状态仍为 PDF 设计值，需核对成品尺寸后评估实拍效果。
 
 `tag_maximum_position_std_m`（默认 0.05 m）和 `tag_maximum_rotation_std_deg`（默认 5°）筛查固定海报/标定下的局部线性化约束强度；不表示真实轨迹精度。独立、场景 `staged/joint` 共用几何诊断，`poster_independent` 用通过筛查的观测评估共同位置支持缺口。场景单次覆盖使用 `parameters.fusion.environment_tags.maximum_position_std_m` / `maximum_rotation_std_deg`；内部独立引擎使用 `--config` 文件的 `environment_tags.tag_maximum_position_std_m` / `tag_maximum_rotation_std_deg`。输出字段与实测流程见[海报约束质量](../docs/03-场景处理.md#海报约束质量和双手实测评估)。
 
-剔除预算统一使用 `tag_maximum_cull_fraction`（默认 0.15，数量上限向上取整，0 关闭剔除）、`tag_minimum_retained_time_fraction`（默认 0.8）和剩余最少帧数。建图尺度、场景单手/共享图及独立图共用规则；一次求解至多一轮剔除，不能递归重置预算。场景单次覆盖路径是 `parameters.fusion.environment_tags.culling.maximum_fraction` / `minimum_retained_time_fraction`，两项是共享海报规则，也影响本次建图尺度估计。记录保留 `culling` 的阶段、预算、时间跨度及移除的原始观测索引/帧/ID/时刻；时刻沿用各求解器时钟。优化后仍有超过逐标签剔除门槛的观测、且无法在本轮预算内处理时，拒绝融合。
+剔除预算统一使用 `tag_maximum_cull_fraction`（默认 0.15，数量上限向上取整，0 关闭剔除）、`tag_minimum_retained_time_fraction`（默认 0.8）和剩余最少帧数。共享双手场景图在初始化与联合优化后各可剔除一次。独立海报图在初始化后可剔除一次，优化后最多两次，第二次的异常数须少于第一次。剔除后用上一轮的海报、地图和惯性状态初始化新图，位姿、速度和零偏按曝光时刻对应。各轮按每手的原始观测集合累计验收数量、最少帧数和时间跨度。建图尺度及场景单手图仍至多剔除一次。场景单次覆盖路径是 `parameters.fusion.environment_tags.culling.maximum_fraction` / `minimum_retained_time_fraction`，两项是共享海报规则，也影响本次建图尺度估计。记录保留 `culling` 的阶段、预算、时间跨度及移除的原始观测索引/帧/ID/时刻；时刻沿用各求解器时钟。优化后仍有超过逐标签剔除门槛的观测、且无法在本轮预算内处理时，拒绝融合。
 
 rear 旋转修正由共享因子实现：`tag_rear_rotation_refinement_enabled` 默认 true，`tag_rear_rotation_prior_sigma_rad` 默认 0.2 rad，`tag_rear_rotation_maximum_correction_deg` 默认 5°。关闭时严格固定标定外参，不创建修正变量；开启后超限拒绝，不裁剪修正角再发布。场景覆盖路径是 `parameters.fusion.environment_tags.rear_rotation_refinement.enabled` / `prior_sigma_rad` / `maximum_correction_deg`；内部独立引擎在 `--config` 的 `environment_tags` 下覆盖原字段名。强度与上限为实验默认值，不代替标定精度测量；结果 `rear_rotation_refinement` 记录实际配置与修正角。
 
@@ -423,7 +443,7 @@ rear 旋转修正由共享因子实现：`tag_rear_rotation_refinement_enabled` 
 
 任务估计后端由 `collection.yaml.backend.mode` 选择。每个 take 可在 `tasks.<take>.backend` 覆盖个别字段。数值门槛的优先级由低到高为算法默认值、批次、任务和显式 `--expert-config`。后端顺序、字段与默认值见[估计后端说明](../docs/03-场景处理.md#选择轨迹估计后端)。
 
-`parameters.poster_vio` 的 `initialization` 管理整板/标签子集假设上限；`keyframes` 管理时间、位移和旋转选帧，间隔为 0 时保留逐帧对照；`frontend` 管理活动点、轨迹预算、长度、几何筛选及有界重关联；`culling` 管理短求解迭代、热启动重求解轮数和累计剔除预算；`holdout` 管理标签/自然像素留出及验收 RMS。默认值见 `algorithms/scene_parameters.yaml`，完整覆盖示例及证据边界见[场景处理](../docs/03-场景处理.md#选择轨迹估计后端)。
+`parameters.poster_vio` 的 `initialization` 管理整板/标签子集假设上限；`keyframes` 管理时间、位移和旋转选帧，间隔为 0 时保留逐帧对照；`frontend` 管理活动点、轨迹预算、长度、几何筛选及有界重关联；`culling` 管理短求解迭代、热启动重求解轮数和累计剔除预算；`holdout` 管理标签/自然像素留出及验收 RMS。专家选项 `parameters.poster_vio.per_tag_huber: true` 在同帧批量投影时为每个标签的四个角点独立计算一个 Huber 权重，默认关闭。默认值见 `algorithms/scene_parameters.yaml`，完整覆盖示例及证据边界见[场景处理](../docs/03-场景处理.md#选择轨迹估计后端)。
 
 `environment_poster.mapping.scale_correction.enabled: true` 开启建图阶段的标签尺度诊断和尺度融合，同时需要开启 `environment_poster.mapping.enabled` 和环境标签检测，并要求建图设备可解析正式 rear 参数或工厂兜底。修正后固定新尺度重求重力与零偏，并复核整图惯性残差；地图形状保持原值。
 
