@@ -1,10 +1,10 @@
 # 查看器代码阅读指南
 
-运行和操作见[三维查看指南](../../../docs/04-结果查看与验收.md)，启动选项见[命令行参数](../../../docs/命令行参数.md#umi-view)，数据格式见[轨迹结果](../../../docs/04-结果查看与验收.md)。
+运行和操作见[三维查看指南](../../../docs/04-结果查看.md)，启动选项见[命令行参数](../../../docs/命令行参数.md#umi-view)，数据格式见[轨迹结果](../../../docs/04-结果查看.md)。
 
 ## 阅读顺序
 
-`server.main()` 创建 `RecordingCatalog` 并启动 HTTP 服务；`results/catalog.py` 负责目录发现与结果装配，`results/trajectory_reader.py` 解析轨迹、逐帧约束和标签间距，`errors.py` 定义输入错误。浏览器的 `app.mjs` 装配页面数据和图表，`library.mjs` 管理录像列表，`playback.mjs` 驱动两路视频和轨迹图表共用的任务时间轴。
+`server.main()` 创建 `RecordingCatalog` 并启动 HTTP 服务；`catalog.py` 负责目录发现与结果装配，`trajectory_reader.py` 解析轨迹、逐帧约束和标签间距，`__init__.py` 定义输入错误。浏览器的 `app.mjs` 装配页面数据和图表，`library.mjs` 管理录像列表，`playback.mjs` 驱动两路视频和轨迹图表共用的任务时间轴。
 
 ## 文件职责
 
@@ -12,15 +12,11 @@
 umi/apps/viewer/
 ├── errors.py          查看器输入错误
 ├── server.py          HTTP API、本地静态资源与视频 Range 流
-├── results/
-│   ├── catalog.py     目录发现、访问边界与结果装配
-│   ├── readers.py     TUM / CSV、逐帧约束和标签测距协议解析
-│   ├── poses.py       TCP 到相机/IMU 的只读显示轨迹转换
-│   └── rear.py        环境镜头的来源校验与媒体描述
-├── resources/
-│   ├── video.py       限并发 FFmpeg 解码、预览与视频资源
-│   ├── cache.py       磁盘缓存、文件身份、跨进程锁与原子发布
-│   └── maps.py        地图校验、旧图集按需转换与缓存
+├── catalog.py        目录发现、结果装配与双手共同时间区间
+├── trajectory_reader.py  轨迹、逐帧约束、标签间距和固定外参转换
+├── video.py          限并发 FFmpeg 解码、预览与视频资源
+├── cache.py          缓存身份、跨进程锁与原子发布
+├── maps.py           地图校验、旧图集按需转换与缓存
 └── static/
     app.mjs          结果加载、图表与页面装配
     library.mjs      录像列表、搜索与刷新
@@ -35,7 +31,7 @@ umi/apps/viewer/
     viewer.css       自适应布局
 ```
 
-两个子包初始化只说明职责，调用方从实际模块导入。HTTP 入口及静态资源位置保留，结果读取不反向启动 HTTP 服务。地图转换缓存校验图集、定位记录及转换实现的文件身份。
+各模块直接通过所在包导入。HTTP 入口及静态资源位置保留，结果读取不反向启动 HTTP 服务。地图转换缓存校验图集、定位记录及转换实现的文件身份。
 
 浏览器侧自行计算三维透视投影，Canvas 显示轨迹；不从 CDN 加载绘图库。大轨迹只在绘制轮廓时降采样，逐帧读取和时间定位保留原始索引。对录像目录外的软链接不暴露文件内容，视频支持 HEAD 和单段 HTTP Range，便于拖动跳转。
 
@@ -45,15 +41,15 @@ umi/apps/viewer/
 
 ## 地图读取
 
-共享场景任务由 `results/catalog.py` 适配：通过 ruamel.yaml 读取采集清单以展示待处理或缺片任务，处理和验收状态从 state.json 读取，不加载算法环境。已有结果只读当前 `results` 指针、校验两只手的场景版本/坐标身份，裁出共同时间区间，再对另一只手的位置和四元数插值。浏览器的 `paired.mjs` 跟随主时间同步第二路视频；两路各自使用 `video_time_offset_s`，不把共同区间起点误当成视频起点。
+共享场景任务由 `catalog.py` 适配：通过公共 YAML 读取器读取采集清单以展示待处理或缺片任务，处理状态从 `state.json` 读取，不加载算法环境。查看器使用任务状态选中的 `results` 或 `local_results`，校验场景版本和坐标身份，裁出共同时间区间，再对另一只手的位置和四元数插值。浏览器的 `paired.mjs` 跟随主时间同步第二路视频；两路各自使用 `video_time_offset_s`，不把共同区间起点误当成视频起点。
 
-场景结果默认仅保存 TCP 主轨迹；缺少相机/IMU TUM 时，`results/trajectory_reader.py` 以已记录的固定外参按需重建这两条显示轨迹。该路径只用标准库，不引入 NumPy、SciPy 或求解器依赖；已保存的历史辅助轨迹仍优先使用。
+场景任务的 `data/<手>/trajectory.csv` 保存 TCP 主轨迹。`trajectory_reader.py` 使用标准库和记录的固定外参重建相机、IMU 的显示轨迹。单段重建通过各自的 TUM 文件读取三个轨迹。
 
-`GET /api/recordings/<id>/map` 独立加载地图，不阻塞轨迹与视频。场景任务通过 `umi.store.result_io` 从结果清单读取各手指标和共享 `map` 引用。新版清单位于 `results/data/episode.json`，schema 4 清单位于 `results/episode.json`。查看器校验相对路径、本场景范围、版本、坐标系与 SHA256，不在每只手的结果里复制地图。单独查看原位置的任务结果也使用同一共享文件。
+`GET /api/recordings/<id>/map` 独立加载地图，不阻塞轨迹与视频。`umi.store.result_io` 从场景任务的 `results/data/episode.json` 读取各手指标和共享 `map` 引用。查看器校验相对路径、本场景范围、版本、坐标系与 SHA256。直接打开原位置的任务结果也使用同一份地图。
 
 内部逐段轨迹优先读取 `details/map.json`，缺少该文件时尝试转换摘要选中轮次的 `.osa` 图集。转换结果在查看器缓存目录持久保存，内存保留最近 4 份；服务重启后不必再次加载 ORB 词典。输入地图、选中轮次、轨迹、定位文件或转换代码/引擎发生变化时使用新缓存身份，不写回录像目录。真正转换时串行加载词典，读取其他已有磁盘缓存不排队。
 
-`umi/perception/atlas.py` 共用 `umi_export_atlas` 转换和绘制数据准备。`umi/workflows/segment/reporting/map_data.py` 选择已有结果的图集，将逐帧定位与最终相机轨迹拟合为 Sim(3) 展示变换。退化或残差过大时保留原始地图坐标，浏览器隐藏轨迹叠加并更换单位提示；不合并不同子地图。
+`umi/perception/atlas.py` 共用 `umi_export_atlas` 转换和绘制数据准备。`umi/reconstruction/segment/map_data.py` 选择已有结果的图集，将逐帧定位与最终相机轨迹拟合为 Sim(3) 展示变换。退化或残差过大时保留原始地图坐标，浏览器隐藏轨迹叠加并更换单位提示；不合并不同子地图。
 
 每张子地图默认最多展示 50000 点（`viewer.map_max_points` 可降低，仅抽样响应，不修改已发布地图），关键帧保留时间、位置和姿态，原始 `.osa` 不改变。展示拟合不修改融合算法，残差不能解释为真实轨迹精度。环境镜头地图暂不展示。
 
@@ -61,7 +57,7 @@ umi/apps/viewer/
 
 首次显示通过版本化 poster URL 读取缓存首帧。已有 WebM 预览时，轨迹 API 直接返回其地址，浏览器不再先读取大 MP4。没有预览时先显示原视频或兼容画面；支持 VP8 的浏览器通过 `/preview` 启动后台生成，准备好后保持当前时间和播放状态切换。用户主动选择兼容模式时不自动切走；录像切换取消旧轮询，旧响应不能覆盖新画面。
 
-以下均为 `config/operations/viewer.yaml` 的初始值，可通过 `config/operations/viewer.local.yaml` 覆盖。预览只读原视频，最大 720 像素宽、不放大小图，保持帧率和视野，约 1.5 Mbps，关键帧间隔 30 帧。最多一份编码任务运行、一份排队；生成失败保留原视频/兼容播放。首帧缓存到磁盘，最近 64 张兼容 JPEG 在内存复用，不生成整段抽帧目录。WebM 支持 Range 与版本化不可变 URL；原视频支持 ETag 重新验证。
+以下均为 `config/operations/viewer.yaml` 的初始值，`--host`、`--port` 可在单次启动时覆盖。预览只读原视频，最大 720 像素宽、不放大小图，保持帧率和视野，约 1.5 Mbps，关键帧间隔 30 帧。最多一份编码任务运行、一份排队；生成失败保留原视频/兼容播放。首帧缓存到磁盘，最近 64 张兼容 JPEG 在内存复用，不生成整段抽帧目录。WebM 支持 Range 与版本化不可变 URL；原视频支持 ETag 重新验证。
 
 缓存默认在 `$XDG_CACHE_HOME/umi-view`（通常为 `~/.cache/umi-view`），`UMI_VIEW_CACHE` 可指定其他目录。`maps/`、`previews/`、`posters/` 都是可再生数据，与录像目录隔离。大文件以路径、尺寸、mtime、ctime、inode 识别变更，预览编码选项及 FFmpeg 身份也进入缓存键；跨进程文件锁防重复生成，原子发布避免读取半成品。缓存可以清理，之后按需重建；不自动删除用户录像或轨迹。
 

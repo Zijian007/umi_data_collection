@@ -2,22 +2,18 @@
 
 from __future__ import annotations
 
-from umi.apps.command_help import grouped_help
-from umi.config import operational_settings as settings
-from umi.config import user_settings as user_config
-
-from pathlib import Path
 import argparse
 import json
 import math
 import sys
+from pathlib import Path
 
 from ruamel.yaml.error import YAMLError
 
-from umi.workflows.calibration import devices
-from umi.workflows.calibration import workflow
-from umi.workflows.calibration.pipeline import inputs
-from umi.workflows.calibration.pipeline import runtime
+from umi.calibration import devices, workflow
+from umi.calibration.pipeline import inputs, runtime
+from umi.config import operational_settings as settings
+from umi.infra.terminal import grouped_help
 
 
 def main(argv: list[str] | None = None, *, prepare_environment: bool = False) -> int:
@@ -26,13 +22,6 @@ def main(argv: list[str] | None = None, *, prepare_environment: bool = False) ->
     arguments = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(arguments)
     try:
-        common = user_config.current().values
-        if hasattr(args, 'cores') and not args.cores and common['runtime']['cores'] != 'auto':
-            args.cores = common['runtime']['cores']
-        if args.cmd == 'run':
-            args.intrinsics_source = common['calibration']['intrinsics_source'] or 'measured'
-        elif args.cmd == 'devices':
-            args.intrinsics_source = common['calibration']['intrinsics_source']
         run_request = inputs.parse_run_args(args) if args.cmd == 'run' else None
         if args.cmd in ('run', 'verify'):
             if args.force and args.resume:
@@ -42,9 +31,8 @@ def main(argv: list[str] | None = None, *, prepare_environment: bool = False) ->
             if not math.isfinite(args.tag_size_mm) or args.tag_size_mm <= 0:
                 raise ValueError('--tag-size-mm 必须是标定板标签的正的有限毫米边长')
             if args.show_config:
-                from umi.workflows.calibration.pipeline.inputs import effective_report
+                from umi.calibration.pipeline.inputs import effective_report
                 report = effective_report(args, run_request)
-                report['user_config'] = user_config.current().report()
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 return 0
         if args.cmd in ('run', 'verify', 'preview-width', 'detect-width'):
@@ -67,6 +55,7 @@ def main(argv: list[str] | None = None, *, prepare_environment: bool = False) ->
     if args.cmd in ('preview-width', 'detect-width'):
         from av.error import FFmpegError
         from cv2 import error as OpenCVError
+
         from umi.perception.gripper import default_tag_roi
         from umi.perception.gripper import video_tools as width_video
         try:
@@ -85,6 +74,19 @@ def main(argv: list[str] | None = None, *, prepare_environment: bool = False) ->
             return 130
         print(json.dumps(result, ensure_ascii=False, indent=2), file=sys.stderr if args.cmd == 'detect-width' else sys.stdout)
         return 0
+    if args.cmd == 'joint':
+        from av.error import FFmpegError
+        from cv2 import error as OpenCVError
+
+        from umi.calibration import joint
+        try:
+            return joint.run(args)
+        except (OSError, ValueError, RuntimeError, KeyError, FFmpegError, OpenCVError, YAMLError) as error:
+            runtime.console.write(str(error), state='失败')
+            return 2
+        except KeyboardInterrupt:
+            runtime.console.write('联合标定已中断', state='中断')
+            return 130
     if args.cmd == 'run':
         return workflow.run(run_request)
     if args.cmd == "verify":
@@ -95,7 +97,7 @@ def main(argv: list[str] | None = None, *, prepare_environment: bool = False) ->
         return devices.install(Path(args.asset), force=args.force, camera_serial=args.serial)
     if args.cmd == "devices":
         return devices.list_devices(kit=args.kit, json_output=args.json_output,
-                                    intrinsics_source=args.intrinsics_source, require_rear=args.require_rear)
+                                    require_rear=args.require_rear)
     if args.cmd == "retire":
         return devices.retire(args.serial)
     if args.cmd == "check":
@@ -113,6 +115,14 @@ def build_parser() -> argparse.ArgumentParser:
         epilog='重复执行 run 或 verify 会自动续跑或复用相同输入的结果。\n'
                '安装前先检查报告。参数帮助：umi-calib <子命令> --help。')
     commands = parser.add_subparsers(dest='cmd', metavar='子命令')
+    joint = commands.add_parser('joint', description='离线联合标定工作镜头和环境镜头的空间外参')
+    joint.add_argument('session', type=Path, help='同时包含 front/ 和 rear/ 实测标定目录的设备批次')
+    joint.add_argument('dual_board', type=Path, help='工作镜头看同款 AprilGrid、环境镜头看静止海报的双板 X3 原片')
+    joint.add_argument('--out', required=True, type=Path, help='新建候选参数和验收报告目录')
+    joint.add_argument('--cache', type=Path, help='可跨运行复用的板观测缓存目录')
+    joint.add_argument('--poster-layout', type=Path, help='本次双板录像对应的海报布局，默认使用项目海报')
+    joint.add_argument('--workers', type=int, help='每个板检测任务的工作线程数')
+    joint.add_argument('--compare-map-fusion', action='store_true', help='固定实测外参，在 C 段单独比较地图尺度和 IMU 融合权重')
     width_preview = commands.add_parser('preview-width', description='从 INSV 生成标签框、ID 和像素距离叠加 MP4')
     width_preview.add_argument('video', type=Path, help='X3 原始 3840×1920 INSV')
     width_preview.add_argument('--out', type=Path, help='输出 MP4，默认原片旁的 <原名>_width_preview.mp4；已有文件拒绝覆盖')
@@ -138,6 +148,8 @@ def build_parser() -> argparse.ArgumentParser:
         '根据 front / rear 目录名选择镜头。默认用 A 求内参，工厂内参模式用 A 验证。'
         'B/C/D 仍须实测验收。rear 需要该设备已有工作镜头标定。'))
     run_parser.add_argument('folder', type=Path, help='末级名称必须为 front / rear；内放 A/B/C/D 子目录各一段 INSV，或按文件名排序的四段 INSV')
+    run_parser.add_argument('--intrinsics', dest='intrinsics_source', choices=('measured', 'factory'), default='measured',
+                            help='内参来源：measured 用 A 段实测 KB4，factory 用工厂 MEI 拟合 KB4 并以 A 段独立验证；默认 %(default)s')
     run_parser.add_argument('--out', type=Path, help='结果目录基名，默认 calibration_result；factory 加 _factory 后缀')
     run_parser.add_argument("--compare-sample", action="store_true", help='仅 front：额外用样例标定跑 C 段轨迹作对照')
     run_parser.add_argument("--install", action="store_true", help='检查通过后登记相机参数')

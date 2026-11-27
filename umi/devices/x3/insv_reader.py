@@ -18,9 +18,8 @@ to several GB, so no function in this module reads a whole media file into memor
 
 from __future__ import annotations
 
-from pathlib import Path
 import struct
-
+from pathlib import Path
 
 MAGIC = b"8db42d694ccc418790edff439fe026bf"
 

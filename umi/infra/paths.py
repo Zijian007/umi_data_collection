@@ -7,10 +7,9 @@ site, while the default project-relative locations stay identical.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from pathlib import Path
-import os
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_ROOT = PROJECT_ROOT / 'config'

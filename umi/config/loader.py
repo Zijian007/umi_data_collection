@@ -7,71 +7,42 @@ and never creates output directories or changes environment variables.
 
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from pathlib import Path
 from typing import get_args, get_origin, get_type_hints
-import json
-import math
 
-from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from umi.infra import provenance as artifact_identity
+from umi.config.parameter_models import CalibrationParameters, TrajectoryParameters
 from umi.core.frame import validate_video_parameters
-from umi.config.parameter_models import TrajectoryParameters, CalibrationParameters
+from umi.infra import provenance as artifact_identity
 from umi.infra.file_store import read_yaml
-from umi.infra.paths import CONFIG_ROOT, PROJECT_ROOT
+from umi.infra.file_store import write_yaml as write_mapping
+from umi.infra.paths import CONFIG_ROOT
 
-
-ROOT = PROJECT_ROOT
 ALGORITHM_DIRECTORY = CONFIG_ROOT / 'algorithms'
-POSTER_GEOMETRY_FILENAME = 'poster_geometry.yaml'
+# 内部 TrajectoryParameters 快照的结构版本；公开文件的版本见 reconstruction.SCHEMA_VERSION。
 SCHEMA_VERSION = 1
+# 标定 B 段的 IMU 噪声先验与融合共用 reconstruction.yaml 的 fusion.imu。
+CALIBRATION_IMU_FIELDS = ('gyro_noise', 'acc_noise', 'gyro_bias_rw', 'acc_bias_rw')
 
-_PARAMETER_NAMES = {
-    'trajectory': {
-        'environment_tags': {'tag_minimum_pose_observation_times': 'tag_minimum_frames'},
-        'retry': {
-            'target_map_position_fraction': 'minimum_full_fraction',
-            'target_maximum_position_support_gap_s': 'maximum_position_support_gap_s',
-        },
-        'notes': {'warn_below_map_position_fraction': 'minimum_full_fraction'},
-    },
-    'calibration': {
-        'checks': {
-            'intrinsics_mean_reprojection_px': 'intrinsics_reprojection_px',
-            'camera_imu_mean_reprojection_px': 'camera_imu_reprojection_px',
-        },
-    },
+_CALIBRATION_CHECK_FIELDS = {
+    'intrinsics_mean_reprojection_px': 'intrinsics_reprojection_px',
+    'camera_imu_mean_reprojection_px': 'camera_imu_reprojection_px',
 }
 
 
-def normalize_parameter_names(kind: str, values: dict, *, public: bool = False) -> dict:
-    """Keep the normalized parameter names used by existing snapshots and hashes."""
-    result = dict(values)
-    for group, names in _PARAMETER_NAMES[kind].items():
-        section = result.get(group)
-        if not isinstance(section, dict):
-            continue
-        if public:
-            for name, internal in names.items():
-                if internal in section:
-                    raise ValueError(f'{group}.{internal} 已移除，请使用 {group}.{name}')
-        if not section.keys() & names.keys():
-            continue
-        section = dict(section)
-        for name, internal in names.items():
-            if name in section:
-                if internal in section:
-                    raise ValueError(f'{group} 不能同时填写 {name} 和 {internal}')
-                section[internal] = section.pop(name)
-        result[group] = section
-    return result
-
-
-def load_poster_geometry(path: Path) -> dict:
-    return normalize_parameter_names('trajectory', {'environment_tags': read_yaml(path)},
-                                     public=True)['environment_tags']
+def _read_calibration_yaml(path: Path) -> dict:
+    document = read_yaml(path)
+    checks = document.get('checks')
+    if isinstance(checks, dict):
+        unknown = checks.keys() & _CALIBRATION_CHECK_FIELDS.values()
+        if unknown:
+            raise ValueError(f'{path}: checks 含未知字段 {sorted(unknown)}')
+        document['checks'] = {_CALIBRATION_CHECK_FIELDS.get(name, name): value for name, value in checks.items()}
+    return document
 
 
 def validate_environment_tags(parameters) -> None:
@@ -219,6 +190,7 @@ class Configuration:
     sources: tuple[str, ...]
     overrides_json: str
     cli_overrides_json: str = "{}"
+    trajectory_validation_source: Path | None = None
 
     @property
     def computation_hash(self) -> str:
@@ -243,8 +215,8 @@ class Configuration:
         path = self.values.trajectory_validation.config
         target = Path(path).expanduser() if path else None
         if target is not None and not target.is_absolute():
-            source_path = self.sources[-1]
-            target = Path(source_path).parent / target
+            source_path = self.trajectory_validation_source or Path(self.sources[0])
+            target = source_path.parent / target
         # C validates one candidate camera independently; task-only poster/dual
         # selections must never leak in from a shared trajectory configuration.
         overrides = {'environment_tags': {'tag_fusion_enabled': False}, 'input': {'mode': 'handheld'}}
@@ -253,30 +225,53 @@ class Configuration:
         return load('trajectory', target, overrides)
 
 
+def overlay_trajectory(configuration: Configuration, overlay: dict, source: Path) -> Configuration:
+    values = merge_overrides(asdict(configuration.values), overlay)
+    effective = decode_parameters('trajectory', values)
+    defaults, _ = _project_defaults('trajectory')
+    return replace(configuration, values=effective, sources=(*configuration.sources, str(source)),
+                   overrides_json=json.dumps(_changed_values(defaults, asdict(effective)), sort_keys=True))
+
+
+def _project_defaults(kind: str) -> tuple[dict, list[str]]:
+    from umi.config import reconstruction
+    if kind == 'trajectory':
+        return dict(reconstruction.defaults().trajectory, schema_version=SCHEMA_VERSION), [str(reconstruction.DEFAULT_PATH)]
+    default_path = ALGORITHM_DIRECTORY / 'calibration.yaml'
+    defaults = _read_calibration_yaml(default_path)
+    if 'imu' in defaults:
+        raise ValueError(f'{default_path}: IMU 默认值由 reconstruction.yaml 的 fusion.imu 提供')
+    fusion = reconstruction.defaults().trajectory['fusion']
+    defaults['imu'] = {name: fusion[name] for name in CALIBRATION_IMU_FIELDS}
+    return defaults, [str(default_path), str(reconstruction.DEFAULT_PATH)]
+
+
+def _overlay(kind: str, path: Path) -> dict:
+    if kind == 'trajectory':
+        from umi.config import reconstruction
+        return reconstruction.read_overlay(path, trajectory_only=True).trajectory
+    return _read_calibration_yaml(path)
+
+
 def load(kind: str, path: Path | None = None, overrides: dict | None = None, *, inline: dict | None = None) -> Configuration:
-    default_path = ALGORITHM_DIRECTORY / f'{kind}.yaml'
+    """path 是用户覆盖文件（轨迹为 reconstruction.yaml 同结构）；inline/overrides 是内部结构。"""
     try:
-        defaults = normalize_parameter_names(kind, read_yaml(default_path), public=True)
-        sources = [str(default_path)]
-        if kind == 'trajectory':
-            shared_environment_tags_path = ALGORITHM_DIRECTORY / POSTER_GEOMETRY_FILENAME
-            shared_environment_tags = load_poster_geometry(shared_environment_tags_path)
-            defaults = dict(defaults,
-                            environment_tags=dict(defaults.get('environment_tags', {}),
-                                                  **shared_environment_tags))
-            sources.append(str(shared_environment_tags_path))
+        defaults, sources = _project_defaults(kind)
         overlay = {}
         if path is not None:
             path = Path(path).expanduser().resolve()
-            overlay = normalize_parameter_names(kind, read_yaml(path), public=True)
+            overlay = _overlay(kind, path)
             sources.append(str(path))
         configuration_values = merge_overrides(defaults, overlay)
-        configuration_values = merge_overrides(configuration_values, normalize_parameter_names(kind, inline or {}))
-        configuration_values = merge_overrides(configuration_values, normalize_parameter_names(kind, overrides or {}))
+        configuration_values = merge_overrides(configuration_values, inline or {})
+        configuration_values = merge_overrides(configuration_values, overrides or {})
         effective = decode_parameters(kind, configuration_values)
         changed = _changed_values(defaults, asdict(effective))
+        validation_source = None
+        if kind == 'calibration':
+            validation_source = path if 'config' in overlay.get('trajectory_validation', {}) else Path(sources[0])
         return Configuration(kind, effective, tuple(sources), json.dumps(changed, sort_keys=True),
-                             json.dumps(overrides or {}, sort_keys=True))
+                             json.dumps(overrides or {}, sort_keys=True), trajectory_validation_source=validation_source)
     except (OSError, YAMLError) as error:
         raise ValueError(f'读取 {kind} 配置失败：{error}') from error
 
@@ -304,15 +299,13 @@ def resolve_trajectory_request(request):
 
 def write_yaml(path: Path, values) -> None:
     """Emit the complete resolved parameters for a child process."""
-    writer = YAML(typ='safe', pure=True)
-    writer.default_flow_style = False
-    writer.sort_base_mapping_type_on_output = False
-    writer.allow_unicode = True
     document = asdict(values)
-    kind = 'trajectory' if isinstance(values, TrajectoryParameters) else 'calibration'
-    for group, names in _PARAMETER_NAMES[kind].items():
-        for name, internal in names.items():
-            document[group][name] = document[group].pop(internal)
-    with path.open('w', encoding='utf-8') as output:
-        writer.dump(document, output)
+    if isinstance(values, TrajectoryParameters):
+        # 子进程按用户覆盖文件的同一入口读取：输出完整的 reconstruction.yaml 同结构树。
+        from umi.config import reconstruction
+        document = reconstruction.public_tree(trajectory=document)
+    else:
+        for name, internal in _CALIBRATION_CHECK_FIELDS.items():
+            document['checks'][name] = document['checks'].pop(internal)
+    write_mapping(path, document)
 

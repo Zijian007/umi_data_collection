@@ -23,14 +23,24 @@ UNITS AND CLOCK (the only two things downstream is allowed to assume):
 
 from __future__ import annotations
 
-from pathlib import Path
 import hashlib
 import struct
+from pathlib import Path
 
 import numpy as np
 
-from umi.devices.x3.insv_reader import FIELD_FIRMWARE, FIELD_FIRST_FRAME_TS_US, FIELD_GYRO_CFG_INFO, FIELD_OFFSET_V3, FIELD_SERIAL, RECORD_GYRO, RECORD_METADATA, parse_metadata_record, parse_trailer, records_by_id
-
+from umi.devices.x3.insv_reader import (
+    FIELD_FIRMWARE,
+    FIELD_FIRST_FRAME_TS_US,
+    FIELD_GYRO_CFG_INFO,
+    FIELD_OFFSET_V3,
+    FIELD_SERIAL,
+    RECORD_GYRO,
+    RECORD_METADATA,
+    parse_metadata_record,
+    parse_trailer,
+    records_by_id,
+)
 
 #: 1 g in m/s^2.
 G0 = 9.80665

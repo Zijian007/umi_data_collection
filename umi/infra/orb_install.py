@@ -1,9 +1,9 @@
 """ORB 安装布局、地图导出工具与二进制能力检查。"""
 
-from pathlib import Path
 import json
 import os
 import subprocess
+from pathlib import Path
 
 from umi.infra.paths import deps_root
 

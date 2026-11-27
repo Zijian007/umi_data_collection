@@ -26,6 +26,8 @@
 #include <opencv2/imgproc.hpp>
 
 #include <System.h>
+#include <KannalaBrandt8.h>
+#include <sstream>
 #include <CLI11.hpp>
 
 using namespace std;
@@ -74,11 +76,43 @@ class FramePlayback {
   vector<cv::Mat> decoded_block_;
 };
 
+// Upper triangle of the pixel Hessian in right-local camera pose coordinates.
+std::string camera_information(ORB_SLAM3::System& slam, ORB_SLAM3::KannalaBrandt8& camera,
+                               const Sophus::SE3f& camera_from_map, double pyramid_scale) {
+  const auto points = slam.GetTrackedMapPoints();
+  const auto keys = slam.GetTrackedKeyPointsUn();
+  if (points.size() != keys.size()) throw std::runtime_error("ORB feature/landmark count mismatch");
+  Eigen::Matrix<double, 6, 6> information = Eigen::Matrix<double, 6, 6>::Zero();
+  size_t count = 0;
+  for (size_t i = 0; i < points.size(); ++i) {
+    auto* point = points[i];
+    if (!point || point->isBad() || !point->Observations()) continue;
+    const Eigen::Vector3d q = (camera_from_map * point->GetWorldPos()).cast<double>();
+    if (!q.allFinite() || q.z() <= 0.) continue;
+    const double sigma = std::pow(pyramid_scale, keys[i].octave);
+    const Eigen::Vector2d residual = camera.project(q) - Eigen::Vector2d(keys[i].pt.x, keys[i].pt.y);
+    if (!residual.allFinite() || residual.squaredNorm() >= 5.991 * sigma * sigma) continue;
+    Eigen::Matrix<double, 3, 6> motion;
+    motion.leftCols<3>() = Sophus::SO3d::hat(q);
+    motion.rightCols<3>() = -Eigen::Matrix3d::Identity();
+    Eigen::Matrix<double, 2, 6> jac = camera.projectJac(q) * motion / sigma;
+    if (!jac.allFinite()) continue;
+    information.noalias() += jac.transpose() * jac;
+    ++count;
+  }
+  if (count < 6) return "";
+  std::ostringstream field;
+  field << std::setprecision(16);
+  for (int i = 0; i < 6; ++i)
+    for (int j = i; j < 6; ++j) field << (i || j ? " " : "") << information(i, j);
+  return field.str();
+}
+
 void write_frame_pose(std::ostream& output, int frame_index, double video_time_s, int tracking_state,
                       const std::pair<Sophus::SE3f, bool>& localization) {
   output << frame_index << "," << video_time_s << "," << tracking_state << "," << (localization.second ? 1 : 0);
   if (!localization.second) {
-    output << ",,,,,,,\n";
+    output << ",,,,,,,";
     return;
   }
   const Sophus::SE3f camera_in_world = localization.first.inverse();
@@ -86,7 +120,7 @@ void write_frame_pose(std::ostream& output, int frame_index, double video_time_s
   const Eigen::Quaternionf camera_orientation = camera_in_world.unit_quaternion();
   output << "," << camera_position.x() << "," << camera_position.y() << "," << camera_position.z()
          << "," << camera_orientation.x() << "," << camera_orientation.y() << "," << camera_orientation.z()
-         << "," << camera_orientation.w() << "\n";
+         << "," << camera_orientation.w();
 }
 
 }  // namespace
@@ -112,6 +146,8 @@ int main(int argc, char **argv) {
   app.add_option("-i,--input_video", input_video)->required();
   std::string output_frames_csv;
   app.add_option("--output_frames_csv", output_frames_csv)->required();
+  int information_stride = 0;
+  app.add_option("--front_information_stride", information_stride, "Export KB4 landmark information at this interval");
   std::string output_trajectory_csv;
   app.add_option("-o,--output_trajectory_csv", output_trajectory_csv);
   std::string load_map;
@@ -165,6 +201,17 @@ int main(int argc, char **argv) {
     return -1;
   }
   cv::Size img_size(fsSettings["Camera.width"], fsSettings["Camera.height"]);
+  std::unique_ptr<ORB_SLAM3::KannalaBrandt8> information_camera;
+  double pyramid_scale = 1.;
+  if (information_stride) {
+    if (information_stride < 0 || !localization_only) return 2;
+    std::vector<float> parameters;
+    for (const char* key : {"fx", "fy", "cx", "cy", "k1", "k2", "k3", "k4"})
+      parameters.push_back((float)fsSettings[std::string("Camera1.") + key]);
+    pyramid_scale = (double)fsSettings["ORBextractor.scaleFactor"];
+    if (!(pyramid_scale > 0. && parameters[0] > 0. && parameters[1] > 0.)) return 2;
+    information_camera.reset(new ORB_SLAM3::KannalaBrandt8(parameters));
+  }
   fsSettings.release();
 
   cv::Mat mask_img;
@@ -216,7 +263,7 @@ int main(int argc, char **argv) {
   }
 
   ofstream fcsv(output_frames_csv);
-  fcsv << "frame_idx,t,state,ok,tx,ty,tz,qx,qy,qz,qw\n";
+  fcsv << "frame_idx,t,state,ok,tx,ty,tz,qx,qy,qz,qw" << (information_stride ? ",camera_information" : "") << "\n";
   fcsv << fixed << setprecision(9);
 
   int n_ok = 0, n_proc = 0;
@@ -243,6 +290,12 @@ int main(int argc, char **argv) {
     int state = SLAM.GetTrackingState();
     n_proc++;
     write_frame_pose(fcsv, frame_idx, t, state, result);
+    if (information_stride) {
+      fcsv << ",";
+      if (result.second && state == 2 && (frame_idx % information_stride == 0 || frame_idx == frame_end - 1))
+        fcsv << camera_information(SLAM, *information_camera, result.first, pyramid_scale);
+    }
+    fcsv << "\n";
     if (result.second) n_ok++;
     if (frame_idx % 300 == 0) cout << "frame " << frame_idx << " state " << state << " ok " << n_ok << "/" << n_proc << endl;
   }

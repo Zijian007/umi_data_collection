@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-from umi.config import operational_settings as operational
-
-from dataclasses import replace
-from pathlib import Path
 import csv
 import json
 import math
 import re
+from dataclasses import replace
+from pathlib import Path
 
+from umi.config import operational_settings as operational
 from umi.infra.file_store import write_json
 from umi.perception import runtime
-from umi.perception.models import AtlasMap, LensLocalization, LensVideo, MapAtlas, VisualContext, ProcessingError
+from umi.perception.models import AtlasMap, LensLocalization, LensVideo, MapAtlas, ProcessingError, VisualContext
 
 
 def build_maps(videos: tuple[LensVideo, ...], context: VisualContext,
@@ -39,18 +38,19 @@ def build_maps(videos: tuple[LensVideo, ...], context: VisualContext,
 
 
 def relocalize_all_maps(atlases: tuple[MapAtlas, ...], context: VisualContext,
-                        directory: Path) -> tuple[LensLocalization, ...]:
-    """第二轮视觉计算：逐图重放同一视频，按原有优先级合并定位。定位不遮手。"""
+                        directory: Path, *, front_information_stride: int = 0) -> tuple[LensLocalization, ...]:
+    """逐图重放同一视频并合并定位；导出工作镜头像素权重时应用建图遮手图。"""
     results = []
     for atlas in atlases:
         lens_dir = directory / atlas.video.lens
         first = lens_dir / 'loc_m0'
-        localize_map(atlas, 0, first, context, directory)
+        options = dict(information_stride=front_information_stride) if front_information_stride and atlas.video.lens == 'front' else {}
+        localize_map(atlas, 0, first, context, directory, **options)
         # 引擎在首次加载图集时输出地图元数据；解析集中在一个边界函数中。
         maps = read_atlas_maps(first / 'log.txt', lens=atlas.video.lens)
         for item in maps:
             if item.index != 0:
-                localize_map(atlas, item.index, lens_dir / f'loc_m{item.index}', context, directory)
+                localize_map(atlas, item.index, lens_dir / f'loc_m{item.index}', context, directory, **options)
         merged = lens_dir / 'loc/frames.csv'
         merged.parent.mkdir()
         command = [context.settings.tools_python, '-m', 'umi.perception.tools.merge_frames', '--out', str(merged)]
@@ -79,9 +79,13 @@ class WarmReverseUnavailable(RuntimeError):
 
 def localize_map(atlas: MapAtlas, index: int, output: Path,
                   context: VisualContext, directory: Path, *, reverse: bool = False,
-                  frame_range: tuple[int, int] | None = None, warm_reverse: bool = False) -> None:
+                  frame_range: tuple[int, int] | None = None, warm_reverse: bool = False,
+                  information_stride: int = 0) -> None:
+    extra = ['--load_map', str(atlas.archive), '--localization_only']
+    if information_stride:
+        extra += ['--front_information_stride', str(information_stride)]
     run_orb(atlas.video, output, context, directory, stage=f'定位（{atlas.video.lens}，地图 {index}）',
-             extra=['--load_map', str(atlas.archive), '--localization_only'], map_index=index,
+             extra=extra, map_index=index, mask=atlas.video.mask if information_stride else None,
              reverse=reverse, frame_range=frame_range, warm_reverse=warm_reverse)
     if not (output / 'frames.csv').is_file():
         raise ProcessingError(f'定位（{atlas.video.lens}，地图 {index}）',
@@ -152,6 +156,9 @@ def run_orb(video: LensVideo, output: Path, context: VisualContext, directory: P
             # CLI11 ExtrasError from older drivers. Other engine failures must surface.
             if warm_reverse and return_code == 109 and any('--warm_reverse' in line for line in lines):
                 raise WarmReverseUnavailable('已安装的 ORB 驱动不支持 --warm_reverse')
+            if return_code == 109 and any('--front_information_stride' in line for line in lines):
+                raise ProcessingError(stage, '当前 ORB 驱动不支持工作镜头地图像素权重，请运行 ./install.sh 更新',
+                                      return_code=return_code)
             cause = f'；{lines[-1][:500]}' if lines else ''
             raise ProcessingError(stage, f'ORB 退出码 {return_code}{cause}；日志：{output / "log.txt"}；错误日志：{stderr_path}',
                                   return_code=return_code)
@@ -160,7 +167,10 @@ def run_orb(video: LensVideo, output: Path, context: VisualContext, directory: P
             raise ValueError('ORB 未写出完整帧数的结束统计')
         seen = 0
         with (output / 'frames.csv').open() as stream:
-            for row in csv.DictReader(stream):
+            reader = csv.DictReader(stream)
+            if '--front_information_stride' in extra and 'camera_information' not in (reader.fieldnames or ()):
+                raise ValueError('ORB 定位结果缺少请求的 camera_information 列，请运行 ./install.sh 更新驱动')
+            for row in reader:
                 expected_index = end - 1 - seen if reverse else start + seen
                 if int(row['frame_idx']) != expected_index or not math.isfinite(float(row['t'])):
                     raise ValueError('ORB 帧索引或时间戳无效')

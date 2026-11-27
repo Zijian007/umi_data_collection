@@ -108,7 +108,10 @@ EOF
   echo "platform $PLAT micromamba $MAMBA_VERSION"
   sha256sum "$O/lib/libORB_SLAM3.so" "$O/Examples/Monocular-Inertial/x3_mono_slam" | sed 's|  .*/|  |'
 } > "$DEPS/BUILD_INFO.txt"
-bash "$ROOT/umi-scene" check || fail "自检没通过（见上面 FAIL 的那一行）"
+(
+  source "$DEPS/env.sh"
+  PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" "$UMI_PY" -m umi.apps.health
+) || fail "自检没通过（见上面 FAIL 的那一行）"
 echo
 echo "安装完成。用法："
 echo "  $ROOT/umi-scene run scenes/<场景>/<批次>"

@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from umi.config import loader as config
-from umi.devices.x3 import extraction
 from umi.core.frame import LENS_HALF, STEP
+from umi.devices.x3 import extraction
 from umi.perception import runtime
-from umi.perception.models import RecordingData, RecordingPaths, LensVideo, VisualContext, ProcessingError
+from umi.perception.models import LensVideo, ProcessingError, RecordingData, RecordingPaths, VisualContext
 
 
 def prepare(video: Path, paths: RecordingPaths, *, allow_irregular: bool = False, frame_step: int = STEP) -> RecordingData:

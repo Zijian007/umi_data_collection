@@ -1,4 +1,0 @@
-fps: 30.0  # 目标采样频率，Hz，范围 (0, 120]。
-max_gap_s: 0.25  # 允许跨越的最大插值间隔，单位秒，须为正数。
-quality_policy: all  # all 保留有效采样，position_supported 要求所有手有位置支持。
-unknown_support: drop  # 严格筛选时对未知证据使用 drop 剔除或 error 中止。

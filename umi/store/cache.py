@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
-from pathlib import Path
-from umi.infra import provenance as artifact_identity
-from umi.store.models import CalibratedCamera, PreparedRecording, Scene
-from contextlib import contextmanager
-from threading import Lock
-from typing import Iterator
 import json
 import os
 import shutil
 import stat
 import time
 import uuid
+from contextlib import contextmanager
+from dataclasses import asdict
+from pathlib import Path
+from threading import Lock
+from typing import Iterator
+
+from umi.infra import provenance as artifact_identity
 from umi.infra.file_store import is_current, mark_used, write_json
 from umi.infra.terminal import Console
+from umi.store.models import CalibratedCamera, PreparedRecording, Scene
 from umi.store.result_io import artifact_hashes, validate_assets
 
 
@@ -36,6 +37,12 @@ def visual_inputs(recording: PreparedRecording, lens: str) -> dict:
 
 # 地图只依赖镜头标定和遮手图；TCP、夹爪宽度和标签测距不参与建图，也不冻结进地图版本。
 MAP_CAMERA_ASSETS = ('front', 'front_manifest', 'rear', 'mask')
+
+
+def camera_identity(camera: CalibratedCamera) -> dict:
+    return dict(serial=camera.serial,
+                assets={name: digest for name, digest in camera.asset_hashes.items() if name not in ('width', 'tag_distance')},
+                intrinsics_source=camera.selected.intrinsics_source, calibration_version=camera.selected.calibration_id)
 
 
 def map_camera_identity(camera: CalibratedCamera) -> dict:

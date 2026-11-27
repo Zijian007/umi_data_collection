@@ -14,11 +14,6 @@ calibration_result/
 umi_calib_rear_out/
 .*.calibration.lock
 .pytest_cache/
-config/*.local.yaml
-config/operations/*.local.yaml
-config/algorithms/audio_sync/*.local.yaml
-/datasets/
-/exports/
 scenes/**/maps/
 scenes/**/runs/
 scenes/**/results

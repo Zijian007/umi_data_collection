@@ -16,14 +16,11 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install portable reader dependencies
-        run: python -m pip install --disable-pip-version-check numpy==1.26.* ruff==0.15.0 import-linter==2.15
+      - name: Install quality tools
+        run: python -m pip install --disable-pip-version-check ruff==0.15.0 import-linter==2.15
 
       - name: Compile Python sources
         run: python -m compileall -q umi tests
-
-      - name: Check portable training reader boundary
-        run: PYTHONPATH=. python -m unittest -q tests.test_dataset_reader_boundary
 
       - name: Lint the umi package
         run: ruff check umi

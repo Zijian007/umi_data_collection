@@ -5,25 +5,24 @@ from __future__ import annotations
 from dataclasses import dataclass, field, fields
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, TypeVar, TypedDict
+from typing import TYPE_CHECKING, Callable, TypedDict, TypeVar
 
 import numpy as np
 
+from umi.config import collection_defaults
 from umi.config import loader as config
-from umi.config import user_settings
-from umi.infra import provenance as artifact_identity
-from umi.store import layout
 from umi.core.arms import ARMS
 from umi.devices import selection
+from umi.infra import provenance as artifact_identity
 from umi.perception.models import LensVideo, RecordingData, VisualContext
-
+from umi.store import layout
 
 if TYPE_CHECKING:
     from umi.devices.rear_fallback import FactoryRearCalibration
     from umi.infra.terminal import Console
-    from umi.workflows.scene.parameters import SceneOverrides
-    from umi.store.cache import CacheAudit
     from umi.perception.poster.detection import DetectionSnapshot
+    from umi.scene.collection.configuration import SceneOverrides
+    from umi.store.cache import CacheAudit
 
 
 _AlgorithmParameters = TypeVar('_AlgorithmParameters')
@@ -119,8 +118,6 @@ class SceneParameters:
     pairing_duration_tolerance_s: float
     gripper_width_max_gap_s: float
     gripper_width_closed_threshold_mm: float
-    gripper_width_diagnostics: bool
-    export_auxiliary_trajectories: bool
     tag_distance_max_reprojection_error_px: float
     tag_distance_max_center_ambiguity_mm: float
     tag_distance_min_valid_fraction: float
@@ -136,6 +133,10 @@ class SceneParameters:
     poster_vio_per_tag_huber: bool = False
     poster_vio_robust_inertial_seed: bool = False
     tag_distance_verified_gap_recovery: bool = False
+    front_map_pixel_fusion: bool = False
+    poster_vio_board_tilt_minimum_gap_s: float = 0.0
+    poster_independent_node_stride: int = 0
+    poster_independent_imu_white_noise_multiplier: float = 1.0
 
     def for_algorithm(self, parameter_type: type[_AlgorithmParameters]) -> _AlgorithmParameters:
         """Project the resolved configuration onto the algorithm's declared fields."""
@@ -159,13 +160,14 @@ class Scene:
     batch_root: Path | None = None
     environment_tags_enabled: bool = False
     reconstruction_mode: str = 'scene_map'
-    poster_vio_base_tag_enabled: bool = field(default_factory=user_settings.poster_vio_base_tag_enabled)
+    poster_vio_base_tag_enabled: bool = field(default_factory=collection_defaults.poster_vio_base_tag_enabled)
     recording_trim: dict = field(default_factory=dict)
-    scene_map_poster_constraint_enabled: bool | None = None
+    scene_map_poster_constraint_enabled: bool = False
     scene_map_tag_detection_enabled: bool | None = None
     scene_map_edge_trim: bool = False
     position_support_gap_sources: dict[str, str] = field(default_factory=dict)
     processing_option_sources: dict[str, str] = field(default_factory=dict)
+    auto_order: tuple[str, ...] = field(default_factory=collection_defaults.auto_order)
 
     @property
     def root(self) -> Path:
@@ -190,7 +192,7 @@ class Scene:
 
     @property
     def environment_tag_detection(self) -> bool:
-        """是否运行环境标签检测：collection.yaml 的 environment_poster.detection.enabled。"""
+        """是否运行环境标签检测：collection.yaml 的 poster.detection。"""
         return self.tag_layout is not None and self.environment_tags_enabled
 
     @property
@@ -224,11 +226,6 @@ class Session:
     @property
     def name(self) -> str:
         return self.root.name
-
-    @property
-    def relative_path(self) -> Path:
-        """批次在原片归档和导出包中的路径。"""
-        return Path(self.scene.name) / self.name
 
     @property
     def devices(self) -> dict[str, dict]:
@@ -326,6 +323,15 @@ class PreparedRecording:
 
 
 @dataclass(frozen=True)
+class BackendServices:
+    """Task-owned detection and output functions provided to the reconstruction backend."""
+
+    prepare_detection_group: Callable
+    prepare_task_detections: Callable
+    write_task_results: Callable
+
+
+@dataclass(frozen=True)
 class TaskInputs:
     """各后端共用的冻结任务输入；场景和任务身份从 episode 读取。"""
     episode: Episode
@@ -337,6 +343,13 @@ class TaskInputs:
     console: Console
     detections: dict[str, DetectionSnapshot | None] = field(default_factory=dict)
     poster_pnp_candidates: dict[str, Callable] = field(default_factory=dict)
+    backend_services: BackendServices | None = None
+
+    @property
+    def services(self) -> BackendServices:
+        if self.backend_services is None:
+            raise RuntimeError('重建后端缺少任务检测和轨迹输出服务')
+        return self.backend_services
 
 
 @dataclass(frozen=True)

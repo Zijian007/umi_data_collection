@@ -1,55 +1,60 @@
 # 复制到 scenes/<scene>/<batch>/collection.yaml；示例文件不被自动发现。
 # 本文件不填写 schema_version；未填写的可选项使用以下说明的默认/继承规则。
+# 标注“项目默认”的字段省略时取 config/collection_defaults.yaml 的同名字段。
+# tasks.<take> 下可覆盖的键（instruction、arms、sync、map、backend）与批次同名同形。
 kit: kit_001  # 必填：hardware/kits/ 下已有目录名；字母/数字/中文/下划线/连字符，kit 决定设备与安装资产。
+arms: [left, right]  # 必填：本批次使用手，候选 [left] / [right] / [left, right]；必须是 kit 设备绑定的非空子集，不能由缺失录像推断。
+description: example scene  # 可选：任意文本，可为 ""；场景身份来自目录名，不影响几何定义。
+# instruction: 拿起物体并放到指定位置  # 可选：批次通用指令，任务可覆盖。
 
-recording:  # 必填：批次默认采集使用手；不能由缺失录像推断为单手。
-  arms: [left, right]  # 必填：候选 [left] / [right] / [left, right]；必须是 kit 设备绑定的非空子集。
+sync:  # 可选：双手任务的默认同步方式；单手任务使用本机时钟。
+  mode: audio_auto  # 省略用项目默认；audio_auto=从音频估计偏移；assumed_simultaneous=按同时开始。manual 只能写在任务级。
+  # algorithm: specialist  # 省略用项目默认；specialist=音量包络互相关；kiwi=频谱指纹和 GCC-PHAT，要求相机型号和录制模式一致。
 
-scene:  # 可选；场景身份来自目录名。
-  description: example scene  # 任意文本字符串，可为 ""；省略为空，不影响几何定义。
-  # instruction: 拿起物体并放到指定位置  # 批次通用指令，任务可覆盖。
+poster:  # 可选：场景中的环境海报；poster_vio/poster_independent/auto 必须提供。各阶段是否使用由 map.poster_scale 和 backend 决定。
+  layout: ../../hardware/environment_poster/environment_poster.json  # 必填非空 JSON 路径；相对 scenes/<scene>/，也可绝对路径。
+  # detection: true  # 可选：省略则随用途/后端自动推导；true=检测（可仅作诊断）；false=显式关闭，与海报后端或 poster_scale 冲突。
 
 map:  # 可选：scene_map/auto 的地图布局和默认绑定；无地图后端忽略地图选择。
-  layout: auto  # 省略继承 config/user.yaml；auto=推断，shared=共享，per_arm=分手建图。
-  reference_arm: left  # 省略继承 config/user.yaml；多路建图时必须属于实际建图录像的手。
-  selection:  # 可选：任务未显式选图时的默认规则。
-    policy: latest_prior  # 当前唯一候选 latest_prior：按登记采集顺序选不晚于任务的最近地图。
-    version: null  # null=按规划/已登记批次默认选择；或填写已发布版本 ID（字母/数字/_/-）。
-    # 非 null version 与本轮 mapping/ 建图原片不能同时声明；不要把 epoch 名当成版本 ID。
+  layout: auto  # 省略用项目默认；auto=按 mapping/ 推断，shared=共享，per_arm=分手建图。
+  reference_arm: left  # 省略用项目默认；多路建图时必须属于实际建图录像的手。
+  version: null  # null=按采集顺序选不晚于任务的最近地图；或填写已发布版本 ID（字母/数字/_/-）。
+  # 非 null version 与本轮 mapping/ 建图原片不能同时声明；不要把 epoch 名当成版本 ID。
+  # poster_scale: off  # 建图时海报尺度的用途：off=不用（默认）；diagnose=只记录证据；correct=用于米制尺度修正。
 
-environment_poster:  # 可选：海报布局和用途；poster_vio/poster_independent/auto 必须提供布局。
-  layout_path: ../../hardware/environment_poster/environment_poster.json  # 必填非空 JSON 路径；相对 scenes/<scene>/，也可绝对路径。
-  # detection:  # 可选：仅检测诊断时使用；省略则随用途/后端自动推导。
-  #   enabled: true  # true=检测；false=显式关闭，与已开启用途或海报/auto 后端冲突。
-  # mapping:  # 可选：建图海报诊断与尺度修正；省略不启用。
-  #   enabled: true  # true=采集并记录建图海报证据；false=不使用，省略为 false。
-  #   scale_correction:  # 可选：是否把海报尺度用于米制建图。
-  #     enabled: true  # true=应用尺度修正，必须同时 mapping.enabled:true；false=仅诊断，省略为 false。
-
-backend:  # 可选；省略 mode 时继承 config/user.yaml，take 可覆盖。
-  mode: scene_map  # scene_map=场景地图；poster_independent=独立引擎+海报；poster_vio=海报/自然点/IMU 联合图；auto=有 mapping 原片时先建/复用地图。
+backend:  # 可选；take 可覆盖。
+  mode: scene_map  # 省略用项目默认；scene_map=场景地图；poster_independent=独立引擎+海报；poster_vio=海报/自然点/IMU 联合图；auto=按候选顺序尝试。
+  # auto_order: [poster_vio, poster_independent, scene_map]  # 仅 auto 生效；轮到 scene_map 才准备地图。默认顺序为 scene_map、poster_vio、poster_independent。
   # scene_map:
-  #   poster_constraint:
-  #     enabled: true  # 有布局且允许检测时默认 true，轨迹输出为任务海报坐标；false 使用地图坐标。
-  #     method: staged  # staged=地图+IMU 基线后优化；joint=视觉种子直接联合；默认 staged。
+  #   poster_constraint: staged  # 有海报且允许检测时默认 staged，轨迹输出为任务海报坐标；joint=视觉种子直接联合；off=使用地图坐标。
   poster_vio:
-    base_tag:
-      enabled: true  # poster_vio 是否使用 kit.yaml 中声明的夹爪基座标签。
-  # auto 有 mapping 原片时先构建/复用地图，再按 scene_map → poster_vio → poster_independent；无 mapping 原片且无地图时从 poster_vio 开始。
+    base_tag: true  # 省略用项目默认；是否使用 kit.yaml 中声明的夹爪基座标签。
+    # robust_inertial_seed: true  # 仅批次级；省略用 config/algorithms/reconstruction.yaml 的默认值。
+    # maximum_observation_gap_s: 3.5  # 海报观测间隔上限，单位 s。
+  # poster_independent:
+  #   maximum_position_support_gap_s: 2.0  # 自然视觉和海报均无位置支持的间隔上限，单位 s。
+  #   maximum_gravity_difference_deg: 5.0  # 两手在海报坐标中的重力夹角上限，单位 deg。
+  # edge_trim:  # 按环境标签裁剪首尾。
+  #   enabled: false
+  #   minimum_missing_duration_s: 1.0  # 首尾缺失海报超过该时长才裁剪，单位 s。
+
+# measurements:
+#   gripper_tags:
+#     verified_gap_recovery: true  # 仅批次级；省略用 config/algorithms/reconstruction.yaml 的默认值。
 
 tasks:  # 可选：按实际任务目录名填写；未列出的任务继承批次默认值。
   take_001:  # 示例任务名，不是枚举；可用字母/数字/中文/_/-，不能占用 mapping/results 等内部目录名。
-    instruction: 拿起物体并放到指定位置  # 任意文本字符串，省略为空；训练导出要求非空操作指令。
-    # arms: [right]  # 可选 [left] / [right] / [left, right]；必须是 recording.arms 的非空子集，省略继承批次。
-    synchronization:  # 可选配置表，也可简写 audio_auto / assumed_simultaneous；单手通常省略。
+    instruction: 拿起物体并放到指定位置  # 任意文本字符串，省略继承批次。
+    # arms: [right]  # 可选：必须是批次 arms 的非空子集，省略继承批次。
+    sync:  # 可选：也可简写 audio_auto / assumed_simultaneous；单手通常省略。
       mode: assumed_simultaneous  # audio_auto=音频估计（仅双手）；assumed_simultaneous=假设同时开始；manual=人工偏移。
       # offsets_s:  # manual 必填：必须覆盖本 take 的全部使用手；t_task = t_video + offset，单位 s。
       #   left: 0.0  # 参考手必须为 0；双手参考 left，单 right 参考 right。
       #   right: 0.12  # 任意有限实数秒，可正可负；此值只是示例，需实测。audio_auto 不接受非零手工偏移。
       # confirmed: false  # 候选 true / false；manual 必填；true 表示已人工核验，单手自动确认。
       # note: ""  # 任意说明字符串，默认空；双手 confirmed:true 时必须填写核验依据。
-    # backend:  # 可选：只覆盖当前 take 的后端。
-    #   mode: poster_independent  # 候选 scene_map / poster_independent / poster_vio / auto；省略继承批次。
+    # backend:  # 可选：只覆盖当前 take 的后端，键与批次 backend 相同（robust_inertial_seed 除外）。
+    #   mode: poster_independent
     # map:  # 可选：当前 take 显式选图；epoch 与 version 互斥，只取消其中一项注释。
-    #   epoch: epoch_001  # 已登记 epoch 名字符串；对应地图必须已构建后才能 scene_map 执行。
+    #   epoch: epoch_001  # 已登记 epoch 名字符串；轮到 scene_map 时按需构建。
     #   version: 20261113_100000-a1b2c3d4  # 已发布地图版本 ID；不是文件路径，显式选择优先于默认规划。

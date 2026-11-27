@@ -8,19 +8,17 @@ assumption in ``sync.json``.
 
 from __future__ import annotations
 
-from umi.config.audio_sync import AUDIO_SYNC_RECIPES
-
-from dataclasses import dataclass, field, replace
 import functools
-from pathlib import Path
 import shutil
 import subprocess
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 import numpy as np
 from scipy.signal import butter, sosfiltfilt
 
 from umi.config import audio_sync as sync_config
-from umi.config.audio_sync import SpecialistParameters
+from umi.config.audio_sync import AUDIO_SYNC_RECIPES, SpecialistParameters
 
 
 class AudioSyncError(RuntimeError):

@@ -1,14 +1,14 @@
 # 夹爪开合宽度
 
-`detection/markers.py` 处理灰度图上的标签检测。`detection/frames.py` 的 `FrameDetector` 统一处理原片 ROI、灰度转换和坐标恢复，供像素开口宽度、三维标签中心距及 `video_tools.py` 中的两个调试命令使用。
+`marker_detection.py` 处理灰度图上的标签检测。`frame_detection.py` 的 `FrameDetector` 统一处理原片 ROI、灰度转换和坐标恢复，供像素开口宽度、三维标签中心距及 `video_tools.py` 中的两个调试命令使用。
 
 ## 夹爪标签中心三维间距
 
-`distance/pose_estimation.py` 计算 KB4 标签位姿和三维中心距离。`distance/measurement.py` 组织采样、缓存、补检与验收。测量从夹爪标签 ID 0/1 的原始四角点、工作镜头 KB4 内参及各自标签边长，求两枚夹爪标签中心在相机坐标系中的位置，输出其三维欧氏距离（mm）。不使用夹持面偏置、零点或像素—毫米 anchors，不据此生成 `close_01` 或闭合状态。
+`tag_pose.py` 计算 KB4 标签位姿和三维中心距离。`distance.py` 组织采样、缓存、补检与验收。测量从夹爪标签 ID 0/1 的原始四角点、工作镜头 KB4 内参及各自标签边长，求两枚夹爪标签中心在相机坐标系中的位置，输出其三维欧氏距离（mm）。不使用夹持面偏置、零点或像素—毫米 anchors，不据此生成 `close_01` 或闭合状态。
 
 套件配置 `gripper.tag_distance: tag_distance.json`，文件包含 `{"tag_sizes_mm":{"0":6.0,"1":6.0}}`；两枚边长分别配置，必须为正数。测量黑色外框，不含白边；尺寸变化线性改变尺度，不能借用标定板尺寸。原片检测缓存保存 `[帧, ID, 角点, xy]`，重复/缺失 ID 的角点保留 NaN。标签中心距按最终轨迹时间点检测，像素锚点宽度沿用原片逐帧检测；两者分别缓存。改尺寸或内参会复用角点重算几何，有效比例不足时再补检尚未尝试的帧。
 
-场景测距、像素宽度提取、`preview-width` 和 `detect-width` 共用 `config/operations/gripper_tag_detection.yaml` 的 `roi_px`。初始值为 `LEFT TOP RIGHT BOTTOM = 600 980 1350 1250`，原点在 1920×1920 工作镜头半幅左上角。场景中心距测量可在专家配置中用 `parameters.measurements.gripper_tags.roi_px` 覆盖，两个宽度命令可用 `--roi` 覆盖。检测先裁剪源像素平面，再将 ROI 转灰度，最终恢复原始半幅坐标。`trajectory.video.crop` 用于轨迹视频准备。
+场景测距、像素宽度提取、`preview-width` 和 `detect-width` 共用 `config/operations/gripper_tag_detection.yaml` 的 `roi_px`。初始值为 `LEFT TOP RIGHT BOTTOM = 600 980 1350 1250`，原点在 1920×1920 工作镜头半幅左上角。场景中心距测量可在专家配置中用 `measurements.gripper_tags.roi_px` 覆盖，两个宽度命令可用 `--roi` 覆盖。检测先裁剪源像素平面，再将 ROI 转灰度，最终恢复原始半幅坐标。`video.crop` 用于轨迹视频准备。
 
 共享灰度转换保留颜色空间、亮度量程及色度采样对齐；奇数 ROI 坐标先对齐后取回精确边界，高位深转 8 位保留抖动相位。视频仍需解码源帧，减少的是灰度转换和检测的像素量；预览视频的彩色显示转换独立于标签检测图像。
 
@@ -16,21 +16,21 @@
 
 三维计算再将原始角点减去 240 像素边距，转换到已标定的 1440 中心裁切坐标；不使用 720 视频内参直接解释原片角点。超出标定裁切或前向 85° 射线范围、退化/过小四边形、无正深度解、重投影误差超限的观测保持缺失。使用 IPPE_SQUARE 两解并按鱼眼重投影误差选择；两解误差相差不超过 0.25 px、中心差超过配置门限时保留 `ambiguous_pose`。
 
-质量参数在 `scene_parameters.yaml` 的 `measurements.gripper_tags`：`max_reprojection_error_px` 默认 2.0（每角点二维残差的 RMS），`max_center_ambiguity_mm` 默认 2.0；实验性覆盖写入 `--expert-config` 的 `parameters.measurements.gripper_tags`。原片测量按最近的实际帧对齐轨迹时钟，限制在半个源帧周期内；不补缺口或用前帧值代替当前缺失。`trajectory.csv` 增加 `tag_distance_mm`、`tag_distance_valid`、`tag_distance_source`，无效数值留空；来源包括 `two_tags`、`missing`、`outside_calibration`、`invalid_geometry`、`pose_failed`、`high_reprojection_error`、`ambiguous_pose`、`ambiguous_detection`、`unmatched_time`。
+质量参数在 `reconstruction.yaml` 的 `measurements.gripper_tags`：`maximum_reprojection_error_px` 默认 2.0（每角点二维残差的 RMS），`maximum_center_ambiguity_mm` 默认 2.0；用 `--expert-config` 按同一字段路径覆盖。原片测量按最近的实际帧对齐轨迹时钟，限制在半个源帧周期内；不补缺口或用前帧值代替当前缺失。`trajectory.csv` 增加 `tag_distance_mm`、`tag_distance_valid`、`tag_distance_source`，无效数值留空；来源包括 `two_tags`、`missing`、`outside_calibration`、`invalid_geometry`、`pose_failed`、`high_reprojection_error`、`ambiguous_pose`、`ambiguous_detection`、`unmatched_time`。
 
-专家配置 `parameters.measurements.gripper_tags.verified_gap_recovery` 默认关闭。开启后，常规测距未达标时，程序仅复查超过连续缺失上限且两端都有有效双标签测量的区间。在原片 ROI 内进行局部对比度增强解码，并从两端分别用理想标签模板定位四角。模板结果要求两个方向的对应角点相差至多 1.5 个原始像素。两种方法都须从当帧原片复核标签编码并通过 KB4 测距门槛。重复 ID、位置冲突及无法复核的候选保持无效。测距报告的 `detection.verified_gap_recovery` 记录各区间的接受行号、方法计数和角点缓存键。
+专家配置 `measurements.gripper_tags.verified_gap_recovery` 默认关闭。开启后，常规测距未达标时，程序仅复查超过连续缺失上限且两端都有有效双标签测量的区间。在原片 ROI 内进行局部对比度增强解码，并从两端分别用理想标签模板定位四角。模板结果要求两个方向的对应角点相差至多 1.5 个原始像素。两种方法都须从当帧原片复核标签编码并通过 KB4 测距门槛。重复 ID、位置冲突及无法复核的候选保持无效。测距报告的 `detection.verified_gap_recovery` 记录各区间的接受行号、方法计数和角点缓存键。
 
-`TagDistanceRequest` 将原片、尺寸、相机、哈希、`TagPoseQuality`、ROI 和验收要求组合为具名输入。`detection/sampling.py` 按真实 PTS 为每个最终轨迹帧选择最近源帧，裁剪到配置 ROI 后检测，不缩小检测像素；解码仍读取压缩视频，非输出时间点不执行标签检测。超出源时钟范围或帧间隔过大时保持 `unmatched_time`。
+`TagDistanceRequest` 将原片、尺寸、相机、哈希、`TagPoseQuality`、ROI 和验收要求组合为具名输入。`frame_detection.py` 按真实 PTS 为每个最终轨迹帧选择最近源帧，裁剪到配置 ROI 后检测，不缩小检测像素；解码仍读取压缩视频，非输出时间点不执行标签检测。超出源时钟范围或帧间隔过大时保持 `unmatched_time`。
 
-先用快速模式扫描全段全部输出帧并完成三维检查。每只手同时满足两项才通过：`two_tags` 有效帧数除以最终 CSV 总帧数达到 `parameters.measurements.gripper_tags.minimum_valid_fraction`（默认 0.5，范围 `(0, 1]`），且连续没有有效三维中心距的帧数不超过 `parameters.measurements.gripper_tags.max_missing_frames`（默认 15，非负整数，0 表示不允许缺失）。恰好等于上限通过；开头、结尾、所有无效原因都计入连续缺失。该上限按最终输出帧计数，当前约 30 帧/秒时 15 帧约为 0.5 秒；调整输出频率后帧数上限不自动改变。
+先用快速模式扫描全段全部输出帧并完成三维检查。每只手同时满足两项才通过：`two_tags` 有效帧数除以最终 CSV 总帧数达到 `measurements.gripper_tags.minimum_valid_fraction`（默认 0.5，范围 `(0, 1]`），且连续没有有效三维中心距的帧数不超过 `measurements.gripper_tags.max_missing_frames`（默认 15，非负整数，0 表示不允许缺失）。恰好等于上限通过；开头、结尾、所有无效原因都计入连续缺失。该上限按最终输出帧计数，当前约 30 帧/秒时 15 帧约为 0.5 秒；调整输出频率后帧数上限不自动改变。
 
 两项中任一不满足就执行有界补检，优先处理最长超限缺口中间的小窗口；只需提高总比例时，优先已有标签的帧并分散补检时间点。根据全段已识别标签学习 ROI 内的活动子区域，每 30 个输出帧中的固定时间点重新搜索整个配置 ROI。每帧最多放大补检 16 个候选，保留 2 倍、3 倍和锐化 3 倍尝试；总比例已通过但仍有长缺口时继续补检，两项同时达标才停止。若已有连续超过上限的帧完成补检后仍无效，或已知重复 ID/源时间缺失使其无法恢复，其他帧不能桥接这段缺口，提前以 `unrecoverable_gap` 失败，不再尝试无关帧。补检解码从目标前的关键帧开始，保留邻帧做最近 PTS 匹配。快速扫描已得到的其余有效帧全部保留，重复 ID 或两轮识别冲突不会通过补检变成有效测量。
 
-快速角点与补检角点分别保存在批次 `.pipeline/tasks/<任务>/cache/sampled_tags/`，身份包含原片、输出时间点、ROI 和检测设置，不含代码或解码器版本（改了检测实现后用 `umi-scene run --recompute` 重算）；验收阈值、尺寸、内参不进入角点身份；几何缓存绑定角点内容与当前测量。改 ROI 会重新检测；调高有效比例或收紧连续缺失上限会复用已有角点，继续补检尚未尝试的帧；放宽不会删除已得测量。日志约每 3 秒显示阶段、帧数、速度及剩余时间，补检同时显示当前有效比例。补检完成仍不满足任一要求时任务失败，`failed-*/<手>/tag_distance.json` 保存实际有效数、分母、门限、最长连续缺失、超限缺口的帧号/原片时间与原因统计；旧成功入口保留，缓存可继续使用。没有配置 `gripper.tag_distance` 的手不执行该验收。
+快速角点与补检角点分别保存在批次 `.pipeline/tasks/<任务>/cache/sampled_tags/`，身份包含原片、输出时间点、ROI 和检测设置，不含代码或解码器版本（改了检测实现后用 `umi-scene run --force` 重算）；验收阈值、尺寸、内参不进入角点身份；几何缓存绑定角点内容与当前测量。改 ROI 会重新检测；调高有效比例或收紧连续缺失上限会复用已有角点，继续补检尚未尝试的帧；放宽不会删除已得测量。日志约每 3 秒显示阶段、帧数、速度及剩余时间，补检同时显示当前有效比例。补检完成仍不满足任一要求时任务失败，`failed-*/<手>/tag_distance.json` 保存实际有效数、分母、门限、最长连续缺失、超限缺口的帧号/原片时间与原因统计；旧成功入口保留，缓存可继续使用。没有配置 `gripper.tag_distance` 的手不执行该验收。
 
 夹爪检测和测距共用 `umi/infra/file_store.py` 的 NPZ 缓存读写。裁剪后的任务先查自己的快速角点缓存，首次缺失时才从完整时间轴的检测结果复制对应帧。补检跟踪当前有效帧、仍可补检的帧和超限缺口，停下后生成完整验收报告。
 
-`episode.json` 的 `tag_distance.<手>` 唯一保存尺寸、内参、检测设置、有效比例和拒绝原因数量。`umi-view` 同步显示当前帧间距，双手分别显示；轨迹交付导出保留 CSV 新字段。当前训练包的夹爪开合通道仍需要独立宽度标定，标签间距不会自动冒充夹爪开口。重投影与双解检查是内部质量检查，实际毫米精度仍需独立测量核验。
+`episode.json` 的 `tag_distance.<手>` 唯一保存尺寸、内参、检测设置、有效比例和拒绝原因数量。`umi-view` 同步显示当前帧间距，双手分别显示。重投影与双解检查是内部质量检查，实际毫米精度仍需独立测量核验。
 
 ## 像素锚点开口宽度
 
@@ -40,7 +40,6 @@
 umi/perception/gripper/
 ├── calibration.py       开口锚点/标签边长读取、像素—毫米映射
 ├── width_estimation.py  开口换算、时间对齐与报告
-├── series.py            开口时间序列与重采样
 ├── video_tools.py       预览、采样监测与标签叠加视频
 ├── detection/
 │   ├── markers.py       灰度图检测、角点和歧义处理
@@ -70,12 +69,11 @@ detect-width 的快速模式针对小标签使用 7～23 像素、步长 4 的�
 | 文件 | 场景集成职责 |
 |---|---|
 | `calibration.py` | 校验 anchors 与开口范围 |
-| `detection/frames.py` | 统一原片 ROI 和坐标，按原片及检测器缓存逐帧像素距离 |
+| `frame_detection.py` | 统一原片 ROI 和坐标，按原片及检测器缓存逐帧像素距离 |
 | `video_tools.py` | 标签叠加预览、按视频时间采样的快速检测及 CSV/MP4 输出 |
 | `width_estimation.py` | 换算毫米、邻近三帧中位数、短缺口插值、内存宽度序列与报告构造 |
-| `series.py` | 时间序列、缺失值、来源编码、CSV 与训练时间重采样 |
 
-宽度测量直接保存在套件目录，由 kit.yaml 各手的 gripper.width 引用相对 JSON 路径。run 在输入入口读取文件，并保存副本与内容哈希，episode.json 保留一份规范化测量与宽度报告，修改文件后重跑即可。插值上限、闭合阈值和诊断开关由 scene_parameters.yaml 管理，原片检测缓存不依赖它们或测量 JSON。width_estimation.process() 返回对齐后的 WidthSeries 和报告，由场景结果写入器与 TCP 一次合写 trajectory.csv；不单独输出宽度 CSV。开启诊断后才额外写出原片逐帧 CSV。
+宽度测量直接保存在套件目录，由 kit.yaml 各手的 gripper.width 引用相对 JSON 路径。run 在输入入口读取文件，并保存副本与内容哈希，episode.json 保留一份规范化测量与宽度报告，修改文件后重跑即可。插值上限和闭合阈值由 reconstruction.yaml 管理，原片检测缓存不依赖它们或测量 JSON。width_estimation.process() 返回对齐后的 WidthSeries 和报告，由场景结果写入器与 TCP 一次合写 trajectory.csv。
 
 无标定的任务继续只输出轨迹；已配置的标定缺失、格式无效或检测出错时任务失败，保留上次成功入口。没有找到标记会保存缺失值，不会当作闭合。超出最大标定开口的结果不作为有效测量，不用短缺口插值掩盖。
 
@@ -94,4 +92,4 @@ PreviewWriter 集中处理图像缩小、叠加、原始 PTS 和 H.264 编码，
 
 monitor 与场景、预览共用裁剪和灰度转换；YUV 平面、半平面及 RGB 打包像素都在源格式中先裁剪，保留颜色空间和量程，支持奇数坐标。快速检测跳过候选放大，按原始半幅的最小像素周长限制过滤微小噪声。该入口使用 4 个解码线程，运行期间将 OpenCV 限为单线程，结束恢复调用前设置；不修改场景流程的线程策略或测量锚点。输出坐标恢复为原始半幅像素，不使用毫米换算。
 
-配置、标定格式、产物和训练字段见 [训练数据指南](../../../docs/05-训练数据准备与导出.md#夹爪宽度标定与接入)。任务时间以视频时间戳为准，原片帧号与处理后视频帧号分别记录。
+配置、标定格式和轨迹输出字段见[夹爪宽度标定与接入](../../../docs/05-任务同步与夹爪测量.md#夹爪宽度标定与接入)。任务时间以视频时间戳为准，原片帧号与处理后视频帧号分别记录。

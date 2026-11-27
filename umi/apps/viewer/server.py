@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
 import argparse
 import json
 import mimetypes
 import os
 import re
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlsplit
 
-from umi.config import operational_settings as settings
-from umi.apps.viewer.resources import video as media
-from umi.apps.viewer.resources.cache import root as cache_root
-from umi.infra.paths import SCENES_ROOT
-
-from umi.apps.viewer.results.catalog import RecordingCatalog
 from umi.apps.viewer import ViewerDataError
-from umi.apps.viewer.resources.video import decode_frame, preview_file, preview_status, video_version
-
+from umi.apps.viewer import video as media
+from umi.apps.viewer.cache import root as cache_root
+from umi.apps.viewer.catalog import RecordingCatalog
+from umi.apps.viewer.video import decode_frame, preview_file, preview_status, video_version
+from umi.config import operational_settings as settings
+from umi.infra.paths import SCENES_ROOT
 
 STATIC = Path(__file__).resolve().parent / 'static'
 DEFAULT_ROOT = SCENES_ROOT

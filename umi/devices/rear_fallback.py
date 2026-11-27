@@ -4,22 +4,21 @@ This is a run asset, never an accepted rear calibration or a registry entry.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import hashlib
 import json
+from dataclasses import dataclass
+from pathlib import Path
 
 from scipy.spatial.transform import Rotation
 
 from umi.config import loader as config
-from umi.devices.x3 import factory_kb4
-from umi.devices import calibration_source
 from umi.core.geometry import imu_from_camera, validate_transform
-from umi.devices.x3 import factory_geometry as factory
-from umi.infra.terminal import Console
-from umi.infra.file_store import atomic_file
+from umi.devices import calibration_assets
 from umi.devices.calibration_assets import parse_basalt
-
+from umi.devices.x3 import factory_geometry as factory
+from umi.devices.x3 import factory_kb4
+from umi.infra.file_store import atomic_file
+from umi.infra.terminal import Console
 
 KIND = 'umi_rear_factory_fallback'
 
@@ -45,7 +44,7 @@ class FactoryRearCalibration:
 
 def derive(video: Path, *, front_path: Path, serial: str, front_source: str) -> FactoryRearCalibration:
     """Read-only preflight. Invalid explicit rear bindings must never call here."""
-    if not serial or front_source not in calibration_source.SOURCES:
+    if not serial or front_source not in calibration_assets.SOURCES:
         raise ValueError('rear 工厂兜底需要本设备 front 的有效 B 标定，不能使用样例')
     try:
         native = factory.read_factory(video)
@@ -89,7 +88,7 @@ def read_snapshot(path: Path, *, serial: str, expected_source: str) -> dict:
     """Run snapshots have hashes checked by their caller; registry remains strict."""
     document = json.loads(path.read_text())
     if document.get('kind') != KIND:
-        return calibration_source.read_rear(path, serial=serial, expected_source=expected_source)[0]
+        return calibration_assets.read_rear(path, serial=serial, expected_source=expected_source)[0]
     origin = document.get('provenance', {})
     if (document.get('schema_version') != 1 or document.get('camera_serial') != serial
             or document.get('lens') != 'rear' or expected_source != 'factory'

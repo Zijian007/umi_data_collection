@@ -1,0 +1,16 @@
+# 批次 collection.yaml 省略这些字段时使用的项目默认值；结构与 collection.yaml 相同。
+# 全团队共用、随 Git 提交；没有按机器区分的覆盖层。单个批次需要不同处理时，直接写在该批次的 collection.yaml。
+
+sync:
+  mode: audio_auto  # audio_auto=双手任务从音频估计偏移；assumed_simultaneous=按同时开始处理。
+  algorithm: kiwi  # specialist=音量包络互相关，kiwi=频谱指纹与 GCC-PHAT。
+
+map:
+  layout: auto  # auto=按 mapping/ 目录推断，shared=共享地图，per_arm=分手建图。
+  reference_arm: left  # 多路建图的参考手，可填 left 或 right。
+
+backend:
+  mode: auto  # auto / scene_map / poster_vio / poster_independent。
+  auto_order: [scene_map, poster_vio, poster_independent]  # 轮到 scene_map 时才准备地图。
+  poster_vio:
+    base_tag: true  # true=允许使用 kit 中声明的夹爪基座标签，false=关闭这项约束。

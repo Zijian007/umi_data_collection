@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import math
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from ruamel.yaml.error import YAMLError
 
-from umi.config.loader import ALGORITHM_DIRECTORY, decode_dataclass, merge_overrides
+from umi.config.loader import ALGORITHM_DIRECTORY, decode_dataclass
 from umi.infra.file_store import read_yaml
 
-
-# 两套音频同步算法的结果配方标识；写入同步记录，变化会使旧记录失效。
+# 同步记录使用算法配方标识核对缓存身份。
 AUDIO_SYNC_RECIPES = {
     'specialist': 'specialist_audio_envelope_xcorr_v1',
     'kiwi': 'kiwi_audio_landmarks_gcc_phat_v3',
@@ -123,19 +122,9 @@ def load_with_sources(algorithm: str) -> tuple[KiwiParameters | SpecialistParame
     model = {'kiwi': KiwiParameters, 'specialist': SpecialistParameters}[algorithm]
     path = source_path(algorithm)
     try:
-        values = read_yaml(path)
-        defaults = decode_dataclass(model, values)
+        return decode_dataclass(model, read_yaml(path)), (path,)
     except (OSError, ValueError, YAMLError) as error:
         raise ValueError(f'读取音频同步配置 {path} 失败：{error}') from error
-    override_path = path.with_suffix('.local.yaml')
-    try:
-        overrides = read_yaml(override_path)
-        parameters = decode_dataclass(model, merge_overrides(values, overrides))
-    except FileNotFoundError:
-        return defaults, (path,)
-    except (OSError, ValueError, YAMLError) as error:
-        raise ValueError(f'读取音频同步配置 {override_path} 失败：{error}') from error
-    return parameters, (path, override_path)
 
 
 def load(algorithm: str) -> KiwiParameters | SpecialistParameters:

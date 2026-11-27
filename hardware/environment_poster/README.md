@@ -1,6 +1,6 @@
 # 环境海报
 
-场景处理使用环境镜头 `rear` 观测这张 ArUco 海报，根据已知角点几何估计海报相对相机的位姿。在批次的 `collection.yaml` 中通过 `environment_poster.layout_path` 选择布局。 [场景处理说明](../../docs/03-场景处理.md)
+场景处理使用环境镜头 `rear` 观测这张 ArUco 海报，根据已知角点几何估计海报相对相机的位姿。在批次的 `collection.yaml` 中通过 `poster.layout` 选择布局。 [场景处理说明](../../docs/03-场景处理.md)
 
 海报采用 `DICT_4X4_100` 字典和 1 格黑边。7 列 × 11 行，ID 从左到右、从上到下为 12–88，标签朝向一致。PDF 纸张为 1000 × 1500 mm，黑色外框边长 100 mm，中心间距 130 mm，左右页边距为 60 mm，上下为 50 mm。 [打印 PDF](environment_poster.pdf) · [布局 JSON](environment_poster.json)
 

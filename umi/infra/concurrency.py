@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
 import threading
+from collections.abc import Callable, Sequence
 
 
 def daemon_map(function: Callable[[object], object], values: Sequence[object], *,

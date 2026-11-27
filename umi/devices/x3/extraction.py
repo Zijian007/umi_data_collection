@@ -21,17 +21,27 @@ The frame-timing check compares against the configured sampling grid; default st
 
 from __future__ import annotations
 
-from pathlib import Path
 import argparse
 import json
 import sys
+from pathlib import Path
 
 import numpy as np
 
-from umi.infra import provenance as artifact_identity
-from umi.core.frame import FPS_SRC, PROFILE, STEP, T0_S, detect_profile_from_streams, output_frame_rate, FPS_TOLERANCE, REGULAR_GRID_TOLERANCE_MS, GAP_INTERVAL_RATIO, IMU_COVERAGE_TOLERANCE_S
+from umi.core.frame import (
+    FPS_SRC,
+    FPS_TOLERANCE,
+    GAP_INTERVAL_RATIO,
+    IMU_COVERAGE_TOLERANCE_S,
+    PROFILE,
+    REGULAR_GRID_TOLERANCE_MS,
+    STEP,
+    T0_S,
+    detect_profile_from_streams,
+    output_frame_rate,
+)
 from umi.devices.x3.imu_reader import ImuReadError, read_imu_and_meta
-
+from umi.infra import provenance as artifact_identity
 
 EUROC_IMU_HEADER = ("#timestamp [ns],w_RS_S_x [rad s^-1],w_RS_S_y [rad s^-1],w_RS_S_z [rad s^-1],"
                     "a_RS_S_x [m s^-2],a_RS_S_y [m s^-2],a_RS_S_z [m s^-2]")

@@ -12,7 +12,7 @@
 | Basalt | 标签 `0.1.7`（提交 `6d8637b9d68ea18a1a63c1baa72818779e156932`），BSD 3-Clause | 相机内参 A 与相机–IMU B 标定 | 预编译包、补丁与逐文件哈希见 [setup/calibration/basalt/PROVENANCE.md](../../setup/calibration/basalt/PROVENANCE.md) |
 | GTSAM | PyPI `gtsam==4.3.0` | 融合、固定地图与 poster_vio 的因子图优化 | 无；版本锁定在 [setup/trajectory/env/requirements.txt](../../setup/trajectory/env/requirements.txt) |
 | KIWI 0.1.0（`TToTMooN/KIWI_software`） | 提交 `22860a30dc1c2e9e5f9a2e55c4955a4fba84646e`，Apache-2.0 | 共享地图米制对齐、镜头放置、固定场景融合与 KIWI 音频同步的参考实现 | 改编范围与许可见 [KIWI 改编说明](#kiwi)与[许可证](LICENSE.kiwi) |
-| specialist（本地参考实现） | 见 NOTICE | poster_vio 初始化、特征几何与重关联、关键帧恢复的参考 | 改编范围与许可见 [umi/estimation/poster_vio/NOTICE.md](../../umi/estimation/poster_vio/NOTICE.md) |
+| specialist（本地参考实现） | 见 NOTICE | poster_vio 初始化、特征几何与重关联、关键帧恢复的参考 | 改编范围与许可见 [umi/reconstruction/backends/poster_vio/NOTICE.md](../../umi/reconstruction/backends/poster_vio/NOTICE.md) |
 
 ORB-SLAM3 与 Pangolin 先从组织下的镜像仓库拉取，失败时退回原作者仓库；两种来源都按上表提交号校验，由 [build_orbslam3.sh](../../setup/trajectory/orbslam3/build_orbslam3.sh) 构建。
 
@@ -36,9 +36,9 @@ ORB-SLAM3 与 Pangolin 先从组织下的镜像仓库拉取，失败时退回原
 ## KIWI
 
 The scene metric alignment, front-to-rear placement, and per-arm fixed-frame
-fusion in `umi/estimation/fixed_map/geometry.py`,
-`umi/estimation/fixed_map/fusion.py`, and
-`umi/estimation/inertial.py` adapt ideas and implementation structure
+fusion in `umi/reconstruction/estimation/fixed_map/geometry.py`,
+`umi/reconstruction/estimation/fixed_map/fusion.py`, and
+`umi/reconstruction/estimation/inertial.py` adapt ideas and implementation structure
 from **KIWI: Kinematic Interface for the Wild**, public reference release 0.1.0,
 commit `22860a30dc1c2e9e5f9a2e55c4955a4fba84646e`:
 
@@ -62,17 +62,17 @@ gates, parallel/antiparallel gravity handling, explicit scene/calibration versio
 configuration-driven noise, and integration with the X3 timestamp convention.
 These files are modified adaptations, not unmodified upstream KIWI code.
 Shared-map scale estimation and motion-segment screening now call the common
-solver in `umi/estimation/fusion/alignment.py`; the three-node system in
+solver in `umi/reconstruction/estimation/fusion/alignment.py`; the three-node system in
 `geometry.py` is retained only as an observability check. Shared maps fit one
 scale, gravity vector and accelerometer bias across accepted segments, rather
 than adopting independent per-segment map placements.
-The separate per-recording implementation is in `umi/estimation/fusion/solver.py`;
-it runs in a worker process through `umi/workflows/segment/fusion_runner.py`.
+The separate per-recording implementation is in `umi/reconstruction/estimation/fusion/solver.py`;
+it runs in a worker process through `umi/reconstruction/segment/fusion_runner.py`.
 
 The task-local poster-VIO implementation additionally references specialist
 commit `da29719cdbaa366df0599984068ad4553d9cc86d` (MIT, Hybrid Robotics).
 The reference paths, local adaptations and complete MIT notice are retained in
-[poster_vio/NOTICE.md](../../umi/estimation/poster_vio/NOTICE.md).
+[poster_vio/NOTICE.md](../../umi/reconstruction/backends/poster_vio/NOTICE.md).
 
 ## 样例资产
 

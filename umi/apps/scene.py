@@ -1,156 +1,183 @@
-"""umi-scene：读取批次配置和原片，自动建图、抽取轨迹，并负责验收与导出。"""
+"""umi-scene：读取批次配置和原片，自动同步、按需建图、生成轨迹结果。"""
 
 from __future__ import annotations
 
-from umi.apps.command_help import grouped_help
-from umi.config import operational_settings as settings
-from umi.config import user_settings as user_config
-
-from pathlib import Path
 import argparse
 import json
 import os
 import signal
+from pathlib import Path
 
-
+from umi.config import collection_defaults
+from umi.config import operational_settings as settings
+from umi.infra.paths import PROJECT_ROOT
+from umi.scene import episodes
+from umi.scene import run as scene_run
+from umi.scene.collection import batch as batch_inputs
+from umi.scene.collection.configuration import SceneOverrides
+from umi.scene.episodes import episode_paths
+from umi.scene.errors import ITEM_FAILURES
+from umi.scene.maps import versions
+from umi.scene.maps import epochs as map_epoch_selection
 from umi.store import layout
-from umi.workflows.scene import workflow
-from umi.workflows.scene import episodes, batch_processing as processing
-from umi.workflows.scene.inputs import batch as batch_inputs
 from umi.store.layout import configured_batches
-from umi.workflows.scene.episodes import episode_paths
-from umi.workflows.scene.maps import repository as map_repository
-from umi.workflows.scene.maps import epoch_selection as map_epoch_selection
-from umi.workflows.scene.errors import ITEM_FAILURES
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog='umi-scene', description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='示例：\n  umi-scene run scenes/test_shelf/20261120_002\n'
-               '  umi-scene run scenes/test_shelf/20261120_002 --dry-run\n'
-               '  umi-scene run <批次>\n'
-               '参数帮助：umi-scene <子命令> --help。')
-    commands = parser.add_subparsers(dest='command', required=True,
-                                     metavar='子命令')
-    commands.add_parser('check', description='检查场景轨迹处理环境')
-    build = commands.add_parser('build', description='单独构建批次地图，自动识别多地图计划')
-    build.add_argument('batch', type=Path, help='批次目录或批次配置；建图原片来自 mapping/ 或多地图清单')
-    build.add_argument('--epochs', action='store_true', help=argparse.SUPPRESS)
-    run = commands.add_parser('run', description='读取批次配置和视频：登记原片、音频同步、建图（含多地图 epoch）并抽取轨迹')
-    run.add_argument('paths', nargs='+', type=Path, metavar='路径', help=(
-        '一个或多个场景、批次或任务目录'))
-    for subparser in (build, run):
-        configuration = subparser.add_argument_group('专家配置')
-        execution = subparser.add_argument_group('执行与检查', '只影响本次运行，不写入 YAML')
-        configuration.add_argument('--expert-config', dest='config', type=Path, help='本次专家算法 YAML 覆盖；只含 trajectory / parameters')
-        configuration.add_argument('--show-config', action='store_true', help='只输出生效配置和来源 JSON；优先于 --dry-run')
-        execution.add_argument('--recompute', dest='force', action='store_true', help=(
-            '单地图批次生成新地图版本；多地图批次重算待构建地图，保留已绑定版本' if subparser is build else
-            '重新计算任务结果，跳过运行前的解码、定位和检测缓存；已有地图和有效的音频同步记录仍可复用'))
-        execution.add_argument('--force', dest='force', action='store_true', help=argparse.SUPPRESS)
-        execution.add_argument('--cores', default='',
-                               help='限制算法子进程可用 CPU，例如 0-7 或 0-3,8')
-        execution.add_argument('--dry-run', action='store_true', help='只检查输入（含原片预检）并显示计划，不创建清单、锁、地图、缓存或结果')
-        if subparser is build:
-            execution.add_argument('--keep-work', action='store_true', help='成功后保留建图中间文件；默认清理，失败现场保留')
-        else:
-            execution.add_argument('--jobs', '-j', type=int, default=None, help='同时处理的任务数，必须 ≥1；默认由 config/user.yaml 决定')
-            execution.add_argument('--skip-preflight', action='store_true', help='跳过任务原片预检；批次入库时仍检查配对、设备和可读性')
-            execution.add_argument('--json', action='store_true', help='以 JSON 输出批量处理结果；默认输出终端汇总表')
-    tags = commands.add_parser('detect-tags', description='检测原片环境镜头的 ArUco 海报，输出角点和可见性报告，不改变轨迹')
-    tags.add_argument('video', type=Path, help='X3 3840×1920 4K60 原片')
-    tags.add_argument('--out', required=True, type=Path, help='独立的检测缓存与报告目录')
-    tags.add_argument('--layout', type=Path, help='海报布局 JSON；默认使用已核对 PDF 的 77 标签海报')
-    tags.add_argument('--border-bits', type=int, help=argparse.SUPPRESS)
-    tags.add_argument('--frame-step', type=int, default=2, help='每 N 个源帧检测一次，N 必须为正整数（默认 %(default)s）')
-    tags.add_argument('--full-frame-every', type=int, default=15,
-                      help='每 N 个采样帧做一次全图检测，其余帧跟随上次标签窗口（默认 %(default)s）')
-    tags.add_argument('--minimum-side-px', type=float, default=0., help='几何可用观测的最短投影边长，单位原片像素，须为有限非负数；默认 %(default)g，不按尺寸过滤')
-    tags.add_argument('--recompute', dest='force', action='store_true', help='重新计算检测；默认复用匹配的原片角点缓存')
-    tags.add_argument('--force', dest='force', action='store_true', help=argparse.SUPPRESS)
-    status = commands.add_parser('status', description='查看批次绑定的地图（含各 epoch 地图是否已构建）和任务的处理、验收状态')
-    status.add_argument('paths', nargs='+', type=Path, help='任务、批次、场景或套件目录，可一次指定多个')
-    status.add_argument('--json', action='store_true', help='以 JSON 输出状态；默认逐条显示')
-    review = commands.add_parser('review', description='对当前成功结果进行人工验收（支持单个任务或批量批次目录）')
-    review.add_argument('paths', nargs='+', type=Path, help='任务目录、批次目录、套件目录或场景目录')
-    decision = review.add_mutually_exclusive_group(required=True)
-    decision.add_argument('--accept', action='store_true', help='将当前有效的成功结果标记为人工接收')
-    decision.add_argument('--reject', action='store_true', help='将当前结果标记为人工拒收')
-    review.add_argument('--reviewer', required=True, help='验收人姓名或标识，写入验收记录')
-    review.add_argument('--reason', default='', help='验收说明或拒收原因；默认不填写')
-    export = commands.add_parser('export', description='导出当前有效且已人工接收的结果')
-    export.add_argument('paths', nargs='+', type=Path, help='待导出的任务、批次、场景或套件目录')
-    export.add_argument('--out', required=True, type=Path, help='导出目录；已有目录拒绝覆盖')
-    export.add_argument('--with-video', action='store_true', help='仅 trajectory：同时复制工作镜头视频；training 已包含视频，与此选项同时使用会报错')
-    export.add_argument('--format', choices=['trajectory', 'training'], default='trajectory', help='默认轨迹交付包；training 为训练中间包')
-    export.add_argument('--profile', type=Path, help='训练导出 YAML，可设置采样频率、插值间隔和质量策略')
-    export.add_argument('--fps', type=float, help=argparse.SUPPRESS)
-    export.add_argument('--max-gap-s', type=float, help=argparse.SUPPRESS)
-    export.add_argument('--start-s', type=float, help='仅 training：人工确认的任务窗口起点，单位秒')
-    export.add_argument('--end-s', type=float, help='仅 training：人工确认的任务窗口终点，单位秒')
-    from umi.dataset.schema import QUALITY_POLICIES, UNKNOWN_SUPPORT_POLICIES
-    export.add_argument('--quality-policy', choices=QUALITY_POLICIES, help=argparse.SUPPRESS)
-    export.add_argument('--unknown-support', choices=UNKNOWN_SUPPORT_POLICIES, help=argparse.SUPPRESS)
-    clean = commands.add_parser('clean', description='删除已被取代的运行、地图版本和中断残留；当前结果、最近一次尝试和验收记录保留')
-    clean.add_argument('paths', nargs='+', type=Path, help='批次、场景或上层目录，可一次指定多个')
-    clean.add_argument('--cache', action='store_true', help='同时清空全部可重建缓存；下次运行会重新解码、建图和定位')
-    clean.add_argument('--dry-run', action='store_true', help='只列出将删除的内容和可释放空间，不做修改')
-    relative = commands.add_parser('evaluate-relative', description='用实测固定夹具参考评估双手相对位姿；不更新人工验收')
-    relative.add_argument('path', type=Path, help='任务目录或冻结的运行结果目录')
-    relative.add_argument('--reference', required=True, type=Path, help='umi_rigid_pair_reference v1 JSON')
-    relative.add_argument('--out', required=True, type=Path, help='评估报告 JSON，必须位于源运行结果目录外')
-    parser.epilog = grouped_help(commands.choices, ('run', 'status', 'review', 'export')) + "\n\n" + parser.epilog
+    parser = argparse.ArgumentParser(prog='umi-scene', description=__doc__)
+    commands = parser.add_subparsers(dest='command', required=True)
+    run = commands.add_parser('run', allow_abbrev=False, help='处理场景、批次或任务，按 collection.yaml 发布结果')
+    run.add_argument('paths', nargs='+', type=Path, metavar='路径', help='一个或多个场景、批次或任务路径')
+    run.add_argument('--force', action='store_true', help='沿实际执行路径重新计算同步、地图和轨迹')
+    run.add_argument('--jobs', type=int, default=1, help='同时处理的任务数，默认 %(default)s')
+    run.add_argument('--cores', default='', help='限制算法子进程可用 CPU，例如 0-3,8')
+    run.add_argument('--expert-config', type=Path, help='本次专家算法配置覆盖')
+    run.add_argument('--json', action='store_true', help='输出结构化 JSON')
+    mode = run.add_mutually_exclusive_group()
+    mode.add_argument('--status', action='store_true', help='查看已记录的地图和任务状态')
+    mode.add_argument('--show-config', action='store_true', help='查看生效配置及其来源')
+    mode.add_argument('--dry-run', action='store_true', help='检查输入并列出运行计划，不写入产物')
     return parser
 
 
-def _prepare_execution(args):
-    """Load command overrides and configure process-wide runtime settings."""
-    overrides = None
-    if args.command in ('run', 'build'):
-        from umi.workflows.scene.parameters import SceneOverrides
-        from umi.workflows.scene.batch_snapshot import effective_report
-        common = user_config.current().values
-        if hasattr(args, 'jobs') and args.jobs is None:
-            args.jobs = common['runtime']['jobs']
-        if hasattr(args, 'cores') and not args.cores and common['runtime']['cores'] != 'auto':
-            args.cores = common['runtime']['cores']
-        if args.command == 'run' and args.jobs < 1:
-            raise ValueError('jobs 必须至少为 1')
-        overrides = SceneOverrides.load(args.config) if args.config else None
-        if getattr(args, 'show_config', False):
-            paths = args.paths if args.command == 'run' else [args.batch]
-            report = dict(program='umi-scene', operation=args.command, scope='configuration_only',
-                precedence=['project_defaults', 'config/user.yaml', 'collection.yaml', '--expert-config'],
-                execution={key: value for key, value in vars(args).items()
-                           if key in ('cores', 'jobs', 'force', 'keep_work', 'skip_preflight', 'epochs')},
-                configuration=effective_report(paths, overrides=overrides),
-                user_config=user_config.current().report(),
-                operational=settings.execution_report(cores=args.cores, jobs=getattr(args, 'jobs', 1)))
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return None, True
-    if args.command in ('run', 'build', 'detect-tags'):
+_LAYOUTS = {'auto': 'auto', 'shared_front': 'shared', 'dual': 'per_arm'}
+_SOURCES = {'project': '项目默认', 'collection': 'collection.yaml', 'expert': '--expert-config'}
+_PROCESSING_LABELS = {'robust_inertial_seed': '鲁棒惯性初始化', 'verified_gap_recovery': '夹爪标签缺口补检'}
+_MAPLESS_BACKENDS = ('poster_vio', 'poster_independent')
+_SYNCHRONIZATION = {'audio_auto': '音频自动估计', 'assumed_simultaneous': '按同时开始',
+                    'manual': '手动偏移', 'single_camera': '单手，无需同步'}
+
+
+def _path(value) -> str:
+    path = Path(value)
+    try:
+        return str(path.resolve().relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _switch(value: bool) -> str:
+    return '开启' if value else '关闭'
+
+
+def _flatten(values: dict, prefix: str = '') -> list[tuple[str, object]]:
+    rows = []
+    for name, value in values.items():
+        key = f'{prefix}.{name}' if prefix else name
+        rows.extend(_flatten(value, key) if isinstance(value, dict) else [(key, value)])
+    return rows
+
+
+def _target_lines(target: dict) -> list[str]:
+    effective, selection = target['effective'], target.get('selection') or {}
+    defaults = set(effective.get('project_defaults_used', ()))
+
+    def mark(field: str) -> str:
+        return '（项目默认）' if field in defaults else ''
+
+    mode = effective['reconstruction_mode']
+    lines = [f"{'任务' if target['scope'] == 'task' else '批次'} {_path(target['target'])}"]
+    if selection:
+        kit = selection['kit']
+        source = selection.get('intrinsics_source') or '按 kit'
+        lines.append(f"  套件      {kit.get('id', '?')} · 使用手 {'、'.join(selection['arms'])} · 内参来源 {source}")
+    lines.append(f'  后端      {mode}{mark("backend.mode")}')
+    if mode == 'auto':
+        lines.append('  尝试顺序  ' + ' → '.join(effective['backend']['auto_order']) + mark('backend.auto_order'))
+    overridden = {name: task_mode for name, task_mode in effective.get('task_reconstruction_modes', {}).items()
+                  if task_mode != mode}
+    if overridden and target['scope'] == 'batch':
+        lines.append('  任务覆盖  ' + ' · '.join(f'{name} → {task_mode}' for name, task_mode in overridden.items()))
+    layout = _LAYOUTS.get(effective['mode'], effective['mode'])
+    declared = effective.get('map_layout', layout)
+    if declared != layout:
+        layout = f'{declared} → {layout}'
+    map_line = (f'布局 {layout}{mark("map.layout")} · 参考手 {effective["reference_arm"]}{mark("map.reference_arm")}'
+                f' · 版本 {selection.get("map_version") or "未绑定"}')
+    if mode in _MAPLESS_BACKENDS:
+        map_line += '（本后端不使用地图）'
+    lines.append(f'  地图      {map_line}')
+    synchronization = effective.get('synchronization')
+    if synchronization is not None:
+        method = synchronization['method']
+        audio = f"{_SYNCHRONIZATION.get(method, method)}{mark('sync.mode')}"
+        if synchronization.get('algorithm'):
+            audio += f" · {synchronization['algorithm']}{mark('sync.algorithm')}"
+    else:
+        audio = (f"{_switch(effective['batch_audio_sync_enabled'])}{mark('sync.mode')}"
+                 f" · {effective['batch_audio_sync_algorithm']}{mark('sync.algorithm')}")
+    lines.append(f'  音频同步  {audio}')
+    lines.append(f"  基座标签  {_switch(effective['poster_vio_base_tag_enabled'])}"
+                 f"{mark('backend.poster_vio.base_tag')}")
+    switches = [f"{_PROCESSING_LABELS.get(name, name)} {_switch(option['value'])}"
+                f"（{_SOURCES.get(option['source'], option['source'])}）"
+                for name, option in effective['processing_options'].items()]
+    lines.append('  处理开关  ' + ' · '.join(switches))
+    if effective.get('tag_layout'):
+        lines.append(f"  海报布局  {_path(effective['tag_layout'])}")
+    map_selection = effective.get('map_selection')
+    if isinstance(map_selection, dict) and map_selection.get('status'):
+        lines.append(f"  选图      {map_selection['status']}"
+                     + (f" · {map_selection['version']}" if map_selection.get('version') else ''))
+    override = target['sources'].get('override')
+    if override:
+        lines.append(f"  专家覆盖  {_path(override['path'])}")
+    changed = _flatten(effective.get('changed_from_defaults', {}))
+    if changed:
+        lines.append('  与项目默认不同的算法参数')
+        lines.extend(f'    {key} = {json.dumps(value, ensure_ascii=False)}' for key, value in changed)
+    return lines
+
+
+def _format_scene_summary(report: dict) -> str:
+    lines = ['配置摘要：只读取声明，不检查原片和缓存；要检查能否运行，用 --dry-run',
+             '生效顺序：config/collection_defaults.yaml → 批次 collection.yaml → 任务 tasks.<take> → --expert-config',
+             '']
+    for target in report['configuration']:
+        lines.extend(_target_lines(target))
+        lines.append('')
+    resources = report['operational']['resources']
+    execution = report['execution']
+    cores = execution.get('cores') or '全部可用'
+    lines.append(f"执行      任务并发 {resources['jobs']} · CPU {resources['cpu_count']}（--cores {cores}）"
+                 f" · 解码 {resources['decode_threads']} 线程 · OpenCV {resources['opencv_threads']} 线程")
+    lines.append('加 --json 输出完整配置和每项来源')
+    return '\n'.join(lines)
+
+
+def _show_config(args, overrides):
+    from umi.scene.collection.config_report import effective_report
+
+    report = dict(program='umi-scene', operation='run', scope='configuration_only',
+        precedence=['project_defaults', 'config/collection_defaults.yaml', 'collection.yaml', '--expert-config'],
+        execution={key: getattr(args, key) for key in ('cores', 'jobs', 'force')},
+        configuration=effective_report(args.paths, overrides=overrides),
+        collection_defaults=collection_defaults.current().report(),
+        operational=settings.execution_report(cores=args.cores, jobs=args.jobs))
+    print(json.dumps(report, ensure_ascii=False, indent=2) if args.json else _format_scene_summary(report))
+    return 0
+
+
+def _run(args):
+    if args.jobs < 1:
+        raise ValueError('--jobs 必须至少为 1')
+    if args.status:
+        return _status(args)
+    overrides = SceneOverrides.load(args.expert_config) if args.expert_config else None
+    if args.show_config:
+        return _show_config(args, overrides)
+    if not args.dry_run:
         import cv2
 
-        threads = settings.values('runtime')['opencv_threads']
-        if threads < 1:
-            raise ValueError('UMI_OPENCV_THREADS 必须是正整数')
-        # OpenCV 设置是进程级的；在创建任务线程前设置一次。
-        cv2.setNumThreads(threads)
-        if args.command == 'run':
-            execution = settings.execution_report(cores=args.cores, jobs=args.jobs)
-            resources = execution['resources']
-            parallel = '满足' if resources['dual_arm_eligible'] else '不满足'
-            workflow.console.write(f'CPU {resources["cpu_count"]} · 解码 {resources["decode_threads"]} 线程 · '
-                                   f'OpenCV {resources["opencv_threads"]} 线程 · '
-                                   f'双手并行条件 {parallel}', state='资源')
-            local_sources = [Path(source).name for kind in ('runtime', 'gripper_tag_detection')
-                             for source in execution[kind]['sources'] if '.local.' in source]
-            if local_sources:
-                workflow.console.write('本机覆盖 ' + ' · '.join(local_sources) + ' · 参数见 --show-config', state='配置')
-        elif args.command == 'build':
-            workflow.console.write(settings.summary(cores=args.cores, jobs=getattr(args, 'jobs', 1)))
-    return overrides, False
+        resources = settings.execution_report(cores=args.cores, jobs=args.jobs)['resources']
+        cv2.setNumThreads(resources['opencv_threads'])
+        parallel = '满足' if resources['dual_arm_eligible'] else '不满足'
+        scene_run.console.write(f'CPU {resources["cpu_count"]} · 解码 {resources["decode_threads"]} 线程 · '
+                               f'OpenCV {resources["opencv_threads"]} 线程 · 双手并行条件 {parallel}', state='资源')
+    result = scene_run.run(args.paths, jobs=args.jobs, force=args.force, cores=args.cores,
+                           dry_run=args.dry_run, overrides=overrides)
+    print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else scene_run.format_batch_summary(result))
+    return int(any(item['status'] not in ('ok', 'skipped', 'local_ok', 'local_skipped', 'planned') for item in result))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -160,23 +187,15 @@ def main(argv: list[str] | None = None) -> int:
     def handle_interrupt(signum, frame):
         interrupts['count'] += 1
         if interrupts['count'] == 1:
-            workflow.console.write('收到中断请求；正在停止当前阶段，再按一次 Ctrl-C 立即退出。', state='中断')
+            scene_run.console.write('收到中断请求；正在停止当前阶段，再按一次 Ctrl-C 立即退出。', state='中断')
             raise KeyboardInterrupt
         os._exit(130)
 
     signal.signal(signal.SIGINT, handle_interrupt)
     try:
-        overrides, handled = _prepare_execution(args)
-        if handled:
-            return 0
-        outcome = COMMANDS[args.command](args, overrides)
-        if isinstance(outcome, int):
-            return outcome
-        # 其余命令统一以 JSON 输出结果。
-        print(json.dumps(outcome, ensure_ascii=False, indent=2))
-        return 0
+        return _run(args)
     except ITEM_FAILURES as error:
-        workflow.console.write(str(error), state='失败')
+        scene_run.console.write(str(error), state='失败')
         return 2
     except KeyboardInterrupt:
         # A poster-VIO worker may still be inside native GTSAM code after the
@@ -186,41 +205,7 @@ def main(argv: list[str] | None = None) -> int:
         os._exit(130)
 
 
-# 每个子命令一个处理函数：返回 int 表示已自行输出、作为退出码；返回结果对象则由 main 以 JSON 输出。
-
-def _check(args, overrides):
-    from umi.apps.health import check
-    return check()
-
-
-def _build(args, overrides):
-    return processing.build(args.batch, force=args.force, keep_work=args.keep_work,
-                            cores=args.cores, dry_run=args.dry_run,
-                            overrides=overrides, epochs=args.epochs)
-
-
-def _run(args, overrides):
-    result = processing.run(args.paths, jobs=args.jobs, force=args.force,
-        cores=args.cores, dry_run=args.dry_run, check_recordings=not args.skip_preflight,
-        overrides=overrides)
-    print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else workflow.format_batch_summary(result))
-    return int(any(item['status'] not in ('ok', 'skipped', 'local_ok', 'local_skipped', 'planned') for item in result))
-
-
-def _detect_tags(args, overrides):
-    from umi.perception.poster.detection import DetectionSettings, cached
-    from umi.perception.poster.layout import DEFAULT_LAYOUT, load
-    board = load(args.layout or DEFAULT_LAYOUT)
-    if args.border_bits is not None and args.border_bits != board.border_bits:
-        raise ValueError('--border-bits 与海报布局的黑边格数不一致')
-    detection_settings = DetectionSettings(border_bits=board.border_bits,
-        dictionary=board.dictionary, ids=board.ids, frame_step=args.frame_step,
-        full_frame_every=args.full_frame_every, minimum_side_px=args.minimum_side_px)
-    return cached(args.video, args.out, detection_settings, force=args.force,
-                  progress=workflow.console.write, layout=board)
-
-
-def _status(args, overrides):
+def _status(args):
     maps = []
     for batch in configured_batches(args.paths):
         try:
@@ -234,11 +219,17 @@ def _status(args, overrides):
         except ITEM_FAILURES as error:
             tasks.append(dict(path=str(path), status='invalid', reason=str(error)))
     if args.json:
-        return dict(batches=maps, tasks=tasks)
+        print(json.dumps(dict(batches=maps, tasks=tasks), ensure_ascii=False, indent=2))
+        return 0
     for item in maps:
         print(f'{item["batch"]}: {_format_batch_maps(item)}')
     for item in tasks:
-        print(f'{item["path"]}: {item["status"]} / {item.get("review", "unreviewed")} {item.get("reason", "")}')
+        attempt = item.get('attempt', {})
+        run = Path(attempt['run']).name if attempt.get('run') else '—'
+        print(f'{item["path"]}  任务 {item["status"]}  最近尝试 {run} {attempt.get("status", "")} {item.get("reason", "")}')
+        if published := item.get('published'):
+            label = '当前结果' if item['current'] else '上次发布'
+            print(f'  {label} {published["path"]}  运行 {Path(published["run"]).name}')
     return 0
 
 
@@ -253,60 +244,6 @@ def _format_batch_maps(item: dict) -> str:
     return f'地图 {item.get("version") or item.get("map_status", "未绑定")}'
 
 
-def _review(args, overrides):
-    targets = episode_paths(args.paths)
-    if not targets:
-        raise ValueError(f'未找到任何任务清单：{args.paths}')
-    if len(targets) == 1:
-        return episodes.review(targets[0], accept=args.accept, reviewer=args.reviewer, reason=args.reason)
-    details = []
-    for target in targets:
-        try:
-            decision = episodes.review(target, accept=args.accept, reviewer=args.reviewer,
-                                       reason=args.reason)['decision']
-            details.append(dict(episode=str(target), status='ok', decision=decision))
-        except Exception as error:
-            details.append(dict(episode=str(target), status='error', error=str(error)))
-    reviewed = sum(item['status'] == 'ok' for item in details)
-    return dict(total=len(targets), accepted=reviewed if args.accept else 0,
-                rejected=0 if args.accept else reviewed,
-                failed=len(details) - reviewed, details=details)
-
-
-def _export(args, overrides):
-    settings = {name: getattr(args, name) for name in ('fps', 'max_gap_s', 'quality_policy', 'unknown_support')
-                if getattr(args, name) is not None}
-    if args.format == 'training':
-        if args.with_video:
-            raise ValueError('训练包已包含视频，请去掉 --with-video')
-        if (args.start_s is None) != (args.end_s is None):
-            raise ValueError('--start-s 和 --end-s 必须同时提供')
-        from umi.dataset.export import build, training_options
-        options = training_options(args.profile, settings)
-        return build(args.paths, args.out, **options,
-                     time_window_s=None if args.start_s is None else (args.start_s, args.end_s))
-    if args.profile is not None or settings or args.start_s is not None or args.end_s is not None:
-        raise ValueError('训练采样选项只适用于 --format training')
-    return episodes.export(episode_paths(args.paths), args.out, with_video=args.with_video)
-
-
-def _clean(args, overrides):
-    return processing.clean(args.paths, dry_run=args.dry_run, cache=args.cache)
-
-
-def _evaluate_relative(args, overrides):
-    from umi.dataset.relative_pose_evaluation import evaluate
-    from umi.infra.file_store import write_json
-    result = evaluate(args.path, args.reference)
-    if args.out.expanduser().resolve().is_relative_to(Path(result['run'])):
-        raise ValueError('评估报告不能写入冻结运行结果目录')
-    if args.out.expanduser().resolve() == args.reference.expanduser().resolve():
-        raise ValueError('评估报告不能覆盖实测参考')
-    write_json(args.out, result)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if result['status'] == 'passed' else 1
-
-
 def _batch_maps(batch: Path) -> dict:
     """批次当前绑定的默认地图和各 epoch 地图的构建状态。"""
     if not layout.metadata(batch, 'manifest.yaml').is_file():
@@ -314,7 +251,7 @@ def _batch_maps(batch: Path) -> dict:
     session = batch_inputs.read_batch(layout.manifest(batch, 'manifest.yaml'))
     scene = session.scene
     try:
-        directory, published = map_repository.load_published(scene)
+        directory, published = versions.load_published(scene)
     except ValueError:
         if session.map_version is not None:
             raise
@@ -339,7 +276,7 @@ def _inspect_epochs(scene, epoch_plan_path: Path) -> dict:
                                    error='地图尚未构建'))
             continue
         try:
-            epoch_directory, epoch_manifest = map_repository.load_published(
+            epoch_directory, epoch_manifest = versions.load_published(
                 scene, version=epoch.map_version, allow_import=True)
             epoch_maps.append(dict(epoch=epoch.epoch, map_version=epoch.map_version,
                                    sequence=epoch.sequence, available=True,
@@ -356,12 +293,6 @@ def _inspect_epochs(scene, epoch_plan_path: Path) -> dict:
         map_status=epoch_maps,
         assignments=map_epoch_selection.select_many(plan.tasks.values(), plan.epochs),
     )
-
-
-COMMANDS = {
-    'check': _check, 'build': _build, 'run': _run, 'detect-tags': _detect_tags, 'status': _status,
-    'review': _review, 'export': _export, 'clean': _clean, 'evaluate-relative': _evaluate_relative,
-}
 
 
 if __name__ == '__main__':

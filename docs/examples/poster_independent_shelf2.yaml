@@ -1,0 +1,5 @@
+backends:
+  poster_independent:
+    fusion:
+      node_stride: 2
+      imu_white_noise_multiplier: 3.0

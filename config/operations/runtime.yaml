@@ -1,5 +1,5 @@
 # 执行预算；这些值影响资源使用和超时，不进入算法结果身份。
-# 当前机器的临时覆盖写入 runtime.local.yaml，不提交 Git。
+# 单次运行可用 --cores、--jobs、--workers 或 UMI_OPENCV_THREADS 调整，不需要改本文件。
 decode_threads: 8  # 每路视频的解码线程数。
 opencv_threads: 4  # 场景运行时 OpenCV 线程数。
 calibration_opencv_threads: 1  # 标定/诊断 OpenCV 线程数，避免帧间并行产生嵌套线程。

@@ -16,6 +16,6 @@ def resolve_arms(declaration: dict, available) -> tuple[str, ...]:
     """Missing declaration inherits the available arms; explicit null is invalid.
 
     Tasks inherit the batch default; legacy batch snapshots inherit their frozen
-    kit. The public collection schema requires recording.arms explicitly.
+    kit. The public collection schema requires arms explicitly.
     """
     return read_arms(declaration.get('expected_arms', tuple(available)), available)

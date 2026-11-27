@@ -31,7 +31,12 @@ export function createLibrary({search, count, list, root, refreshButton, onSelec
       top.append(title, status);
       const name = list.ownerDocument.createElement('strong'); name.textContent = recordingLabel(entry.name);
       const labels = {pending:'待处理', incomplete:'待补齐', failed:'处理失败', rejected_preflight:'原片检查未通过', ok:'已完成', skipped:'已完成', local_ok:'独立局部轨迹', local_skipped:'独立局部轨迹（复用）'};
-      const sub = list.ownerDocument.createElement('small'); sub.textContent = `${entry.serial?.slice(-4) || '设备未知'}  /  ${Number.isFinite(entry.duration) ? entry.duration.toFixed(1) + ' s' : '时长未知'}  /  ${entry.rows ?? '—'} 帧 / ${labels[entry.status] || entry.status}${entry.review === 'accepted' ? ' · 已接收' : entry.review === 'rejected' ? ' · 已拒收' : ''}`;
+      const sub = list.ownerDocument.createElement('small'); sub.textContent = `${entry.serial?.slice(-4) || '设备未知'}  /  ${Number.isFinite(entry.duration) ? entry.duration.toFixed(1) + ' s' : '时长未知'}  /  ${entry.rows ?? '—'} 帧 / ${labels[entry.status] || entry.status}`;
+      if (entry.published && !entry.current) {
+        const run = entry.published.run.split('/').pop();
+        sub.textContent += ` · 显示上次发布 ${run}`;
+        button.title = [entry.attempt?.reason, entry.published.path].filter(Boolean).join(' · ');
+      }
       button.append(top, name, sub); button.addEventListener('click', () => onSelect(entry.id)); list.append(button);
     }
   }

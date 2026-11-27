@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from umi.estimation.constraint_quality import scale_consistency
+from umi.reconstruction.estimation.constraint_quality import scale_consistency
 
 REAL_RUN = subprocess.run
 
@@ -28,7 +28,7 @@ class FakeEngines:
 
     def fuse(self, request, **kwargs):
         """Stand-in for ``fusion_runner.execute``; writes the files the real worker produces."""
-        from umi.workflows.segment import fusion_runner
+        from umi.reconstruction.segment import fusion_runner
         directory = request.output
         self.calls.append(('fuse', request, kwargs))
         if self.failures.get('fuse', 0):
@@ -49,7 +49,7 @@ class FakeEngines:
         """Patch the external-engine and fusion-worker boundaries together."""
         from unittest.mock import patch
         from umi.perception import runtime
-        from umi.workflows.segment import fusion_runner
+        from umi.reconstruction.segment import fusion_runner
         return (patch.object(runtime.subprocess, 'run', side_effect=run or self),
                 patch.object(fusion_runner, 'execute', side_effect=fuse or self.fuse))
 

@@ -13,29 +13,25 @@
 | `poster/detection.py` | 环境镜头 ArUco `DICT_4X4_100` 海报角点、真实 PTS、检测缓存与采样可见性报告；不求海报位姿 |
 | `poster/geometry.py` | KB4 海报角点投影、解析导数与多帧板位姿初值 |
 | `poster/quality.py` | 共享角点噪声、异常剔除预算、证据记录及条件几何质量 |
-| `umi/estimation/factors/poster.py` | 场景与独立图共用的鲁棒角点因子、安装旋转修正及验收 |
+| `umi/reconstruction/estimation/poster_factors.py` | 场景与独立图共用的鲁棒角点因子、安装旋转修正及验收 |
 | `poster/layout.py` | 已核对 PDF 的海报米制布局、角点顺序校验与几何身份 |
 | `tools/` | 可独立执行的镜头裁切和定位合并工具 |
 
-海报实现集中在 `poster/`，直接从实际子模块导入。`geometry.py` 保留投影、残差和初始化，`quality.py` 依赖几何计算噪声与筛查指标，`umi/estimation/factors/poster.py` 复用两者构建因子；检测和布局不依赖场景或独立轨迹业务。包初始化只说明职责。
+海报实现集中在 `poster/`，直接从实际子模块导入。`geometry.py` 保留投影、残差和初始化，`quality.py` 依赖几何计算噪声与筛查指标，`umi/reconstruction/estimation/poster_factors.py` 复用两者构建因子；检测和布局不依赖场景或独立轨迹业务。包初始化只说明职责。
 
 `VisualContext` 直接包含已解析参数、核心设置、路径、帧数及 CPU 设置，不携带 `TrajectoryRequest`。独立流程通过 `ReconstructionContext.visual` 提供视觉上下文；场景直接构造 `VisualContext`。
 
 调用方明确选择镜头及其参数文本，`visual_settings()` 只负责生成运行资产，不自动回退样例标定。相机–IMU–TCP 共用几何位于 `umi/core/geometry.py`，遮手图裁切和缩放由 `umi/perception/runtime.py` 使用 X3 的镜头裁切规则完成。
 
-环境海报目前可独立检测，无需环境镜头标定。默认使用已从用户 PDF 核对的 [77 标签布局](../../hardware/environment_poster/environment_poster.json)：
+环境海报角点由 `poster.detection.cached()` 提供，布局默认使用已核对 PDF 的 [77 标签布局](../../hardware/environment_poster/environment_poster.json)。
 
-```bash
-./umi-scene detect-tags /path/to/recording.insv --out /tmp/environment-tags
-```
-
-仅接受 X3 3840×1920、约 59.94 fps 的双镜头原片，检测左半幅 `rear`。字典为 `DICT_4X4_100`，默认登记 ID 12–88、黑边 1 格；同帧重复 ID 全部拒绝，其他 ID 计为未知。默认每两个源帧取一个，可用 `--frame-step` 调节；始终保存真实 PTS，不用帧率推算时间。`--minimum-side-px` 可增加像素边长筛选，默认 0 仅统计。可用 `--layout` 指定同格式布局；`--border-bits` 若指定，必须与布局一致。
+仅接受 X3 3840×1920、约 59.94 fps 的双镜头原片，检测左半幅 `rear`。字典为 `DICT_4X4_100`，默认登记 ID 12–88、黑边 1 格；同帧重复 ID 全部拒绝，其他 ID 计为未知。默认每两个源帧取一个，保存真实 PTS。调用方通过 `DetectionSettings` 指定采样步长与最短投影边长，黑边格数来自布局。
 
 输出 `observations.npz`（采样源帧号、视频时刻、ID、原始半幅角点及筛选标记）、`detection.json`（原片和检测设置及角点文件哈希）和 `report.json`。`TagObservations.corners_px` 减去 240 px 得到标定裁切坐标，`imu_times_s(offset)` 显式接收环境镜头时间偏移；默认观测只含视频时间。标定裁切之外的检测保留用于统计，但 `usable=False`。
 
 `poster.detection.load_observations(path)` 是原始角点 NPZ 的统一读取入口：禁用 pickle，恢复全部数组并验证时间、索引、角点与有效性契约。检测缓存、建图快照、场景融合和独立引擎共用该入口；来源身份与哈希仍由各自调用方核对。
 
-可见率按采样帧计算，同一帧多个 ID 不重复计为多个时刻；最长缺口也是采样统计，不能推断跳过的帧。`usable` 仅表示像素与标定裁切筛选通过，不是海报位姿可观测性或轨迹验收。报告记录当前布局和 PDF 来源哈希，角点缓存与物理几何分开；更正尺寸时可复用像素观测。布局是 `pdf_design`，不代表已测量打印成品。独立检测命令输出角点和可见性报告。场景的海报布局、裁剪和融合开关见[后端配置](../../docs/03-场景处理.md#选择轨迹估计后端)。
+可见率按采样帧计算，同一帧多个 ID 不重复计为多个时刻；最长缺口也是采样统计，不能推断跳过的帧。`usable` 仅表示像素与标定裁切筛选通过，不是海报位姿可观测性或轨迹验收。报告记录当前布局和 PDF 来源哈希，角点缓存与物理几何分开；更正尺寸时可复用像素观测。布局是 `pdf_design`，不代表已测量打印成品。场景的海报布局、裁剪和融合开关见[后端配置](../../docs/03-场景处理.md#选择轨迹估计后端)。
 
 `VideoDecode` 向宽度、采样中心距和环境海报检测器交付同一原始帧，各自保留 ROI、采样规则和检测状态。场景同时启用两类以上检测时预先填充各自缓存；缓存命中的检测器不注册，全部命中时不打开视频。像素宽度逐源帧检测，中心距按最近真实 PTS 选择输出帧，海报按源帧号采样。各检测器按原片和自身设置独立判断角点缓存是否可复用；检测器专用参数变化只重跑受影响的检测。ffmpeg 镜头视频生成与按需补检仍单独解码。
 
@@ -51,4 +47,4 @@
 
 `logs/tracking.json` 记录各镜头各阶段的覆盖统计；文本日志供排障，结构化记录供结果生成。独立重建另写 `logs/run.json` 记录运行身份和完成状态。
 
-第三方仍安装在其原有 `Examples/Monocular-Inertial` 路径，实际使用纯视觉模式，Python 代码通过 `umi/infra/orb_install.py` 访问。当前构建默认启用修复后的前向 KB4，限制单射线角度 ≤85°，不支持完整 >180° 视野。`umi.infra.orb_install.require_forward_kb4()` 检查实际二进制的 `--capabilities`；工厂来源遇到旧引擎时明确报错，需要重编译。实测与工厂来源共用同一几何，重编引擎后用 `umi-scene build --force` 重建地图。
+第三方仍安装在其原有 `Examples/Monocular-Inertial` 路径，实际使用纯视觉模式，Python 代码通过 `umi/infra/orb_install.py` 访问。当前构建默认启用修复后的前向 KB4，限制单射线角度 ≤85°，不支持完整 >180° 视野。`umi.infra.orb_install.require_forward_kb4()` 检查实际二进制的 `--capabilities`；工厂来源遇到旧引擎时明确报错，需要重编译。实测与工厂来源共用同一几何，重编引擎后用 `umi-scene run --force` 重建地图。

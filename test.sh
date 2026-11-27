@@ -21,36 +21,43 @@ RUN_QUICK=0
 TEST_TARGETS=()
 TEST_JOBS="${UMI_TEST_JOBS:-8}"
 
-# The quick profile contains pure numerical, schema, timing and cache-contract
-# tests.  End-to-end calibration, mapping, scene and viewer workflows remain
-# in the full suite.
-QUICK_MODULES=(
-    test_audio_sync test_batch_configuration test_calibration_bag
-    test_calibration_directory test_calibration_evidence test_calibration_metrics
-    test_camera_frame test_camera_geometry test_compact_manifests
-    test_coordinate_contracts test_effective_configuration test_file_hash
-    test_documentation_contracts
-    test_fusion test_fusion_quality test_fusion_stability test_map_epochs
-    test_operational_settings test_relocalization test_shared_alignment
-    test_tag_board test_user_config test_video_parameters test_vision_boundaries
-    test_poster_vio_contract test_poster_vio_initialization test_poster_vio_frontend
-    test_poster_vio_refinement
-    test_poster_vio_specialist test_cross_camera_base_tag test_task_configuration
+# Quick targets select individual classes from the same modules as the full suite.
+QUICK_TESTS=(
+    test_calibration.BagConversionTests test_calibration.CalibrationDirectoryTests
+    test_calibration.BoardLayoutTests test_calibration.CoverageMetricTests
+    test_calibration.Kb4Tests test_calibration.SolverLogTests
+    test_calibration.GravityEvidenceTests test_calibration.TimeComparisonTests test_calibration.TimeValidityTests
+    test_configuration.OperationalSettingsTests test_configuration.CollectionDefaultsTests
+    test_scene_configuration.SceneConfigurationTests test_scene_configuration.KitTests
+    test_scene_configuration.TaskConfigurationTests test_scene_configuration.EffectiveConfigurationTests
+    test_platform.DocumentationContractsTests test_platform.SharedBoundaryTests
+    test_platform.CodeRevisionTests test_platform.FileHashTests
+    test_scene.AudioSyncTests test_collection.IngestTests
+    test_maps.MapEpochTests test_maps.RecoveryTests test_maps.ReverseRuntimeTests
+    test_fusion.FusionQualityTests test_fusion.FusionRegressionTests test_fusion.SamplingStabilityTests
+    test_fusion.SharedAlignmentTests test_fusion.CoordinateContractTests
+    test_poster.TagBoardTests
+    test_poster_vio.PosterVioContractTests test_poster_vio.PosterVioFrontendTests
+    test_poster_vio.PosterVioInitializationTests test_poster_vio.PosterVioRefinementTests
+    test_poster_vio.FeatureGeometryTests test_poster_vio.SpecialistTaskTests
+    test_poster_vio.BaseTagDetectionTests test_poster_vio.BaseTagWorkflowTests test_poster_vio.CrossCameraBaseTagTests
+    test_perception.CameraFrameTests test_perception.CameraGeometryTests
+    test_segment.VideoParametersTests
 )
 
 usage() {
     echo "用法: $0 [选项] | $0 --unit [测试模块或用例 ...]"
     echo ""
     echo "选项:"
-    echo "  --unit       运行 Python 测试；可指定 test_rear_assets 或 模块.类.方法"
+    echo "  --unit       运行 Python 测试；可指定模块、模块.类或模块.类.方法"
     echo "  --quick      运行快速内循环测试；端到端建图/任务回归仍由 --unit 覆盖"
     echo "  --js         仅运行查看器前端测试 (node --test)"
-    echo "  --checks     仅运行 CLI 运行时健康检查 (umi-calib check, umi-scene check, KB4 C++ 回归)"
+    echo "  --checks     运行标定、场景依赖和 KB4 C++ 健康检查"
     echo "  --all        运行全部（单元测试 + 前端测试 + CLI 检查 + KB4 C++ 回归）"
     echo "  UMI_TEST_JOBS=N  无指定目标时并行运行 Python 测试模块，默认 8；设为 1 恢复串行"
     echo "  -h, --help   显示帮助信息"
     echo ""
-    echo "示例: $0 --unit test_rear_assets test_calibration_inventory"
+    echo "示例: $0 --unit test_segment.RearAssetsTests test_calibration.InventoryTests"
 }
 
 if [ $# -gt 1 ] && [ "$1" != "--unit" ]; then
@@ -90,13 +97,9 @@ echo "=================================================="
 if [ "$RUN_UNIT" -eq 1 ]; then
     echo ""
     if [ "$RUN_QUICK" -eq 1 ]; then
-        echo "[快速] 运行快速内循环测试 (tests/，跳过端到端工作流)..."
-        QUICK_TARGETS=()
-        for module in "${QUICK_MODULES[@]}"; do
-            QUICK_TARGETS+=("tests/${module}.py")
-        done
+        echo "[快速] 运行数值、配置、时序和接口契约测试..."
         PYTHONPATH="$ROOT_DIR/tests${PYTHONPATH:+:$PYTHONPATH}" \
-            "$TEST_PY" tests/run_parallel.py --jobs "$TEST_JOBS" "${QUICK_TARGETS[@]}"
+            "$TEST_PY" tests/run_parallel.py --jobs "$TEST_JOBS" "${QUICK_TESTS[@]}"
     elif [ ${#TEST_TARGETS[@]} -gt 0 ]; then
         echo "[单元] 运行指定测试..."
         PYTHONPATH="$ROOT_DIR/tests${PYTHONPATH:+:$PYTHONPATH}" \
@@ -104,8 +107,9 @@ if [ "$RUN_UNIT" -eq 1 ]; then
     else
         echo "[单元] 运行主单元测试套件 (tests/)，并行 worker=$TEST_JOBS..."
         MODULES=(tests/test_*.py)
+        MODULES=("${MODULES[@]##*/}")
         PYTHONPATH="$ROOT_DIR/tests${PYTHONPATH:+:$PYTHONPATH}" \
-            "$TEST_PY" tests/run_parallel.py --jobs "$TEST_JOBS" "${MODULES[@]}"
+            "$TEST_PY" tests/run_parallel.py --jobs "$TEST_JOBS" "${MODULES[@]%.py}"
     fi
     echo "✓ 主单元测试通过"
 fi
@@ -127,7 +131,10 @@ if [ "$RUN_CHECKS" -eq 1 ]; then
     echo ""
     echo "[自检] 运行 CLI 运行时自检..."
     ./umi-calib check
-    ./umi-scene check
+    (
+        source "$DEPS_DIR/env.sh"
+        PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}" "$UMI_PY" -m umi.apps.health
+    )
     if command -v c++ >/dev/null 2>&1; then
         KB4_TEST=$(mktemp)
         c++ -std=c++14 -DNDEBUG -I setup/trajectory/orbslam3 tests/cpp/test_kb4_bearing.cpp -o "$KB4_TEST"

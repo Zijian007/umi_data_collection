@@ -8,21 +8,21 @@ See docs/dev/PROVENANCE.md and docs/dev/LICENSE.kiwi.
 from __future__ import annotations
 
 import dataclasses
-from fractions import Fraction
 import json
 import math
-from pathlib import Path
 import subprocess
 import tempfile
+from fractions import Fraction
+from pathlib import Path
 
 import numpy as np
 from scipy import stats
 from scipy.ndimage import maximum_filter
 
-from umi.devices.x3.insv_reader import metadata_summary, read_metadata
 from umi.config import audio_sync as sync_config
-from umi.config.audio_sync import KiwiParameters as SyncParams
 from umi.config.audio_sync import AUDIO_SYNC_RECIPES
+from umi.config.audio_sync import KiwiParameters as SyncParams
+from umi.devices.x3.insv_reader import metadata_summary, read_metadata
 from umi.perception.audio.specialist_audio import AudioSyncError, AudioSyncEstimate
 
 

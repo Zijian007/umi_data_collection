@@ -1,7 +1,5 @@
 """共享海报噪声、异常剔除预算与条件几何质量诊断。"""
-from dataclasses import replace
-
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 

@@ -6,8 +6,8 @@ T_a_b 将 b 系坐标映射到 a 系。长度使用米，四元数使用 xyzw。
 
 from __future__ import annotations
 
-from scipy.spatial.transform import Rotation, Slerp
 import numpy as np
+from scipy.spatial.transform import Rotation, Slerp
 
 
 def transform(rotation, translation) -> np.ndarray:

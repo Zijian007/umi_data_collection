@@ -1,4 +1,4 @@
-"""运行环境与设备档案检查：umi-scene check 与内部逐段引擎 check 共用。"""
+"""场景运行环境与设备档案检查。"""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from umi.calibration import devices as inventory
 from umi.devices import selection as trajectory_calibration
 from umi.devices.calibration_assets import SAMPLE_CAMERA_JSON
 from umi.infra.paths import ORB_SETTINGS_ROOT, PROJECT_ROOT
 from umi.infra.terminal import Console
 from umi.perception import runtime as visual_runtime
-from umi.workflows.calibration import inventory
 
 REPO = PROJECT_ROOT
 console = Console("轨迹")
@@ -69,3 +69,7 @@ def check() -> int:
     console.write("环境检查通过" if ok else "环境或设备档案检查失败；请按上方缺失项修复，依赖安装日志见 <deps>/logs/",
                   state="完成" if ok else "失败")
     return 0 if ok else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(check())

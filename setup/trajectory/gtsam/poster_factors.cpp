@@ -1,4 +1,4 @@
-// Rear-camera poster constraints in the independent visual-inertial graph.
+// Rear-camera poster constraints for map-based and visual-inertial graphs.
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/nonlinear/NonlinearFactor.h>
 #include <pybind11/eigen.h>
@@ -16,11 +16,15 @@ using umi::Intrinsics;
 class PosterCornerFactor final : public NoiseModelFactor {
  public:
   PosterCornerFactor(const SharedNoiseModel& noise, const KeyVector& keys, const Matrix4& extrinsic,
-                     const Intrinsics& intrinsics, const Matrix& points, const Matrix& pixels)
+                     const Intrinsics& intrinsics, const Matrix& points, const Matrix& pixels,
+                     const Vector& sigmas = Vector(), double huber = 0.0)
       : NoiseModelFactor(noise, keys), extrinsic_(extrinsic), intrinsics_(intrinsics),
-        points_(points), pixels_(pixels) {
+        points_(points), pixels_(pixels), sigmas_(sigmas), huber_(huber) {
+    if (sigmas.size() && (points.rows() % 4 || sigmas.size() != 2 * points.rows() ||
+                          !sigmas.allFinite() || sigmas.minCoeff() <= 0 || !std::isfinite(huber) || huber <= 0))
+      throw std::invalid_argument("Invalid per-tag Huber parameters");
     if ((keys.size() != 2 && keys.size() != 3) || points.cols() != 3 || pixels.cols() != 2 ||
-        points.rows() != pixels.rows() || !noise || noise->dim() != size_t(2 * points.rows()))
+        points.rows() != pixels.rows() || !noise || noise->dim() != size_t(2 * points.rows() + sigmas.size() / 8))
       throw std::invalid_argument("Invalid poster corner factor dimensions");
   }
 
@@ -36,7 +40,8 @@ class PosterCornerFactor final : public NoiseModelFactor {
     if (refine) correction = state.at<Rot3>(keys()[2]).matrix();
     const Matrix3 base = extrinsic_.topLeftCorner<3, 3>();
     const Matrix3 rotation = correction * base;
-    Vector residual(2 * points_.rows());
+    const Eigen::Index tag_count = sigmas_.size() / 8;
+    Vector residual(2 * points_.rows() + tag_count);
     if (H) {
       (*H)[0].resize(residual.size(), 6);
       (*H)[1].resize(residual.size(), 6);
@@ -60,6 +65,24 @@ class PosterCornerFactor final : public NoiseModelFactor {
           (*H)[2].block<2, 3>(2*i, 0) = -projection * correction * skewSymmetric(base * in_imu);
       }
     }
+    // Each tag has its own Huber loss on its eight whitened corner coordinates.
+    // The extra residual supplies the cost offset. Its IRLS Jacobian is zero.
+    for (Eigen::Index tag = 0; tag < tag_count; ++tag) {
+      const Eigen::Index row = 8 * tag;
+      const auto sigma = sigmas_.segment<8>(row);
+      auto pixels = residual.segment<8>(row);
+      pixels.array() /= sigma.array();
+      const double norm = pixels.norm();
+      const double sqrt_weight = std::sqrt(huber_ / std::max(norm, huber_));
+      pixels *= sqrt_weight;
+      residual[2 * points_.rows() + tag] = std::sqrt(huber_ * std::max(norm - huber_, 0.0));
+      if (H) {
+        for (Matrix& jacobian : *H) {
+          jacobian.middleRows<8>(row).array().colwise() *= sqrt_weight / sigma.array();
+          jacobian.row(2 * points_.rows() + tag).setZero();
+        }
+      }
+    }
     return residual;
   }
 
@@ -67,6 +90,8 @@ class PosterCornerFactor final : public NoiseModelFactor {
   Matrix4 extrinsic_;
   Intrinsics intrinsics_;
   Matrix points_, pixels_;
+  Vector sigmas_;
+  double huber_;
 };
 
 class PosterDepthFactor final : public NoiseModelFactor {
@@ -125,7 +150,14 @@ void bind_poster_factors(pybind11::module_& m) {
   pybind11::class_<PosterCornerFactor, gtsam::NoiseModelFactor, std::shared_ptr<PosterCornerFactor>>(
       m, "PosterCornerFactor")
       .def(pybind11::init<const gtsam::SharedNoiseModel&, const gtsam::KeyVector&, const gtsam::Matrix4&,
-                          const Intrinsics&, const gtsam::Matrix&, const gtsam::Matrix&>());
+                          const Intrinsics&, const gtsam::Matrix&, const gtsam::Matrix&>())
+      .def_static("per_tag_huber", [](const gtsam::KeyVector& keys, const gtsam::Matrix4& ext,
+                                      const Intrinsics& k, const gtsam::Matrix& points, const gtsam::Matrix& pixels,
+                                      const gtsam::Vector& sigmas, double huber) {
+        if (!sigmas.size()) throw std::invalid_argument("Missing per-tag corner sigmas");
+        auto noise = gtsam::noiseModel::Unit::Create(sigmas.size() + sigmas.size() / 8);
+        return std::make_shared<PosterCornerFactor>(noise, keys, ext, k, points, pixels, sigmas, huber);
+      });
   pybind11::class_<PosterDepthFactor, gtsam::NoiseModelFactor, std::shared_ptr<PosterDepthFactor>>(
       m, "PosterDepthFactor")
       .def(pybind11::init<const gtsam::SharedNoiseModel&, const gtsam::KeyVector&, const gtsam::Matrix4&,

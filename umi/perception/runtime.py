@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-from umi.config import operational_settings as settings
-
-from pathlib import Path
 import subprocess
 import traceback
+from pathlib import Path
 
+from umi.config import operational_settings as settings
 from umi.config import parameter_models
 from umi.core.frame import CROP, calibrated_crop_xywh
+from umi.infra.orb_install import orb_directory, orb_executable
 from umi.infra.paths import PROJECT_ROOT, python_executable
-from umi.perception.models import VisualContext, VisualSettings, ProcessingError
-from umi.infra.orb_install import orb_executable, orb_directory
+from umi.perception.models import ProcessingError, VisualContext, VisualSettings
 
-
-HERE = Path(__file__).resolve().parent
-TOOLS = HERE / 'tools'
 REPO = PROJECT_ROOT
 
 
@@ -105,9 +101,8 @@ def validate_engines(environment: dict[str, str]) -> tuple[Path, Path]:
         python_executable(environment)
     except ValueError as error:
         raise ProcessingError('准备运行环境', str(error)) from error
-    for name in ('ORB3_DIR',):
-        if not environment.get(name):
-            raise ProcessingError('准备运行环境', f'缺少环境变量 {name}；请通过 ./umi-scene 启动')
+    if not environment.get('ORB3_DIR'):
+        raise ProcessingError('准备运行环境', '缺少环境变量 ORB3_DIR；请通过 ./umi-scene 启动')
     orb = Path(environment['ORB3_DIR']).resolve()
     vocabulary = Path(environment.get('ORB3_VOCAB') or orb / 'Vocabulary/ORBvoc.txt').resolve()
     for path in (orb_executable(orb), vocabulary):

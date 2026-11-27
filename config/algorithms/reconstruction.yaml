@@ -1,0 +1,287 @@
+# 重建算法参数：按处理流程排列，场景流程、内部逐段引擎和标定 C 共用这一份默认值。
+#   输入 → 镜头视频 → 视觉 → 建图 → 定位 → IMU 融合 → 环境海报 → 后端 → 重试 → 测量 → 报告
+# --expert-config 与本文件同结构，只写需要改的字段。日常处理策略写在批次 collection.yaml，不写在这里。
+# sigma 是标准差：通常越小约束越强；协方差另有注明。噪声权重与验收门限用途不同。
+# “链”是连续跟踪的一段视觉观测；“分段”是在链内进一步划分的尺度/放置单元。
+# 调整 video.frame_step 时，fusion.alignment.step_frames / fusion.solver.node_stride 仍以处理后的帧计数。
+
+schema_version: 3  # 本文件结构版本；当前固定为整数 3，不是调参项。
+
+# 1. 输入：原片配对、预检与时间轴
+# ────────────────────────────────────────────────────────────────────
+input:
+  # 内部逐段引擎的镜头组合；场景任务由 collection.yaml 的地图布局和后端决定，标定 C 固定 handheld。
+  mode: handheld  # handheld=工作镜头+IMU；dual=工作/环境镜头+IMU。
+  # 仅独立逐段引擎可接受帧时间不规则的录像；开启仍需自行核对时间轴。
+  allow_irregular_frames: false  # true=使用真实帧时间；false=拒绝不规则录像。
+  pairing:  # pending/ 中同一套件多路原片的候选配对。
+    start_tolerance_s: 2.0  # 文件名起始时间允许的最大差值，单位 s。
+    duration_tolerance_s: 1.0  # 同套件录像允许的最大时长差，单位 s。
+  preflight:  # 原片完整性和开头静止质量检查。
+    minimum_duration_s: 3.0  # 原片允许进入流水线的最短有效时长，单位 s。
+    static_window_s: 2.0  # 开头静止质量检查窗口，单位 s。
+    maximum_static_gyro_rad_s: 1.0  # 静止窗口角速度 P95 上限，单位 rad/s。
+    maximum_static_gravity_deviation_m_s2: 2.0  # 静止窗口加速度模长偏离重力的上限，单位 m/s²。
+    maximum_static_acc_std_m_s2: 0.8  # 静止窗口加速度模长标准差上限，单位 m/s²。
+    maximum_shutter_s: 0.020  # 快门时长中位数上限，单位 s。
+    maximum_shutter_variation: 0.25  # 快门时长变异系数上限，无量纲。
+
+# 2. 镜头视频：INSV → 工作/环境镜头视频，同时用于建图、定位与结果查看
+# ────────────────────────────────────────────────────────────────────
+video:
+  crop:  # 在已标定的 1440×1440 方图内再裁切；不能扩展到未标定区域。
+    size_px: 1440  # 偶数，2–1440；1440 表示保留全部标定视野。
+    offset_x_px: 0  # 相对居中位置的水平偏移，单位 px，正数向右，可为负。
+    offset_y_px: 0  # 垂直偏移，单位 px，正数向下；需保证裁切仍在标定视野内。
+  # 每 N 帧保留一帧；输出 fps = (60000/1001) / N。时间戳、SLAM、融合和训练帧索引同步采用。
+  frame_step: 2  # 正整数 N；影响输出 fps 与融合节点数量。
+  size_px: 720  # 输出正方形边长，单位 px，偶数；不能大于 crop.size_px。
+  resize_filter: area  # area / bilinear / bicubic / lanczos / neighbor。
+  codec: libx264  # libx264（H.264）或 libx265（HEVC）；容器统一 MP4。
+  pixel_format: yuv420p  # yuv420p 或 yuv444p；常规查看与训练用 yuv420p。
+  crf: 10  # 0–51，越小压缩损失越少、文件通常越大。
+  preset: medium  # ultrafast / superfast / veryfast / faster / fast / medium / slow / slower / veryslow。
+  keep_audio: false  # true=保留原片已有音轨（AAC）；无音轨不会伪造。
+  audio_bitrate_kbps: 128  # 保留音轨时的 AAC 目标码率，单位 kbps；正整数。
+
+# 3. 视觉：ORB-SLAM3 建图与逐图定位
+# ────────────────────────────────────────────────────────────────────
+vision:
+  orb:
+    features: 1250  # 每帧目标特征数；正整数，越大通常计算量越高。
+    # 与 levels 一起决定尺度覆盖范围，不能单独理解为“越小越准”。
+    scale_factor: 1.2  # 相邻金字塔层缩放因子；必须 >1，越接近 1 尺度采样越密。
+    levels: 8  # 金字塔层数；正整数，越大覆盖更多尺度但计算量增加。
+    initial_fast: 20  # 首次 FAST 阈值；正整数，越大角点筛选更严格。
+    minimum_fast: 7  # 局部角点不足时的重试 FAST 阈值；正整数且 <= initial_fast。
+    # 单目阶段使用地图单位，不能直接当成真实米数。
+    far_points_map_units: 20.0  # 远点过滤距离，单位地图坐标；正数。
+  initial_tag:  # 两视图初始化失败时的标签辅助初始化；标签不必每帧可见。
+    dictionary: 20  # OpenCV 标记字典编号，0–20；20 对应 DICT_APRILTAG_36h11。
+    id: 13  # 辅助初始化使用的标签 ID；非负整数。
+    # umi-calib run / verify 在 C 段自动用 --tag-size-mm 覆盖此值；不是轨迹尺度修正旋钮。
+    size_m: 0.024  # 标签黑框边长，单位 m；0.024 即 24 mm。
+
+# 4. 建图：共享场景地图的米制对齐与放置
+# ────────────────────────────────────────────────────────────────────
+mapping:
+  alignment:  # 视觉节点与 IMU 的尺度、重力和零偏对齐，决定地图能否发布。
+    node_interval_s: 0.25  # 对齐节点的最小时间间隔，单位 s。
+    maximum_gap_s: 0.15  # 视觉中断超过此时长时不参与连续对齐，单位 s。
+    minimum_nodes: 12  # 对齐至少需要的可靠视觉节点数；至少 5。
+    maximum_condition: 100000000.0  # 对齐设计矩阵允许的最大条件数；必须 >1。
+    maximum_scale_relative_std: 0.2  # 米制尺度相对标准差上限，无量纲；0.2 即 20%。
+    gravity_tolerance_m_s2: 0.5  # 自由估计重力与参考重力允许的差值，单位 m/s²。
+    maximum_rms_m: 0.05  # 对齐位置方程 RMS 上限，单位 m。
+    maximum_acc_bias_m_s2: 2.0  # 对齐得到的加速度零偏分量上限，单位 m/s²；同时作为发布门限。
+  placement:  # 工作镜头地图到固定场景坐标的刚体放置。
+    minimum_pose_pairs: 10  # 双镜头放置至少需要的共同位姿对数量；至少 3。
+    position_sigma_m: 0.015  # 放置位置观测标准差，单位 m。
+    rotation_sigma_deg: 1.0  # 放置旋转观测标准差，单位 deg。
+    maximum_rms_m: 0.05  # 放置位置 RMS 上限，单位 m。
+    maximum_rotation_deg: 5.0  # 放置旋转 RMS 上限，单位 deg。
+  poster_scale:  # 建图阶段的海报尺度证据；是否使用由 collection.yaml 的 map.poster_scale 决定。
+    minimum_observation_times: 6  # 海报尺度估计至少需要的有效观测时刻数。
+    minimum_motion_m: 0.15  # 看到海报期间建图镜头中心的最小移动范围，单位 m。
+    minimum_board_extent_m: 0.08  # 海报角点在板面方向的最小跨度，单位 m。
+    maximum_relative_std: 0.15  # 海报尺度相对标准差上限，无量纲。
+    imu_std_floor: 0.03  # IMU 尺度相对不确定度下限，无量纲。
+    poster_std_floor: 0.02  # 海报尺度相对不确定度下限，无量纲。
+    compatibility_sigma: 3.0  # 两类尺度兼容性检查的标准差倍数。
+    maximum_scale_difference: 0.20  # 海报尺度与 IMU 尺度相对差值上限，无量纲。
+
+# 5. 定位：固定地图任务的逐帧定位
+# ────────────────────────────────────────────────────────────────────
+localization:
+  minimum_localized_fraction: 0.5  # 每只手获得地图位置约束的最低帧比例，范围 (0, 1]。
+  maximum_visual_gap_s: 2.0  # 允许的最长连续无视觉时长，单位 s；也是单手局部回退的位置支持门槛。
+  reverse_fill:  # 正向定位有缺失时，反向重放同一镜头视频补帧。
+    enabled: true  # true=有缺帧时尝试反向补全；false=仅正向定位。
+    context_s: 1.0  # 反向处理缺口两侧附带的上下文，单位 s。
+    minimum_overlap_frames: 3  # 正反向结果接受前必须共享的最少帧数。
+    maximum_position_difference_m: 0.03  # 正反向共同帧位置差上限，单位 m。
+    maximum_rotation_difference_deg: 3.0  # 正反向共同帧旋转差上限，单位 deg。
+
+# 6. IMU 融合：线性恢复尺度和重力，再联合优化位姿、速度、零偏和地图放置
+# ────────────────────────────────────────────────────────────────────
+fusion:
+  gravity_m_s2: 9.81  # 融合使用的重力模长，单位 m/s²；方向固定为 -Z，不是轨迹缩放系数。
+  imu:  # IMU 噪声模型；标定 B 段的相机–IMU 求解也使用这组值。
+    acc_noise: 0.002  # 加速度噪声密度，单位 (m/s²)/√Hz；正数，调大降低对加速度的信任。
+    gyro_noise: 0.0002  # 角速度噪声密度，单位 (rad/s)/√Hz；正数。
+    acc_bias_rw: 0.003  # 加速度零偏随机游走，单位 (m/s²)/√s；正数。
+    gyro_bias_rw: 0.00002  # 陀螺零偏随机游走，单位 (rad/s)/√s；正数。
+    # 预积分位置误差的协方差系数，直接乘单位矩阵、不再平方；是协方差，不是标准差。
+    integration_covariance: 0.00000001  # 正数。
+  initial_gyro_bias:  # 用全段静止样本估计初始陀螺零偏；与后面的 zupt 检测不同。
+    static_gyro_rad_s: 0.02  # 角速度模长小于此值的样本视为静止，单位 rad/s。
+    minimum_samples: 200  # 静止样本数严格大于此值才采用均值，否则从零开始；<= maximum_samples。
+    maximum_samples: 2000  # 最多使用的静止样本数，按时间顺序取最先满足条件的样本。
+  alignment:  # 内部逐段引擎的线性尺度/重力对齐；共享地图另见 mapping.alignment。
+    step_frames: 30  # 对齐区间端点间隔，单位为处理后的帧；默认约 1 s，不改变输出帧率。
+    minimum_pairs: 5  # 一次线性对齐最少运动区间数；不足时无解。
+    maximum_relative_scale_std: 0.2  # 链提供位置约束时的尺度相对标准差上限，无量纲。
+    gravity_tolerance_m_s2: 0.5  # 自由估计重力与 gravity_m_s2 的差值上限，单位 m/s²。
+    # 选择初始镜头时的候选优先级，不是超过即让整段失败的硬门限。
+    maximum_acc_bias_m_s2: 1.0  # 初始加速度零偏分量上限，单位 m/s²。
+  chains:  # 断链、失败链细分与同地图尺度分组。
+    split_rotation_deg: 15.0  # 视觉与陀螺旋转差超过此角度时断链，单位 deg；0 关闭此判据。
+    refine_pairs: 8  # 失败链细分规模 W（区间对数）；达到 2W 对先独立检查，仍失败才二分；0 关闭。
+    minimum_pairs: 3  # 链被接受为位置约束至少需要的运动区间对数。
+    # 两链尺度之比须严格落在 1/ratio 与 ratio 之间才共享放置。
+    group_scale_ratio: 1.25  # 尺度分组倍率；0 或 1 不分组，否则必须 >1。
+  segments:  # 链内再划分的尺度/放置单元，相邻分段由连续性因子相连。
+    duration_s: 0.0  # 分段时长，单位 s；0 表示整条链一个分段。
+    continuity_log_scale_sigma: 0.03  # 相邻分段 log(scale) 差的标准差，无量纲；0.03 约 3%。
+    continuity_rotation_sigma_deg: 0.3  # 相邻分段旋转连续性标准差，单位 deg。
+    continuity_position_sigma_m: 0.002  # 相邻分段边界位置连续性标准差，单位 m。
+  dual_lens:  # 内部逐段引擎 dual 模式下，环境镜头链与工作镜头参考的一致性检查。
+    minimum_common_frames: 10  # 两镜头共同位置帧数下限；单镜头不使用。
+    maximum_rms_m: 0.05  # 另一镜头对齐后的位置 RMS 上限，单位 m；超过只保留旋转约束。
+    maximum_rotation_deg: 1.0  # 另一镜头旋转差中位数上限，单位 deg；超过整条链不参与融合。
+  visual:  # 内部逐段引擎的视觉观测权重。
+    position_sigma_m: 0.004  # 视觉位置观测基础标准差，单位 m；越小越信任视觉。
+    rotation_sigma_deg: 0.5  # 视觉旋转观测标准差，单位 deg。
+    adaptive_sigma: true  # true=按各镜头对齐 RMS 放大较差镜头的位置 sigma（按镜头整体调权）。
+    map_residual: true  # true=在地图坐标计算位置残差；false=在米制世界坐标计算。
+    huber: 1.345  # 视觉残差 Huber 阈值，作用于归一化残差，无量纲。
+  scene_map:  # 固定地图任务的视觉观测权重；海报约束策略由 collection.yaml 控制。
+    front_position_sigma_m: 0.015  # 工作镜头位置观测标准差，单位 m。
+    rear_position_sigma_m: 0.020  # 环境镜头位置观测标准差，单位 m。
+    rotation_sigma_deg: 1.0  # 视觉旋转观测标准差，单位 deg。
+    huber: 2.5  # 视觉残差 Huber 阈值，作用于归一化残差，无量纲。
+  lever:  # 镜头杆臂（相机系中从相机到 IMU 的位移）。
+    optimize_front: false  # true=围绕标定初值优化工作镜头杆臂，不回写标定资产；环境镜头参与位置融合时总会优化。
+    sigma_m: 0.01  # 可优化杆臂的初值先验标准差，单位 m。
+  priors:  # 图优化初值先验：约束变量偏离线性阶段初值的程度，不是最终误差容许值。
+    scale_sigma: 0.5  # 每条位置链首段 log(scale) 初值标准差，无量纲；不是 50% 误差上限。
+    gauge_rotation_sigma_rad: 0.05  # 锚定参考段旋转先验标准差，单位 rad。
+    gauge_position_sigma_m: 0.001  # 锚定参考段位置先验标准差，单位 m。
+    rotation_sigma_rad: 0.5  # 非锚定链首段旋转先验标准差，单位 rad。
+    position_sigma_m: 1.0  # 非锚定链首段位置先验标准差，单位 m。
+    velocity_sigma_m_s: 0.5  # 首个图节点速度先验标准差，单位 m/s。
+    acc_bias_sigma: 0.1  # 首个图节点加速度零偏先验标准差，单位 m/s²。
+    gyro_bias_sigma: 0.01  # 首个图节点陀螺零偏先验标准差，单位 rad/s。
+  solver:  # 采样与求解器预算；增大迭代上限不保证精度提升。
+    node_stride: 5  # 每隔多少处理帧设一个图节点，中间帧由 IMU 补全；不影响输出轨迹点数。
+    linear_iterations: 50000  # 线性对齐 LSQR 最大迭代次数。
+    linear_tolerance: 0.000000000001  # LSQR 的 atol/btol 相对停止容差，无量纲；不是米制误差阈值。
+    lm_iterations: 100  # 非线性 LM 图优化最大迭代次数。
+  zupt:  # 静止时的零速度约束：从 IMU 静止窗口识别近零速度。
+    enabled: true  # true=在静止节点加入零速度先验；不要求录像必须有静止段。
+    half_window_s: 0.25  # 每个视频时刻前后各取的 IMU 窗口，单位 s；0.25 即总长约 0.5 s。
+    minimum_samples: 20  # 静止窗口最少 IMU 样本数。
+    maximum_gyro_rad_s: 0.03  # 窗口内角速度模长上限，单位 rad/s。
+    maximum_acc_norm_std_m_s2: 0.08  # 窗口内加速度模长标准差上限，单位 m/s²。
+    velocity_sigma_m_s: 0.01  # 零速度先验标准差，单位 m/s；越小越强地把速度拉向零。
+
+# 7. 环境海报：场景建图、任务融合、内部逐段引擎和标定 C 共用的海报几何与验收
+# ────────────────────────────────────────────────────────────────────
+poster:
+  front_map_pixel_fusion: false  # 两种海报后端使用本条录像的工作镜头 ORB 地图与逐帧像素信息。
+  # 仅内部逐段引擎和标定 C 使用；场景任务由 collection.yaml 的后端推导，场景 --expert-config 不能覆盖。
+  standalone_fusion: false  # true=逐段引擎把海报角点加入联合优化；false=声明资产后只诊断。
+  detection:
+    minimum_side_px: 8.0  # 单个标签的最短投影边长，单位 px。
+    minimum_pose_observation_times: 3  # 海报位姿估计至少需要的独立观测时刻数。
+  corners:  # 标签角点的像素噪声模型。
+    sigma_px: 1.0  # 角点基础像素标准差，单位 px。
+    sigma_per_radius_px: 40.0  # 远离主点后的角点噪声增量系数，单位 px；0 关闭。
+    huber: 1.345  # 角点鲁棒核阈值，作用于归一化残差。
+  acceptance:
+    maximum_reprojection_rms_px: 5.0  # 海报角点重投影 RMS 上限，单位 px。
+    maximum_position_std_m: 0.05  # 位置支持的局部线性化标准差上限，单位 m；不代表实际精度。
+    maximum_rotation_std_deg: 5.0  # 对应旋转标准差上限，单位 deg。
+    # 海报后端共用默认值；backends.poster_vio / poster_independent 可用同名字段单独覆盖。
+    maximum_position_support_gap_s: 2.0  # 自然视觉与合格海报均无位置支持的最大间隔，单位 s。
+  culling:  # 海报观测异常剔除预算。
+    maximum_fraction: 0.15  # 每手标签剔除预算，数量上限向上取整；0 关闭。
+    minimum_retained_time_fraction: 0.8  # 剔除后至少保留原海报观测时间跨度的比例。
+  rear_rotation_refinement:  # 环境镜头外参的小旋转修正。
+    enabled: true  # false=严格固定 rear 外参，不创建修正变量。
+    prior_sigma_rad: 0.2  # 零均值旋转先验强度，单位 rad；实验默认值，不代替标定精度测量。
+    maximum_correction_deg: 5.0  # 修正角超限则拒绝融合，不裁剪后发布，单位 deg。
+
+# 8. 后端：各轨迹估计后端自己的门槛
+# ────────────────────────────────────────────────────────────────────
+backends:
+  poster_independent:  # 本录像独立重建 + 海报统一坐标。
+    maximum_gravity_difference_deg: 5.0  # 两手在海报坐标中的重力夹角上限，单位 deg。
+    fusion:
+      node_stride: 0  # 正整数指定此后端的图节点步长，0 继承 fusion.solver.node_stride。
+      imu_white_noise_multiplier: 1.0  # 乘在此后端的加速度和角速度白噪声标准差上。
+  poster_vio:  # 任务级联合图：海报角点、自然特征和 IMU。
+    board_tilt_minimum_gap_s: 1.0  # 每只手的海报内部观测间隔都达到此秒数时优化共享倾角，0 关闭。
+    per_tag_huber: false  # true=同帧批量投影时每个标签独立计算 Huber 权重；false=按共享权重。
+    minimum_training_observation_times: 8  # 每手最少的独立训练标签时刻数，留出后仍需满足；至少 3。
+    maximum_observation_gap_s: 3.5  # 初始化标签时刻之间的最大间隔，单位 s。
+    minimum_time_span_s: 1.0  # 每手标签观测的最小时间跨度，单位 s。
+    maximum_gravity_difference_deg: 5.0  # 两手惯性初始化重力方向夹角上限，单位 deg。
+    base_tag:  # 双手跨手观测使用的夹爪基座安装变量；标签由 kit 声明，是否使用由 collection.yaml 决定。
+      prior_rotation_sigma_rad: 0.2  # 安装变量旋转先验标准差，单位 rad。
+      prior_translation_sigma_m: 0.03  # 安装变量平移先验标准差，单位 m。
+      maximum_rotation_correction_deg: 10.0  # 相对种子允许的最大修正角，单位 deg，(0, 180]；超出拒绝任务。
+      maximum_translation_correction_m: 0.05  # 相对种子允许的最大平移修正，单位 m；超出拒绝任务。
+      minimum_self_frames: 3  # 跨手安装变量所需的不同自身观测时刻数；至少 3，单手不使用。
+    initialization:
+      robust_inertial_seed: true  # 重力或零偏超限时尝试鲁棒惯性初始化；批次可在 collection.yaml 覆盖。
+      maximum_hypotheses: 32  # 每帧整板/标签子集 PnP 假设的确定性上限；至少 3。
+    keyframes:
+      maximum_dt_s: 0.1  # 关键帧最大时间间隔，单位 s；0 保留逐帧全图作对照。
+      minimum_translation_m: 0.03  # 初值平移超过此值时保留关键帧，单位 m。
+      minimum_rotation_deg: 3.0  # 初值旋转超过此值时保留关键帧，单位 deg。
+    frontend:  # 自然特征跟踪。
+      maximum_features: 200  # 每镜头同时活动的特征点上限。
+      maximum_tracks: 500  # 每镜头保留给联合图的轨迹总预算，按录像时间分配。
+      minimum_track_length: 3  # 三角化所需的最少观测数；至少 2。
+      maximum_track_length: 40  # 单条轨迹的观测数上限，达到后重新检测。
+      maximum_observations_per_track: 8  # 联合图每条轨迹最多保留的观测数；保留首尾和均匀中间观测。
+      geometric_threshold_px: 3.0  # KB4 视线极几何/旋转门槛的像素等效值，单位 px。
+      revisit:  # 同镜头轨迹的重关联。
+        enabled: true  # true=用 ORB 描述子 + 米制重投影验证后续接轨迹。
+        maximum_bank: 256  # 每镜头暂存可重关联轨迹数上限。
+        maximum_gap_s: 5.0  # 可重关联的最长真实 IMU 时间间隔，单位 s。
+        match_ratio: 0.75  # Hamming 最近/次近距离比上限，(0, 1)。
+        maximum_reprojection_px: 4.0  # 重关联需通过的初值米制重投影门槛，单位 px。
+    culling:
+      maximum_rounds: 3  # 联合求解后最多剔除并重求解的轮数；0 关闭。
+      precull_iterations: 3  # 首轮先短求解判断异常；后续沿用已求解状态和阻尼。
+      maximum_natural_fraction: 0.15  # 每手每镜头累计剔除自然点比例，[0, 1)。
+      natural_threshold_px: 10.0  # 自然像素异常门槛，单位 px；标签沿用 poster.culling。
+    holdout:
+      stride: 5  # 初始化前按独立标签时刻留出内部帧；0 关闭，否则至少为 2。
+      natural_stride: 5  # 按冻结图节点索引留出自然点像素；0 关闭，否则至少为 2。
+      maximum_rms_px: 5.0  # 未参与初始化或求解的标签/自然点像素 RMS 上限，单位 px。
+
+# 9. 重试：内部逐段引擎（poster_independent、标定 C、独立轨迹）的重建选轮
+# ────────────────────────────────────────────────────────────────────
+retry:
+  maximum_tries: 3  # 完整重建总尝试次数上限，含第一次；1 表示不重试。
+  target_localized_fraction: 0.95  # 地图位置约束覆盖帧比例的目标，0–1；低于则重试，不会直接让轨迹更准。
+  use_poster_position_support: true  # true=有完整几何证据时把合格海报位置支持计入覆盖。
+  target_maximum_position_support_gap_s: 2.0  # 独立轨迹的最长无位置支持目标，单位 s；场景运行另行解析。
+  maximum_placements: 1  # 可接受的独立地图放置数上限；多轮有效结果优先选放置数少的。
+  # 硬性保护：超限轮次不得选中；全部轮次超限则失败并保留现场。
+  maximum_scale_change_ratio: 2.0  # 融合后尺度相对初始化的最大双向倍率；必须 >1。
+
+# 10. 测量：夹爪标签中心距与开口宽度
+# ────────────────────────────────────────────────────────────────────
+measurements:
+  gripper_tags:  # 两枚夹爪标签中心距的几何质量规则。
+    # 可选 roi_px: [left, top, right, bottom]（工作镜头半幅像素），省略时读取 operations/gripper_tag_detection.yaml。
+    verified_gap_recovery: true  # 常规测距超出缺口上限时，用原片增强和双向模板补检；批次可在 collection.yaml 覆盖。
+    maximum_reprojection_error_px: 2.0  # 标签角点重投影 RMS 上限，单位 px。
+    maximum_center_ambiguity_mm: 2.0  # 平面两解中心距离超过此值才接受，单位 mm。
+    minimum_valid_fraction: 0.5  # 有效中心距帧的最低比例，(0, 1]。
+    maximum_missing_frames: 15  # 允许连续缺失的最大输出帧数；0 不允许缺失。
+  gripper_width:  # 夹爪开口宽度和闭合状态的后处理。
+    maximum_interpolation_gap_s: 0.2  # 宽度缺口允许插值的最大间隔，单位 s；0 表示不插值。
+    closed_threshold_mm: 3.0  # 判断夹爪闭合的宽度阈值，单位 mm。
+
+# 11. 报告：只产生提醒和诊断产物，不参与求解或重试
+# ────────────────────────────────────────────────────────────────────
+reporting:
+  warnings:
+    minimum_localized_fraction: 0.5  # 地图位置约束帧比例低于此值时提醒，0–1。
+    maximum_leading_imu_s: 5.0  # 开头 IMU 桥接超过此时长时提醒，单位 s；不表示该段实测误差。
+    minimum_mapping_fraction: 0.5  # 建图跟踪帧比例低于此值时提醒，0–1；不是逐图定位成功率。

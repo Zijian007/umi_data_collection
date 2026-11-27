@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-import hashlib
 import json
 import re
+from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
-from umi.devices.calibration_assets import CalibrationError
+from umi.core.frame import CROP, output_frame_rate, scale_intrinsics, validate_video_size, video_intrinsics
 from umi.core.geometry import camera_from_tcp, validate_transform
+from umi.devices.calibration_assets import CalibrationError
 from umi.infra.paths import ORB_SETTINGS_ROOT, PACKAGE_ROOT, PROJECT_ROOT
-from umi.core.frame import CROP, scale_intrinsics, validate_video_size, video_intrinsics, output_frame_rate
-
+from umi.infra.provenance import file_hash
 
 FRONT_SETTINGS_TEMPLATE = ORB_SETTINGS_ROOT / 'front_x3_r1440_720.yaml'
 # 独立融合的求解入口；结果元数据记录其内容哈希。
@@ -105,7 +104,7 @@ class CalibrationAssets:
 
     def hashes(self) -> dict[str, str]:
         return {
-            name: hashlib.sha256(path.read_bytes()).hexdigest()
+            name: file_hash(path)
             for name, path in (
                 ("camera_json", self.camera_json), ("tcp_geometry", self.tcp_geometry),
                 ("front_mask", self.front_mask),
@@ -151,7 +150,7 @@ def select_calibration(video: Path, *, device: str = "", tcp: Path | None = None
     if record.get("intrinsics_source") == "factory":
         from umi.infra.orb_install import require_forward_kb4
         require_forward_kb4()
-        from umi.devices.calibration_source import check_recording
+        from umi.devices.calibration_assets import check_recording
         check_recording(video, record["intrinsics_provenance"])
     geometry = read_tcp_geometry(tcp) if tcp is not None else None
     return SelectedCalibration(

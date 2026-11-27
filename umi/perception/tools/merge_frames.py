@@ -11,13 +11,18 @@ def merge(sources, output):
     """合并已排序优先级的定位观测；同来源有效时保持来源。"""
     srcs, out = sources, output
     frame_table = []
+    information = False
     for lab, pri, path in srcs:
         with open(path, newline="") as source:
-            d = {int(r["frame_idx"]): r for r in csv.DictReader(source)}
+            reader = csv.DictReader(source)
+            information |= "camera_information" in (reader.fieldnames or ())
+            d = {int(r["frame_idx"]): r for r in reader}
         frame_table.append((lab, float(pri), d))
     frame_table.sort(key=lambda x: -x[1])
     nfr = max(max(d) for _, _, d in frame_table) + 1
     cols = ["frame_idx", "t", "state", "ok", "tx", "ty", "tz", "qx", "qy", "qz", "qw", "map"]
+    if information:
+        cols.append("camera_information")
     cur = None; counts = {lab: 0 for lab, _, _ in frame_table}; switches = 0
     with open(out, "w", newline="") as fo:
         w = csv.writer(fo); w.writerow(cols)
@@ -30,12 +35,12 @@ def merge(sources, output):
                 cur = nxt if nxt is not None else cur
             if cur in valid:
                 r = valid[cur]; counts[cur] += 1
-                w.writerow([k, r["t"], 2, 1] + [r[c] for c in ("tx", "ty", "tz", "qx", "qy", "qz", "qw")] + [cur])
+                w.writerow([k, r["t"], 2, 1] + [r[c] for c in ("tx", "ty", "tz", "qx", "qy", "qz", "qw")] + [cur] + ([r.get("camera_information", "")] if information else []))
             else:
                 anyr = next((d[k] for _, _, d in frame_table if k in d), None)
                 if anyr is None:
                     raise ValueError(f"frame {k} is missing from every localization source; refusing to invent its timestamp")
-                w.writerow([k, anyr["t"], 1, 0, 0, 0, 0, 0, 0, 0, 1, ""])
+                w.writerow([k, anyr["t"], 1, 0, 0, 0, 0, 0, 0, 0, 1, ""] + ([""] if information else []))
     return dict(frames=nfr, counts=counts, switches=switches)
 
 

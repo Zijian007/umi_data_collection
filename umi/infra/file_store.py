@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from pathlib import Path
-from typing import TYPE_CHECKING
 import fcntl
 import json
 import os
 import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ruamel.yaml import YAML
 
@@ -108,6 +108,7 @@ def read_npz_cache(path: Path, marker: Path, inputs: dict, *, mismatch: str | No
     if not is_current(marker):
         return None
     import numpy as np
+
     from umi.infra.provenance import file_hash
 
     try:
@@ -128,6 +129,7 @@ def read_npz_cache(path: Path, marker: Path, inputs: dict, *, mismatch: str | No
 def write_npz_cache(path: Path, marker: Path, inputs: dict, **arrays) -> str:
     """先原子保存数组，再发布包含内容哈希的完成标记。"""
     import numpy as np
+
     from umi.infra.provenance import file_hash
 
     with atomic_file(path) as temporary, temporary.open('wb') as stream:
@@ -147,9 +149,9 @@ def write_yaml(path: Path, document: dict) -> None:
 
 
 @contextmanager
-def atomic_file(path: Path):
+def atomic_file(path: Path, *, prefix: str | None = None, suffix: str = ''):
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix='.'+path.name, dir=path.parent)
+    fd, name = tempfile.mkstemp(prefix='.'+path.name if prefix is None else prefix, suffix=suffix, dir=path.parent)
     os.close(fd)
     temporary = Path(name)
     try:

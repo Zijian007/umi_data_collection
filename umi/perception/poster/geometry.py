@@ -32,7 +32,7 @@ def skew(point):
     return np.array([[0., -z, y], [z, 0., -x], [-y, x, 0.]])
 
 
-def _skew_batch(vectors):
+def skew_batch(vectors):
     """Return cross-product matrices for a batch of 3-vectors."""
     result = np.zeros((len(vectors), 3, 3))
     result[:, 0, 1] = -vectors[:, 2]
@@ -47,7 +47,7 @@ def _skew_batch(vectors):
 def rotation_correction_jacobian(correction, base_rotation, in_body, projection):
     """Jacobian for a right perturbation of a left-applied camera correction."""
     base_camera = np.einsum('ij,nj->ni', base_rotation, in_body)
-    seat_camera = -np.einsum('ij,njk->nik', correction, _skew_batch(base_camera))
+    seat_camera = -np.einsum('ij,njk->nik', correction, skew_batch(base_camera))
     return np.einsum('nij,njk->nik', projection, seat_camera).reshape(-1, 3)
 
 
@@ -57,34 +57,21 @@ def tag_camera_points(body, board, T_camera_imu, points):
     return in_body, transform(T_camera_imu, in_body)
 
 
+def tag_pose_jacobians(body, board, T_camera_imu, points, in_body, projection):
+    """Chain a camera-space derivative through the body and board Pose3 perturbations."""
+    identity = np.broadcast_to(np.eye(3), (len(points), 3, 3))
+    body_twist = np.concatenate((skew_batch(in_body), -identity), axis=2)
+    board_twist = np.concatenate((-skew_batch(points), identity), axis=2)
+    projected_rotation = projection @ T_camera_imu[:3, :3]
+    board_rotation = body[:3, :3].T @ board[:3, :3]
+    return projected_rotation @ body_twist, projected_rotation @ (board_rotation @ board_twist)
+
+
 def residual_and_jacobians(body, board, T_camera_imu, points, pixels, model, *, return_projection=False):
     """KB4 corner residuals and GTSAM right-perturbation Jacobians at one pose."""
     in_body, in_camera = tag_camera_points(body, board, T_camera_imu, points)
     projection = model.project_jacobian(in_camera)
-    camera_rotation = T_camera_imu[:3, :3]
-    board_rotation = body[:3, :3].T @ board[:3, :3]
-    count = len(points)
-    skew_body = np.zeros((count, 3, 3))
-    skew_body[:, 0, 1] = -in_body[:, 2]
-    skew_body[:, 0, 2] = in_body[:, 1]
-    skew_body[:, 1, 0] = in_body[:, 2]
-    skew_body[:, 1, 2] = -in_body[:, 0]
-    skew_body[:, 2, 0] = -in_body[:, 1]
-    skew_body[:, 2, 1] = in_body[:, 0]
-    skew_board = np.zeros((count, 3, 3))
-    skew_board[:, 0, 1] = -points[:, 2]
-    skew_board[:, 0, 2] = points[:, 1]
-    skew_board[:, 1, 0] = points[:, 2]
-    skew_board[:, 1, 2] = -points[:, 0]
-    skew_board[:, 2, 0] = -points[:, 1]
-    skew_board[:, 2, 1] = points[:, 0]
-    identity = np.broadcast_to(np.eye(3), (count, 3, 3))
-    body_twist = np.concatenate((skew_body, -identity), axis=2)
-    board_twist = np.concatenate((-skew_board, identity), axis=2)
-    projected_rotation = np.einsum('nij,jk->nik', projection, camera_rotation)
-    j_body = np.einsum('nij,njk->nik', projected_rotation, body_twist)
-    board_rotation_twist = np.einsum('ij,njk->nik', board_rotation, board_twist)
-    j_board = np.einsum('nij,njk->nik', projected_rotation, board_rotation_twist)
+    j_body, j_board = tag_pose_jacobians(body, board, T_camera_imu, points, in_body, projection)
     result = ((model.project(in_camera) - pixels).ravel(),
               j_body.reshape(-1, 6), j_board.reshape(-1, 6))
     if return_projection:
@@ -114,6 +101,12 @@ def _frame_groups(cameras, frame_ids=None):
             groups.append(np.arange(start, index, dtype=int))
             start = index
     return groups
+
+
+def sighting_rms_px(prediction, pixels):
+    """One RMS pixel distance per tag sighting, over its four corners."""
+    corner_errors = np.linalg.norm(prediction - pixels, axis=2)
+    return np.sqrt(np.mean(corner_errors ** 2, axis=1))
 
 
 def residual_metrics(prediction, pixels, frame_ids=None, tag_ids=None):

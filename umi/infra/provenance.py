@@ -6,20 +6,19 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import functools
 import hashlib
 import json
 import os
 import threading
+from pathlib import Path
 
 from umi.infra.paths import PROJECT_ROOT
-
 
 ROOT = PROJECT_ROOT
 
 
-def canonical_hash(value: dict) -> str:
+def canonical_hash(value: object) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
     return hashlib.sha256(encoded).hexdigest()
 

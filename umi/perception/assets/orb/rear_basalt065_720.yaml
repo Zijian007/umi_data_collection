@@ -1,5 +1,5 @@
 %YAML:1.0
-# Camera geometry template; runtime appends algorithm settings from config/algorithms/trajectory.yaml.
+# Camera geometry template. Runtime appends algorithm settings from config/algorithms/reconstruction.yaml.
 # Rear lens, 720. Intrinsics from a Basalt solve on recording 065 (1440 px: fx 510.811, fy 510.567, cx 722.719, cy 724.679), scaled the same way as the front lens.
 
 File.version: "1.0"

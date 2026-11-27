@@ -10,12 +10,11 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-from scipy.optimize import least_squares
 import cv2
 import numpy as np
+from scipy.optimize import least_squares
 
 from umi.devices.x3.factory_geometry import Kb4Model
-
 
 FIT_VERSION = 1
 FIT_SIDE = 65

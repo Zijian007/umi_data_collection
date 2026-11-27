@@ -1,58 +1,101 @@
-"""共享场景的数值与流程回归：已知尺度、固定坐标、双手同步、资产和失败发布。"""
+"""场景轨迹主流程、同步、设备和独立回退。"""
+
 from __future__ import annotations
-from umi.store.result_io import arm_evidence, result_paths, validate_result
-from umi.estimation.fixed_map.parameters import FixedMapParameters, MapPlacementParameters
-from umi.config.loader import load
-from umi.infra import provenance as artifact_identity
-from umi.infra.terminal import Console
-from umi.workflows.scene.tasks import poster_independent as independent_reconstruction, scene_map as scene_reconstruction
-from umi.workflows.scene.maps import repository as map_lifecycle
-from umi.workflows.scene.maps import build as map_build
-from umi.workflows.scene.maps import repository as map_repository
 
 import csv
 import io
 import json
+import os
+import struct
+import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
-from contextlib import redirect_stderr
 from datetime import datetime
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import cv2
 import numpy as np
-from umi.store.result_io import pose_rows
+from collection_defaults_fakes import defaults_document, patched_defaults
+from registry_fakes import legacy_bundle, write_batch, write_task
 from scipy.spatial.transform import Rotation
+from trajectory_fakes import FakeEngines
 
-from umi.config import loader as config
-from umi.config import user_settings
-from umi.core.geometry import imu_from_camera
-from umi.infra.file_store import read_yaml
-from umi.workflows.scene.inputs import batch as batch_inputs, batch as episode_inputs, scene as kit_inputs, scene as scene_inputs
-from umi.workflows.scene.parameters import SceneOverrides
-from umi.estimation import mapping as slam, mapping
-from umi.estimation.fixed_map import fusion, geometry
-from umi.store import models
-from umi.workflows.scene import workflow
-from umi.estimation.models import FusedTrajectory
-from umi.store.result_io import read_arm_settings, read_arm_summary
-from umi.workflows.scene import recordings as recording_checks
-from umi.workflows.scene.camera_assets import select_camera
-from umi.infra.file_store import write_json, write_yaml
-from umi.devices import calibration_assets
-from umi.devices import selection
-from umi.perception.models import LensVideo, RecordingData, MapAtlas
-from umi.apps.viewer.results.catalog import RecordingCatalog
+from umi.apps import calib as calib_cli
+from umi.apps import scene as cli
 from umi.apps.viewer import ViewerDataError
-from umi.devices import registry
+from umi.apps.viewer.catalog import RecordingCatalog
+from umi.calibration import devices as inventory
+from umi.calibration import rear_workflow as rear_calibration
+from umi.calibration import result_io
+from umi.calibration import workflow as calibration_workflow
+from umi.calibration.models import (
+    CalibrationInputs,
+    CameraImuResult,
+    Decision,
+    GravityResult,
+    IntrinsicsResult,
+    SegmentPaths,
+)
+from umi.calibration.pipeline import board_detection
+from umi.calibration.pipeline import recordings as calibration_recordings
+from umi.calibration.solve import basalt, board_pnp
+from umi.calibration.validation import gravity
+from umi.config import audio_sync as sync_config
+from umi.config import loader as config
+from umi.config.loader import load
+from umi.core.geometry import imu_from_camera
+from umi.devices import calibration_assets, registry, selection
+from umi.infra import provenance
+from umi.infra import provenance as artifact_identity
+from umi.infra.file_store import read_yaml, write_json, write_yaml
+from umi.infra.terminal import Console
+from umi.perception.audio import kiwi_audio as landmark_audio
+from umi.perception.audio.specialist_audio import AUDIO_SYNC_RECIPES, AudioSyncError, AudioSyncEstimate, estimate_offset
+from umi.perception.models import LensVideo, MapAtlas, RecordingData, RecordingPaths
+from umi.reconstruction.backends.poster_independent import run as independent_reconstruction
+from umi.reconstruction.backends.scene_map import run as scene_reconstruction
+from umi.reconstruction.estimation import mapping
+from umi.reconstruction.estimation import mapping as slam
+from umi.reconstruction.estimation.fixed_map import fusion, geometry
+from umi.reconstruction.estimation.fixed_map.parameters import FixedMapParameters, MapPlacementParameters
+from umi.reconstruction.estimation.inertial import integrate_samples
+from umi.reconstruction.estimation.models import FusedTrajectory
+from umi.reconstruction.segment import fusion_runner
+from umi.reconstruction.segment import reconstruction as runtime
+from umi.scene import run as workflow
+from umi.scene.collection import batch as batch_inputs
+from umi.scene.collection import batch as episode_inputs
+from umi.scene.collection import configuration as scene_inputs
+from umi.scene.collection import kit
+from umi.scene.collection import kit as kit_inputs
+from umi.scene.collection.configuration import SceneOverrides
+from umi.scene.inputs import recordings, synchronization
+from umi.scene.inputs import recordings as recording_checks
+from umi.scene.inputs.recordings import select_camera
+from umi.scene.inputs.synchronization import estimate_audio_sync, load_ready_audio_sync
+from umi.scene.maps import binding as map_lifecycle_binding
+from umi.scene.maps import build as map_build
+from umi.scene.maps import versions as map_repository
+from umi.store import layout, models
 from umi.store import result_io as asset_identity
-from umi.estimation.inertial import integrate_samples
+from umi.store.models import PreparedRecording
+from umi.store.result_io import (
+    pose_rows,
+    read_arm_settings,
+    read_arm_summary,
+    result_paths,
+    validate_result,
+)
+
+# 共享场景的数值与流程回归：已知尺度、固定坐标、双手同步、资产和失败发布。
 
 
-def motion(phase=0., baseline=0.):
+def scene_motion(phase=0., baseline=0.):
     t = np.arange(0, 8.001, .002)
     absolute = t+phase
     rotation = Rotation.from_euler('xyz', np.column_stack([
@@ -86,7 +129,7 @@ class SceneNumericalTests(unittest.TestCase):
         self.assertEqual(geometry.alignment_parameters(trajectory.fusion, scene_parameters.for_algorithm(MapPlacementParameters), gravity=9.8).gravity_m_s2, 9.8)
 
     def test_recovers_metric_scale_and_rejects_unobservable_motion(self):
-        times, poses, imu = motion()
+        times, poses, imu = scene_motion()
         raw = poses.copy(); raw[:, :3, 3] /= 2.3
         obs = geometry.VisualObservations(times, raw, np.arange(len(times)), 'visual_map')
         result = geometry.metric_alignment(obs, np.eye(4), imu, np.zeros(3), 9.81, self.p.for_algorithm(MapPlacementParameters), fusion_parameters=load('trajectory').values.fusion)
@@ -104,7 +147,7 @@ class SceneNumericalTests(unittest.TestCase):
             self.assertAlmostEqual(np.linalg.det(rotation), 1.)
 
     def test_scene_fusion_preserves_absolute_translation_and_rotation(self):
-        times, poses, imu = motion()
+        times, poses, imu = scene_motion()
         obs = geometry.VisualObservations(times, poses, np.arange(len(times)), 'scene')
         result = fusion.fuse(times, imu, dict(front=obs), dict(front=np.eye(4)), self.trajectory.fusion, self.trajectory.zupt, self.p.for_algorithm(FixedMapParameters))
         np.testing.assert_allclose(result.T_reference_imu[:, :3, 3], poses[:, :3, 3], atol=.001)
@@ -113,7 +156,7 @@ class SceneNumericalTests(unittest.TestCase):
         self.assertLess(float(angle.max()), .001)
 
     def test_camera_lever_is_not_scaled_with_map_positions(self):
-        times, body, imu = motion()
+        times, body, imu = scene_motion()
         T_imu_cam = geometry.transform(Rotation.from_euler('xyz', [.1, -.2, .3]).as_matrix(), [.03, -.02, .01])
         camera = body @ T_imu_cam
         raw = camera.copy(); raw[:, :3, 3] /= 3.
@@ -125,7 +168,7 @@ class SceneNumericalTests(unittest.TestCase):
         np.testing.assert_allclose(solved.T_reference_imu[:, :3, 3], body[:, :3, 3], atol=.001)
 
     def test_frozen_front_rear_placement_with_time_offset(self):
-        times, rear, _ = motion()
+        times, rear, _ = scene_motion()
         lever = geometry.transform(Rotation.from_euler('z', .3).as_matrix(), [.04, .01, -.02])
         G = geometry.transform(Rotation.from_euler('z', .7).as_matrix(), [1., -.5, .2])
         front = np.linalg.inv(G) @ (rear @ lever)
@@ -150,12 +193,9 @@ class SceneWorkflowTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         # Synthetic INSVs have no audio.
-        preferences_path = self.root / 'user.yaml'
-        preferences_values = read_yaml(user_settings.DEFAULT_PATH)
-        preferences_values['features']['audio_sync']['enabled'] = False
-        write_yaml(preferences_path, preferences_values)
-        preferences = user_settings.load(preferences_path)
-        self.enterContext(patch.object(user_settings, 'current', return_value=preferences))
+        preferences = defaults_document()
+        preferences['sync']['mode'] = 'assumed_simultaneous'
+        self.enterContext(patched_defaults(self.root, preferences))
         kit_root = patch.object(kit_inputs, 'KITS', self.root / 'kits')
         kit_root.start(); self.addCleanup(kit_root.stop)
         self.source = self.root / 'source'
@@ -170,19 +210,17 @@ class SceneWorkflowTests(unittest.TestCase):
                                   if key != 'gripper'}))
         current_camera.start(); self.addCleanup(current_camera.stop)
         write_yaml(self.scene_path, dict(kit='test_kit',
-                   recording=dict(arms=['left', 'right']),
-                   scene=dict(description='test'),
-                   map=dict(layout='shared', reference_arm='left',
-                            selection=dict(policy='latest_prior')),
+                   arms=['left', 'right'],
+                   description='test',
+                   map=dict(layout='shared', reference_arm='left'),
                    backend=dict(mode='scene_map')))
         self.scene = scene_inputs.read_scene(self.scene_path)
         kit = self.write_kit('test_kit', {arm: dict(serial='SERIAL_'+arm, **self.device_pins['SERIAL_'+arm]) for arm in models.ARMS})
         self.batch_root = self.scene.root / '20261025_001'
         write_yaml(self.batch_root / 'collection.yaml', dict(
-                   scene=dict(description='test'),
-                   map=dict(layout='shared', reference_arm='left',
-                            selection=dict(policy='latest_prior')),
-                   kit='test_kit', recording=dict(arms=['left', 'right']),
+                   description='test',
+                   map=dict(layout='shared', reference_arm='left'),
+                   kit='test_kit', arms=['left', 'right'],
                    backend=dict(mode='scene_map')))
         self.session_path = self.batch_root / '.pipeline/manifest.yaml'
         mapping_reference = dict(self.ref('left'), **{key: value for key, value in kit['arms']['left'].items() if key != 'serial'})
@@ -216,7 +254,7 @@ class SceneWorkflowTests(unittest.TestCase):
             camera = models.CalibratedCamera('SERIAL_'+arm, selected, dict(front=calibration_assets.read_basalt(assets.camera_json)),
                 dict(front=assets.camera_json, tcp=assets.tcp_geometry, mask=assets.front_mask))
             self.cameras[self.recording_paths[arm]] = camera
-            times, poses, imu = motion(baseline=.6 if arm == 'right' else 0.)
+            times, poses, imu = scene_motion(baseline=.6 if arm == 'right' else 0.)
             raw = poses.copy(); raw[:, :3, 3] /= 2.3
             self.raw[arm] = geometry.VisualObservations(times, raw, np.arange(len(times)), 'visual_map')
             encoded = asset_dir / 'front.mp4'
@@ -227,14 +265,14 @@ class SceneWorkflowTests(unittest.TestCase):
                 RecordingData({}, asset_dir / 'imu.csv'))
         self.patches = [patch('umi.devices.registry.rear_path', side_effect=lambda serial, version: self.rear_files[serial]),
             patch('umi.devices.registry.pin', side_effect=lambda serial: dict(calibration='test')),
-            patch('umi.workflows.scene.recordings.check_episode', return_value=recording_checks.EpisodeCheckReport(passed=True)),
-            patch('umi.workflows.scene.camera_assets.select_camera', side_effect=self.select_camera),
-            patch('umi.workflows.scene.workflow.runtime.validate_engines', return_value=(self.root, self.root)),
-            patch('umi.workflows.scene.recordings.prepare_recording', side_effect=lambda video, camera, *args, **kwargs: replace(self.prepared_recordings[video], camera=camera)),
-            patch('umi.estimation.mapping.build', side_effect=self.build),
-            patch('umi.estimation.mapping.atlas_candidates', side_effect=lambda rec, lens, *args, **kwargs: iter([(0, self.observations(rec, lens))])),
-            patch('umi.estimation.mapping.localize', side_effect=lambda rec, lens, *args, **kwargs: self.observations(rec, lens)),
-            patch('umi.estimation.mapping.export_map', return_value=dict(index=0, id=0, points=[[0., 0., 0.]], point_count=1,
+            patch('umi.scene.inputs.recordings.check_episode', return_value=recording_checks.EpisodeCheckReport(passed=True)),
+            patch('umi.scene.inputs.recordings.select_camera', side_effect=self.select_camera),
+            patch('umi.scene.run.runtime.validate_engines', return_value=(self.root, self.root)),
+            patch('umi.scene.inputs.recordings.prepare_recording', side_effect=lambda video, camera, *args, **kwargs: replace(self.prepared_recordings[video], camera=camera)),
+            patch('umi.reconstruction.estimation.mapping.build', side_effect=self.build),
+            patch('umi.reconstruction.estimation.mapping.atlas_candidates', side_effect=lambda rec, lens, *args, **kwargs: iter([(0, self.observations(rec, lens))])),
+            patch('umi.reconstruction.estimation.mapping.localize', side_effect=lambda rec, lens, *args, **kwargs: self.observations(rec, lens)),
+            patch('umi.reconstruction.estimation.mapping.export_map', return_value=dict(index=0, id=0, points=[[0., 0., 0.]], point_count=1,
                 keyframes=[], bounds=None, coordinates='trajectory', alignment=dict(status='aligned', scale=2.3,
                 rotation=np.eye(3).tolist(), translation=[0., 0., 0.], rmse_m=0., source='fixed_scene')))]
         for item in self.patches:
@@ -256,7 +294,7 @@ class SceneWorkflowTests(unittest.TestCase):
         return write_kit(name, {arm: arms[arm] for arm in models.ARMS if arm in arms})
 
     def build_scene(self, *, bind=False, **kwargs):
-        """bind=True 与 umi-scene build 一样把新版本绑定到批次清单；默认只绑定第一次建图。"""
+        """bind=True 把新版本绑定到批次清单；默认只绑定第一次建图。"""
         self.scene = batch_inputs.read_batch(self.session_path, overrides=getattr(self, 'scene_overrides', None)).scene
         built = map_build.build_version(self.scene, **kwargs)
         if built['status'] != 'planned':
@@ -350,13 +388,13 @@ class SceneWorkflowTests(unittest.TestCase):
         write_yaml(self.episode_path, document)
 
     def local_fusion_result(self):
-        times, poses, _ = motion(baseline=.6)
+        times, poses, _ = scene_motion(baseline=.6)
         tracked = np.ones(len(times), dtype=bool)
         return FusedTrajectory(poses, tracked, tracked.copy(), dict(mode='independent',
             localization_fraction=1., maximum_visual_gap_s=0., actual_error='not_measured'))
 
-    def test_single_arm_fallback_publication_viewing_reuse_and_export_isolation(self):
-        from umi.workflows.scene import episodes
+    def test_single_arm_fallback_publication_viewing_and_reuse(self):
+        from umi.scene import episodes
         self.single_arm_episode()
         self.build_scene()
         with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene',
@@ -384,8 +422,6 @@ class SceneWorkflowTests(unittest.TestCase):
             self.assertEqual(set(loaded['tracks']), {'tcp', 'camera', 'imu'})
             self.assertEqual(catalog.map_data(entry['id'])['maps'], [])
             self.assertEqual(episodes.task_status(self.episode_path)['output'], str(output))
-            with self.assertRaisesRegex(ValueError, 'local_ok'):
-                episodes.successful_run(episode_inputs.read_episode(self.episode_path))
             self.assertEqual(workflow.run_episode(self.episode_path)['status'], 'local_skipped')
             self.assertEqual(shared.call_count, 1)
             self.assertEqual(local.call_count, 1)
@@ -417,8 +453,8 @@ class SceneWorkflowTests(unittest.TestCase):
             local.assert_not_called()
 
     def test_fallback_still_measures_and_rejects_invalid_tag_distance(self):
-        from umi.perception.gripper.distance import measurement as tag_distance
-        from umi.perception.gripper.distance.measurement import TagDistanceResult, TagDistanceSeries
+        from umi.perception.gripper import distance as tag_distance
+        from umi.perception.gripper.distance import TagDistanceResult, TagDistanceSeries
         self.single_arm_episode()
         self.build_scene()
         video = self.recording_paths['right']
@@ -493,9 +529,6 @@ class SceneWorkflowTests(unittest.TestCase):
         key = catalog.scan()['recordings'][0]['id']
         self.assertIn('camera', catalog.load(key)['tracks'])
         self.assertEqual(catalog.map_data(key)['kind'], 'umi_map_view')
-        from umi.workflows.scene import episodes
-        episodes.review(self.episode_path, accept=True, reviewer='test')
-        episodes.export([self.episode_path], self.root / 'legacy_export')
         self.assertEqual({path: path.read_bytes() for path in output.rglob('*') if path.is_file()}, before)
 
     def test_skip_preflight_is_recorded_in_compact_metadata(self):
@@ -540,6 +573,28 @@ class SceneWorkflowTests(unittest.TestCase):
             rows = list(csv.DictReader(stream))
         separation = [np.linalg.norm([float(row['right_'+axis])-float(row['left_'+axis]) for axis in 'xyz']) for row in rows]
         np.testing.assert_allclose(separation, .6, atol=.003)
+
+        # A task with only a front camera prepared can select a published dual map.
+        collection = self.batch_root / 'collection.yaml'
+        settings = read_yaml(collection)
+        settings['backend'] = dict(mode='auto', auto_order=['scene_map'])
+        settings['map']['version'] = built['version']
+        write_yaml(collection, settings)
+        session_data = read_yaml(self.session_path)
+        del session_data['mapping']
+        write_yaml(self.session_path, session_data)
+
+        def select_for_mode(video, scene):
+            camera = self.select_camera(video, scene)
+            if scene.mode == 'dual':
+                return camera
+            return replace(camera, measurements={'front': camera.measurements['front']},
+                           files={key: path for key, path in camera.files.items() if key != 'rear'})
+
+        with patch('umi.scene.inputs.recordings.select_camera', side_effect=select_for_mode):
+            result = workflow.run_episode(self.episode_path)
+            self.assertEqual(result['frame_id'], built['frame_id'])
+            self.assertEqual(workflow.run_episode(self.episode_path)['status'], 'skipped')
 
     def test_rear_calibration_requires_matching_serial_lens_and_verdict(self):
         camera = self.cameras[self.recording_paths['left']]
@@ -623,14 +678,11 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertEqual(summary['fusion']['actual_error'], 'not_measured')
 
     def test_robot_tcp_convention_is_written_with_bimanual_results(self):
-        expert = self.root / 'tcp-expert.yaml'
-        write_yaml(expert, dict(parameters=dict(diagnostics=dict(export_auxiliary_trajectories=True))))
-        self.scene_overrides = SceneOverrides.load(expert)
         source = Path(__file__).resolve().parents[1] / 'tests/fixtures/grippers/handheld_v1/003/t_tcp_camera.json'
         for camera in self.cameras.values():
             camera.files['tcp'].write_bytes(source.read_bytes())
         self.build_scene()
-        self.assertEqual(workflow.run_episode(self.episode_path, overrides=self.scene_overrides)['status'], 'ok')
+        self.assertEqual(workflow.run_episode(self.episode_path)['status'], 'ok')
         output = self.task_root / 'results'
         metadata = json.loads((output / 'data/episode.json').read_text())
         for arm in ('left', 'right'):
@@ -638,10 +690,7 @@ class SceneWorkflowTests(unittest.TestCase):
             self.assertEqual(tcp_frame['convention'], 'genie_omnipicker_axes_v1')
             settings = read_arm_settings(output / 'data' / arm)
             self.assertEqual(settings['tcp_frame'], tcp_frame)
-            tcp, camera = np.array(list(pose_rows(output / 'data' / arm / 'trajectory.csv')), dtype=float), np.loadtxt(arm_evidence(output / 'data' / arm, 'traj_camera.txt'))
-            np.testing.assert_allclose(Rotation.from_quat(tcp[:, 4:]).as_matrix(),
-                                       Rotation.from_quat(camera[:, 4:]).as_matrix()
-                                       @ np.asarray(json.loads(source.read_text())['T_camera_tcp']['R_rows']), atol=1e-8)
+            self.assertEqual(settings['T_camera_tcp'], json.loads(source.read_text())['T_camera_tcp'])
 
     def test_multitask_bimanual_metric_world_and_reuse(self):
         built = self.build_scene()
@@ -693,7 +742,7 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertEqual(direct.map_data(direct.scan()['recordings'][0]['id']), json.loads(shared_map.read_text()))
 
     def test_map_version_contains_build_time_and_forced_builds_are_distinct(self):
-        with patch('umi.workflows.scene.maps.build.datetime') as clock:
+        with patch('umi.scene.maps.build.datetime') as clock:
             clock.now.return_value = datetime(2026, 10, 25, 15, 30, 0)
             first = self.build_scene()
             self.assertRegex(first['version'], r'^20261025_153000-[0-9a-f]{8}$')
@@ -706,7 +755,7 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertNotEqual(second['version'], first['version'])
         self.assertEqual(second['version'].rsplit('-', 1)[0], first['version'].rsplit('-', 1)[0])
         # 新版本发布不改变批次已固定的地图。
-        episode, _, manifest = map_lifecycle.bind_map(episode_inputs.read_episode(self.episode_path), None, dry_run=True)
+        episode, _, manifest = map_lifecycle_binding.bind_map(episode_inputs.read_episode(self.episode_path), None, dry_run=True)
         self.assertEqual(episode.session.map_version, first['version'])
         self.assertEqual(manifest['version'], first['version'])
 
@@ -725,7 +774,7 @@ class SceneWorkflowTests(unittest.TestCase):
                 write_yaml(self.session_path, session)
                 self.assertEqual(map_repository.load_published(self.scene)[0], old_dir)
                 self.assertEqual(self.build_scene()['version'], old_version)
-                episode, _, manifest = map_lifecycle.bind_map(episode_inputs.read_episode(self.episode_path), None, dry_run=True)
+                episode, _, manifest = map_lifecycle_binding.bind_map(episode_inputs.read_episode(self.episode_path), None, dry_run=True)
                 self.assertEqual(episode.session.map_version, old_version)
                 self.assertEqual(manifest['version'], old_version)
 
@@ -762,7 +811,7 @@ class SceneWorkflowTests(unittest.TestCase):
         workflow.run_episode(self.episode_path)
         output = self.task_root / 'results'
         previous = output.resolve()
-        with patch('umi.estimation.fixed_map.fusion.fuse', side_effect=ValueError('failed fusion')):
+        with patch('umi.reconstruction.estimation.fixed_map.fusion.fuse', side_effect=ValueError('failed fusion')):
             with self.assertRaisesRegex(ValueError, 'failed fusion'):
                 workflow.run_episode(self.episode_path, force=True)
         self.assertEqual(output.resolve(), previous)
@@ -773,7 +822,7 @@ class SceneWorkflowTests(unittest.TestCase):
             workflow.run_episode(self.episode_path)
 
     def test_published_result_survives_attempt_state_write_failure(self):
-        from umi.workflows.scene import episodes
+        from umi.scene import episodes
 
         self.build_scene()
         output = self.task_root / 'results'
@@ -795,17 +844,17 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertEqual(result['status'], 'planned')
         self.assertFalse((self.scene.root / 'maps').exists())
         override = self.root / 'bad.yaml'
-        write_yaml(override, dict(schema_version=2, pairing=dict(start_tolerance_s=True)))
+        write_yaml(override, dict(input=dict(pairing=dict(start_tolerance_s=True))))
         with self.assertRaisesRegex(ValueError, 'pairing_start_tolerance_s'):
             scene_inputs.load_scene_parameters(override)
-        write_yaml(override, dict(schema_version=2, pairing=dict(typo=1)))
+        write_yaml(override, dict(input=dict(pairing=dict(typo=1))))
         with self.assertRaisesRegex(ValueError, '未知'):
             scene_inputs.load_scene_parameters(override)
 
     def test_scene_parameter_changes_require_explicit_build(self):
         first = self.build_scene()
         expert = self.root / 'scene-expert.yaml'
-        write_yaml(expert, dict(parameters=dict(placement=dict(position_sigma_m=.02))))
+        write_yaml(expert, dict(mapping=dict(placement=dict(position_sigma_m=.02))))
         overrides = SceneOverrides.load(expert)
         changed_scene = batch_inputs.read_batch(self.session_path, overrides=overrides).scene
         with self.assertRaisesRegex(ValueError, '建图配置已变化'):
@@ -819,7 +868,7 @@ class SceneWorkflowTests(unittest.TestCase):
         manifest['map'] = dict(version=second['version'],
                                manifest_sha256=artifact_identity.file_hash(directory / 'manifest.json'))
         write_yaml(manifest_path, manifest)
-        expert.write_text('parameters:\n  placement:\n    position_sigma_m: 0.02\n  pairing:\n    start_tolerance_s: 3.0\n')
+        expert.write_text('mapping:\n  placement:\n    position_sigma_m: 0.02\ninput:\n  pairing:\n    start_tolerance_s: 3.0\n')
         changed_scene = batch_inputs.read_batch(self.session_path, overrides=SceneOverrides.load(expert)).scene
         _, map_manifest = map_repository.load_published(changed_scene)
         self.assertEqual(map_manifest['version'], second['version'])
@@ -957,8 +1006,9 @@ class SceneWorkflowTests(unittest.TestCase):
                 sha256=artifact_identity.file_hash(duplicate))
         write_yaml(ep2, second)
 
-        from umi.apps import scene as cli
         import io
+
+        from umi.apps import scene as cli
         stdout = io.StringIO()
         with patch('sys.stdout', stdout), patch.object(workflow.console, 'write'):
             code = cli.main(['run', str(self.session_path), '--jobs', '2', '--json'])
@@ -966,6 +1016,754 @@ class SceneWorkflowTests(unittest.TestCase):
         output = json.loads(stdout.getvalue().strip())
         self.assertEqual(len(output), 2)
         self.assertTrue(all(item['status'] == 'ok' for item in output))
+
+
+# 跨场景交错采集、固定版本、原片导入与设备资产回归。
+
+
+class RegistryVersionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        kit_root = patch.object(kit_inputs, 'KITS', self.root / 'kits')
+        kit_root.start(); self.addCleanup(kit_root.stop)
+        target = self.root / 'registry'
+        write_json(target / 'index.json', dict(kind='umi_device_registry', version=3,
+                   devices={}))
+        override = patch.multiple(registry, ROOT=target, INDEX=target / 'index.json',
+                                 CAMERAS=target / 'cameras')
+        override.start(); self.addCleanup(override.stop)
+        self.bundle = legacy_bundle(self.root / 'first')
+        registry.register('CAMERA_A', self.bundle)
+
+    def test_index_rejects_conflicting_redundant_serial(self):
+        stored = json.loads(registry.INDEX.read_text())
+        stored['devices']['CAMERA_A']['serial'] = 'OTHER_CAMERA'
+        write_json(registry.INDEX, stored)
+        with self.assertRaisesRegex(registry.RegistryError, '序列号不一致'):
+            registry.load_index()
+
+    def test_tampered_assets_and_retired_devices_are_rejected(self):
+        pinned = registry.pin('CAMERA_A')
+        selected = registry.get('CAMERA_A', **pinned)
+        Path(selected['json']).write_text('{}')
+        with self.assertRaisesRegex(registry.RegistryError, '哈希'):
+            registry.get('CAMERA_A', **pinned)
+        registry.retire('CAMERA_A')
+        self.assertFalse(inventory.device_inventory()[0]['ok'])
+        with self.assertRaisesRegex(registry.RegistryError, '停用'):
+            registry.get('CAMERA_A', **pinned)
+
+    def test_rear_calibration_is_versioned_and_owned_by_device(self):
+        rear = json.loads(calibration_assets.SAMPLE_CAMERA_JSON.read_text())
+        rear.update(kind='umi_rear_calibration', camera_serial='CAMERA_A', lens='rear', validation=dict(verdict='PASS'))
+        source = self.root / 'rear.json'
+        write_json(source, rear)
+        installed = registry.register_rear(source)
+        target = registry.rear_path('CAMERA_A', installed['version'])
+        self.assertEqual(source.read_bytes(), target.read_bytes())
+        self.assertEqual(registry.register_rear(source), installed)
+        with self.assertRaises(registry.RegistryError):
+            registry.rear_path('CAMERA_B', installed['version'])
+        rear['validation']['verdict'] = 'FAIL'
+        write_json(source, rear)
+        with self.assertRaisesRegex(registry.RegistryError, '验收'):
+            registry.register_rear(source)
+
+
+class RecordingImportTests(unittest.TestCase):
+    def test_import_preserves_source_and_refuses_same_name_overwrite(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            video = root / 'sd/VID_001.insv'
+            video.parent.mkdir(); video.write_bytes(b'original')
+            managed = root / 'recordings'
+            destination = managed / 'market/20261025_001/take_001/left'
+            with patch.object(registry, 'read_insv_serial', return_value='CAMERA_A'):
+                metadata = recordings.inspect(video)
+                imported = recordings.import_video(video, destination, metadata=metadata)
+                self.assertEqual(imported.parent.name, 'left')
+                self.assertEqual(imported.name, video.name)
+                self.assertEqual(video.read_bytes(), imported.read_bytes())
+                self.assertEqual(recordings.import_video(imported, destination, metadata=metadata), imported)
+                video.write_bytes(b'different')
+                with self.assertRaisesRegex(ValueError, '同名录像'):
+                    recordings.import_video(video, destination, metadata=recordings.inspect(video))
+                self.assertEqual(imported.read_bytes(), b'original')
+                self.assertFalse(list(imported.parent.glob('.import-*')))
+
+
+class SessionManagementTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = SceneWorkflowTests()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.fixture.build_scene()
+        self.f = self.fixture
+        for item in (
+            patch.object(registry, 'get', return_value={}),
+            patch.object(registry, 'pin', side_effect=lambda serial: self.f.device_pins[serial]),
+            patch.object(registry, 'read_insv_serial', side_effect=lambda path: 'SERIAL_'+Path(path).read_text()),
+        ):
+            item.start(); self.addCleanup(item.stop)
+
+    def session(self, scene_path, name):
+        self.f.write_kit('fixture', {arm:dict(serial='SERIAL_'+arm,**self.f.device_pins['SERIAL_'+arm]) for arm in models.ARMS})
+        scene = scene_inputs.read_scene(scene_path)
+        version = self.f.bound_map_version() if scene.root == self.f.scene.root else None
+        return write_batch(scene_path, name, kit='fixture', map_version=version)
+
+    def episode(self, session, name):
+        path = write_task(batch_inputs.read_batch(session), name, self.f.recording_paths)
+        episode = episode_inputs.read_episode(path)
+        for arm, raw in episode.recordings.items():
+            original = self.f.recording_paths[arm]
+            self.f.cameras[raw] = self.f.cameras[original]
+            self.f.prepared_recordings[raw] = self.f.prepared_recordings[original]
+        return path
+
+    def test_interleaved_scenes_reuse_devices_with_distinct_map_frames(self):
+        first = self.session(self.f.scene_path, 'morning')
+        other_path = self.f.root / 'other_market/seed/collection.yaml'
+        data = read_yaml(self.f.scene_path)
+        write_yaml(other_path, data)
+        other = self.session(other_path, 'afternoon')
+        record = read_yaml(other)
+        record['mapping'] = dict(left=self.f.ref('left'))
+        write_yaml(other, record)
+        map_lifecycle_binding.build_scene(other)
+        first_task, other_task = self.episode(first, 'take_001'), self.episode(other, 'take_001')
+        a, b = workflow.run_episode(first_task), workflow.run_episode(other_task)
+        self.assertNotEqual(a['frame_id'], b['frame_id'])
+        self.assertEqual(batch_inputs.read_batch(first).devices, batch_inputs.read_batch(other).devices)
+        paths = cli.episode_paths([self.f.scene.root, first, first_task])
+        self.assertEqual(len(paths), 2)  # 预置任务和 morning 任务，重复输入去重。
+        names = [item['name'] for item in RecordingCatalog(self.f.root).scan()['recordings']]
+        self.assertIn('lab/fixture/morning/take_001', names)
+        self.assertIn('other_market/fixture/afternoon/take_001', names)
+
+    def test_existing_session_uses_its_map_after_current_map_changes(self):
+        session = self.session(self.f.scene_path, 'fixed')
+        task = self.episode(session, 'take_001')
+        original = workflow.run_episode(task)['frame_id']
+        new = map_lifecycle_binding.build_scene(self.f.session_path, force=True)
+        self.assertNotEqual(original, new['frame_id'])
+        self.assertEqual(workflow.run_episode(task)['frame_id'], original)
+        with self.assertRaisesRegex(ValueError, 'map.version'):
+            workflow.run_episode(task, force=True)
+        manifest = read_yaml(session)
+        manifest['map']['manifest_sha256'] = '0'*64
+        write_yaml(session, manifest)
+        with self.assertRaisesRegex(ValueError, '哈希'):
+            workflow.run_episode(task, dry_run=True)
+
+    def test_declared_device_and_import_hash_are_verified(self):
+        session = self.session(self.f.scene_path, 'verified')
+        task = self.episode(session, 'take_001')
+        data = read_yaml(task)
+        data['recordings']['left']['serial'], data['recordings']['right']['serial'] = (
+            data['recordings']['right']['serial'], data['recordings']['left']['serial'])
+        write_yaml(task, data)
+        with self.assertRaisesRegex(ValueError, '设备身份'):
+            workflow.run_episode(task, dry_run=True)
+        data['recordings']['left']['sha256'] = '0'*64
+        write_yaml(task, data)
+        with self.assertRaisesRegex(ValueError, '录像已变化'):
+            episode_inputs.read_episode(task)
+
+    def test_discovery_skips_internal_and_archived_tasks(self):
+        for name in (*layout.INTERNAL_DIRECTORIES, '.hidden'):
+            write_yaml(self.f.scene.root / name / 'nested/episode.yaml', {})
+        self.assertEqual(cli.episode_paths([self.f.scene.root]), [self.f.episode_path])
+        unrelated = self.f.scene.root / 'notes.txt'
+        unrelated.write_text('not a task manifest')
+        with self.assertRaisesRegex(ValueError, '对应清单'):
+            cli.episode_paths([unrelated])
+
+    def test_import_video_with_hardlink(self):
+        import os
+        src = self.f.root / 'video_to_link.insv'
+        src.write_bytes(b'test_link_content')
+        meta = dict(serial='CAM_LINK', sha256=artifact_identity.file_hash(src))
+        dest = self.f.root / 'test_scene/take_001/left'
+        imported = recordings.import_video(src, dest, metadata=meta, link=True)
+        self.assertEqual(os.stat(src).st_ino, os.stat(imported).st_ino)
+
+    def test_run_requires_a_batch_and_does_not_create_scene_configuration(self):
+        root = self.f.root / 'new_scene'
+        self.assertEqual(cli.main(['run', str(root), '--dry-run']), 2)
+        self.assertFalse(root.exists())
+
+
+"""原片检查、静止任务、曝光未知与成功发布保护。"""
+
+
+class RecordingCheckTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg=scene_inputs.load_scene_parameters(None)
+
+    def test_static_hand_in_fixed_metric_map_is_allowed(self):
+        t=np.arange(0,5,.001)
+        imu=dict(t_s=t,acc=np.tile([0.,0.,9.81],(len(t),1)),gyr=np.zeros((len(t),3)))
+        self.assertEqual(recording_checks.check_initial_static(imu,self.cfg).status,'PASS')
+        imu['gyr'][:]=2.
+        self.assertEqual(recording_checks.check_initial_static(imu,self.cfg).status,'WARN')
+
+    def test_exposure_missing_or_invalid_is_unknown_and_slow_is_fail(self):
+        path=Path('/dummy.insv')
+        with patch.object(recording_checks.insv_reader,'parse_trailer',return_value=dict(records=[])):
+            self.assertEqual(recording_checks.check_exposure(path,self.cfg).status,'UNKNOWN')
+        records=dict(records=[dict(id=4,offset=100,size=1600)])
+        data=b''.join(struct.pack('<Qd',i,0.05) for i in range(100))
+        with patch.object(recording_checks.insv_reader,'parse_trailer',return_value=records),patch.object(recording_checks.insv_reader,'read_record_bytes',return_value=data):
+            self.assertEqual(recording_checks.check_exposure(path,self.cfg).status,'FAIL')
+
+    def test_stream_tolerance_is_absolute_and_matches_extraction_contract(self):
+        container=MagicMock();container.__enter__.return_value=container
+        stream=MagicMock();stream.codec_context.width=3840;stream.codec_context.height=1920;stream.average_rate=57.
+        container.streams.video=[stream]
+        with patch('av.open',return_value=container):
+            self.assertFalse(recording_checks.check_stream(Path('/dummy.insv')).passed)
+
+    def test_invalid_imu_and_short_recording_are_rejected(self):
+        t=np.arange(0,5,.001)
+        imu=dict(t_s=t,acc=np.tile([0.,0.,9.81],(len(t),1)),gyr=np.zeros((len(t),3)),integrity=dict(status='OK'))
+        with patch.object(recording_checks.imu_reader,'read_imu_and_meta',return_value=imu):
+            self.assertTrue(recording_checks.check_imu(Path('/dummy'),self.cfg)[0].passed)
+            imu['acc'][5,0]=np.nan
+            self.assertFalse(recording_checks.check_imu(Path('/dummy'),self.cfg)[0].passed)
+
+    def test_failed_qa_preserves_success_and_dry_run_is_read_only(self):
+        f=SceneWorkflowTests();f.setUp()
+        try:
+            f.build_scene();workflow.run_episode(f.episode_path)
+            output=f.task_root/'results';previous=output.resolve()
+            log = f.task_root / 'run.log'
+            success_log = log.resolve()
+            before={str(path):path.read_bytes() for path in f.root.rglob('*') if path.is_file() and not path.is_symlink()}
+            failure=recording_checks.EpisodeCheckReport(False,['review rejection'])
+            with patch.object(recording_checks,'check_episode',return_value=failure):
+                with self.assertRaises(recording_checks.RecordingCheckError):workflow.run_episode(f.episode_path,dry_run=True)
+                after={str(path):path.read_bytes() for path in f.root.rglob('*') if path.is_file() and not path.is_symlink()}
+                self.assertEqual(before,after)
+                self.assertEqual(log.resolve(), success_log)
+                with self.assertRaises(recording_checks.RecordingCheckError):workflow.run_episode(f.episode_path)
+            self.assertEqual(output.resolve(),previous)
+            self.assertNotEqual(log.resolve(), success_log)
+            self.assertIn('review rejection', log.read_text())
+            state=json.loads((layout.metadata(f.task_root, 'state.json')).read_text())
+            self.assertEqual(state['attempt']['status'],'rejected_preflight')
+            self.assertEqual(json.loads((output / 'data/episode.json').read_text())['status'],'ok')
+        finally:f.doCleanups()
+
+
+# 后镜头裁切与 A/B/D/C 流程；求解器替代，C 的尺度/融合和独立误差计算使用真实数值代码。
+
+
+class RearCalibrationTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = SceneWorkflowTests('test_multitask_bimanual_metric_world_and_reuse')
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.video = self.fixture.recording_paths['left']
+        self.front = self.fixture.cameras[self.video]
+        recordings = SegmentPaths(self.video, self.video, self.video, self.video)
+        self.inputs = CalibrationInputs(recordings, self.front.serial, dict(tagCols=6, tagRows=6, tagSize=.024, tagSpacing=.3))
+        self.poses = scene_motion()[1]
+
+    def solve_b(self, dataset, grid, a, parameters, context, *, prepared_bag=None):
+        write_json(context.paths.calibration, json.loads(self.front.files['front'].read_text()))
+        return CameraImuResult(context.paths.calibration, self.front.measurements['front'], self.metrics())
+
+    @staticmethod
+    def metrics():
+        return dict(corners_per_frame=1000., mean_reprojection_px=.1, rms_reprojection_px=.12)
+
+    @staticmethod
+    def coverage():
+        return dict(reach_radius_percentile=1., coverage_percentile=99.0, coverage_reach_threshold=0.5, frames_reaching_by_direction=dict(right=50, left=50, down=50, up=50),
+                    board_pose_fraction=1., board_distance_m=[.2, .5])
+
+    def prepare(self, video, camera, *args, **kwargs):
+        self.assertEqual(set(camera.measurements), {'front', 'rear'})
+        self.assertAlmostEqual(args[0].trajectory.values.orb.initial_tag_size_m, self.inputs.grid['tagSize'])
+        self.assertFalse(args[0].parameters.tag_fusion_enabled)
+        self.assertFalse(args[0].parameters.tag_mapping_enabled)
+        self.assertFalse(args[0].parameters.tag_mapping_scale_enabled)
+        rec = self.fixture.prepared_recordings[video]
+        return replace(rec, camera=camera, lens_videos=(LensVideo('rear', rec.lens_videos[0].path, rec.lens_videos[0].settings, None),))
+
+    def run_rear(self, scale, *, tag_size_mm=24., install=False):
+        self.inputs = replace(self.inputs, grid=dict(self.inputs.grid, tagSize=tag_size_mm/1000.))
+        output = self.fixture.root / 'rear_output'
+        def dataset(video, target, **kwargs):
+            target.mkdir(parents=True)
+        a = IntrinsicsResult(self.front.files['front'], [350., 350., 720., 720., 0., 0., 0., 0.], self.metrics(), self.coverage())
+        reference = dict(video_time_s=self.fixture.prepared_recordings[self.video].video_times_s, idx=np.arange(len(self.poses)), p=scale*self.poses[:, :3, 3], n_frames=len(self.poses), reproj_deg_med=[])
+        with patch.object(rear_calibration.registry, 'pin', return_value=self.fixture.device_pins[self.front.serial]), \
+             patch.object(calibration_workflow.inputs, 'prepare_inputs', return_value=self.inputs) as prepare_inputs, \
+             patch.object(rear_calibration.recordings, 'select_camera', return_value=self.front), \
+             patch.object(calibration_workflow.runtime, 'prepare', return_value=True), \
+             patch.object(calibration_recordings, 'build', side_effect=dataset) as build, \
+             patch.object(calibration_recordings, 'imu_stats', return_value=dict(gyro_norm_p95_rad_s=1.)), \
+             patch.object(basalt, 'estimate_intrinsics', return_value=a), \
+             patch.object(basalt, 'prepare_bag', return_value=(output/'run/work/camera_imu.bag', dict(elapsed_s=0.))), \
+             patch.object(basalt, 'estimate_camera_imu', side_effect=self.solve_b), \
+             patch.object(gravity, 'validate_gravity', return_value=GravityResult('REPORT_ONLY', 6, 6, .01)), \
+             patch.object(rear_calibration.recordings, 'prepare_recording', side_effect=self.prepare), \
+             patch.object(board_detection, 'detect_cached', return_value={}), \
+             patch.object(calibration_workflow, '_coverage', return_value=self.coverage()), \
+             patch.object(board_pnp, 'board_reference', return_value=reference):
+            arguments = ['run', str(self.fixture.source/'rear'), '--out', str(output), '--tag-size-mm', str(tag_size_mm)]
+            code = calib_cli.main(arguments + (['--install'] if install else []))
+            doc = result_io.load_result(output)
+            result = dict(status=Decision(doc['evaluation']['decision']).label, exit_code=code)
+        prepare_inputs.assert_called_once()
+        self.assertEqual(build.call_count, 4)
+        self.assertTrue(all(call.kwargs['lens'] == 'rear' for call in build.call_args_list))
+        self.assertEqual([call.kwargs['with_images'] for call in build.call_args_list], [True, True, True, False])
+        return result, output
+
+    def test_publishes_matching_rear_measurement_only_after_independent_C_pass(self):
+        result, output = self.run_rear(1.)
+        self.assertTrue(result['status'].startswith('PASS'))
+        measured = json.loads((output / 'rear_calibration.json').read_text())
+        self.assertEqual(measured['camera_serial'], self.front.serial)
+        self.assertEqual(measured['lens'], 'rear')
+        self.assertLess(measured['validation']['C']['ate_se3_rmse_mm'], 2.)
+        self.assertTrue((output / 'report.txt').is_file())
+        self.assertNotIn('样例标定', (output / 'report.txt').read_text())
+
+    def test_rear_C_isolates_global_scene_poster_switches(self):
+        enabled = replace(scene_inputs.load_scene_parameters(),
+            tag_fusion_enabled=True, tag_mapping_enabled=True, tag_mapping_scale_enabled=True)
+        with patch.object(scene_inputs, 'load_scene_parameters', return_value=enabled):
+            result, _ = self.run_rear(1.)
+        self.assertTrue(result['status'].startswith('PASS'))
+
+    def test_C_scale_error_prevents_rear_measurement_publication(self):
+        result, output = self.run_rear(1.5)
+        self.assertEqual(result['status'], 'FAIL')
+        self.assertFalse((output / 'rear_calibration.json').exists())
+        self.assertTrue((output / 'run/work').exists())
+        self.assertEqual(result_io.load_result(output)['evaluation']['decision'], 'rejected')
+
+    def test_rear_validation_passes_measured_a3_size_to_scene_preparation(self):
+        result, output = self.run_rear(1., tag_size_mm=35.7)
+        self.assertTrue(result['status'].startswith('PASS'))
+        snapshot = result_io.load_result(output)['computation']['trajectory_validation']
+        self.assertAlmostEqual(snapshot['values']['orb']['initial_tag_size_m'], .0357)
+
+    def test_rear_auto_install_uses_rear_measurement_after_acceptance(self):
+        with patch.object(calibration_workflow.devices, 'install', return_value=0) as install, \
+             patch.object(calibration_workflow.devices, 'install_bundle') as install_front:
+            result, output = self.run_rear(1., install=True)
+        self.assertEqual(result['exit_code'], 0)
+        install.assert_called_once_with(output, force=False, camera_serial=self.front.serial)
+        install_front.assert_not_called()
+
+    def test_failed_rear_validation_does_not_install(self):
+        with patch.object(calibration_workflow.devices, 'install') as install:
+            result, _ = self.run_rear(1.5, install=True)
+        self.assertEqual(result['exit_code'], 1)
+        install.assert_not_called()
+
+
+class RearPixelsTests(unittest.TestCase):
+    def test_front_and_rear_calibration_decode_the_correct_half(self):
+        executable = Path(__file__).resolve().parents[1] / '.deps/env/bin/ffmpeg'
+        if not executable.is_file():
+            self.skipTest('project FFmpeg is not installed')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            video = root / 'packed.insv'
+            subprocess.run([str(executable), '-nostdin', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
+                '-i', 'color=black:size=3840x1920:rate=60000/1001,drawbox=x=1920:y=0:w=1920:h=1920:color=white:t=fill',
+                '-frames:v', '2', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-f', 'mp4', str(video)], check=True)
+            def extract(source, out, **kwargs):
+                path = out / 'mav0/cam0'
+                path.mkdir(parents=True)
+                (path / 'data.csv').write_text('#timestamp,filename\n1000000000,1000000000.png\n')
+                imu = out / 'mav0/imu0'
+                imu.mkdir()
+                (imu / 'data.csv').write_text('#t,wx,wy,wz,ax,ay,az\n1000000000,0,0,0,0,0,9.81\n')
+                (out / 'extract_manifest.json').write_text('{}')
+            with patch.object(calibration_recordings.extraction, 'extract', side_effect=extract):
+                calibration_recordings.build(video, root / 'front', lens='front')
+                calibration_recordings.build(video, root / 'rear', lens='rear')
+            front = cv2.imread(str(root / 'front/mav0/cam0/data/1000000000.png'), cv2.IMREAD_GRAYSCALE)
+            rear = cv2.imread(str(root / 'rear/mav0/cam0/data/1000000000.png'), cv2.IMREAD_GRAYSCALE)
+            self.assertEqual(front.shape, (1440, 1440))
+            self.assertGreater(float(front.mean()), 220.)
+            self.assertLess(float(rear.mean()), 30.)
+
+
+# 单手回退适配器：真实阶段编排，外部引擎用文件协议替身。
+
+
+class SceneFallbackAdapterTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.engines = FakeEngines(self.root)
+        self.paths = RecordingPaths(self.root / 'prepared')
+        self.engines.write_dataset(self.paths.dataset)
+        (self.paths.dataset / 'extract_manifest.json').write_text(json.dumps(dict(source=dict(name='right.insv'))))
+        self.video = self.root / 'prepared-front.mp4'
+        self.video.write_bytes(b'prepared video')
+        self.camera = self.root / 'frozen-front.json'
+        self.camera.write_bytes(calibration_assets.SAMPLE_CAMERA_JSON.read_bytes())
+        configuration = config.load('trajectory')
+        self.episode = SimpleNamespace(expected_arms=('right',), recordings={'right': self.root / 'right.insv'},
+                                       scene=SimpleNamespace(trajectory=configuration,parameters=scene_inputs.load_scene_parameters(),tag_layout=None,
+                                                             environment_tag_detection=False))
+        times = np.loadtxt(self.paths.dataset / 'mav0/cam0/data.csv', delimiter=',', usecols=0) / 1e9 - 1
+        self.recording = PreparedRecording(
+            SimpleNamespace(files={'front': self.camera, 'mask': selection.DEFAULT_FRONT_MASK}),
+            SimpleNamespace(paths=self.paths, cores='', parameters=configuration.values),
+            (LensVideo('front', self.video, self.root / 'scene-settings.yaml', None),), times, np.empty((0, 7)),
+            RecordingData(dict(source=dict(name='right.insv')), self.paths.dataset / 'mav0/imu0/data.csv'))
+        for mocked in (patch.dict(os.environ, self.engines.environment),
+                       *self.engines.patches(),
+                       patch.object(runtime.console, 'write')):
+            mocked.start()
+            self.addCleanup(mocked.stop)
+
+    def run_fallback(self):
+        return independent_reconstruction.reconstruct(self.episode, 'right', self.recording, self.root / 'independent')
+
+    def test_reuses_video_frozen_calibration_and_full_original_clock(self):
+        self.episode.scene.parameters = replace(self.episode.scene.parameters, poster_independent_node_stride=2,
+                                                poster_independent_imu_white_noise_multiplier=3.)
+        result = self.run_fallback()
+        self.assertEqual([kind for kind, *_ in self.engines.calls], ['map', 'localize', 'merge', 'fuse'])
+        self.assertEqual(len(result.T_reference_imu), len(self.recording.video_times_s))
+        np.testing.assert_allclose(result.T_reference_imu[:, 0, 3], np.arange(self.engines.frames) * .01)
+        self.assertTrue(result.tracked.all())
+        self.assertEqual(result.evidence['mode'], 'independent')
+        for kind, command, _ in self.engines.calls:
+            if kind in ('map', 'localize'):
+                actual_video = Path(command[command.index('--input_video') + 1])
+                self.assertTrue(actual_video.samefile(self.video))
+                self.assertFalse(actual_video.is_symlink())
+            if kind == 'fuse':
+                self.assertEqual(command.calibration, self.camera)
+                times = np.loadtxt(command.times, skiprows=1)
+                np.testing.assert_allclose(times - 1, self.recording.video_times_s, rtol=0, atol=1e-9)
+                self.assertFalse(command.correct_poster_clock)
+                self.assertFalse(command.refine_initialization)
+                parameters = json.loads(command.parameters.read_text())
+                self.assertEqual(parameters['input']['mode'], 'handheld')
+                shared = self.episode.scene.trajectory.values.fusion
+                for field in ('node_stride', 'acc_noise', 'gyro_noise'):
+                    self.assertEqual(parameters['fusion'][field], getattr(shared, field))
+                self.assertEqual(parameters['fusion']['gravity_tolerance_m_s2'],
+                                 self.episode.scene.trajectory.values.fusion.gravity_tolerance_m_s2)
+        directory = self.root / 'independent'
+        asset_identity.validate_assets(directory, asset_identity.artifact_hashes(directory, ('debug',)))
+
+    def test_independent_quality_failure_is_not_published_as_success(self):
+        self.engines.scale_changes = {1: 3.27, 2: 3.27, 3: 3.27}
+        with self.assertRaisesRegex(ValueError, '独立模式也失败.*尺度'):
+            self.run_fallback()
+        record = json.loads((self.root / 'independent/attempts.json').read_text())
+        self.assertIsNone(record['chosen'])
+        self.assertTrue(all(not attempt['usable'] for attempt in record['attempts']))
+
+    def test_truncated_trajectory_cannot_silently_drop_tail_frames(self):
+        def fuse(request, **options):
+            self.engines.fuse(request, **options)
+            tum = request.output / 'traj_tum.txt'
+            tum.write_text(''.join(tum.read_text().splitlines(keepends=True)[:-1]))
+
+        with patch.object(fusion_runner, 'execute', side_effect=fuse):
+            with self.assertRaisesRegex(ValueError, '未完整覆盖原录像时间轴'):
+                self.run_fallback()
+
+    def test_bimanual_episode_cannot_use_adapter_with_only_one_recording(self):
+        self.episode.expected_arms = ('left', 'right')
+        with self.assertRaisesRegex(ValueError, '只支持完整单手任务'):
+            self.run_fallback()
+        self.assertEqual(self.engines.calls, [])
+
+
+# 双手音频同步记录（sync.json）的复用与失效；umi-scene run 处理任务时调用同一实现。
+
+
+ESTIMATE = AudioSyncEstimate(other_started_later_s=.25, peak_ratio=2., peak_value=3.,
+                             sample_rate_hz=16000, max_offset_s=30.)
+KIWI_ESTIMATE = replace(
+    ESTIMATE, other_started_later_s=-.5, peak_ratio=None, sample_rate_hz=48000,
+    method=AUDIO_SYNC_RECIPES['kiwi'],
+    diagnostics=dict(landmark_votes=80, landmark_runner_up_votes=8, landmark_support_span_s=4.0))
+
+
+class SceneSyncTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.batch = self.root / 'shelf' / 'batch_001'
+        self.task = self.batch / 'take_001'
+        self.recordings = {}
+        for arm in ('left', 'right'):
+            path = self.task / arm / f'{arm}.insv'
+            path.parent.mkdir(parents=True)
+            path.write_text(arm)
+            self.recordings[arm] = path
+        self.collection = dict(kit='rig', scene={}, backend=dict(mode='scene_map'),
+                               arms=['left', 'right'], audio_sync=dict(enabled=True))
+        write_yaml(self.batch / 'collection.yaml', self.collection)
+        self.enterContext(patch.object(kit, 'KITS', self.root / 'kits'))
+        write_yaml(kit.KITS / 'rig/kit.yaml', dict(arms={arm: dict(serial=arm) for arm in self.recordings}))
+        self.enterContext(patch.object(registry, 'read_insv_serial', side_effect=lambda path: path.read_text()))
+        self.enterContext(patch.object(recordings, 'video_duration_s', return_value=4.))
+        self.estimate = self.enterContext(patch.object(synchronization, 'estimate_offset_from_files',
+                                                      return_value=ESTIMATE))
+
+    def resolve(self, algorithm='specialist', *, dry_run=False):
+        output = layout.metadata(self.task, 'sync.json')
+        return synchronization.resolve_audio_sync(self.recordings, output, algorithm=algorithm, dry_run=dry_run)
+
+    def test_estimate_is_recorded_once_and_then_reused(self):
+        sync, reused = self.resolve()
+        self.assertFalse(reused)
+        self.assertEqual(sync['offsets_s'], dict(left=0., right=-.25))
+        self.assertTrue(layout.metadata(self.task, 'sync.json').is_file())
+        self.estimate.assert_called_once_with(self.recordings['left'], self.recordings['right'],
+                                             parameters=sync_config.load('specialist'))
+        self.assertTrue(self.resolve()[1])
+        self.estimate.assert_called_once()
+
+    def test_read_only_preview_does_not_write_a_record(self):
+        sync, reused = self.resolve(dry_run=True)
+        self.assertEqual((reused, sync['offsets_s']), (False, dict(left=0., right=-.25)))
+        self.assertFalse(layout.metadata(self.task, 'sync.json').exists())
+
+    def test_switching_algorithms_recomputes_and_dry_run_keeps_the_record(self):
+        self.resolve('specialist')
+        output = layout.metadata(self.task, 'sync.json')
+        previous_bytes = output.read_bytes()
+        with patch.object(synchronization.landmark_audio, 'estimate_offset_from_files',
+                          return_value=KIWI_ESTIMATE) as kiwi:
+            preview, reused = self.resolve('kiwi', dry_run=True)
+            self.assertFalse(reused)
+            self.assertEqual(preview['offsets_s'], dict(left=0., right=.5))
+            self.assertEqual(output.read_bytes(), previous_bytes)
+            self.assertIsNone(preview['peak_ratio'])
+            self.assertEqual(preview['diagnostics']['landmark_votes'], 80)
+            self.assertFalse(self.resolve('kiwi')[1])
+            record = json.loads(output.read_text())
+            self.assertEqual(record['inputs']['recipe'], AUDIO_SYNC_RECIPES['kiwi'])
+            self.assertEqual(record['video_offset_status'], 'kiwi_same_model_mode_av_delay_cancels')
+            self.assertTrue(self.resolve('kiwi')[1])
+            self.assertEqual(kiwi.call_count, 2)
+        self.estimate.assert_called_once()
+
+    def test_previous_kiwi_recipe_is_recomputed_even_after_failure(self):
+        output = layout.metadata(self.task, 'sync.json')
+        previous = dict(kind='umi_audio_sync', status='failed', inputs=dict(
+            recipe='kiwi_audio_landmarks_gcc_phat_v1'))
+        output.parent.mkdir(parents=True)
+        output.write_text(json.dumps(previous))
+        with patch.object(synchronization.landmark_audio, 'estimate_offset_from_files',
+                          return_value=KIWI_ESTIMATE) as kiwi:
+            self.assertFalse(self.resolve('kiwi')[1])
+        self.assertEqual(json.loads(output.read_text())['inputs']['recipe'], AUDIO_SYNC_RECIPES['kiwi'])
+        kiwi.assert_called_once()
+
+    def test_effective_yaml_parameters_invalidate_sync_cache_for_both_algorithms(self):
+        directory = self.root / 'audio_sync'
+        for name in ('specialist', 'kiwi'):
+            write_yaml(directory / f'{name}.yaml', read_yaml(sync_config.source_path(name)))
+        self.enterContext(patch.object(sync_config, 'DIRECTORY', directory))
+        kiwi = self.enterContext(patch.object(synchronization.landmark_audio, 'estimate_offset_from_files',
+                                             return_value=KIWI_ESTIMATE))
+        for name, field, initial, modified, estimator in (
+                ('kiwi', 'min_votes', 15, 12, kiwi),
+                ('specialist', 'min_peak_ratio', 1.3, 1.5, self.estimate)):
+            with self.subTest(algorithm=name):
+                first, _ = self.resolve(name)
+                self.assertEqual(first['parameters'][field], initial)
+                output = layout.metadata(self.task, 'sync.json')
+                previous = output.read_bytes()
+                config_path = directory / f'{name}.yaml'
+                defaults = read_yaml(sync_config.source_path(name))
+                write_yaml(config_path, {**defaults, field: initial})
+                self.assertTrue(self.resolve(name)[1])
+                write_yaml(config_path, {**defaults, field: modified})
+                preview, reused = self.resolve(name, dry_run=True)
+                self.assertEqual((reused, preview['parameters'][field]), (False, modified))
+                self.assertEqual(preview['parameters'], {**first['parameters'], field: modified})
+                self.assertEqual(output.read_bytes(), previous)
+                ready, _ = self.resolve(name)
+                self.assertEqual(ready['parameters'][field], modified)
+                self.assertEqual(getattr(estimator.call_args.kwargs['parameters'], field), modified)
+                self.assertEqual(json.loads(output.read_text())['inputs']['parameters'], ready['parameters'])
+                self.assertEqual(estimator.call_count, 3)
+
+    def test_invalid_yaml_is_reported_before_calling_the_estimator(self):
+        directory = self.root / 'audio_sync'
+        write_yaml(directory / 'specialist.yaml',
+                   {**read_yaml(sync_config.source_path('specialist')), 'min_peak_ratio': True})
+        with patch.object(sync_config, 'DIRECTORY', directory), self.assertRaisesRegex(ValueError, 'min_peak_ratio'):
+            self.resolve()
+        self.assertFalse(layout.metadata(self.task, 'sync.json').exists())
+        self.estimate.assert_not_called()
+
+
+class SceneSyncWorkflowTests(unittest.TestCase):
+    def test_scene_run_reuses_audio_sync_until_forced(self):
+        fixture = SceneWorkflowTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        from registry_fakes import write_task_configuration
+
+        write_task_configuration(fixture.task_root, dict(synchronization='audio_auto'))
+        batch_config = fixture.task_root.parent / 'collection.yaml'
+        config = read_yaml(batch_config)
+        config['sync'] = dict(algorithm='kiwi')
+        write_yaml(batch_config, config)
+        with patch.object(synchronization.landmark_audio, 'estimate_offset_from_files',
+                          return_value=replace(KIWI_ESTIMATE, other_started_later_s=.25)) as estimate, \
+             patch.object(recordings, 'video_duration_s', return_value=8.), redirect_stdout(io.StringIO()):
+            fixture.build_scene()
+            workflow.run_episode(fixture.episode_path)
+            self.assertEqual(workflow.run_episode(fixture.episode_path)['status'], 'skipped')
+            estimate.assert_called_once()
+            result = workflow.run_episode(fixture.episode_path, force=True)
+        self.assertEqual(result['synchronization']['offsets_s'], dict(left=0., right=-.25))
+        self.assertEqual(result['synchronization']['algorithm'], 'kiwi')
+        self.assertEqual(estimate.call_count, 2)
+
+
+# Contract tests for the standalone audio synchronization estimator.
+
+
+def _bursts(rate: int, duration_s: float, onsets: list[float], seed: int) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    signal = rng.normal(0.0, 0.001, int(duration_s * rate))
+    for onset in onsets:
+        start = int(onset * rate)
+        width = int(0.02 * rate)
+        signal[start:start + width] += rng.normal(0.0, 1.0, width)
+    return signal
+
+
+class AudioSyncTests(unittest.TestCase):
+    def test_positive_offset_means_other_started_later(self) -> None:
+        rate = 16_000
+        onsets = [1.0, 2.7, 5.3, 8.9]
+        reference = _bursts(rate, 12.0, onsets, seed=1)
+        other = _bursts(rate, 12.0, [time + 0.4 for time in onsets], seed=2)
+
+        result = estimate_offset(reference, other, sample_rate_hz=rate)
+
+        self.assertAlmostEqual(result.other_started_later_s, 0.4, delta=0.01)
+        self.assertGreater(result.peak_ratio, 1.3)
+
+    def test_ambiguous_periodic_audio_is_rejected(self) -> None:
+        rate = 16_000
+        onsets = [float(index) for index in range(1, 7)]
+        reference = _bursts(rate, 9.0, onsets, seed=5)
+        other = _bursts(rate, 9.0, [time + 0.3 for time in onsets], seed=6)
+
+        with self.assertRaisesRegex(AudioSyncError, "ambiguous"):
+            estimate_offset(reference, other, sample_rate_hz=rate)
+
+    def test_silent_audio_is_rejected(self) -> None:
+        with self.assertRaisesRegex(AudioSyncError, "silent"):
+            estimate_offset(np.zeros(1024), np.zeros(1024))
+
+    def test_landmark_matching_and_refinement_recover_unequal_clips_in_both_directions(self) -> None:
+        rate = sync_config.load('kiwi').sample_rate
+        rng = np.random.default_rng(7)
+        reference = rng.normal(0, .001, 9 * rate)
+        onsets = np.cumsum(rng.uniform(.09, .18, 55))
+        frequencies = rng.uniform(400, 2600, len(onsets))
+        time = np.arange(int(.09 * rate)) / rate
+        window = .23 * np.hanning(len(time))
+        for onset, frequency in zip(onsets, frequencies):
+            start = round(onset * rate)
+            reference[start:start + len(time)] += window * np.sin(2 * np.pi * frequency * time)
+        for lag in (20177, 31 * rate + 20177):
+            other = np.pad(reference * .65, (lag, 9000))
+            other += rng.normal(0, .0005, len(other))
+            for ref, candidate, expected in ((reference, other, lag), (other, reference, -lag)):
+                with self.subTest(lag=expected):
+                    result = landmark_audio.estimate_offset(ref, candidate)
+                    self.assertAlmostEqual(result.other_started_later_s, expected / rate, delta=2 / rate)
+                    self.assertGreaterEqual(result.diagnostics['landmark_votes'], 15)
+                    self.assertIsNone(result.peak_ratio)
+                    self.assertIsNone(result.max_offset_s)
+
+    def test_kiwi_rejects_audio_with_no_distinctive_landmarks(self) -> None:
+        rate = sync_config.load('kiwi').sample_rate
+        time = np.arange(4 * rate) / rate
+        periodic = .2 * np.sin(2 * np.pi * 440 * time)
+        for signal in (periodic, np.round(32768 * periodic) / 32768):
+            with self.assertRaisesRegex(AudioSyncError, '持续单频'):
+                landmark_audio.estimate_offset(signal, signal)
+
+    def test_pipeline_persists_specialist_session_clock_offset_and_reuses_matching_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / 'left.insv'
+            other = root / 'right.insv'
+            output = root / 'sync.json'
+            reference.write_bytes(b'left')
+            other.write_bytes(b'right')
+            fake = AudioSyncEstimate(other_started_later_s=0.25, peak_ratio=2.0, peak_value=3.0,
+                                     sample_rate_hz=16000, max_offset_s=30.0)
+            recordings = {'left': reference, 'right': other}
+            with patch('umi.scene.inputs.synchronization.estimate_offset_from_files', return_value=fake) as estimate:
+                first = estimate_audio_sync(recordings, algorithm='specialist', output=output)
+                second = estimate_audio_sync(recordings, algorithm='specialist', output=output)
+
+            self.assertEqual(first, second)
+            self.assertEqual(first['status'], 'ready')
+            self.assertEqual(first['raw_audio_offset_s']['right'], 0.25)
+            self.assertEqual(first['offsets_s']['right'], -0.25)
+            self.assertEqual(first['video_offset_status'], 'specialist_assumed_video_clock')
+            estimate.assert_called_once()
+
+    def test_ready_record_is_consumable_only_with_matching_recordings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / 'left.insv'
+            other = root / 'right.insv'
+            output = root / 'sync.json'
+            reference.write_bytes(b'left')
+            other.write_bytes(b'right')
+            fake = AudioSyncEstimate(other_started_later_s=0.12, peak_ratio=2.0, peak_value=3.0,
+                                     sample_rate_hz=16000, max_offset_s=30.0)
+            recordings = {'left': reference, 'right': other}
+            with patch('umi.scene.inputs.synchronization.estimate_offset_from_files', return_value=fake):
+                estimate_audio_sync(recordings, algorithm='specialist', output=output)
+            result = load_ready_audio_sync(output, recordings, algorithm='specialist')
+            self.assertEqual(result['offsets_s'], {'left': 0., 'right': -.12})
+            self.assertEqual(result['sync_record_sha256'], provenance.file_hash(output))
+            other.write_bytes(b'changed')
+            with self.assertRaisesRegex(ValueError, '指纹已变化'):
+                load_ready_audio_sync(output, recordings, algorithm='specialist')
+
+    def test_failed_estimate_is_persisted_and_blocks_repeated_consumption(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / 'left.insv'
+            other = root / 'right.insv'
+            output = root / 'sync.json'
+            reference.write_bytes(b'left')
+            other.write_bytes(b'right')
+            recordings = {'left': reference, 'right': other}
+            with patch('umi.scene.inputs.synchronization.estimate_offset_from_files',
+                       side_effect=AudioSyncError('no common event')):
+                with self.assertRaisesRegex(AudioSyncError, '音频同步失败'):
+                    estimate_audio_sync(recordings, algorithm='specialist', output=output)
+            record = json.loads(output.read_text())
+            self.assertEqual(record['status'], 'failed')
+            with self.assertRaisesRegex(ValueError, '上次 specialist 音频同步失败'):
+                load_ready_audio_sync(output, recordings, algorithm='specialist')
 
 
 if __name__ == '__main__':

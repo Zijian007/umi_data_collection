@@ -13,8 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from umi.devices.x3.insv_reader import read_metadata, metadata_summary
-
+from umi.devices.x3.insv_reader import metadata_summary, read_metadata
 
 FIELDS = ('xi fx fy cx cy yaw pitch roll tx ty tz k1 k2 k3 p1 p2 '
           'width height lens_type').split()
@@ -130,6 +129,7 @@ def working_from_environment(native: dict) -> np.ndarray:
     its translation stays in the original body frame. Body is not the IMU.
     """
     from scipy.spatial.transform import Rotation
+
     from umi.core.geometry import transform, validate_transform
 
     body_from_lens = {}

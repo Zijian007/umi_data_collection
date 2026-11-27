@@ -1,15 +1,22 @@
-from umi.workflows.scene.inputs import scene as kit_inputs
 """在临时目录生成测试标定包，不依赖工作区里的设备登记或演示数据。"""
 import shutil
 from copy import deepcopy
 from pathlib import Path
 
-from umi.infra.file_store import read_yaml, write_yaml
 from umi.devices import calibration_assets
+from umi.infra.file_store import read_yaml, write_json, write_yaml
+from umi.infra.provenance import file_hash
+from umi.scene.collection import kit as kit_inputs
 
 
 def legacy_bundle(path: Path) -> Path:
-    calibration_assets.make_bundle(calibration_assets.SAMPLE_CAMERA_JSON, path)
+    path.mkdir(parents=True, exist_ok=True)
+    target = path / 'calibration_r1440.json'
+    shutil.copyfile(calibration_assets.SAMPLE_CAMERA_JSON, target)
+    measured = calibration_assets.read_basalt(target)
+    write_json(path / 'bundle.json', dict(kind='umi_traj_calibration_bundle', schema_version=2,
+        calibration_sha256=file_hash(target), T_imu_cam={'p': measured['p'], 'q_xyzw': measured['q_xyzw']},
+        cam_time_offset_ns=measured['cam_time_offset_ns']))
     return path
 
 
@@ -50,9 +57,16 @@ def write_kit(name: str, arms: dict, *, description='') -> dict:
     return kit_inputs.read_kit(name)
 
 
+def _scene_text(source: dict) -> dict:
+    """Scene fields of a public collection or of an internal scene document used as a fixture seed."""
+    if 'arms' in source and 'kit' in source:
+        return {key: source[key] for key in ('description',) if key in source}
+    return dict(source.get('scene', {}))
+
+
 def write_batch(scene: Path, name: str, *, kit: str, arms=None, map_version=None) -> Path:
     """Write a manual declaration and persist its resolved test snapshot."""
-    from umi.workflows.scene import batch_snapshot as batches
+    from umi.scene.collection import batch as batches
     from umi.infra.file_store import write_yaml
 
     if scene.suffix in ('.yaml', '.yml'):
@@ -62,30 +76,30 @@ def write_batch(scene: Path, name: str, *, kit: str, arms=None, map_version=None
     batch = root / name
     if scene.suffix in ('.yaml', '.yml'):
         source = read_yaml(scene)
-        if 'recording' in source and 'map' in source and scene.name == 'collection.yaml':
-            scene_document = dict(source.get('scene', {}),
+        if 'arms' in source and 'map' in source and scene.name == 'collection.yaml':
+            scene_document = dict(_scene_text(source),
                                   layout=source.get('map', {}).get('layout', 'auto'),
                                   map_reference_arm=source.get('map', {}).get('reference_arm', 'left'))
         else:
-            scene_document = source.get('scene', {}) if scene.name == 'collection.yaml' else {}
+            scene_document = _scene_text(source) if scene.name == 'collection.yaml' else {}
     elif (scene / 'collection.yaml').is_file():
         source = read_yaml(scene / 'collection.yaml')
-        if 'recording' in source and 'map' in source:
-            scene_document = dict(source.get('scene', {}),
+        if 'arms' in source and 'map' in source:
+            scene_document = dict(_scene_text(source),
                                   layout=source.get('map', {}).get('layout', 'auto'),
                                   map_reference_arm=source.get('map', {}).get('reference_arm', 'left'))
         else:
-            scene_document = source.get('scene', {})
+            scene_document = _scene_text(source)
     else:
         candidates = sorted(scene.glob('*/collection.yaml')) if scene.is_dir() else []
         seed = [path for path in candidates if path.parent.name == 'seed']
         source = read_yaml((seed or candidates)[0]) if (seed or candidates) else {}
-        if 'recording' in source and 'map' in source:
-            scene_document = dict(source.get('scene', {}),
+        if 'arms' in source and 'map' in source:
+            scene_document = dict(_scene_text(source),
                                   layout=source.get('map', {}).get('layout', 'auto'),
                                   map_reference_arm=source.get('map', {}).get('reference_arm', 'left'))
         else:
-            scene_document = source.get('scene', {}) if source else {}
+            scene_document = _scene_text(source) if source else {}
     # Synthetic batches need a concrete topology when no mapping clips have
     # been staged yet; production auto mode still infers it from real clips.
     if not scene_document:
@@ -96,24 +110,23 @@ def write_batch(scene: Path, name: str, *, kit: str, arms=None, map_version=None
     old_tags = scene_document.get('tags', {})
     poster = None
     if old_tags:
-        poster = dict(
-            layout_path=old_tags.get('layout'),
-            detection=dict(enabled=old_tags.get('enabled', False)),
-            mapping=dict(enabled=old_tags.get('mapping', {}).get('enabled', False),
-                         scale_correction=dict(enabled=old_tags.get('mapping', {}).get('scale', {}).get('enabled', False))))
-    data = dict(kit=kit, recording=dict(arms=selected_arms),
-                scene=dict(description=scene_document.get('description', '')),
+        poster = dict(layout=old_tags.get('layout'), detection=old_tags.get('enabled', False))
+        mapping = old_tags.get('mapping', {})
+        poster_scale = ('correct' if mapping.get('scale', {}).get('enabled') else
+                        'diagnose' if mapping.get('enabled') else 'off')
+    data = dict(kit=kit, arms=selected_arms,
+                description=scene_document.get('description', ''),
                 map=dict(layout=scene_document.get('layout', 'auto'),
-                         reference_arm=scene_document.get('map_reference_arm', 'left'),
-                         selection=dict(policy='latest_prior')),
+                         reference_arm=scene_document.get('map_reference_arm', 'left')),
                 backend=dict(mode='scene_map'))
     if poster is not None:
-        data['environment_poster'] = poster
-        data['backend']['scene_map'] = dict(poster_constraint=dict(
-            enabled=old_tags.get('fusion', {}).get('enabled', False),
-            method=old_tags.get('fusion', {}).get('method', 'staged')))
+        data['poster'] = poster
+        data['map']['poster_scale'] = poster_scale
+        fusion = old_tags.get('fusion', {})
+        data['backend']['scene_map'] = dict(
+            poster_constraint=fusion.get('method', 'staged') if fusion.get('enabled', False) else 'off')
     if map_version is not None:
-        data['map']['selection']['version'] = map_version
+        data['map']['version'] = map_version
     write_yaml(batch / 'collection.yaml', data)
     return batches.save_record(batches.read_inputs(batch, require_mapping=False))
 
@@ -121,7 +134,7 @@ def write_batch(scene: Path, name: str, *, kit: str, arms=None, map_version=None
 def write_task(session, name: str, recording_paths: dict, *, expected_arms=None, instruction=None) -> Path:
     """Arrange a task record for tests of readers, maps and results; no CLI behavior."""
     from umi.store import layout
-    from umi.workflows.scene import recordings
+    from umi.scene.inputs import recordings
     from umi.infra.file_store import write_yaml
     import os
 
@@ -139,8 +152,8 @@ def write_task(session, name: str, recording_paths: dict, *, expected_arms=None,
     if configuration:
         collection_path = session.root / 'collection.yaml'
         collection = read_yaml(collection_path) if collection_path.is_file() else dict(
-            kit=session.kit['id'], recording=dict(arms=list(session.expected_arms)),
-            scene=dict(description=''), backend=dict(mode='scene_map'))
+            kit=session.kit['id'], arms=list(session.expected_arms),
+            description='', backend=dict(mode='scene_map'))
         collection.setdefault('tasks', {})[name] = dict(
             **({'arms': configuration.pop('expected_arms')} if 'expected_arms' in configuration else {}),
             **configuration)
@@ -163,11 +176,13 @@ def write_task_configuration(task: Path, data: dict) -> Path:
         batch = task
     path = batch / 'collection.yaml'
     collection = read_yaml(path) if path.is_file() else dict(
-        kit='rig', recording=dict(arms=['left', 'right']),
-        scene=dict(description=''), backend=dict(mode='scene_map'))
+        kit='rig', arms=['left', 'right'],
+        description='', backend=dict(mode='scene_map'))
     task_data = deepcopy(data)
-    if isinstance(task_data.get('synchronization'), dict) and 'mode' not in task_data['synchronization']:
-        task_data['synchronization']['mode'] = 'manual'
+    if 'synchronization' in task_data:
+        task_data['sync'] = task_data.pop('synchronization')
+    if isinstance(task_data.get('sync'), dict) and 'mode' not in task_data['sync']:
+        task_data['sync']['mode'] = 'manual'
     if 'expected_arms' in task_data:
         task_data['arms'] = task_data.pop('expected_arms')
     if 'reconstruction' in task_data and isinstance(task_data['reconstruction'], dict):

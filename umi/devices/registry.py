@@ -8,20 +8,18 @@ candidate validation by ``umi-calib``.
 
 from __future__ import annotations
 
-from pathlib import Path
 import json
 import os
 import re
 import shutil
 import tempfile
+from pathlib import Path
 
+from umi.devices import calibration_assets
 from umi.infra import provenance as artifact_identity
 from umi.infra.file_store import locked, write_json
-from umi.devices import calibration_assets
-from umi.infra.paths import PROJECT_ROOT, REGISTRY_ROOT
+from umi.infra.paths import REGISTRY_ROOT
 
-
-REPO = PROJECT_ROOT
 ROOT = REGISTRY_ROOT
 INDEX = ROOT / "index.json"
 CAMERAS = ROOT / "cameras"
@@ -121,8 +119,7 @@ def store_version(parent: Path, version: str, files: dict[str, Path], **metadata
 
 def _current_key(source: str) -> str:
     """来源名只用于选择指针，不能充当不可变版本身份。"""
-    from umi.devices.calibration_source import validate
-    return validate(source)
+    return calibration_assets.validate_intrinsics_source(source)
 
 
 def _version_id(*, serial: str, lens: str, source: str, files: dict[str, Path]) -> str:
@@ -176,7 +173,7 @@ def bundle_sha256(bundle_dir: Path) -> str:
 
 def read_insv_identity(path: Path) -> dict:
     """Serial / firmware from the INSV trailer. Does not decode video or IMU samples."""
-    from umi.devices.x3.insv_reader import parse_trailer, read_metadata, metadata_summary
+    from umi.devices.x3.insv_reader import metadata_summary, parse_trailer, read_metadata
 
     path = Path(path)
     tr = parse_trailer(path, gyro_parser=False)
@@ -246,13 +243,12 @@ def get(serial: str, *, calibration: str | None = None, allow_retired: bool = Fa
     device_record = index_data['devices'].get(serial)
     if device_record is None:
         raise UnknownCameraError(f'相机 {serial!r} 尚未登记；标定验收后执行 ./umi-calib install。')
-    from umi.devices import calibration_source as origin
     if intrinsics_source is not None:
-        origin.validate(intrinsics_source)
+        calibration_assets.validate_intrinsics_source(intrinsics_source)
         if calibration is None:
             calibration = device_record.get('calibration_sources', {}).get(intrinsics_source)
     selected = _record_view(serial, device_record, calibration=calibration, allow_retired=allow_retired)
-    origin.require(selected, intrinsics_source, label=f'相机 {serial} 标定')
+    calibration_assets.require_intrinsics_source(selected, intrinsics_source, label=f'相机 {serial} 标定')
     return selected
 
 
@@ -269,9 +265,8 @@ def register_rear(source: Path) -> dict:
     rear_calibration_record = json.loads(source.read_text())
     serial = validate_id(rear_calibration_record.get('camera_serial'))
     get(serial)
-    from umi.devices.calibration_source import read_rear
     try:
-        measurement, _ = read_rear(source, serial=serial)
+        measurement, _ = calibration_assets.read_rear(source, serial=serial)
     except ValueError as error:
         raise RegistryError(str(error)) from error
     key = _current_key(measurement['intrinsics_source'])
@@ -292,14 +287,13 @@ def register_rear(source: Path) -> dict:
 
 def current_rear_version(serial: str, source: str) -> str | None:
     """只读当前选择；缺少选择与选择损坏分开处理，后者不能自动兜底。"""
-    from umi.devices.calibration_source import validate, read_rear
-    validate(source)
+    calibration_assets.validate_intrinsics_source(source)
     record = load_index()['devices'].get(validate_id(serial))
     if record is None:
         raise UnknownCameraError(f'相机 {serial} 尚未登记')
     version = record.get('rear_calibration_sources', {}).get(source)
     if version is not None:
-        read_rear(rear_path(serial, version), serial=serial, expected_source=source)
+        calibration_assets.read_rear(rear_path(serial, version), serial=serial, expected_source=source)
     return version
 
 
@@ -337,14 +331,13 @@ def resolve_insv(path: Path, device: str | None = None, *, intrinsics_source: st
     ``device`` overrides the trailer serial (engineer). ``UMI_TRAJ_CALIB`` skips the registry and
     uses that camera bundle.
     """
-    from umi.devices import calibration_source as origin
     if intrinsics_source is not None:
-        origin.validate(intrinsics_source)
+        calibration_assets.validate_intrinsics_source(intrinsics_source)
     env = (os.environ.get("UMI_TRAJ_CALIB") or "").strip()
     if env:
         cal = (calibration_assets.describe(calibration_assets.SAMPLE_CAMERA_JSON.parent, 'factory')
                if env == 'factory' else calibration_assets.describe(Path(env).expanduser().resolve(), 'registry'))
-        origin.require(cal, intrinsics_source)
+        calibration_assets.require_intrinsics_source(cal, intrinsics_source)
         try:
             ident = read_insv_identity(path)
         except RegistryError:

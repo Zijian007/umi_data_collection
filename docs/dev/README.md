@@ -4,35 +4,40 @@
 
 配置和资产的职责见[权威来源](SSOT与权威来源.md)，变换方向、时钟与优化变量见[算法实现约定](算法实现约定.md)。
 
+海报后端的地图融合开关、双板精度与货架回退结果见[地图融合交接](海报后端地图融合交接.md)。
+
 ## 从入口沿流程阅读
 
-三个命令入口都是薄壳脚本，执行 `python -m umi.apps.<名称>`；`apps/` 只解析参数并调用 `workflows/`。
+三个命令入口都是薄壳脚本，执行 `python -m umi.apps.<名称>`；`apps/` 只解析参数并调用对应流程。
 
 | 流程 | 阅读入口 |
 |---|---|
-| 标定 | [标定代码指南](../../umi/workflows/calibration/README.md)：`umi/apps/calib.py` → `workflows/calibration/workflow.run()` / `verify()` |
-| 共享场景 | [场景代码指南](../../umi/workflows/scene/README.md)：`umi/apps/scene.py` 的 `COMMANDS` → `scene/batch_processing.run()` / `build()` → `scene/maps/repository.build_scene()` / `scene/workflow.run_episode()` |
-| 任务后端 | `scene/workflow.execute_episode()` → `scene/tasks/backend_routing.execute()` → `scene_map` / `poster_independent` / `poster_vio`（`auto` 由 `_AutoRoute` 按顺序尝试） |
-| 内部逐段引擎 | [逐段引擎指南](../../umi/workflows/segment/README.md)：`umi/apps/segment.py` → `segment/workflow.run_batch()` → `run_recording()` → `reconstruction.run_attempts()` |
-| 无场景地图的 VIO | [poster_vio 代码指南](../../umi/estimation/poster_vio/README.md)：`scene/tasks/poster_vio_inputs.prepare_task_inputs()` → `estimation/poster_vio/solver.solve_joint_poster_imu()` |
+| 标定 | [标定代码指南](../../umi/calibration/README.md)：`umi/apps/calib.py` → `calibration/workflow.run()` / `verify()` |
+| 场景任务 | [场景代码指南](../../umi/scene/README.md)：`umi/apps/scene.py` → `scene/run.run()` → `scene/run.run_episodes()` 与按需地图绑定 |
+| 任务后端 | `scene/run.execute_episode()` → `scene/routing.execute()` → `scene_map` / `poster_independent` / `poster_vio`（`auto` 由 `_AutoRoute` 按顺序尝试） |
+| 内部逐段引擎 | [逐段引擎指南](../../umi/reconstruction/segment/README.md)：`umi/apps/segment.py` → `segment/workflow.run_batch()` → `run_recording()` → `reconstruction.run_attempts()` |
+| 无场景地图的 VIO | [poster_vio 代码指南](../../umi/reconstruction/backends/poster_vio/README.md)：`reconstruction/backends/poster_vio/run.prepare_task_inputs()` → `reconstruction/backends/poster_vio/solver.solve_joint_poster_imu()` |
 | 三维查看 | [查看器代码指南](../../umi/apps/viewer/README.md)：`apps/viewer/server.main()` → `RecordingCatalog` → 浏览器播放状态 |
 | 共用视觉 | [视觉代码指南](../../umi/perception/README.md)：录像准备、ORB 建图/定位、海报检测 |
 | 相机数据 | [extraction.py](../../umi/devices/x3/extraction.py) 提取时间戳和 IMU；[frame.py](../../umi/core/frame.py) 定义录制几何、裁剪、帧率和时钟约定 |
 | 设备选择 | [registry.py](../../umi/devices/registry.py) 读取内部序列号、选择标定与夹爪并核对哈希 |
-| 训练导出 | [数据集代码指南](../../umi/dataset/README.md) |
 
-`workflow.py` 展示顺序、阶段衔接与失败收尾；阶段函数返回具名结果。标定的 `acceptance.py` 决定验收，`result_io.py` 保存和校验记录，`reports.py` 只负责展示；第三方进程、依赖与日志在 `pipeline/runtime.py`，Basalt 适配在 `solve/basalt.py`。场景发布、报告和审计在 `scene/tasks/publication.py`，阶段缓存在 `umi/store/cache.py`；`umi/perception/decoding.py` 一次解码向多个检测器分发帧。标定的完整数据流、状态、恢复与登记契约见[标定架构与验证](标定架构与验证.md)。
+`workflow.py` 展示顺序、阶段衔接与失败收尾；阶段函数返回具名结果。标定的 `acceptance.py` 决定验收，`result_io.py` 保存和校验记录，`reports.py` 只负责展示；第三方进程、依赖与日志在 `pipeline/runtime.py`，Basalt 适配在 `solve/basalt.py`。场景发布、报告和审计在 `scene/publication.py`，阶段缓存在 `umi/store/cache.py`；`umi/perception/decoding.py` 一次解码向多个检测器分发帧。标定的完整数据流、状态、恢复与登记契约见[标定架构与验证](标定架构与验证.md)。
 
 ## 分层结构
+
+一次采集任务从 scene/run.py 进入。场景负责批次、地图版本、候选顺序与发布。重建代码集中在 reconstruction/，其中 backends/ 实现三个可选后端，segment/ 提供单段重建，estimation/ 提供共用的地图几何与融合。标定和任务流程通过这些入口获取轨迹。查看器读取已发布的轨迹结果。
 
 `umi/` 按依赖方向分层，上层可以依赖下层，下层不得依赖上层。[`.importlinter`](../../.importlinter) 声明这些层，CI 用 `lint-imports` 检查；类型标注专用导入（`if TYPE_CHECKING:`）不计入。
 
 | 层（上 → 下） | 目录 | 职责 |
 |---|---|---|
 | apps | [umi/apps](../../umi/apps) | 命令入口 `calib.py`、`scene.py`、`segment.py`、环境检查 `health.py` 和查看器 `viewer/`；只解析参数、调用流程、格式化输出 |
-| dataset | [umi/dataset](../../umi/dataset) | 已验收结果 → 训练中间包；固定夹具相对位姿评估 |
-| workflows | [umi/workflows](../../umi/workflows) | 流程编排：`calibration/`、`scene/`（批次、地图、任务后端适配与发布）、`segment/`（内部逐段引擎与融合工作进程） |
-| estimation | [umi/estimation](../../umi/estimation) | 数值算法：`fusion/`（独立视觉惯性融合）、`fixed_map/`（固定地图融合与海报尺度）、`poster_vio/`（任务内联合图）、`factors/`（共用海报因子）、`inertial.py`、地图米制化 `mapping.py` |
+| calibration | [umi/calibration](../../umi/calibration) | 标定与验收流程 |
+| scene | [umi/scene](../../umi/scene) | 批次准备、地图、任务后端、轨迹发布与固定夹具评估 |
+| backends | [umi/reconstruction/backends](../../umi/reconstruction/backends) | scene_map、poster_independent、poster_vio 的观测到轨迹流程 |
+| segment | [umi/reconstruction/segment](../../umi/reconstruction/segment) | 内部逐段重建引擎与融合工作进程 |
+| estimation | [umi/reconstruction/estimation](../../umi/reconstruction/estimation) | 数值算法：`fusion/`（独立视觉惯性融合）、`fixed_map/`（固定地图融合与海报尺度）、`poster_factors.py`（共用海报因子）、`inertial.py`、地图米制化 `mapping.py` |
 | store | [umi/store](../../umi/store) | 批次磁盘布局、阶段缓存 `StageCache`、结果读取，以及场景数据模型 `models.py` |
 | perception | [umi/perception](../../umi/perception) | 解码、录像准备、ORB 建图/定位、海报检测与 PnP、音频同步 `audio/`、夹爪标签 `gripper/` |
 | devices | [umi/devices](../../umi/devices) | X3 原片读取 `x3/`、相机登记表、标定资产与来源、轨迹用标定选择 `selection.py` |
@@ -49,18 +54,18 @@
 - 位姿几何、时钟换算和录制规格等公共约定放 `core/`。通用文件读写放 `infra/`，TUM 轨迹读写入口见 [file_store.py](../../umi/infra/file_store.py)。
 - 设备或标定文件的读写放 `devices/`。提取图像和音频观测放 `perception/`，求解与验收数值放 `estimation/`。
 - 一个算法需要的参数，在算法旁定义窄参数类（如 `PosterVioParameters`），由 `SceneParameters.for_algorithm()` 投影，算法不直接依赖配置文件结构。
-- 编排顺序、失败收尾、发布与报告放 `workflows/`；命令行参数与输出格式放 `apps/`。
+- 场景编排和发布放 `scene/`，标定编排放 `calibration/`，后端专用求解放 `reconstruction/backends/`；命令行参数与输出格式放 `apps/`。
 - 跨层引用前先看 `lint-imports` 是否通过；需要反向依赖时，通常说明该代码应下移一层。
 
 ### 融合工作进程
 
-独立融合由 [`segment/fusion_runner.py`](../../umi/workflows/segment/fusion_runner.py) 执行：重建阶段调用 `execute(FusionRequest, ...)`，它在一次性的 spawn 工作进程里调用 `fuse()`。不用线程是因为 GTSAM 的 Python 绑定在优化期间持有 GIL，线程会让左右手融合串行；工作进程保留双手并行、`--cores` 的 CPU 绑定、nice、崩溃隔离，并把 stdout/stderr 写入 `logs/fuse.log`。输入、输出与失败诊断（`alignment_failure.json`、`poster_failure.json`）仍通过文件交换。
+独立融合由 [`segment/fusion_runner.py`](../../umi/reconstruction/segment/fusion_runner.py) 执行：重建阶段调用 `execute(FusionRequest, ...)`，它在一次性的 spawn 工作进程里调用 `fuse()`。不用线程是因为 GTSAM 的 Python 绑定在优化期间持有 GIL，线程会让左右手融合串行；工作进程保留双手并行、`--cores` 的 CPU 绑定、nice、崩溃隔离，并把 stdout/stderr 写入 `logs/fuse.log`。输入、输出与失败诊断（`alignment_failure.json`、`poster_failure.json`）仍通过文件交换。
 
 ## 缓存与复用
 
 缓存和结果复用**只依据数据输入**：原片内容、所选标定与资产、参数与配置。代码和外部引擎的版本不参与判断，也不需要维护任何源文件清单。
 
-- 改了算法、重编 ORB-SLAM3/Basalt 或升级依赖后，用 `--recompute` 重算。`umi-scene run --recompute` 重算任务结果，并跳过本次运行前的解码、定位和检测缓存。本次运行中新生成的缓存和有效的音频同步记录仍可复用。需要重建已有地图时用 `umi-scene build --recompute`。阶段缓存的时间检查见 `umi/infra/file_store.py` 的 `recompute()` / `is_current()`。
+- 场景算法或引擎变化后，用 `umi-scene run --force` 重算本次实际执行的阶段。标定用 `umi-calib run --recompute` 建立新版本。阶段缓存的时间检查见 `umi/infra/file_store.py`。
 - 结果、地图清单、逐段引擎设置和标定记录写入 `code_revision`（git 提交号及 `umi/` 是否有未提交改动），只用于追溯。
 - 原片、设备资产、配置及结果文件的完整性用 `file_hash()` 的原始字节 SHA256 校验。数组缓存统一用 `file_store.read_npz_cache()` / `write_npz_cache()`：完成标记记录输入身份（按 JSON 规范形式比较）和数组文件哈希。
 
@@ -82,27 +87,27 @@
 ./test.sh        # 一键测试：主单元测试 (unittest，含宽度映射) + 前端测试 (node)
 ./test.sh --all  # 包含 CLI check 运行时检查与 KB4 C++ 数值回归
 ./test.sh --quick  # 快速内循环：数值、schema、时序与缓存契约测试
-./test.sh --unit test_rear_assets test_calibration_inventory  # 日常改动：只跑相关模块
-./test.sh --unit test_config.ConfigTests.test_c_isolates_task_poster_and_dual_mode_but_keeps_solver_parameters
+./test.sh --unit test_segment test_calibration  # 运行两个主题模块
+./test.sh --unit test_segment.RearAssetsTests test_calibration.InventoryTests
+./test.sh --unit test_configuration.ConfigTests.test_yaml_rejects_duplicate_keys_at_any_level
 ```
 
-无指定测试目标时，`test.sh` 会按测试模块并行启动 8 个 Python worker。可用
-`UMI_TEST_JOBS=1 ./test.sh --unit` 恢复串行，或设置更适合本机资源的 worker 数量。指定模块或单个用例时仍只执行指定目标。
+全量和快速档按主题模块并行执行，默认最多 8 个 Python worker。可用
+`UMI_TEST_JOBS=1 ./test.sh --unit` 恢复串行，或设置更适合本机资源的 worker 数量。
 
 也可分项执行各环境原生命令：
 
 ```bash
 .deps/calib_env/bin/python -m unittest discover -s tests -q
 node --test tests/js/viewer.test.mjs
-./umi-calib check
-./umi-scene check
+./test.sh --checks
 ```
 
 Node 只用于查看器前端测试，运行查看器不需要 Node。Python 测试覆盖输入、标定验收、流程、复用、重建协议、产物布局与查看器；涉及求解器和 SLAM 的单元测试使用替代引擎。真实录像端到端回归和独立误差评估需另外记录输入、设备标定、版本及结果。
 
-`--quick` 用于日常内循环，跳过建图、任务、场景和查看器等端到端工作流；`--unit` 不带模块时仍运行全部 Python 测试。`--unit` 带模块时接受 `test_模块` 或 `test_模块.测试类.方法`，从 `tests/` 解析。定位和迭代时运行快速档或相关模块，涉及公共配置、登记表或融合接口的改动收尾再跑全量。选跑不会自动推断依赖，也不会替代最后的跨模块回归。
+`--quick` 从主题模块中选跑数值、配置、时序和接口契约类。`--unit` 默认运行全部 Python 测试，也可按 `test_模块`、`test_模块.测试类` 或 `test_模块.测试类.方法` 选跑。
 
-仓库的轻量 CI 位于 `.github/workflows/quality.yml`：只安装 NumPy、Ruff 和 import-linter，检查全仓 Python 语法、可移植训练读取器边界、`ruff check umi` 与 `lint-imports` 分层合约，不依赖 GTSAM、OpenCV、SLAM 或真实录像。完整算法回归仍使用本机 `.deps` 环境执行 `./test.sh --quick`、`./test.sh --unit` 和必要的 `./test.sh --all`。
+仓库的轻量 CI 位于 `.github/workflows/quality.yml`：使用 Python、Ruff 和 import-linter 检查源码语法、代码规范与依赖分层，不依赖 GTSAM、OpenCV、SLAM 或真实录像。完整算法回归仍使用本机 `.deps` 环境执行 `./test.sh --quick`、`./test.sh --unit` 和必要的 `./test.sh --all`。
 
 ### 黄金回归
 
@@ -128,8 +133,8 @@ Node 只用于查看器前端测试，运行查看器不需要 Node。Python 测
 | 首次安装与一次采集的主流程 | [01 安装与日常使用](../01-安装与日常使用.md) |
 | 标定录制、求解、验收和登记 | [02 相机与夹爪标定](../02-相机与夹爪标定.md) |
 | 场景/批次选项、配对、地图复用和排障 | [03 场景处理](../03-场景处理.md) |
-| 查看器、人工验收、成果包和结果字段 | [04 结果查看与验收](../04-结果查看与验收.md) |
-| 训练输入、宽度测量、数组和就绪条件 | [05 训练数据准备与导出](../05-训练数据准备与导出.md) |
+| 查看器和结果字段 | [04 结果查看](../04-结果查看.md) |
+| 任务指令、双手同步与夹爪宽度 | [05 任务同步与夹爪测量](../05-任务同步与夹爪测量.md) |
 | 资产目录、版本、坐标约定 | [设备与坐标](../principles/设备与坐标.md) |
 | 算法过程与当前验证边界 | [算法原理](../principles/算法原理.md) |
 | 内部模块职责和引擎输出 | 对应 umi 模块 README |
@@ -142,8 +147,8 @@ Node 只用于查看器前端测试，运行查看器不需要 Node。Python 测
 
 - 扩展真实录像回归的录像覆盖，并记录标定 ID、引擎版本、耗时及重复运行波动。
 - 独立测量相机到 TCP 的几何，验证目前使用的 CAD 名义值。
-- 为需要训练开合通道的夹爪补做像素到毫米的宽度标定。仅有标签中心距的套件保持 `training_ready: false`。
+- 为需要输出夹爪开口的套件补做像素到毫米的宽度标定。
 - 对 `poster_vio` 做实拍精度和资源基准验证，再评估动态物体筛除、滑窗边缘化和 GPU 加速。
 - 明确仓库许可证及对外分发说明。
 
-实时预览、任务卡、上传、LeRobot 适配、模型训练和机械臂部署属于后续范围。软件回归结果和现场精度证据分别记录。
+实时预览、任务卡和上传属于后续范围。软件回归结果和现场精度证据分别记录。

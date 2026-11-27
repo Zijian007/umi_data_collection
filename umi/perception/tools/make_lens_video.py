@@ -3,17 +3,17 @@
 The crop comes from umi.core.frame (right = front, left = rear). Frame k of the output
 is dataset frame k, so the two lenses pair by index.
 
-usage: make_lens_video.py <insv> <euroc_mav0_dir> <out_mp4> <left|right> --config trajectory.yaml
+usage: make_lens_video.py <insv> <euroc_mav0_dir> <out_mp4> <left|right> --config <resolved_config.yaml>
 """
 
-from dataclasses import asdict
-from pathlib import Path
 import argparse
 import csv
 import hashlib
 import json
 import os
 import subprocess
+from dataclasses import asdict
+from pathlib import Path
 
 from umi.config import loader as config
 from umi.config import parameter_models
@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('insv', 'mav0', 'out', 'half'):
         parser.add_argument(name)
-    parser.add_argument('--config', type=Path, required=True, help='父流程写出的完整 trajectory YAML')
+    parser.add_argument('--config', type=Path, required=True, help='父流程按 reconstruction.yaml 结构写出的轨迹参数')
     parser.add_argument('--source-frame-start', type=int, default=0, help='原片中保留的第一帧')
     args = parser.parse_args(argv)
     parameters = config.load('trajectory', args.config).values

@@ -1,13 +1,13 @@
 """场景磁盘布局；用户输入留在外层，程序维护的地图、运行、缓存和状态统一位于 .pipeline。"""
 
-from pathlib import Path
 import json
 import os
+from pathlib import Path
 
-from umi.infra import provenance
-from umi.infra.file_store import locked as storage_lock, read_yaml
 from umi.config.collection_schema import normalize_collection
-
+from umi.infra import provenance
+from umi.infra.file_store import locked as storage_lock
+from umi.infra.file_store import read_yaml
 
 INTERNAL_DIRECTORIES = frozenset({
     'archive', 'cache', 'runs', 'versions', 'maps', 'mapping', 'videos',
@@ -20,12 +20,7 @@ LEGACY_USER_FILES = {'scene.yaml', 'batch.yaml', 'task.yaml'}
 
 
 def reject_legacy_user_file(path: Path) -> None:
-    """Reject the retired split YAML entry points.
-
-    Historical result directories remain readable through their frozen
-    ``.pipeline`` manifests, but a new run must never silently migrate a
-    split scene/batch/task declaration.
-    """
+    """Direct retired split YAML entry points to the batch collection."""
     if path.name in LEGACY_USER_FILES:
         raise ValueError(
             f'{path.name} 已移除；请将场景、批次和任务配置合并到批次根目录的 collection.yaml')

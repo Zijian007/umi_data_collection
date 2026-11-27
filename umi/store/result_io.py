@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from dataclasses import dataclass
-from pathlib import Path
 import csv
 import json
 import math
 import os
-from umi.infra import provenance as artifact_identity, provenance
+from collections.abc import Iterator
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from umi.infra import provenance as artifact_identity
+from umi.store import layout
+
+if TYPE_CHECKING:
+    from umi.store.models import Episode
 
 
 TCP_COLUMNS = ('t_episode_s', 'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw')
-SCENE_RESULT_VERSIONS = (4, 5, 6)
+SCENE_RESULT_VERSIONS = (5, 6)
 
 
 @dataclass(frozen=True)
@@ -35,31 +41,25 @@ def _internal_publication(directory: Path) -> bool:
 
 
 def result_paths(directory: Path) -> ResultPaths:
-    """Resolve a legacy run, an internal run or its published result package."""
+    """Resolve an internal run, its publication or its published data directory."""
     directory = directory.resolve()
     if _internal_publication(directory):
         return ResultPaths(directory.parent, directory, directory / 'data')
     published = directory / 'published'
     if (published / 'data/episode.json').is_file():
         return ResultPaths(directory, published, published / 'data')
-    data = directory / 'data'
-    if (data / 'episode.json').is_file():
-        return ResultPaths(directory, directory, data)
-    if directory.name == 'data' and _internal_publication(directory.parent) and (directory / 'episode.json').is_file():
+    if directory.name == 'data' and _internal_publication(directory.parent):
         return ResultPaths(directory.parent.parent, directory.parent, directory)
-    return ResultPaths(directory, directory, directory)
+    return ResultPaths(directory, directory, directory / 'data')
 
 
 def published_arm_run(directory: Path) -> Path:
-    """Find the run containing an arm's published data or legacy files."""
-    data = directory.resolve().parent
-    if data.name == 'data' and (data / 'episode.json').is_file():
-        return result_paths(data.parent).run
-    return data
+    """Find the run from the arm directory in published scene data."""
+    return result_paths(directory.resolve().parent.parent).run
 
 
 def arm_evidence(directory: Path, name: str) -> Path:
-    """Read a per-arm diagnostic from its run, or beside a legacy arm."""
+    """Locate a per-arm scene diagnostic in the same run."""
     return published_arm_run(directory) / directory.name / 'details' / name
 
 
@@ -67,13 +67,17 @@ def read_result(paths: ResultPaths) -> dict:
     published = paths.published.resolve()
     if not published.is_relative_to(paths.run) or not paths.manifest.resolve().is_relative_to(published):
         raise ValueError('结果清单超出发布目录')
-    return json.loads(paths.manifest.read_text(encoding='utf-8'))
+    manifest = json.loads(paths.manifest.read_text(encoding='utf-8'))
+    if not isinstance(manifest, dict):
+        raise ValueError('任务清单必须是 JSON 对象')
+    return manifest
 
 
 def validate_result(paths: ResultPaths, manifest: dict) -> None:
+    if manifest.get('schema_version') not in SCENE_RESULT_VERSIONS:
+        raise ValueError('任务清单需要受支持的结果版本')
     validate_assets(paths.published, manifest['assets'])
-    if manifest.get('schema_version') in (5, 6):
-        validate_assets(paths.run, manifest['evidence_assets'])
+    validate_assets(paths.run, manifest['evidence_assets'])
 
 
 def is_local_scene(coordinate_record: dict) -> bool:
@@ -102,6 +106,13 @@ def _validate_poster_placement(matrix) -> None:
         raise ValueError('海报坐标旋转必须为右手正交矩阵')
 
 
+def task_poster_frame(episode: Episode, layout_hash: str) -> dict:
+    """同一组原片和布局共享任务海报参考系，包括换后端或换地图重新求解。"""
+    recordings = {arm: ref['sha256'] for arm, ref in episode.recording_refs.items()}
+    identity = artifact_identity.canonical_hash(dict(recordings=recordings, layout=layout_hash))
+    return dict(frame_id=f'poster:{identity}', scope='task_poster', axes='board_layout', units='metres')
+
+
 def scene_map_identity(map_manifest: dict) -> str:
     """固定地图的坐标身份和全部资产共同参与任务复用。"""
     return artifact_identity.canonical_hash({key: map_manifest[key]
@@ -110,11 +121,13 @@ def scene_map_identity(map_manifest: dict) -> str:
 
 def scene_reference(manifest: dict) -> dict:
     """读取唯一的场景坐标声明，并核对它与输入摘要中的地图身份一致。"""
+    if manifest.get('schema_version') not in SCENE_RESULT_VERSIONS:
+        raise ValueError('任务清单需要受支持的结果版本')
     scene = manifest['scene']
     if 'T_board_scene' in scene and (manifest.get('kind') != 'umi_scene_episode' or not is_poster_scene(scene)):
         raise ValueError('地图到海报变换与结果坐标声明不一致')
     if manifest.get('kind') == 'umi_poster_episode':
-        if (manifest.get('schema_version') not in SCENE_RESULT_VERSIONS or not is_poster_scene(scene)
+        if (not is_poster_scene(scene)
                 or not scene.get('frame_id', '').startswith('poster:')
                 or scene.get('version') is not None or manifest.get('map') is not None):
             raise ValueError('任务海报坐标声明无效')
@@ -129,8 +142,6 @@ def scene_reference(manifest: dict) -> dict:
                 scene.get('version') is not None or len(manifest['arms']) != 1 or manifest.get('map') is not None):
             raise ValueError('独立局部结果的坐标声明无效')
         return scene
-    if manifest.get('schema_version') not in SCENE_RESULT_VERSIONS:
-        raise ValueError('任务清单需要受支持的结果版本')
     reference = scene
     if is_poster_scene(scene):
         reference = manifest['inputs'].get('scene_map_reference')
@@ -153,7 +164,7 @@ def scene_reference(manifest: dict) -> dict:
 def _manifest(directory: Path, manifest: dict | None) -> dict:
     if manifest is None:
         path = directory.parent / 'episode.json'
-        if not path.is_file():
+        if directory.parent.name != 'data' or not path.is_file():
             raise ValueError(f'缺少当前格式任务清单：{path}')
         manifest = json.loads(path.read_text(encoding='utf-8'))
     if (manifest.get('kind') not in ('umi_scene_episode', 'umi_local_episode', 'umi_poster_episode')
@@ -203,12 +214,6 @@ def read_arm_settings(directory: Path, manifest: dict | None = None) -> dict:
         T_camera_tcp=arm_metadata['T_camera_tcp'], tcp_frame=manifest['tcp_frames'][arm],
         video_time_offset_s=arm_metadata.get('video_time_offset_s', manifest['synchronization']['offsets_s'][arm]),
         video_parameters=manifest['inputs']['trajectory_parameters']['video'], frame_geometry=arm_metadata['frame_geometry'])
-
-
-def trajectory_path(directory: Path) -> Path:
-    """返回场景统一轨迹表；独立轨迹结果使用 TUM 文件。"""
-    combined = directory / 'trajectory.csv'
-    return combined if combined.is_file() else directory / 'traj_tcp.txt'
 
 
 def pose_rows(path: Path) -> Iterator[list[str]]:
@@ -267,7 +272,7 @@ def recording_identity(path: Path) -> dict:
 
 def artifact_hashes(directory: Path, roots: tuple[str, ...]) -> dict:
     """directory 下指定文件或子树内文件的相对路径 → SHA256。"""
-    return {str(path.relative_to(directory)): provenance.file_hash(path)
+    return {str(path.relative_to(directory)): artifact_identity.file_hash(path)
             for root in (directory / name for name in roots)
             for path in ([root] if root.is_file() else sorted(root.rglob('*'))) if path.is_file()}
 
@@ -278,5 +283,41 @@ def validate_assets(directory: Path, hashes: dict) -> None:
         raise ValueError('场景/任务资产清单为空')
     for name, digest in hashes.items():
         target = (directory / name).resolve()
-        if not target.is_relative_to(directory.resolve()) or not target.is_file() or provenance.file_hash(target) != digest:
+        if not target.is_relative_to(directory.resolve()) or not target.is_file() or artifact_identity.file_hash(target) != digest:
             raise ValueError(f'场景/任务资产缺失、越界或内容已变：{name}')
+
+
+def task_state(root: Path, episode_path: Path, session_path: Path, expected_arms, recordings):
+    state = layout.read_state(root)
+    attempt = state.get('attempt', {})
+    status = 'pending'
+    if set(expected_arms) - set(recordings):
+        status = 'incomplete'
+    elif (attempt.get('manifest_sha256') == artifact_identity.file_hash(episode_path)
+          and attempt.get('session_sha256') == artifact_identity.file_hash(session_path)
+          and attempt.get('task_configuration_sha256', artifact_identity.canonical_hash({})) == layout.task_configuration_hash(root)):
+        status = attempt['status']
+
+    publications = []
+    for link in (root / 'results', root / 'local_results'):
+        if not link.exists():
+            continue
+        paths = result_paths(link)
+        if not paths.manifest.resolve().is_relative_to(layout.metadata(root, 'runs').resolve()) or not paths.manifest.is_file():
+            continue
+        try:
+            if read_result(paths).get('schema_version') not in SCENE_RESULT_VERSIONS:
+                continue
+        except (OSError, ValueError):
+            continue
+        publications.append(dict(path=str(link), run=layout.run_reference(root, paths.run)))
+    # Reuse can select an older publication without updating the link timestamp.
+    preferred = state.get('published_run', attempt.get('run'))
+    published = next((p for p in publications if p['run'] == preferred), None)
+    if published is None and publications:
+        published = max(publications, key=lambda p: Path(p['path']).lstat().st_mtime_ns)
+    successful = status in ('ok', 'skipped', 'local_ok', 'local_skipped')
+    current = bool(successful and published and published['run'] == attempt.get('run'))
+    if successful and not current:
+        status = 'pending'
+    return dict(status=status, attempt=attempt, published=published, current=current)

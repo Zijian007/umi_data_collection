@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 from umi.config import operational_settings as settings
-from umi.perception import runtime
 from umi.infra.orb_install import exporter_paths
-
+from umi.perception import runtime
 
 MAX_POINTS = 50000
 
@@ -28,11 +27,11 @@ def read_atlas(archive: Path, output: Path, *, log: Path | None = None) -> dict:
         if not executable.is_file():
             raise MapDataError('缺少 umi_export_atlas，请运行 install.sh 更新轨迹组件')
         runtime.run_logged(['timeout', str(timeout), *command], log,
-                           stage='导出场景地图', environment=dict(os.environ))
+                           stage='转换地图图集', environment=dict(os.environ))
     else:
         for path in (archive, executable, vocabulary):
             if not path.is_file():
-                raise MapDataError(f'地图读取缺少 {path.name}；导出器可通过 install.sh 安装')
+                raise MapDataError(f'地图读取缺少 {path.name}；图集转换工具可通过 install.sh 安装')
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired as error:

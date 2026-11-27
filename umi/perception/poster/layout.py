@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
-import json
 
 import numpy as np
 
 from umi.infra import provenance
 from umi.infra.paths import ENVIRONMENT_POSTER_LAYOUT as DEFAULT_LAYOUT
 from umi.infra.paths import HARDWARE_ROOT
-
 
 _LEGACY_LAYOUT = HARDWARE_ROOT / 'calibration_targets' / DEFAULT_LAYOUT.name
 

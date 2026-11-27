@@ -8,9 +8,11 @@ name = umi 分层：上层可依赖下层，下层不得依赖上层
 type = layers
 layers =
     umi.apps
-    umi.dataset
-    umi.workflows
-    umi.estimation
+    umi.calibration
+    umi.scene
+    umi.reconstruction.backends
+    umi.reconstruction.segment
+    umi.reconstruction.estimation
     umi.store
     umi.perception
     umi.devices
@@ -22,6 +24,7 @@ layers =
 name = 流程之间：标定 > 场景 > 内部逐段引擎
 type = layers
 layers =
-    umi.workflows.calibration
-    umi.workflows.scene
-    umi.workflows.segment
+    umi.calibration
+    umi.scene
+    umi.reconstruction.backends
+    umi.reconstruction.segment

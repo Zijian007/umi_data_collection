@@ -1,25 +1,18 @@
-kit: kit_001  # 已有 hardware/kits/<名称>/kit.yaml 的目录名字符串；必填，定义设备和夹爪资产。
+kit: kit_001  # hardware/kits/<名称>/kit.yaml 的目录名；定义设备和夹爪资产。
+arms: [left, right]  # 本批次使用手；任务可覆盖为子集，缺片不会自动变单手。
+description: test shelf  # 场景描述；身份来自目录名。
 
-recording:  # 批次默认采集使用手；任务可覆盖为子集。
-  arms: [left, right]  # 候选 [left] / [right] / [left, right]；必须是 kit 的非空子集，缺片不会自动变单手。
-  audio_sync:
-    enabled: true  # 本批次按双手录音估计时间偏移。
-    algorithm: kiwi  # specialist=音量包络互相关（默认）；kiwi=频谱指纹投票 + GCC-PHAT 精对齐。
+sync:  # 双手任务默认同步方式；任务可用 tasks.<take>.sync 覆盖。
+  mode: audio_auto  # audio_auto=从录音估计偏移；assumed_simultaneous=按同时开始。
+  algorithm: kiwi  # specialist=音量包络互相关（项目默认）；kiwi=频谱指纹投票 + GCC-PHAT 精对齐。
 
-scene:  # 场景描述配置表；身份来自目录名，不在此处填写算法参数。
-  description: test shelf  # 任意描述字符串，可为空；不定义坐标系或算法。
+poster:  # 场景中的环境海报；各阶段是否使用由 map.poster_scale、backend 决定。
+  layout: ../../hardware/environment_poster/environment_poster.json  # 相对 scenes/<scene>/，也可绝对路径。
+  detection: true  # 运行海报检测；false 会与海报后端冲突。
 
-environment_poster:  # 海报布局与用途；海报/auto 后端只需布局即可推导必需能力。
-  layout_path: ../../hardware/environment_poster/environment_poster.json  # 非空布局 JSON 路径；相对 scenes/<scene>/，也可绝对路径；文件须可读取。
-  detection:  # 可选检测开关；省略时随用途/后端推导。
-    enabled: true  # true=检测；false=显式关闭，与开启用途或海报/auto 后端冲突。
-
-backend:  # 批次默认任务后端；tasks.<take>.backend 可覆盖。
-  mode: poster_vio  # 候选 scene_map、poster_independent、poster_vio、auto。
+backend:  # 批次默认后端；tasks.<take>.backend 可覆盖。
+  mode: poster_vio  # scene_map / poster_independent / poster_vio / auto。
   scene_map:
-    poster_constraint:
-      enabled: true  # 使用场景地图后端时加入海报约束。
-      method: staged  # staged=地图与 IMU 基线后优化；joint=视觉种子联合优化。
+    poster_constraint: staged  # staged=地图与 IMU 基线后优化；joint=视觉种子联合优化；off=不用海报。
   poster_vio:
-    base_tag:
-      enabled: false  # 此批次关闭夹爪基座标签约束。
+    base_tag: false  # 此批次关闭夹爪基座标签约束。

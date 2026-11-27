@@ -1,14 +1,15 @@
 """进程内冻结的操作配置；与轨迹/标定算法 --config 独立。"""
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
-import json
-import os
 
 from ruamel.yaml.error import YAMLError
+
 from umi.core.frame import validate_roi
 from umi.infra.file_store import read_yaml
 from umi.infra.paths import CONFIG_ROOT
@@ -72,7 +73,7 @@ class Settings:
 
     def report(self) -> dict:
         return dict(values=dict(self.values), origins=dict(self.origins), sources=list(self.sources),
-                    precedence=['project_defaults', 'local_override', 'environment', 'user_config', 'command_line'])
+                    precedence=['project_defaults', 'environment', 'command_line'])
 
 
 def load(kind: str, *, directory: Path | None = None, environment=None, overrides=None, origins=None) -> Settings:
@@ -88,19 +89,14 @@ def load(kind: str, *, directory: Path | None = None, environment=None, override
         snapshot = inherited[kind]
         values, origins, sources = dict(snapshot['values']), dict(snapshot['origins']), list(snapshot['sources'])
     else:
-        for path in (directory / f'{kind}.yaml', directory / f'{kind}.local.yaml'):
-            if path.name.endswith('.local.yaml') and not path.exists():
-                continue
-            try:
-                overlay = read_yaml(path)
-                _validate(kind, overlay)
-                if not sources:
-                    _validate(kind, overlay, complete=True)
-            except (OSError, ValueError, YAMLError) as error:
-                raise ValueError(f'无法加载配置 {path}：{error}') from error
-            values.update(overlay)
-            origins.update({key: str(path) for key in overlay})
-            sources.append(str(path))
+        path = directory / f'{kind}.yaml'
+        try:
+            values = read_yaml(path)
+            _validate(kind, values, complete=True)
+        except (OSError, ValueError, YAMLError) as error:
+            raise ValueError(f'无法加载配置 {path}：{error}') from error
+        origins = {key: str(path) for key in values}
+        sources = [str(path)]
         if kind == 'runtime' and 'UMI_OPENCV_THREADS' in environment:
             try:
                 values['opencv_threads'] = int(environment['UMI_OPENCV_THREADS'])
@@ -135,22 +131,27 @@ def child_environment(environment=None, *, kinds=('runtime', 'gripper_tag_detect
     return result
 
 
+def cpu_ranges(cores: str) -> tuple[range, ...]:
+    """Parse the shared --cores syntax without choosing an affinity policy."""
+    selected = []
+    try:
+        for part in cores.split(','):
+            bounds = [int(value) for value in part.split('-')]
+            if len(bounds) == 1:
+                bounds.append(bounds[0])
+            if len(bounds) != 2 or not 0 <= bounds[0] <= bounds[1]:
+                raise ValueError
+            selected.append(range(bounds[0], bounds[1] + 1))
+    except ValueError:
+        raise ValueError('--cores 需要 CPU 编号或范围，例如 0-3,8-11') from None
+    return tuple(selected)
+
+
 def available_cpus(cores: str = '') -> list[int]:
     available = set(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else set(range(os.cpu_count() or 2))
     if cores:
-        selected = set()
-        try:
-            for part in cores.split(','):
-                bounds = [int(value) for value in part.split('-')]
-                if len(bounds) == 1 and bounds[0] >= 0:
-                    selected.add(bounds[0])
-                elif len(bounds) == 2 and 0 <= bounds[0] <= bounds[1]:
-                    selected.update(cpu for cpu in available if bounds[0] <= cpu <= bounds[1])
-                else:
-                    raise ValueError
-        except ValueError:
-            raise ValueError('--cores 需要 CPU 编号或范围，例如 0-3,8-11') from None
-        available &= selected
+        selected = cpu_ranges(cores)
+        available = {cpu for cpu in available if any(cpu in group for group in selected)}
         if not available:
             raise ValueError('--cores 未包含当前进程可用的 CPU')
     return sorted(available)
@@ -182,12 +183,9 @@ def execution_report(*, cores: str = '', workers=None, jobs: int = 1, calibratio
 def summary(*, cores: str = '', workers=None, jobs: int = 1, calibration: bool = False) -> str:
     report = execution_report(cores=cores, workers=workers, jobs=jobs, calibration=calibration)
     resources = report['resources']
-    local = [p for group in ('runtime', 'gripper_tag_detection')
-             for p in current(group).sources if '.local.' in p]
     budget = (f'，标定线程预算 {resources["calibration_workers"]}' if calibration else
               f'，双手并行预算 {"满足" if resources["dual_arm_eligible"] else "不足或多任务串行分手"}')
     return ('配置：operations/runtime.yaml / operations/gripper_tag_detection.yaml'
-            + (f'，本机覆盖：{", ".join(local)}' if local else '')
             + f'；可用 CPU {resources["cpu_count"]}，任务并发 {jobs}，'
             f'解码线程 {resources["decode_threads"]}，OpenCV {resources["opencv_threads"]}'
             + budget + '；完整来源见 --show-config')

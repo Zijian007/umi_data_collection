@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from umi.config import operational_settings as settings
-
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+
+from umi.config import operational_settings as settings
 
 
 @dataclass(frozen=True)
