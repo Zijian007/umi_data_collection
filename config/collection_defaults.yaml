@@ -11,6 +11,6 @@ map:
 
 backend:
   mode: auto  # auto / scene_map / poster_vio / poster_independent。
-  auto_order: [scene_map, poster_vio, poster_independent]  # 轮到 scene_map 时才准备地图。
+  auto_order: [poster_vio, poster_independent]  # 轮到 scene_map 时才准备地图。
   poster_vio:
-    base_tag: true  # true=允许使用 kit 中声明的夹爪基座标签，false=关闭这项约束。
+    base_tag: false  # true=允许使用 kit 中声明的夹爪基座标签，false=关闭这项约束。

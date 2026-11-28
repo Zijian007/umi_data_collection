@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import csv
 import json
-import math
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from umi.infra import provenance as artifact_identity
 from umi.store import layout
-
-if TYPE_CHECKING:
-    from umi.store.models import Episode
+from umi.store.coordinates import (
+    OutputCoordinates,
+    is_local_scene as is_local_scene,
+    is_poster_scene as is_poster_scene,
+    task_poster_frame as task_poster_frame,
+    uses_scene_map as uses_scene_map,
+    validate_poster_placement,
+)
 
 
 TCP_COLUMNS = ('t_episode_s', 'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw')
@@ -80,39 +83,6 @@ def validate_result(paths: ResultPaths, manifest: dict) -> None:
     validate_assets(paths.run, manifest['evidence_assets'])
 
 
-def is_local_scene(coordinate_record: dict) -> bool:
-    """任务坐标记录是否为单手独立回退的局部坐标（不与场景共享）。"""
-    return coordinate_record.get('scope') == 'local'
-
-
-def is_poster_scene(coordinate_record: dict) -> bool:
-    return coordinate_record.get('scope') == 'task_poster'
-
-
-def uses_scene_map(scene: dict) -> bool:
-    return not is_local_scene(scene) and (not is_poster_scene(scene) or 'T_board_scene' in scene)
-
-
-def _validate_poster_placement(matrix) -> None:
-    if (not isinstance(matrix, list) or len(matrix) != 4
-            or any(not isinstance(row, list) or len(row) != 4 for row in matrix)
-            or any(type(x) not in (float, int) or not math.isfinite(x) for row in matrix for x in row)
-            or matrix[3] != [0, 0, 0, 1]):
-        raise ValueError('海报坐标变换无效')
-    x, y, z = [row[:3] for row in matrix[:3]]
-    cross = [x[1]*y[2]-x[2]*y[1], x[2]*y[0]-x[0]*y[2], x[0]*y[1]-x[1]*y[0]]
-    if (any(abs(math.hypot(*axis)-1) > 1e-6 for axis in (x, y, z))
-            or abs(sum(a*b for a, b in zip(x, y))) > 1e-6 or math.dist(cross, z) > 1e-6):
-        raise ValueError('海报坐标旋转必须为右手正交矩阵')
-
-
-def task_poster_frame(episode: Episode, layout_hash: str) -> dict:
-    """同一组原片和布局共享任务海报参考系，包括换后端或换地图重新求解。"""
-    recordings = {arm: ref['sha256'] for arm, ref in episode.recording_refs.items()}
-    identity = artifact_identity.canonical_hash(dict(recordings=recordings, layout=layout_hash))
-    return dict(frame_id=f'poster:{identity}', scope='task_poster', axes='board_layout', units='metres')
-
-
 def scene_map_identity(map_manifest: dict) -> str:
     """固定地图的坐标身份和全部资产共同参与任务复用。"""
     return artifact_identity.canonical_hash({key: map_manifest[key]
@@ -124,11 +94,13 @@ def scene_reference(manifest: dict) -> dict:
     if manifest.get('schema_version') not in SCENE_RESULT_VERSIONS:
         raise ValueError('任务清单需要受支持的结果版本')
     scene = manifest['scene']
-    if 'T_board_scene' in scene and (manifest.get('kind') != 'umi_scene_episode' or not is_poster_scene(scene)):
+    raw_source = (manifest.get('inputs') or {}).get('scene_map_reference') if is_poster_scene(scene) else None
+    frame = OutputCoordinates.from_record(scene, source_map=raw_source)
+    if 'T_board_scene' in scene and (manifest.get('kind') != 'umi_scene_episode' or frame.scope != 'task_poster'):
         raise ValueError('地图到海报变换与结果坐标声明不一致')
     if manifest.get('kind') == 'umi_poster_episode':
-        if (not is_poster_scene(scene)
-                or not scene.get('frame_id', '').startswith('poster:')
+        if (frame.scope != 'task_poster'
+                or not (frame.frame_id or '').startswith('poster:')
                 or scene.get('version') is not None or manifest.get('map') is not None):
             raise ValueError('任务海报坐标声明无效')
         for arm in manifest['arms']:
@@ -138,23 +110,24 @@ def scene_reference(manifest: dict) -> dict:
                 raise ValueError('任务海报结果缺少实际融合或含场景地图先验')
         return scene
     if manifest.get('kind') == 'umi_local_episode':
-        if (not is_local_scene(scene) or not scene.get('frame_id', '').startswith('local:') or
+        if (frame.scope != 'local' or not (frame.frame_id or '').startswith('local:') or
                 scene.get('version') is not None or len(manifest['arms']) != 1 or manifest.get('map') is not None):
             raise ValueError('独立局部结果的坐标声明无效')
         return scene
-    reference = scene
-    if is_poster_scene(scene):
-        reference = manifest['inputs'].get('scene_map_reference')
-        if (manifest.get('schema_version') != 6 or not uses_scene_map(scene)
-                or not scene.get('frame_id', '').startswith('poster:')
+    reference = frame.source_map
+    if frame.scope == 'task_poster':
+        if (manifest.get('schema_version') != 6 or reference is None
+                or not (frame.frame_id or '').startswith('poster:')
                 or scene.get('axes') != 'board_layout' or scene.get('units') != 'metres'
-                or scene.get('reconstruction_backend') != 'scene_map' or not manifest.get('map')
-                or not reference or reference['version'] != scene['version']
+                or frame.backend != 'scene_map' or not manifest.get('map')
+                or not raw_source or reference.version != scene['version']
                 or not any(item['fusion'].get('environment_poster', {}).get('status') == 'fused'
                            for item in manifest['arm_results'].values())):
             raise ValueError('地图定位的任务海报坐标声明无效')
-        _validate_poster_placement(scene['T_board_scene'])
-    identity = scene_map_identity(dict(version=reference['version'], frame_id=reference['frame_id'],
+        validate_poster_placement(frame.T_output_map)
+    if reference is None:
+        raise ValueError('固定地图结果缺少地图坐标声明')
+    identity = scene_map_identity(dict(version=reference.version, frame_id=reference.frame_id,
         mode=manifest['inputs']['map_mode'], assets=manifest['inputs']['scene_assets']))
     if identity != manifest['inputs']['scene_map_sha256']:
         raise ValueError('任务声明的场景坐标或地图资产与输入摘要不一致')
@@ -254,6 +227,8 @@ def quality_summary(arm_results: dict, coordinate_record: dict, common_interval_
             environment_poster_status=(poster.get('status')
                                         if isinstance(poster, dict) else None),
         )
+        if 'tag_distance' in metadata:
+            arms[arm]['tag_distance'] = metadata['tag_distance']
     return dict(
         schema_version=1,
         scope='task_poster' if is_poster_scene(coordinate_record) else 'local' if is_local_scene(coordinate_record) else 'shared_scene',

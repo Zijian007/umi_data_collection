@@ -57,16 +57,16 @@ from umi.infra.terminal import Console
 from umi.perception.audio import kiwi_audio as landmark_audio
 from umi.perception.audio.specialist_audio import AUDIO_SYNC_RECIPES, AudioSyncError, AudioSyncEstimate, estimate_offset
 from umi.perception.models import LensVideo, MapAtlas, RecordingData, RecordingPaths
-from umi.reconstruction.backends.poster_independent import run as independent_reconstruction
-from umi.reconstruction.backends.scene_map import run as scene_reconstruction
-from umi.reconstruction.estimation import mapping
-from umi.reconstruction.estimation import mapping as slam
+from umi.reconstruction.backends import scene_map as scene_reconstruction
+from umi.reconstruction import mapping
+from umi.reconstruction import mapping as slam
 from umi.reconstruction.estimation.fixed_map import fusion, geometry
 from umi.reconstruction.estimation.fixed_map.parameters import FixedMapParameters, MapPlacementParameters
 from umi.reconstruction.estimation.inertial import integrate_samples
 from umi.reconstruction.estimation.models import FusedTrajectory
 from umi.reconstruction.segment import fusion_runner
-from umi.reconstruction.segment import reconstruction as runtime
+from umi.reconstruction.segment import prepared_recording
+from umi.reconstruction.segment import attempts as runtime
 from umi.scene import run as workflow
 from umi.scene.collection import batch as batch_inputs
 from umi.scene.collection import batch as episode_inputs
@@ -81,6 +81,7 @@ from umi.scene.inputs.synchronization import estimate_audio_sync, load_ready_aud
 from umi.scene.maps import binding as map_lifecycle_binding
 from umi.scene.maps import build as map_build
 from umi.scene.maps import versions as map_repository
+from umi.scene.collection.batch import read_episode as read_task_episode
 from umi.store import layout, models
 from umi.store import result_io as asset_identity
 from umi.store.models import PreparedRecording
@@ -140,8 +141,8 @@ class SceneNumericalTests(unittest.TestCase):
             geometry.metric_alignment(geometry.VisualObservations(times, raw, obs.indices, 'visual_map'), np.eye(4), imu, np.zeros(3), 9.81, self.p.for_algorithm(MapPlacementParameters), fusion_parameters=load('trajectory').values.fusion)
 
     def test_gravity_parallel_antiparallel_are_finite(self):
-        for gravity in ([0, 0, -9.81], [0, 0, 9.81], [1., 2., -9.]):
-            g = np.asarray(gravity, float)
+        for vector in ([0, 0, -9.81], [0, 0, 9.81], [1., 2., -9.]):
+            g = np.asarray(vector, float)
             rotation = geometry.gravity_rotation(g)
             np.testing.assert_allclose(rotation @ g, [0, 0, -np.linalg.norm(g)], atol=1e-9)
             self.assertAlmostEqual(np.linalg.det(rotation), 1.)
@@ -269,10 +270,10 @@ class SceneWorkflowTests(unittest.TestCase):
             patch('umi.scene.inputs.recordings.select_camera', side_effect=self.select_camera),
             patch('umi.scene.run.runtime.validate_engines', return_value=(self.root, self.root)),
             patch('umi.scene.inputs.recordings.prepare_recording', side_effect=lambda video, camera, *args, **kwargs: replace(self.prepared_recordings[video], camera=camera)),
-            patch('umi.reconstruction.estimation.mapping.build', side_effect=self.build),
-            patch('umi.reconstruction.estimation.mapping.atlas_candidates', side_effect=lambda rec, lens, *args, **kwargs: iter([(0, self.observations(rec, lens))])),
-            patch('umi.reconstruction.estimation.mapping.localize', side_effect=lambda rec, lens, *args, **kwargs: self.observations(rec, lens)),
-            patch('umi.reconstruction.estimation.mapping.export_map', return_value=dict(index=0, id=0, points=[[0., 0., 0.]], point_count=1,
+            patch('umi.reconstruction.mapping.build', side_effect=self.build),
+            patch('umi.reconstruction.mapping.atlas_candidates', side_effect=lambda rec, lens, *args, **kwargs: iter([(0, self.observations(rec, lens))])),
+            patch('umi.reconstruction.mapping.localize', side_effect=lambda rec, lens, *args, **kwargs: self.observations(rec, lens)),
+            patch('umi.reconstruction.mapping.export_map', return_value=dict(index=0, id=0, points=[[0., 0., 0.]], point_count=1,
                 keyframes=[], bounds=None, coordinates='trajectory', alignment=dict(status='aligned', scale=2.3,
                 rotation=np.eye(3).tolist(), translation=[0., 0., 0.], rmse_m=0., source='fixed_scene')))]
         for item in self.patches:
@@ -394,12 +395,12 @@ class SceneWorkflowTests(unittest.TestCase):
             localization_fraction=1., maximum_visual_gap_s=0., actual_error='not_measured'))
 
     def test_single_arm_fallback_publication_viewing_and_reuse(self):
-        from umi.scene import episodes
+        from umi.scene import task_state as episodes
         self.single_arm_episode()
         self.build_scene()
         with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene',
                           side_effect=fusion.SceneFusionQualityError('场景定位不足：覆盖 0.0%')) as shared, \
-                patch.object(independent_reconstruction, 'reconstruct', return_value=self.local_fusion_result()) as local:
+                patch.object(prepared_recording, 'reconstruct_local_fallback', return_value=self.local_fusion_result()) as local:
             result = workflow.run_episode(self.episode_path)
             self.assertEqual(result['status'], 'local_ok')
             output = Path(result['output'])
@@ -421,7 +422,7 @@ class SceneWorkflowTests(unittest.TestCase):
             self.assertEqual(loaded['summary']['scene']['frame_id'], result['frame_id'])
             self.assertEqual(set(loaded['tracks']), {'tcp', 'camera', 'imu'})
             self.assertEqual(catalog.map_data(entry['id'])['maps'], [])
-            self.assertEqual(episodes.task_status(self.episode_path)['output'], str(output))
+            self.assertEqual(episodes.task_status(read_task_episode(self.episode_path, verify=False))['output'], str(output))
             self.assertEqual(workflow.run_episode(self.episode_path)['status'], 'local_skipped')
             self.assertEqual(shared.call_count, 1)
             self.assertEqual(local.call_count, 1)
@@ -437,7 +438,7 @@ class SceneWorkflowTests(unittest.TestCase):
         self.build_scene()
         with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene',
                           side_effect=fusion.SceneFusionQualityError('场景定位不足')), \
-                patch.object(independent_reconstruction, 'reconstruct') as local:
+                patch.object(prepared_recording, 'reconstruct_local_fallback') as local:
             with self.assertRaisesRegex(fusion.SceneFusionQualityError, '场景定位不足'):
                 workflow.run_episode(self.episode_path)
             local.assert_not_called()
@@ -447,12 +448,12 @@ class SceneWorkflowTests(unittest.TestCase):
         self.single_arm_episode()
         self.build_scene()
         with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=ValueError('损坏的输入')), \
-                patch.object(independent_reconstruction, 'reconstruct') as local:
+                patch.object(prepared_recording, 'reconstruct_local_fallback') as local:
             with self.assertRaisesRegex(ValueError, '损坏的输入'):
                 workflow.run_episode(self.episode_path)
             local.assert_not_called()
 
-    def test_fallback_still_measures_and_rejects_invalid_tag_distance(self):
+    def test_local_fallback_publishes_track_with_invalid_tag_distance_flagged(self):
         from umi.perception.gripper import distance as tag_distance
         from umi.perception.gripper.distance import TagDistanceResult, TagDistanceSeries
         self.single_arm_episode()
@@ -470,9 +471,17 @@ class SceneWorkflowTests(unittest.TestCase):
             return TagDistanceResult(TagDistanceSeries(times, np.full(len(times), 50.),
                 np.full(len(times), 'two_tags')), dict(valid_fraction=1., **sizes))
 
+        def missing(request, cache, **kwargs):
+            self.assertFalse(kwargs['strict'])
+            times = request.video_times_s + request.episode_offset_s
+            return TagDistanceResult(TagDistanceSeries(times, np.full(len(times), np.nan),
+                np.full(len(times), 'missing')), dict(valid_fraction=0., rows=len(times), acceptance=dict(
+                    valid_rows=0, minimum_valid_fraction=.5, longest_missing_frames=len(times),
+                    maximum_missing_frames=15, longest_missing_interval_s=[0., 7.8], passed=False)))
+
         with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene',
                           side_effect=fusion.SceneFusionQualityError('覆盖不足')), \
-                patch.object(independent_reconstruction, 'reconstruct', return_value=self.local_fusion_result()), \
+                patch.object(prepared_recording, 'reconstruct_local_fallback', return_value=self.local_fusion_result()), \
                 patch.object(tag_distance, 'process', side_effect=measure) as process, \
                 patch('umi.perception.decoding.VideoDecode.run', return_value=[]):
             result = workflow.run_episode(self.episode_path)
@@ -482,24 +491,26 @@ class SceneWorkflowTests(unittest.TestCase):
                 row = next(csv.DictReader(stream))
             self.assertEqual(row['tag_distance_mm'], '50.000000')
             process.assert_called_once()
-            report = dict(valid_fraction=0., rows=10, acceptance=dict(valid_rows=0,
-                minimum_valid_fraction=.5, longest_missing_frames=10, maximum_missing_frames=15))
-            process.side_effect = tag_distance.TagDistanceAcceptanceError(report)
-            with self.assertRaisesRegex(ValueError, '有效比例'):
-                workflow.run_episode(self.episode_path, force=True)
-            self.assertEqual(output.resolve(), first)
+            process.side_effect = missing
+            changed = workflow.run_episode(self.episode_path, force=True)
+            self.assertEqual(changed['status'], 'local_ok')
+            self.assertNotEqual(output.resolve(), first)
+            self.assertFalse(changed['quality']['arms']['right']['tag_distance']['passed'])
+            with (output / 'data/right/trajectory.csv').open() as stream:
+                row = next(csv.DictReader(stream))
+            self.assertEqual((row['tag_distance_mm'], row['tag_distance_valid']), ('', '0'))
             self.assertFalse((self.task_root / 'results').exists())
 
     def test_fallback_and_double_failure_preserve_previous_shared_result(self):
         self.single_arm_episode()
         self.build_scene()
-        with patch.object(independent_reconstruction, 'reconstruct') as local:
+        with patch.object(prepared_recording, 'reconstruct_local_fallback') as local:
             shared_result = workflow.run_episode(self.episode_path)
             local.assert_not_called()
         shared_output = Path(shared_result['output']).resolve()
         with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene',
                           side_effect=fusion.SceneFusionQualityError('覆盖不足')), \
-                patch.object(independent_reconstruction, 'reconstruct', return_value=self.local_fusion_result()) as local:
+                patch.object(prepared_recording, 'reconstruct_local_fallback', return_value=self.local_fusion_result()) as local:
             result = workflow.run_episode(self.episode_path, force=True)
             local_output = Path(result['output']).resolve()
             self.assertEqual(Path(shared_result['output']).resolve(), shared_output)
@@ -509,7 +520,7 @@ class SceneWorkflowTests(unittest.TestCase):
                 workflow.run_episode(self.episode_path, force=True)
             self.assertEqual(Path(shared_result['output']).resolve(), shared_output)
             self.assertEqual(Path(result['output']).resolve(), local_output)
-            failures = list((models.layout.metadata(self.task_root, 'runs')).glob('failed-*/error.json'))
+            failures = list((models.layout.metadata(self.task_root, 'runs')).glob('*/error.json'))
             self.assertEqual(len(failures), 1)
             reason = json.loads(failures[0].read_text())['reason']
             self.assertIn('覆盖不足', reason)
@@ -822,7 +833,7 @@ class SceneWorkflowTests(unittest.TestCase):
             workflow.run_episode(self.episode_path)
 
     def test_published_result_survives_attempt_state_write_failure(self):
-        from umi.scene import episodes
+        from umi.scene import task_state as episodes
 
         self.build_scene()
         output = self.task_root / 'results'
@@ -844,17 +855,17 @@ class SceneWorkflowTests(unittest.TestCase):
         self.assertEqual(result['status'], 'planned')
         self.assertFalse((self.scene.root / 'maps').exists())
         override = self.root / 'bad.yaml'
-        write_yaml(override, dict(input=dict(pairing=dict(start_tolerance_s=True))))
+        write_yaml(override, dict(recording=dict(pairing=dict(start_tolerance_s=True))))
         with self.assertRaisesRegex(ValueError, 'pairing_start_tolerance_s'):
             scene_inputs.load_scene_parameters(override)
-        write_yaml(override, dict(input=dict(pairing=dict(typo=1))))
+        write_yaml(override, dict(recording=dict(pairing=dict(typo=1))))
         with self.assertRaisesRegex(ValueError, '未知'):
             scene_inputs.load_scene_parameters(override)
 
     def test_scene_parameter_changes_require_explicit_build(self):
         first = self.build_scene()
         expert = self.root / 'scene-expert.yaml'
-        write_yaml(expert, dict(mapping=dict(placement=dict(position_sigma_m=.02))))
+        write_yaml(expert, dict(backends=dict(scene_map=dict(mapping=dict(placement=dict(position_sigma_m=.02))))))
         overrides = SceneOverrides.load(expert)
         changed_scene = batch_inputs.read_batch(self.session_path, overrides=overrides).scene
         with self.assertRaisesRegex(ValueError, '建图配置已变化'):
@@ -868,7 +879,8 @@ class SceneWorkflowTests(unittest.TestCase):
         manifest['map'] = dict(version=second['version'],
                                manifest_sha256=artifact_identity.file_hash(directory / 'manifest.json'))
         write_yaml(manifest_path, manifest)
-        expert.write_text('mapping:\n  placement:\n    position_sigma_m: 0.02\ninput:\n  pairing:\n    start_tolerance_s: 3.0\n')
+        write_yaml(expert, dict(backends=dict(scene_map=dict(mapping=dict(placement=dict(position_sigma_m=.02)))),
+                                recording=dict(pairing=dict(start_tolerance_s=3.))))
         changed_scene = batch_inputs.read_batch(self.session_path, overrides=SceneOverrides.load(expert)).scene
         _, map_manifest = map_repository.load_published(changed_scene)
         self.assertEqual(map_manifest['version'], second['version'])
@@ -1432,7 +1444,7 @@ class SceneFallbackAdapterTests(unittest.TestCase):
             self.addCleanup(mocked.stop)
 
     def run_fallback(self):
-        return independent_reconstruction.reconstruct(self.episode, 'right', self.recording, self.root / 'independent')
+        return prepared_recording.reconstruct_local_fallback(self.episode, 'right', self.recording, self.root / 'independent')
 
     def test_reuses_video_frozen_calibration_and_full_original_clock(self):
         self.episode.scene.parameters = replace(self.episode.scene.parameters, poster_independent_node_stride=2,
@@ -1572,6 +1584,39 @@ class SceneSyncTests(unittest.TestCase):
         self.assertEqual(json.loads(output.read_text())['inputs']['recipe'], AUDIO_SYNC_RECIPES['kiwi'])
         kiwi.assert_called_once()
 
+    def test_legacy_failed_kiwi_sync_can_use_verified_specialist_and_reuse_the_record(self):
+        output = layout.metadata(self.task, 'sync.json')
+        output.parent.mkdir(parents=True)
+        original = synchronization._identity(self.recordings, 'kiwi', sync_config.load('kiwi'))
+        output.write_text(json.dumps(dict(kind='umi_audio_sync', status='failed', inputs=original)))
+        verified = replace(ESTIMATE, method=sync_config.KIWI_FALLBACK_RECIPE,
+                           diagnostics=dict(agreed_windows=3, windows=[{}, {}, {}]))
+        with patch.object(landmark_audio, 'estimate_offset_from_files',
+                          side_effect=landmark_audio.LandmarkMatchError('too few landmarks')) as kiwi, \
+                patch.object(landmark_audio, 'verified_specialist_from_files', return_value=verified) as fallback:
+            sync, reused = self.resolve('kiwi')
+            self.assertFalse(reused)
+            self.assertEqual(sync['offsets_s'], dict(left=0., right=-.25))
+            self.assertEqual(sync['fallback']['algorithm'], 'specialist')
+            self.assertEqual(self.resolve('kiwi'), (sync, True))
+            kiwi.assert_called_once()
+            fallback.assert_called_once()
+
+    def test_fallback_does_not_retry_invalid_audio_or_cache_an_unverified_offset(self):
+        output = layout.metadata(self.task, 'sync.json')
+        for error, should_try in ((AudioSyncError('invalid audio'), False),
+                                  (landmark_audio.LandmarkMatchError('weak fingerprints'), True)):
+            with self.subTest(should_try=should_try), patch.object(landmark_audio, 'estimate_offset_from_files',
+                        side_effect=error), patch.object(landmark_audio, 'verified_specialist_from_files',
+                        side_effect=AudioSyncError('windows disagree')) as fallback:
+                with self.assertRaises(AudioSyncError):
+                    self.resolve('kiwi')
+                self.assertEqual(fallback.call_count, int(should_try))
+                failed = json.loads(output.read_text())
+                self.assertEqual(failed['status'], 'failed')
+                self.assertNotIn('offsets_s', failed)
+                output.unlink()
+
     def test_effective_yaml_parameters_invalidate_sync_cache_for_both_algorithms(self):
         directory = self.root / 'audio_sync'
         for name in ('specialist', 'kiwi'):
@@ -1651,6 +1696,34 @@ def _bursts(rate: int, duration_s: float, onsets: list[float], seed: int) -> np.
 
 
 class AudioSyncTests(unittest.TestCase):
+    def test_specialist_short_overlap_keeps_three_independent_checks_and_rejects_periodic_audio(self):
+        p = replace(sync_config.load('kiwi'), sample_rate=8000)
+        rng = np.random.default_rng(11)
+        samples = rng.normal(size=12 * p.sample_rate)
+        lag = p.sample_rate // 5
+        coarse = replace(ESTIMATE, other_started_later_s=-.21)
+        result = landmark_audio._verify_specialist(samples, samples[lag:], coarse, p, 1.3)
+        self.assertAlmostEqual(-result.other_started_later_s, .2, delta=1/p.sample_rate)
+        self.assertEqual(result.diagnostics['agreed_windows'], 3)
+        self.assertGreaterEqual(result.diagnostics['window_duration_s'], 3.)
+        self.assertLess(result.diagnostics['window_duration_s'], 6.)
+        with self.assertRaisesRegex(AudioSyncError, '每段至少 3 秒'):
+            landmark_audio._verify_specialist(samples[:8*p.sample_rate], samples[lag:8*p.sample_rate], coarse, p, 1.3)
+        repeated = np.tile(rng.normal(size=p.sample_rate // 8), 96)
+        with self.assertRaisesRegex(AudioSyncError, '分窗复核不一致'):
+            landmark_audio._verify_specialist(repeated, repeated[lag:], coarse, p, 1.3)
+
+    def test_specialist_candidate_must_agree_with_independent_audio_windows(self):
+        p = replace(sync_config.load('kiwi'), sample_rate=8000)
+        a = np.random.default_rng(5).normal(size=25 * p.sample_rate)
+        b = a[p.sample_rate // 5:]
+        coarse = replace(ESTIMATE, other_started_later_s=-.21)
+        result = landmark_audio._verify_specialist(a, b, coarse, p, 1.3)
+        self.assertAlmostEqual(-result.other_started_later_s, .2, delta=1/p.sample_rate)
+        self.assertEqual(result.diagnostics['agreed_windows'], 4)
+        with self.assertRaisesRegex(AudioSyncError, '分窗复核不一致'):
+            landmark_audio._verify_specialist(a, b, replace(coarse, other_started_later_s=-.05), p, 1.3)
+
     def test_positive_offset_means_other_started_later(self) -> None:
         rate = 16_000
         onsets = [1.0, 2.7, 5.3, 8.9]

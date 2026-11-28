@@ -16,8 +16,7 @@ from umi.core.timing import video_to_imu_seconds
 from umi.infra import provenance as artifact_identity
 from umi.infra.concurrency import daemon_map
 from umi.infra.file_store import is_current, mark_used, write_json
-from umi.reconstruction.backends.poster_independent import run as independent_reconstruction
-from umi.reconstruction.estimation import mapping as slam
+from umi.reconstruction import mapping as slam
 from umi.reconstruction.estimation.fixed_map import fusion
 from umi.reconstruction.estimation.fixed_map.fusion import SceneFusionQualityError
 from umi.reconstruction.estimation.fixed_map.geometry import VisualObservations
@@ -28,10 +27,11 @@ from umi.reconstruction.estimation.fixed_map.parameters import (
     RelocalizationParameters,
 )
 from umi.reconstruction.estimation.fixed_map.poster import PosterInputs
-from umi.reconstruction.estimation.models import FusedTrajectory
+from umi.reconstruction.estimation.models import BackendDiagnostics, BackendResult, FusedTrajectory
+from umi.reconstruction.segment import prepared_recording
 from umi.store import layout
 from umi.store.cache import camera_identity
-from umi.store.models import ArmExecutionResult, Episode, PreparedRecording, TaskInputs
+from umi.store.models import Episode, PreparedRecording, TaskInputs
 from umi.store.result_io import is_local_scene, task_poster_frame, validate_assets
 
 
@@ -43,8 +43,9 @@ class _ArmSolveResult:
 
 
 def execute_task(inputs: TaskInputs, *, map_dir: Path, map_manifest: dict,
-                       coordinate_record: dict, allow_local_fallback=True) -> ArmExecutionResult:
-    """Run all arms, optionally solve one shared environment-poster pose, and write tracks."""
+                 coordinate_record: dict, allow_local_fallback=True, diagnostics: BackendDiagnostics | None = None
+                 ) -> BackendResult:
+    """Run all arms and optionally solve one shared environment-poster pose."""
     episode = inputs.episode
     scene, name = episode.scene, episode.root.name
     prepared_recordings, run_dir = inputs.recordings, inputs.directory
@@ -78,7 +79,7 @@ def execute_task(inputs: TaskInputs, *, map_dir: Path, map_manifest: dict,
             write_json(run_dir / 'fallback.json',
                        dict(shared_failure=str(shared_error), shared_scene=coordinate_record))
             try:
-                fusion_result = independent_reconstruction.reconstruct(
+                fusion_result = prepared_recording.reconstruct_local_fallback(
                     episode, arm, recording, run_dir / arm / 'independent',
                     poster_detection=snapshot)
             except Exception as local_error:
@@ -106,14 +107,12 @@ def execute_task(inputs: TaskInputs, *, map_dir: Path, map_manifest: dict,
         else:
             for arm in arms:
                 run_arm(arm)
-    except Exception as error:
+    except Exception:
         # Map-frame trajectories from successful peers are useful in the failed run directory.
-        if solved_arms and not scene.parameters.tag_fusion_enabled:
-            try:
-                trajectories = {arm: solved_arms[arm].trajectory for arm in arms if arm in solved_arms}
-                inputs.services.write_task_results(inputs, trajectories, coordinate_record, parallel=parallel)
-            except Exception as write_error:
-                error.add_note(f'保留已求解手的诊断轨迹失败：{write_error}')
+        if diagnostics is not None and solved_arms and not scene.parameters.tag_fusion_enabled:
+            trajectories = {arm: solved_arms[arm].trajectory for arm in arms if arm in solved_arms}
+            diagnostics.partial = BackendResult.from_recordings(trajectories, prepared_recordings, coordinate_record,
+                                                                source_map=map_manifest)
         raise
 
     coordinate_record = solved_arms[arms[0]].coordinate_record
@@ -140,7 +139,7 @@ def execute_task(inputs: TaskInputs, *, map_dir: Path, map_manifest: dict,
                                  reconstruction_backend='scene_map', T_board_scene=to_board.tolist())
         trajectories = {arm: replace(result, T_reference_imu=to_board @ result.T_reference_imu)
                         for arm, result in trajectories.items()}
-    return inputs.services.write_task_results(inputs, trajectories, coordinate_record, parallel=parallel)
+    return BackendResult.from_recordings(trajectories, prepared_recordings, coordinate_record, source_map=map_manifest)
 
 
 def _restore_localization(cache_dir: Path, key: str, cache_audit) -> VisualObservations | None:

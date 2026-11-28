@@ -63,6 +63,8 @@ class FakeEngines:
 
     def __call__(self, command, **kwargs):
         command = list(map(str, command))
+        if command[-1:] == ['--capabilities'] and Path(command[0]).name == 'x3_mono_slam':
+            return SimpleNamespace(returncode=0, stdout='{}')
         output = kwargs['stdout']
         if 'umi.perception.tools.make_lens_video' in command:
             pos = command.index('umi.perception.tools.make_lens_video')

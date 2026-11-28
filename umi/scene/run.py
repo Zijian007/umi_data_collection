@@ -7,7 +7,7 @@ import shutil
 import time
 import uuid
 from collections import Counter
-from contextlib import nullcontext, suppress
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from threading import Lock
@@ -18,20 +18,20 @@ from umi.infra.file_store import recompute_when_forced, write_json
 from umi.infra.orb_install import require_forward_kb4
 from umi.infra.terminal import Console
 from umi.perception import runtime
-from umi.scene import cleanup, episodes, publication, routing
+from umi.scene import cleanup, publication, routing, task_state
 from umi.scene.collection import batch as batches
 from umi.scene.collection.batch import batch_task_directories, read_batch, read_episode
 from umi.scene.collection.configuration import SceneOverrides
 from umi.scene.errors import ITEM_FAILURES
 from umi.scene.inputs import recordings, synchronization
-from umi.scene.inputs.identity import current_auto_identity, episode_inputs, map_input_fields
+from umi.scene.inputs.identity import current_auto_identity, episode_inputs, map_input_fields, result_reuse_identity
 from umi.scene.maps import binding, versions
-from umi.scene.publication import RunAudit
+from umi.scene.task_state import RunAudit
 from umi.store import layout
 from umi.store.cache import CacheAudit, camera_identity
 from umi.store.layout import locked
 from umi.store.models import CalibratedCamera, Episode, EpisodeRunResult, TaskInputs
-from umi.store.result_io import is_local_scene, uses_scene_map, validate_assets
+from umi.store.result_io import is_local_scene, validate_assets
 
 console = Console('场景')
 
@@ -146,7 +146,7 @@ def run_episodes(paths: list[Path], *, jobs: int = 1, force=False, cores='', dry
                     with locked(root):
                         state = layout.read_state(layout.owner(path))
                         if state.get('attempt', {}).get('status') not in ('rejected_preflight', 'failed'):
-                            episodes.record_attempt(task_episode, 'failed', None, reason=str(error))
+                            task_state.record_attempt(task_episode, 'failed', None, reason=str(error))
                 except ITEM_FAILURES:
                     pass
             console.write(str(error), recording=label, state='失败')
@@ -216,6 +216,8 @@ def format_batch_summary(summaries: list[dict]) -> str:
                 poster_label = {'fused': '已融合', 'diagnostics_only': '仅诊断',
                                 'not_observed': '未观测', 'disabled': '关闭'}.get(poster, poster)
                 fields.append(f'海报 {poster_label}')
+            if distance := metrics.get('tag_distance'):
+                fields.append(f'夹爪测距 {"通过" if distance["passed"] else "未通过"}（有效 {distance["valid_fraction"]:.1%}）')
             if fields:
                 hand = {'left': '左手', 'right': '右手'}.get(arm, arm)
                 lines.append(f'    {hand}  ' + ' · '.join(fields))
@@ -238,6 +240,7 @@ class ResolvedInputs:
     batch_map: binding.BatchMap | None
     requested_map: str | None = None
     force: bool = False
+    map_attempt_episode: Episode | None = None
 
 
 def backend_preview(episode: Episode, *, force=False) -> dict:
@@ -317,8 +320,8 @@ def _reject_preflight(episode: Episode, check_report, task_console: Console, *, 
             audit.event('preflight', status='rejected', reasons=check_report.reasons)
             retained = publication.record_failure(episode, run_dir, message, status='rejected_preflight',
                 identity=identity)
-            audit.finish('rejected_preflight', error=recordings.RecordingCheckError(message),
-                         directory=retained)
+            audit.finish('rejected_preflight', error=recordings.RecordingCheckError(message))
+            cleanup.after_task(episode.root)
             task_console.write(f'日志 {audit.log_path} · 预检报告 {retained / "preflight_report.json"}', state='诊断')
     raise recordings.RecordingCheckError(message)
 
@@ -343,6 +346,8 @@ def resolve_inputs(episode: Episode, task_console: Console, *, map_version: str 
         versions.validate_map_calibrations(cameras, map_manifest)
         binding.require_map_views(scene, cameras, map_manifest)
     input_identity = episode_inputs(episode, cameras, map_manifest)
+    if mode != 'auto':
+        input_identity['reuse_identity'] = result_reuse_identity(episode, input_identity, (mode,))
 
     map_text = (f'地图 {map_manifest["frame_id"]}' if map_manifest is not None else
                 '到达 scene_map 时准备地图' if mode == 'auto' and 'scene_map' in scene.auto_order else '无预建场景地图')
@@ -368,8 +373,9 @@ def execute_episode(resolved: ResolvedInputs, task_console: Console, *, cores: s
     run_dir = layout.metadata(episode.root, 'runs') / uuid.uuid4().hex
     run_dir.mkdir(parents=True)
     # 解码产物从缓存链接到运行期工作目录，结束即删；发布结果只保留自包含文件。
-    work_dir = layout.metadata(episode.root, 'work') / run_dir.name
+    work_dir = run_dir / 'work'
     started, started_at = time.monotonic(), time.time()
+    published = None
     cache_audit = _create_cache_audit(episode, resolved.cameras, sync_cache_status, sync_cache_reason)
     audit = RunAudit(episode.root, session=episode.session.root.name,
                      input_identity=resolved.identity, run_directory=run_dir)
@@ -403,51 +409,78 @@ def execute_episode(resolved: ResolvedInputs, task_console: Console, *, cores: s
         # Step 2: 各手独立求解轨迹、夹爪测量与共享海报融合
         audit.event('stage_finished', stage='prepare_recordings')
         audit.event('stage_started', stage='estimate_tracks')
-        task_inputs = TaskInputs(episode, prepared_recordings, video_offsets_s,
-                                 run_dir, arm_cpu_sets, cache_audit, run_console, backend_services=routing.backend_services())
+        task_inputs = TaskInputs(episode, prepared_recordings, video_offsets_s, run_dir, arm_cpu_sets, cache_audit,
+                                 run_console, backend_services=routing.backend_services(), work_directory=work_dir)
+        map_inputs = {}
+        map_attempt_episode = None
 
         def resolve_candidate_map(inputs: TaskInputs):
-            nonlocal active
+            nonlocal map_inputs, map_attempt_episode
             bound, selection, map_cameras = binding.resolve_auto_map(
                 resolved.episode, resolved.requested_map, resolved.cameras,
                 batch_map=resolved.batch_map, allow_build=True, cores=cores, force=resolved.force)
-            scene = replace(active.episode.scene, mode=bound.scene.mode)
-            bound_episode = replace(active.episode, session=replace(bound.session, scene=scene),
+            scene = replace(episode.scene, mode=bound.scene.mode)
+            bound_episode = replace(episode, session=replace(bound.session, scene=scene),
                               map_version=bound.map_version, map_selection=bound.map_selection)
             reselect_cameras = map_cameras is not resolved.cameras
-            identity = {**active.identity, **map_input_fields(
+            map_inputs = map_input_fields(
                 bound_episode, selection.manifest, auto_map_attempted=True,
-                requested_map_version=None if resolved.force and selection.manifest else resolved.requested_map)}
-            if reselect_cameras:
-                identity['cameras'] = {arm: camera_identity(camera) for arm, camera in map_cameras.items()}
-            active = replace(active, episode=bound_episode, map_selection=selection,
-                             identity=identity, batch_map=resolved.batch_map)
+                requested_map_version=None if resolved.force and selection.manifest else resolved.requested_map)
+            map_inputs['auto_map_cameras'] = {arm: camera_identity(camera) for arm, camera in map_cameras.items()}
+            map_attempt_episode = bound_episode
             audit.event('map_resolved', map_directory=selection.directory,
                         map_version=(selection.manifest or {}).get('version'),
-                        input_hash=audit.update_input_identity(identity), failure=selection.failure)
+                        input_hash=audit.update_input_identity({**resolved.identity, **map_inputs}), failure=selection.failure)
             if selection.manifest is not None:
                 runtime.validate_engines(dict(os.environ))
                 if scene.mode == 'dual' and any(camera.measurements.get('rear', {}).get('intrinsics_source') == 'factory'
                                                 for camera in map_cameras.values()):
                     require_forward_kb4()
             if reselect_cameras:
-                active = replace(active, cameras=recordings.snapshot_cameras(map_cameras, run_dir, share_identical=True))
+                frozen_cameras = recordings.snapshot_cameras(map_cameras, inputs.directory, share_identical=True)
                 inputs = replace(inputs, recordings=recordings.prepare_episode_recordings(
-                    bound_episode, active.cameras, video_offsets_s, work_dir=work_dir / 'scene_map',
+                    bound_episode, frozen_cameras, video_offsets_s, work_dir=inputs.work_directory / 'prepare',
                     cores=cores, arm_cores=arm_cpu_sets, cache_audit=cache_audit))
+            elif selection.manifest is not None:
+                inputs = freeze_candidate(inputs)
             return replace(inputs, episode=bound_episode), selection
+
+        def freeze_candidate(inputs: TaskInputs):
+            candidate_cameras = {arm: item.camera for arm, item in inputs.recordings.items()}
+            frozen = recordings.snapshot_cameras(candidate_cameras, inputs.directory, share_identical=True)
+            return replace(inputs, recordings={arm: replace(item, camera=frozen[arm])
+                                               for arm, item in inputs.recordings.items()})
+
+        def select_candidate(inputs: TaskInputs, selection: binding.MapSelection):
+            nonlocal active
+            identity = {**resolved.identity, **map_inputs}
+            if selection.manifest is not None:
+                identity['base_cameras'] = identity['cameras']
+                identity['cameras'] = map_inputs['auto_map_cameras']
+            active = replace(active, episode=inputs.episode, map_selection=selection, identity=identity,
+                             batch_map=resolved.batch_map if map_attempt_episode else None,
+                             map_attempt_episode=map_attempt_episode)
 
         with run_console.heartbeat('轨迹重建', step=(2, 3)):
             if mode == 'auto':
                 arm_execution = routing.execute(task_inputs, active.map_selection, resolve_map=resolve_candidate_map,
-                    prepare_independent=lambda: runtime.validate_engines(dict(os.environ)))
+                    prepare_independent=lambda: runtime.validate_engines(dict(os.environ)),
+                    freeze_candidate=freeze_candidate, select_candidate=select_candidate)
             else:
                 arm_execution = routing.execute(task_inputs, active.map_selection)
         coordinate_record = arm_execution.coordinate_record
+        attempts = coordinate_record.get('attempts', ())
+        selected = [item['backend'] for item in attempts] if mode == 'auto' else [mode]
+        retry_preparation = (coordinate_record.get('front_map_selection', {}).get('retry_preparation', False)
+                             or any(item.get('retry_preparation') for item in attempts))
+        identity = dict(active.identity, reuse_identity=result_reuse_identity(
+            episode, active.identity, selected, retry_preparation=retry_preparation))
+        active = replace(active, identity=identity)
+        audit.update_input_identity(identity)
         run_console.write(_backend_summary(arm_execution, mode), step=(2, 3), state='完成')
         # 局部回退结果不引用共享地图。
         display_map_path = None
-        if uses_scene_map(coordinate_record):
+        if arm_execution.coordinates.uses_map:
             selection = active.map_selection
             display_map_path = selection.directory / 'map.json'
             if mode == 'auto':
@@ -465,7 +498,6 @@ def execute_episode(resolved: ResolvedInputs, task_console: Console, *, cores: s
             cache_audit=cache_audit,
             preflight=check_record,
             started=started,
-            started_at=started_at,
         )
         is_local = published.is_local
         output = published.output
@@ -477,19 +509,18 @@ def execute_episode(resolved: ResolvedInputs, task_console: Console, *, cores: s
         task_console.write(str(audit.log_path), state='日志')
     except KeyboardInterrupt as error:
         run_console.write(f'处理被用户中断 · 日志 {audit.log_path}', state='诊断')
-        retained = publication.record_failure(active.episode, run_dir, '处理被用户中断',
-                                              identity=active.identity, status='interrupted', error=error)
-        audit.finish('interrupted', error=error, directory=retained)
+        publication.record_failure(active.episode, run_dir, '处理被用户中断',
+                                   identity=active.identity, status='interrupted', error=error)
+        audit.finish('interrupted', error=error)
         raise
     except Exception as error:
         run_console.write(f'{error} · 日志 {audit.log_path}', state='诊断')
-        retained = publication.record_failure(active.episode, run_dir, str(error), identity=active.identity, error=error)
-        audit.finish('failed', error=error, directory=retained)
+        publication.record_failure(active.episode, run_dir, str(error), identity=active.identity, error=error)
+        audit.finish('failed', error=error)
         raise
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
-        with suppress(OSError):
-            work_dir.parent.rmdir()
+        cleanup.after_task(episode.root, used_since=started_at if published is not None else None)
 
     common_interval_s = published.common_interval_s
     return dict(
@@ -579,7 +610,7 @@ def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '
             imported = batches.prepare_for_run(batch, dry_run=dry_run,
                                         intrinsics_source=intrinsics_source, overrides=overrides,
                                         previews=previews, map_epoch=map_epoch)
-            registered = episodes.episode_paths([batch])
+            registered = batches.episode_paths([batch])
             new_count = len(imported['episodes'])
             total = len({str(path) for path in registered} | {item['path'] for item in imported['episodes']})
             console.write(
@@ -607,7 +638,7 @@ def run(paths: list[Path], *, jobs: int = 1, force: bool = False, cores: str = '
                                        recording=batch.name, state='失败')
             summaries.append(_failed_item(batch, error))
     # 已登记批次和显式任务路径继续使用相同的处理引擎。
-    direct = episodes.episode_paths(paths, exclude=batch_roots)
+    direct = batches.episode_paths(paths, exclude=batch_roots)
     # A selected take can have raw recordings but no saved task manifest yet.
     for target in paths:
         root = target.expanduser().resolve()

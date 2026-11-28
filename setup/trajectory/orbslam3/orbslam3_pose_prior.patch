@@ -1,0 +1,131 @@
+diff --git a/include/System.h b/include/System.h
+--- a/include/System.h
++++ b/include/System.h
+@@ -141,6 +141,10 @@
+ 
+     // This stops local mapping thread (map building) and performs only camera tracking.
+     void ActivateLocalizationMode();
++
++    // One frame's visual relocalization hint. A zero limit clears it.
++    void SetLocalizationPosePrior(const Sophus::SE3f& Tcw, float maxTranslation);
++    std::pair<int, int> GetLocalizationPosePriorCounts() const;
+     // This resumes local mapping thread and performs SLAM again.
+     void DeactivateLocalizationMode();
+ 
+diff --git a/include/Tracking.h b/include/Tracking.h
+--- a/include/Tracking.h
++++ b/include/Tracking.h
+@@ -98,6 +98,16 @@
+     // Use this function if you have deactivated local mapping and you only want to localize the camera.
+     void InformOnlyTracking(const bool &flag);
+ 
++    void SetLocalizationPosePrior(const Sophus::SE3f& Tcw, float maxTranslation)
++    {
++        mLocalizationPrior = Tcw;
++        mLocalizationPriorMaxTranslation = maxTranslation;
++    }
++    std::pair<int, int> GetLocalizationPosePriorCounts() const
++    {
++        return {mnLocalizationPriorAttempts, mnLocalizationPriorAccepted};
++    }
++
+     void UpdateFrameIMU(const float s, const IMU::Bias &b, KeyFrame* pCurrentKeyFrame);
+     KeyFrame* GetLastKeyFrame()
+     {
+@@ -200,6 +210,11 @@
+     bool PredictStateIMU();
+ 
+     bool Relocalization();
++    bool RelocalizeWithPosePrior();
++    Sophus::SE3f mLocalizationPrior;
++    float mLocalizationPriorMaxTranslation = 0.f;
++    int mnLocalizationPriorAttempts = 0;
++    int mnLocalizationPriorAccepted = 0;
+ 
+     void UpdateLocalMap();
+     void UpdateLocalPoints();
+diff --git a/src/System.cc b/src/System.cc
+--- a/src/System.cc
++++ b/src/System.cc
+@@ -551,6 +551,16 @@
+ }
+ 
+ 
++void System::SetLocalizationPosePrior(const Sophus::SE3f& Tcw, float maxTranslation)
++{
++    mpTracker->SetLocalizationPosePrior(Tcw, maxTranslation);
++}
++
++std::pair<int, int> System::GetLocalizationPosePriorCounts() const
++{
++    return mpTracker->GetLocalizationPosePriorCounts();
++}
++
+ void System::ActivateLocalizationMode()
+ {
+     unique_lock<mutex> lock(mMutexMode);
+diff --git a/src/Tracking.cc b/src/Tracking.cc
+--- a/src/Tracking.cc
++++ b/src/Tracking.cc
+@@ -3338,8 +3338,61 @@
+     }
+ }
+ 
++bool Tracking::RelocalizeWithPosePrior()
++{
++    ++mnLocalizationPriorAttempts;
++    const Sophus::SE3f Twc = mLocalizationPrior.inverse();
++    const Eigen::Vector3f center = Twc.translation();
++    const Eigen::Vector3f forward = Twc.rotationMatrix().col(2);
++    vector<std::pair<float, KeyFrame*>> candidates;
++    for (auto* keyframe : mpAtlas->GetCurrentMap()->GetAllKeyFrames())
++    {
++        if (keyframe->isBad()) continue;
++        const auto keyframePose = keyframe->GetPoseInverse();
++        if (forward.dot(keyframePose.rotationMatrix().col(2)) < 0.7f) continue;
++        candidates.emplace_back((keyframePose.translation() - center).squaredNorm(), keyframe);
++    }
++    const size_t count = std::min<size_t>(3, candidates.size());
++    if (!count) return false;
++    std::partial_sort(candidates.begin(), candidates.begin() + count, candidates.end(),
++                      [](const auto& a, const auto& b) {
++                          if (a.first != b.first) return a.first < b.first;
++                          return a.second->mnId < b.second->mnId;
++                      });
++
++    const Frame saved(mCurrentFrame);
++    ORBmatcher matcher(0.75f, true);
++    for (size_t i = 0; i < count; ++i)
++    {
++        auto* keyframe = candidates[i].second;
++        mCurrentFrame.SetPose(mLocalizationPrior);
++        std::fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), nullptr);
++        std::fill(mCurrentFrame.mvbOutlier.begin(), mCurrentFrame.mvbOutlier.end(), false);
++        if (matcher.SearchByProjection(mCurrentFrame, keyframe, {}, 14.f, 80) < 50) continue;
++        if (Optimizer::PoseOptimization(&mCurrentFrame) < 50) continue;
++        const auto recovered = mCurrentFrame.GetPose().inverse();
++        if (!recovered.matrix().allFinite() ||
++            (recovered.translation() - center).norm() > mLocalizationPriorMaxTranslation ||
++            (mLocalizationPrior * recovered).so3().log().norm() > 0.262f) continue;
++
++        for (size_t j = 0; j < mCurrentFrame.mvpMapPoints.size(); ++j)
++            if (mCurrentFrame.mvbOutlier[j]) mCurrentFrame.mvpMapPoints[j] = nullptr;
++        mpReferenceKF = keyframe;
++        mCurrentFrame.mpReferenceKF = keyframe;
++        mnLastRelocFrameId = mCurrentFrame.mnId;
++        ++mnLocalizationPriorAccepted;
++        return true;
++    }
++
++    mCurrentFrame = saved;
++    return false;
++}
++
+ bool Tracking::Relocalization()
+ {
++    if (mbOnlyTracking && mLocalizationPriorMaxTranslation > 0.f && RelocalizeWithPosePrior())
++        return true;
++
+     Verbose::PrintMess("Starting relocalization", Verbose::VERBOSITY_NORMAL);
+     // Compute Bag of Words Vector
+     mCurrentFrame.ComputeBoW();

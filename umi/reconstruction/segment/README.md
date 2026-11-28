@@ -14,10 +14,10 @@ umi/apps/segment.py main() → workflow.run_batch() → workflow.run_recording()
     perception.recordings.prepare()      时间戳、IMU、丢帧策略
     workflow._reconstruction_settings()  冻结环境镜头标定与海报观测，生成视觉与融合设置
     perception.recordings.prepare_lens_videos()
-    reconstruction.run_attempts()
-        perception.slam.build_maps()     纯视觉建图
+    attempts.run_attempts()
+        perception.slam.build_maps()     单目建图，可用陀螺仪旋转辅助
         perception.slam.relocalize_all_maps() 固定图集逐图定位并合并
-        reconstruction.fuse_visual_imu() → fusion_runner.execute()  在 spawn 工作进程中调用 fuse()
+        attempts.fuse_visual_imu() → fusion_runner.execute()  在 spawn 工作进程中调用 fuse()
     workflow._write_results()          trajectory_results.write_trajectories() 与展示地图
     reporting.artifacts.finalize_result() 发布视频、摘要与报告
     reporting.artifacts.cleanup_debug()  成功后按需清理中间产物
@@ -26,14 +26,16 @@ umi/apps/segment.py main() → workflow.run_batch() → workflow.run_recording()
 | 文件 | 职责 |
 |---|---|
 | `workflow.py` | 单段录像的阶段顺序、失败归因与复用判断 |
-| `reconstruction.py` | 多轮“建图 → 定位 → 融合”、每轮质量评估与选择 |
-| `fusion_runner.py` | 融合执行边界：`FusionRequest` → 工作进程中的 `fuse()`；保留双手并行、`--cores`、nice 与崩溃隔离 |
+| `attempts.py` | 多轮“建图 → 定位 → 融合”、每轮质量评估与选择 |
+| `fusion_runner.py` | 在独立工作进程执行 `FusionRequest`，经单向管道回传进度，并将求解器日志写入 `fuse.log` |
+| [`estimation/fusion/solver.py`](../estimation/fusion/solver.py) | 尺度与重力对齐、选择初值、恢复全帧状态并检查位置支持 |
+| [`estimation/fusion/poster_solve.py`](../estimation/fusion/poster_solve.py) | 海报曝光采样、联合图求解、按累计预算剔除观测并热启动重求解 |
 | `environment_assets.py` | 环境镜头标定与海报输入的选择、冻结与加载（场景回退共用） |
 | `trajectory_results.py` | 融合结果 → 相机/TCP 轨迹、逐帧证据与运行设置记录 |
 | `results.py`、`map_data.py` | 结果读取、发布、报告与展示地图 |
 | `tools/initialization_review.py` | 用保留的视觉/IMU 数据对照初始化的开发诊断 |
 
-原片校验和设备选择发生在清理旧输出之前。每个镜头只裁切一次，所有重建尝试复用；可疑结果默认最多重建三轮。先检查每个有位置约束的分段相对自身初始化的尺度变化，双向倍率超过 `retry.maximum_scale_change_ratio`（默认 2）或证据无效时，该轮不能选中；全部轮次因此被拒绝则执行失败并保留现场。其余轮次优先选择独立地图放置更少、位置约束覆盖更高的结果。各轮拒绝原因保存在 `tries`，融合证据包含 `scale_consistency`。该保护不估计真实误差，也不保证视觉地图正确；2 倍上限仍需多录像验证。参数位于 `config/algorithms/reconstruction.yaml`。
+原片校验和设备选择发生在清理旧输出之前。每个镜头只裁切一次，所有重建尝试复用；可疑结果默认最多重建三轮。先检查每个有位置约束的分段相对自身初始化的尺度变化，双向倍率超过 `segment_engine.retry.maximum_scale_change_ratio`（默认 2）或证据无效时，该轮不能选中；全部轮次因此被拒绝则执行失败并保留现场。其余轮次优先选择独立地图放置更少、位置约束覆盖更高的结果。各轮拒绝原因保存在 `tries`，融合证据包含 `scale_consistency`。该保护不估计真实误差，也不保证视觉地图正确；2 倍上限仍需多录像验证。参数位于 `config/algorithms/reconstruction/common.yaml`。
 
 独立初始化保留原尺度求解，并以起点偏移 `0`、`step//3`、`2*step//3` 的独立窗口复核每个足够长的连续段。尺度相对跨度、自由重力向量差沿用 `maximum_relative_scale_std` 和 `gravity_tolerance_m_s2`；原先合格的段若在复核窗口失效，也会被拒绝。不平均重叠窗口来降低不确定度，不选择恰好通过的窗口替代主解。短段无法提供至少两个窗口时标为 `insufficient_evidence`，仍执行原来的尺度/重力门限；全部窗口齐全且一致才标为 `stable`。检查只用于独立轨迹初始化，共享场景地图保留其原有验收流程。
 
@@ -212,13 +214,23 @@ python -m umi.apps.segment /path/to/task.insv --mode dual --rear-calibration rea
 `environment_assets.py` 集中选择 rear 与可选海报布局，用不可变 `EnvironmentAssets` 传递本次选择；指纹计算只消费已选资产，不再次查询登记表。rear 身份与文件路径分别建模，正式文件冻结在结果 `devices/rear/`，成功清理 debug 后仍保留。光学参数供 rear SLAM 使用；外参和时差传入原生融合，不论是否启用海报都换算到 front 视频时钟，禁止跨丢帧或地图切换插值。版本、来源和内容进入计算身份；复用结果时再次校验冻结资产。`handheld` 下仅在指定海报时接受 rear，避免选择了标定却没有使用。
 
 
+## 陀螺仪辅助建图
+
+独立重建默认使用 `segment_engine.orb.gyro_aided_mapping`。首遍建图在真实前镜头曝光时间之间积分陀螺仪，依据标定外参得到相机坐标系下的旋转增量。ORB 从最近可信位姿预测旋转，用视觉匹配求位姿，并检查约 0.3 秒内的相对姿态。验收失败时先尝试投影恢复，再使用现有重定位。恢复期间先确认连续帧，再插入关键帧。缺少兼容驱动或 IMU 连续覆盖时，相应录像或帧段走视觉跟踪。准备状态见 `debug/logs/mapping_gyro.json`，预测、拒绝、恢复及延后插入关键帧的次数见首遍的 `map/execution.json`。
+
 ## 环境海报
 
-独立 `handheld` / `dual` 支持 `--tag-layout FILE`，可加 `--rear-calibration measured|factory` 选择本设备已登记的完整 rear 标定，要求序列号、参数来源和验收匹配。省略时按上述规则兜底，显式绑定损坏则拒绝。两种路径均冻结 rear 参数和来源到 `devices/rear/`；工厂转换不合格或元数据缺失时在预检失败，保留旧结果。指定资产默认只诊断；通过 YAML `poster.standalone_fusion: true` 显式启用。共享默认阈值在 `reconstruction.yaml` 的 `poster` 下，单次覆盖通过 `--config` 传入相同结构。
+独立 `handheld` / `dual` 支持 `--tag-layout FILE`，可加 `--rear-calibration measured|factory` 选择本设备已登记的完整 rear 标定，要求序列号、参数来源和验收匹配。省略时按上述规则兜底，显式绑定损坏则拒绝。两种路径均冻结 rear 参数和来源到 `devices/rear/`；工厂转换不合格或元数据缺失时在预检失败，保留旧结果。指定资产默认只诊断；通过 YAML `standalone.poster_fusion: true` 显式启用。共享默认阈值在 `reconstruction/common.yaml` 的 `shared.poster` 下，单次覆盖通过 `--config` 传入相同结构。
 
 `environment_assets.py` 选择环境镜头标定，并冻结标定、海报布局和原始角点；`umi/reconstruction/estimation/fusion/poster.py` 在原生图中添加单板角点因子。原有地图分段尺度仍是变量，不把上一轮融合轨迹作为固定地图先验再平滑一次。真实 rear 观测时刻插入 IMU 节点；恢复全帧轨迹时使用这些实际时间节点。dual 地图定位也按镜头时差重采样，不跨丢帧/地图切换。没有海报观测时保持原图输出；仍需通过惯性初始化和原有质量验收。
 
-海报数量/时间剔除规则位于 `umi/perception/poster/quality.py`；`umi/reconstruction/estimation/poster_factors.py` 从原场景实现提取旋转 seat、鲁棒角点因子及解析 Jacobian，场景与独立图共同使用。rear 修正可严格关闭，开启时检查修正角上限；独立海报图在初始化后可剔除一次，优化后最多两次，第二次的异常数须少于第一次。各轮共用原始观测的数量与时间覆盖预算，优化后重求解复用已有对齐、地图放置和基线，不重跑 SLAM。`umi.reconstruction.estimation.constraint_quality.position_support_summary()` 将真实观测时刻的共同支持缺口传给重试；证据不全时保留原视觉覆盖规则，尺度硬保护继续生效。
+启用海报融合的 `handheld` 模式在 Stage 1 无合格 ORB 初始化段时，可用已知尺寸的多标签海报和 IMU 初始化米制位姿、重力及零偏。海报种子需通过实际时刻覆盖、重投影和几何可观测性检查。各前镜头子图使用重叠时刻拟合尺度和放置，符合门限的跟踪段进入联合图。后续用原始角点、IMU 和合格地图约束求解；最终还需通过几何有效的位置支持缺口与地图尺度保护。若没有任何地图尺度变量，质量判断使用合格的海报位置支持。成功时 `fuse_info.json` 的 `init_lens` 为 `poster`，`poster_initialization` 保存种子证据；种子被拒绝时在 `alignment_failure.json` 中记录相同字段和拒绝原因。
+
+海报数量/时间剔除规则位于 `umi/perception/poster/quality.py`；`umi/reconstruction/estimation/poster_factors.py` 从原场景实现提取旋转 seat、鲁棒角点因子及解析 Jacobian，场景与独立图共同使用。rear 修正可严格关闭，开启时检查修正角上限；独立海报图在初始化后可剔除一次，优化后最多两次，第二次的异常数须少于第一次。各轮共用原始观测的数量与时间覆盖预算，优化后重求解复用已有对齐、地图放置和轨迹初值。正常路径的初值来自已求解基线，海报兜底路径的初值来自 PnP 与 IMU。两条路径显式选用参考地图段或首帧位姿作为世界系锚定。
+
+`poster_independent` 用真实观测时刻检查海报位置支持，将发布门槛应用于每轮，再对合格候选排序。普通独立引擎和单手局部回退沿用各自的重试覆盖规则。尺度硬保护仍检查每个参与优化的地图尺度。
+
+专家配置 `backends.poster_independent.poster_guidance: true` 将海报与 IMU 初始化提前到单目建图前。建图完成后，用最终图集中各子图的关键帧单独拟合米制尺度和坐标变换，并在留出关键帧上验证。第二遍定位仅在海报位置观测覆盖且该子图对齐通过时尝试位姿引导。ORB 用当前前镜头图像投影匹配并优化，投影验证失败时走原重定位。全段海报覆盖通过后，联合图可用该轨迹作为初值，海报因子继续使用原始角点。初始化证据保存在 `debug/logs/poster_initialization.json`，子图留出验证和引导次数见对应尝试的 `logs/poster_localization.json` 和 `logs/tracking.json`。
 
 在项目锁定的 Linux x86_64 GTSAM 环境，`install.sh` 会编译独立融合使用的 KB4 角点和深度因子。角点按同一时刻每组最多八个标签共用 Huber 权重，深度因子按该时刻全部训练角点计算。没有原生扩展时使用 Python 实现。
 

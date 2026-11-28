@@ -5,6 +5,7 @@ class PosterVioQualityError(ValueError):
     """poster_vio 输入有效，但观测或求解质量不足以交付轨迹。"""
 
     category = 'poster_vio_quality'
+    retry_preparation = False
 
 
 class PosterIndependentQualityError(ValueError):

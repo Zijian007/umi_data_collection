@@ -16,7 +16,7 @@ umi/scene/
 ├── inputs/
 │   ├── recordings.py           录像读取、预检、时间戳、IMU 和标定冻结
 │   ├── synchronization.py      双手同步
-│   ├── recording_intervals.py  首尾裁剪与保留区间
+│   ├── trimming.py             首尾裁剪与保留区间
 │   └── identity.py             复用所需的输入指纹
 ├── routing.py                 候选顺序、回退和尝试记录
 ├── maps/
@@ -26,13 +26,13 @@ umi/scene/
 │   └── epochs.py               读计划、选 epoch、构建后写回版本
 ├── measurements.py             环境标签、夹爪宽度和中心距
 ├── publication.py              TCP 轨迹、双手时间对齐、发布与复用
-├── episodes.py                 任务发现与运行状态
+├── task_state.py               运行状态、审计及日志入口
 ├── relative_pose_evaluation.py   双手固定夹具实测评估
 ├── cleanup.py                   运行、缓存和地图保留策略
 └── errors.py                    场景流程错误类型
 ```
 
-数值算法在 `umi/reconstruction/`，磁盘布局、结果格式和阶段缓存在 `umi/store/`。三个后端位于 [reconstruction/backends](../reconstruction/backends)，各自从 `run.py` 进入。路由提供检测与轨迹写入函数，后端通过 `TaskInputs` 接收这些函数。后端共用 `TaskInputs` 和 `ArmExecutionResult`，后者的 `coordinate_record` 声明实际输出坐标。固定地图融合和 Poster VIO 共用 IMU 因子，`poster_independent` 调用内部逐段重建引擎。
+任务后端位于 `reconstruction/backends/`。`poster_independent.py` 和 `scene_map.py` 各提供一个任务入口，VIO 从 `poster_vio/task.py` 进入。后端返回每手已验收的 IMU 轨迹、时间轴、输出坐标和位置支持。`publication.py` 将选定候选的轨迹转成 TCP 轨迹并发布。场景建图、任务定位、VIO 增强和标定 C 共用 `reconstruction/mapping.py`。
 
 ## 采集管理
 
@@ -71,7 +71,7 @@ umi-scene run → run.run()
         publication.write_arm_result()  生成各手 TCP 轨迹
     publication.write_bimanual_trajectory()  生成双手对齐轨迹
     publication.write_episode_result()  写报告、证据和任务元数据
-    episodes.record_attempt()           更新运行状态
+    task_state.record_attempt()           更新运行状态
 ```
 
 
@@ -85,7 +85,7 @@ umi-scene run → run.run()
 
 缓存只依据数据输入复用，不包含代码或引擎身份；`--force` 通过 `infra.file_store.recompute()` 让本次运行开始前的缓存全部失效，本次运行中新生成的仍可复用。完整地图输入保留原片路径、时间和 SHA256 以便追溯，`reuse_key` 按内容、相关配置和相机资产比较，不把文件路径或夹爪资产作为地图身份。工作镜头遮手图仍属于地图输入。
 
-建图和任务通过 `cache.StageCache` 共用缓存存储机制，纯输入身份由 `cache.preparation_inputs()` / `visual_inputs()` 构造；地图专属镜头资产筛选与复用键也由 `cache` 生成。`umi/reconstruction/estimation/mapping.py` 的地图求解不导入地图流水线模块（由分层合约保证）。
+建图和任务通过 `cache.StageCache` 共用缓存存储机制，纯输入身份由 `cache.preparation_inputs()` / `visual_inputs()` 构造；地图专属镜头资产筛选与复用键也由 `cache` 生成。共用地图运行模块调用 `fixed_map` 的尺度和放置算法，数值模块的依赖由导入合约检查。
 
 场景写入锁内，`StageCache.stage()` 先验证缓存清单和资产哈希，再将产物复制到本次工作目录；读写不会共享可修改文件。准备缓存只保存数据集和镜头视频，当前相机设置、遮手图、时间偏移与算法上下文重新生成；视觉缓存使用实际镜头视频、相机设置、ORB 参数与遮手图（仅建图）；定位另包含地图内容和子地图索引。尺度与放置每次重新验收，不缓存最终数值解。
 
@@ -99,11 +99,11 @@ umi-scene run → run.run()
 
 场景录像准备直接构造 `perception.models.VisualContext`，包含已解析参数、帧数与 CPU 设置；不构造 `TrajectoryRequest`。共用的视觉设置为 `VisualSettings`，内部逐段轨迹引擎的融合设置由 `ReconstructionSettings` 扩展；场景融合直接接收已解析参数，不生成单段融合脚本的配置文件。
 
-后端用具名的手级结果传递轨迹、坐标声明和待联合求解的海报输入。启用共享海报时，两手基线均完成后再联合求解。`scene_map.run.localize_with_cache()` 先尝试恢复已校验的观测，缺失或损坏时计算并发布完整缓存；引擎失败保留独立工作目录与日志，诊断复制仍在缓存命中或计算成功后执行。
+后端用具名的手级结果传递轨迹、坐标声明和待联合求解的海报输入。启用共享海报时，两手基线均完成后再联合求解。`scene_map.localize_with_cache()` 先尝试恢复已校验的观测，缺失或损坏时计算并发布完整缓存；引擎失败保留独立工作目录与日志，诊断复制仍在缓存命中或计算成功后执行。
 
 任务准备和定位数据保存在 `<批次>/.pipeline/tasks/<任务>/cache/`；任务失败时保留最近一次失败现场。进度写 stderr，结构化 JSON 写 stdout。
 
-每次真正执行的任务会在 `<批次>/.pipeline/tasks/<任务>/logs/<run-id>/` 持久化 `run.log`、`events.jsonl` 和 `run_manifest.json`。前者保留人读进度，第二个记录逐行的阶段/终端事件，最后一个记录输入指纹、状态、起止时间、耗时、结果路径及同一任务的 `runs/` 现场；成功和失败（包括原片预检拒绝）都写入。日志用于跟踪运行进度。质量摘要位于发布清单，完整融合证据位于内部运行目录的 `diagnostics.json`。
+每次运行在 `<批次>/.pipeline/tasks/<任务>/runs/<run-id>/` 保存现场。`audit/` 包含 `run.log`、`events.jsonl` 和 `run_manifest.json`，临时文件放在 `work/`。成功发布后，任务目录的 `results/` 指向该运行的 `published/`。清理会保留当前结果、最近尝试和人工引用的完整现场，较早的运行保留 `audit/`。读取器也支持历史分离日志布局。
 
 地图清单的建图定义只存于 `inputs.definition`。地图展示数据生成后移除转换中间文件和空日志，保留有内容的日志及失败现场；已发布版本不因整理而改写。
 
@@ -159,13 +159,13 @@ umi-scene run → run.run()
 
 宽度模块复用 `umi/perception/gripper/frame_detection.py` 的检测器和现有毫米映射；原片像素检测只按原片和检测器缓存，换算、处理策略与固定时间偏移在缓存后应用。宽度资产不进入相机几何身份，另在 inputs.identity.episode_inputs 中记录内容哈希；episode.json 统一保留规范化测量快照和报告，不重复写各手 JSON。宽度数值与 TCP 统一保存在 `trajectory.csv`。参考 [宽度模块](../perception/gripper/README.md)。
 
-`gripper.tag_distance` 启用独立的夹爪标签中心三维间距。与宽度共用基础检测器，但按输出时间点独立采样、缓存角点，KB4 内参和各夹爪标签实测边长用于位姿解算；结果写入同一 CSV 的 `tag_distance_*` 三列，报告汇入 `episode.json`。尺寸资产不进入地图/相机几何身份，单独进入任务输入指纹；修改边长或质量门限重用角点，重算三维值。该测量不依赖开口锚点，不生成归一化开合量，缺失不插值填充。环境海报由批次 `poster` 与 `config/algorithms/reconstruction.yaml` 中的海报参数管理。
+`gripper.tag_distance` 启用独立的夹爪标签中心三维间距。与宽度共用基础检测器，但按输出时间点独立采样、缓存角点，KB4 内参和各夹爪标签实测边长用于位姿解算；结果写入同一 CSV 的 `tag_distance_*` 三列，报告汇入 `episode.json`。尺寸资产不进入地图/相机几何身份，单独进入任务输入指纹；修改边长或质量门限重用角点，重算三维值。该测量不依赖开口锚点，不生成归一化开合量，缺失不插值填充。环境海报由批次 `poster` 与 `config/algorithms/reconstruction/common.yaml` 中的海报参数管理。
 
 `umi/scene/measurements.py` 在各手重建前准备海报观测。配置了夹爪宽度或中心距时，未命中的检测共用一次原片顺序解码。只有一种夹爪测量时，由测量步骤按需检测。中心距补检仍按需执行。
 
 ## 单手独立回退
 
-`routing.execute()` 在地图不可用或后端返回明确的质量拒绝时继续尝试下一个候选，`poster_vio` 前端无法解码也可触发回退。显式 `scene_map` 的局部回退要求预期手和实际准备录像都恰好为一只手。`umi/reconstruction/backends/poster_independent/run.py` 复用冻结的工作镜头标定、已裁切视频和原始 IMU，调用独立 `run_attempts()`；显式传入完整帧时间表，保持独立模式的尺度/初始化质量门限和重试策略，不启用实验性的初始化细化。输入和引擎错误会终止当前任务。
+`routing.execute()` 在地图不可用或后端返回明确的质量拒绝时继续尝试下一个候选，`poster_vio` 前端无法解码也可触发回退。显式 `scene_map` 的局部回退要求预期手和实际准备录像都恰好为一只手。`umi/reconstruction/segment/prepared_recording.py` 复用冻结的工作镜头标定、已裁切视频和原始 IMU，调用独立 `run_attempts()`；显式传入完整帧时间表，保持独立模式的尺度/初始化质量门限和重试策略，不启用实验性的初始化细化。输入和引擎错误会终止当前任务。
 
 适配器返回 `models.FusedTrajectory`，其 `T_reference_imu` 明确表示声明参考系中的 IMU 位姿。`scene.scope=local`、唯一 `local:…` frame_id、`umi_local_episode` 和 `map=null` 声明局部坐标语义；所有下游读取均须遵守此声明。成功发布到 `local_results`，状态为 `local_ok/local_skipped`，不覆盖 `results`。宽度和标签间距由 `measurements.measure()` 在发布前统一验收，返回 `ArmMeasurements`；查看器支持局部结果且不加载共享地图。
 
@@ -201,7 +201,7 @@ kit 的 `intrinsics.front/rear` 是唯一来源选择，由 `collection.kit.vali
 
 环境海报的布局和检测开关配置在 `poster`，建图尺度用途在 `map.poster_scale`。地图定位是否融合海报以及融合初值的选择配置在 `backend.scene_map.poster_constraint`。融合默认随用途开启检测。实现位于 `umi/reconstruction/estimation/fixed_map/poster.py`，初值与投影位于 `umi/perception/poster/geometry.py`。单手每段录像求一个海报位姿，双手开启融合时求两手共享的海报位姿。布局随结果冻结，地图尺度保持固定。`staged` 先求地图与 IMU 基线再进行海报优化。`joint` 从视觉种子构建包含地图先验、IMU 和海报角点的最终图。环境检测按采样帧做周期性全图扫描，中间帧跟随上次标签窗口。[海报约束质量与实测评估](../../docs/03-场景处理.md#海报约束质量和双手实测评估)
 
-`map.poster_scale` 默认 `off`。设为 `diagnose` 收集尺度证据，设为 `correct` 将海报尺度用于米制校正。`umi/reconstruction/estimation/mapping.py` 保持视觉地图形状并处理米制镜头杆臂，合并后由 `geometry.metric_alignment(fixed_scale=...)` 精确固定尺度重做惯性验收。地图目录保留冻结布局及角点，任务不复用建图海报位姿。
+`map.poster_scale` 默认 `off`。设为 `diagnose` 收集尺度证据，设为 `correct` 将海报尺度用于米制校正。`umi/reconstruction/mapping.py` 保持视觉地图形状并处理米制镜头杆臂，合并后由 `geometry.metric_alignment(fixed_scale=...)` 精确固定尺度重做惯性验收。地图目录保留冻结布局及角点，任务不复用建图海报位姿。
 
 位置支持由 `umi/perception/poster/quality.py` 复用 `geometry.py` 的解析 Jacobian、共享角点噪声和 Huber 权重计算，场景两种融合方法与独立图共享实现。`umi/reconstruction/estimation/constraint_quality.py` 处理精确支持事件缺口和输出时间单元关联；`frames.csv` 和运行报告携带来源标记，未知历史证据不补为零。`umi.core.geometry.relative_pose_series()` 供双手表和 `relative_pose_evaluation.py` 中的实测固定夹具评估复用。
 
@@ -215,4 +215,4 @@ kit 的 `intrinsics.front/rear` 是唯一来源选择，由 `collection.kit.vali
 
 ### 海报后端首尾裁剪
 
-`backend.edge_trim` 默认关闭。开启时，`umi/scene/inputs/recording_intervals.py` 在首个适用的后端前计算同步后的保留区间，供两个海报后端和启用海报约束的 `scene_map` 共用。边界由可靠多标签 PnP 和局部陀螺仪连续性确定，内部缺口保留。裁剪视图保留原片时钟与完整 IMU，按帧区间缓存镜头编码与地图定位。各候选复用任务内的环境标签观测，夹爪中心距补检和验收使用保留区间。裁剪与 VIO 初始化复用输入相同的 PnP 候选。`PreparedRecording.source_frame_start` 将前镜头特征和结果帧表映射回 INSV。每手结果的 `video_time_offset_s` 记录发布视频起点在任务时钟中的位置。裁剪规则纳入任务配置指纹。
+`backend.edge_trim` 默认关闭。开启时，`umi/scene/inputs/trimming.py` 在首个适用的后端前计算同步后的保留区间，供两个海报后端和启用海报约束的 `scene_map` 共用。边界由可靠多标签 PnP 和局部陀螺仪连续性确定，内部缺口保留。裁剪视图保留原片时钟与完整 IMU，按帧区间缓存镜头编码与地图定位。各候选复用任务内的环境标签观测，夹爪中心距补检和验收使用保留区间。裁剪与 VIO 初始化复用输入相同的 PnP 候选。`PreparedRecording.source_frame_start` 将前镜头特征和结果帧表映射回 INSV。每手结果的 `video_time_offset_s` 记录发布视频起点在任务时钟中的位置。裁剪规则纳入任务配置指纹。

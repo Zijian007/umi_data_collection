@@ -17,10 +17,8 @@ from umi.config.collection_schema import (
 )
 from umi.core.arms import resolve_arms
 from umi.infra.file_store import read_yaml
-from umi.reconstruction.backends.poster_independent.run import independent_retry_gap
-from umi.scene import episodes
 from umi.scene.collection import kit as kit_inputs
-from umi.scene.collection.batch import mapping_records
+from umi.scene.collection.batch import episode_paths, mapping_records
 from umi.scene.collection.configuration import (
     SceneOverrides,
     batch_declaration,
@@ -35,20 +33,26 @@ from umi.store import layout
 from umi.store.layout import configured_batches
 from umi.store.models import Scene
 
-DEFAULT_SOURCES = (str(reconstruction.DEFAULT_PATH),)
+DEFAULT_SOURCES = tuple(map(str, reconstruction.DEFAULT_PATHS))
 
 
 def _backend_report(scene) -> dict:
     parameters = scene.parameters
     map_uses_poster = scene.scene_map_poster_constraint_enabled
     trim = scene.recording_trim
+
+    def option(field):
+        return dict(value=getattr(parameters, field), source=scene.processing_option_sources.get(field, 'project'))
+
     return dict(
         mode=scene.reconstruction_mode,
         **(dict(auto_order=list(scene.auto_order)) if scene.reconstruction_mode == 'auto' else {}),
         scene_map=dict(poster_constraint=parameters.tag_fusion_method if map_uses_poster else 'off'),
         poster_vio=dict(base_tag=scene.poster_vio_base_tag_enabled,
+                        front_map=dict(enabled=option('poster_vio_front_map_enabled')),
                         maximum_observation_gap_s=parameters.poster_vio_maximum_observation_gap_s),
-        poster_independent=dict(maximum_position_support_gap_s=parameters.poster_maximum_position_support_gap_s,
+        poster_independent=dict(front_map=dict(pixel_weights=option('poster_independent_front_map_pixel_weights')),
+                                maximum_position_support_gap_s=parameters.poster_maximum_position_support_gap_s,
                                 maximum_gravity_difference_deg=parameters.poster_maximum_gravity_difference_deg),
         edge_trim=dict(enabled=trim.get('enabled', False),
                        minimum_missing_duration_s=trim.get('minimum_missing_duration_s', 1.0),
@@ -60,14 +64,16 @@ def _position_support_report(scene: Scene, arms: tuple[str, ...]) -> dict:
     report = {}
     candidates = scene.auto_order if scene.reconstruction_mode == 'auto' else (scene.reconstruction_mode,)
     if 'poster_independent' in candidates:
-        maximum_gap_s, source = independent_retry_gap(scene, require_poster=True)
+        maximum_gap_s = scene.parameters.poster_maximum_position_support_gap_s
+        source = scene.position_support_gap_sources.get('poster_maximum_position_support_gap_s')
         report['poster_independent'] = dict(retry_target_s=maximum_gap_s, acceptance_maximum_s=maximum_gap_s,
                                             source=source)
     if 'poster_vio' in candidates:
         report['poster_vio'] = dict(acceptance_maximum_s=scene.parameters.poster_vio_maximum_position_support_gap_s,
                                      source=scene.position_support_gap_sources.get('poster_vio_maximum_position_support_gap_s'))
     if scene.reconstruction_mode == 'scene_map' and len(arms) == 1:
-        maximum_gap_s, source = independent_retry_gap(scene, require_poster=False)
+        maximum_gap_s = scene.parameters.maximum_visual_gap_s
+        source = scene.position_support_gap_sources.get('maximum_visual_gap_s')
         report['scene_map_single_arm_fallback'] = dict(retry_target_s=maximum_gap_s, source=source)
     if report:
         return dict(retry_uses_poster_position_support=scene.trajectory.values.retry.use_poster_position_support,
@@ -97,7 +103,7 @@ def _report_targets(paths: list[Path]) -> list[Path]:
         else:
             discovered = configured_batches([requested_path])
             discovered.extend(layout.owner(path).parent
-                              for path in episodes.episode_paths([requested_path], exclude=discovered))
+                              for path in episode_paths([requested_path], exclude=discovered))
             targets.update(discovered or [directory])
     return sorted(targets)
 
@@ -206,7 +212,7 @@ def _target_report(directory: Path, *, overrides: SceneOverrides | None,
     trajectory = scene.trajectory.snapshot()
     effective_tree = reconstruction.public_tree(trajectory=trajectory['values'], scene=asdict(scene.parameters),
                                                 declaration=overrides.values if overrides else None, for_scene=True)
-    default_tree = reconstruction.public_tree(trajectory=asdict(algorithm_config.load('trajectory').values),
+    default_tree = reconstruction.public_tree(trajectory=asdict(algorithm_config.load('trajectory', standalone=False).values),
                                               scene=asdict(load_scene_parameters()), for_scene=True)
     return dict(
         target=str(task_root or directory), scope='task' if task_root else 'batch', sources=dict(

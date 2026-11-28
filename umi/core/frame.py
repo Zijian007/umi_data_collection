@@ -6,7 +6,7 @@ environment lens (环境镜头, legacy key rear) occupies the left half.
 These image halves do not identify the left/right hand or factory lens indices.
 The r1440 calibration belongs to a 1440
 centre crop of that half. Calibration extraction keeps every second frame.
-Trajectory videos use the crop, frame step and output size from config/algorithms/reconstruction.yaml (video).
+Trajectory videos use the crop, frame step and output size from config/algorithms/reconstruction/common.yaml (recording.video).
 This module owns recording-mode recognition, calibrated bounds, pixel conversion
 and the exact derived video rate. Processing never extends the calibrated field of view.
 """

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -29,7 +30,7 @@ from umi.perception.poster.quality import (
     without_sightings,
 )
 from umi.reconstruction.estimation.fixed_map import fusion
-from umi.reconstruction.estimation.fixed_map.geometry import VisualObservations
+from umi.reconstruction.estimation.fixed_map.geometry import MapAlignmentError, VisualObservations
 from umi.reconstruction.estimation.fixed_map.parameters import (
     MapInertialParameters,
     MappedPosterParameters,
@@ -691,3 +692,36 @@ def combine_scales(imu_scale, imu_std, tag_scale, tag_std, parameters: PosterSca
                 imu_std_floor=parameters.tag_mapping_imu_std_floor, tag_std_floor=parameters.tag_mapping_tag_std_floor,
                 effective_relative_std=std.tolist(), weights=weights.tolist(), normalized_log_difference=normalized,
                 scale=float(np.exp(weights @ logs)), relative_scale_std=float(1./np.linalg.norm(1./std)))
+
+
+def correct_map_scale(placement, observations, measured, rear_measured, poster_bundle,
+                      parameters: PosterScaleParameters, *, apply_scale: bool, recheck_scale: Callable[[float], dict]):
+    """Check the poster scale against the map scale, then optionally recheck the merged scale with IMU."""
+    report = dict(status='missing_rear_calibration', applied=False, actual_error='not_measured')
+    result = deepcopy(placement)
+    try:
+        if poster_bundle is not None:
+            board, detections = poster_bundle
+            report = estimate_scale(observations, measured, rear_measured, detections, board, placement['scale'], parameters)
+            report['applied'] = False
+            if report['status'] == 'estimated':
+                merged = combine_scales(placement['scale'], placement['evidence']['relative_scale_std'],
+                                        report['scale'], report['relative_scale_std'], parameters)
+                report['combination'] = merged
+                if not merged['compatible']:
+                    raise PosterScaleConflict('海报与 IMU 地图尺度不相容，拒绝加权合并', dict(report, status='conflict'))
+                report['status'] = 'diagnostics_only'
+                if apply_scale:
+                    try:
+                        result = recheck_scale(merged['scale'])
+                    except ValueError as error:
+                        report['inertial_recheck'] = getattr(error, 'diagnostics', {})
+                        raise PosterScaleConflict(f'合并尺度未通过惯性复核：{error}', dict(report, status='conflict')) from error
+                    result['evidence']['relative_scale_std'] = merged['relative_scale_std']
+                    report.update(status='corrected', applied=True)
+    except PosterScaleConflict as error:
+        report = dict(error.evidence, reason=str(error), applied=False)
+        if apply_scale:
+            raise MapAlignmentError(str(error), dict(environment_poster=report)) from error
+    result['evidence']['environment_poster'] = report
+    return result

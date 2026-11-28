@@ -29,7 +29,7 @@ from umi.perception.runtime import write_error_log
 from umi.reconstruction.estimation.constraint_quality import evaluate_notes
 from umi.reconstruction.estimation.models import ReconstructionContext, RecordingPaths, TrajectoryRequest
 from umi.reconstruction.segment import environment_assets as calibration_assets
-from umi.reconstruction.segment import map_data, reconstruction, results
+from umi.reconstruction.segment import map_data, attempts, results
 from umi.reconstruction.segment import trajectory_results as postprocess
 from umi.reconstruction.segment.environment_assets import EnvironmentAssets, load_frozen_rear, load_poster
 from umi.reconstruction.segment.results import load_summary, result_path
@@ -66,19 +66,19 @@ def run_batch(input_paths: list[str], output: Path | None, request: TrajectoryRe
             raise ValueError("--jobs 必须 >= 1")
         videos = _find_inputs(input_paths)
     except (OSError, ValueError) as error:
-        reconstruction.console.write(f"准备轨迹抽取失败：{error}", state="失败")
+        attempts.console.write(f"准备轨迹抽取失败：{error}", state="失败")
         return 1
     if not videos:
-        reconstruction.console.write("未找到 .insv 录像：" + "，".join(input_paths), state="失败")
+        attempts.console.write("未找到 .insv 录像：" + "，".join(input_paths), state="失败")
         return 1
     # 输出以文件 stem 命名；同名输入必须在启动前拒绝，避免并发覆盖同一份结果。
     names = [video.stem for video in videos]
     if len(set(names)) != len(names):
-        reconstruction.console.write("录像名称重复；请分批处理，并用 --out 指定不同输出目录", state="失败")
+        attempts.console.write("录像名称重复；请分批处理，并用 --out 指定不同输出目录", state="失败")
         return 1
     output_root = (output or _default_output(input_paths)).resolve()
     workers = jobs
-    reconstruction.console.write(f"共 {len(videos)} 段录像；模式 {request.mode}；并行数 {workers}；输出：{output_root}")
+    attempts.console.write(f"共 {len(videos)} 段录像；模式 {request.mode}；并行数 {workers}；输出：{output_root}")
     with cf.ThreadPoolExecutor(max_workers=workers) as executor:
         summaries = list(executor.map(partial(run_recording, output_root=output_root, request=request), videos))
     results.show_batch(summaries)
@@ -131,7 +131,7 @@ def _run_recording(video: Path, output_root: Path, request: TrajectoryRequest) -
     # 确定要重算后再准备目录。准备失败时不往旧目录写失败报告。
     try:
         if paths.output.exists():
-            reconstruction.console.write(f"重新处理：{'指定 --force' if request.force else previous.reason}", recording=recording_name)
+            attempts.console.write(f"重新处理：{'指定 --force' if request.force else previous.reason}", recording=recording_name)
             shutil.rmtree(paths.output)
         paths.logs.mkdir(parents=True)
     except OSError as error:
@@ -146,23 +146,23 @@ def _run_recording(video: Path, output_root: Path, request: TrajectoryRequest) -
     stage = "读取录像"
     try:
         # 1. 读取容器帧时间和尾部 IMU，不解码图像；此处检查丢帧策略。
-        reconstruction.console.write("读取录像时间戳和 IMU", recording=recording_name, step=(1, 4))
+        attempts.console.write("读取录像时间戳和 IMU", recording=recording_name, step=(1, 4))
         run_inputs = visual_recordings.prepare(video, paths, allow_irregular=request.allow_irregular,
             frame_step=request.configuration.values.video.frame_step)
         frames = run_inputs.manifest["frames"]
-        reconstruction.console.write(f"{frames['n_frames_used']} 帧；时长 {frames['duration_s']:.1f} 秒", recording=recording_name)
+        attempts.console.write(f"{frames['n_frames_used']} 帧；时长 {frames['duration_s']:.1f} 秒", recording=recording_name)
 
         # 2. 原片只裁切一次，所有建图与定位尝试复用相同镜头视频。
         stage = "准备镜头视频"
-        reconstruction.console.write("准备镜头视频，供所有重建尝试共用", recording=recording_name, step=(2, 4))
+        attempts.console.write("准备镜头视频，供所有重建尝试共用", recording=recording_name, step=(2, 4))
         settings = _reconstruction_settings(video, paths, selected, environment_assets, request)
         context = ReconstructionContext(paths, settings, request.configuration.values, frames['n_frames_used'], request.cores)
         videos = visual_recordings.prepare_lens_videos(video, context, lenses=('front', 'rear') if request.mode == 'dual' else ('front',))
 
         # 3. 重试一整轮“建图 → 定位 → 融合”，依据融合质量选择最佳尝试。
         stage = "轨迹重建"
-        reconstruction.console.write("重建轨迹：建图 → 逐图定位与合并 → IMU 融合", recording=recording_name, step=(3, 4))
-        attempt = reconstruction.run_attempts(videos, run_inputs, context, recording_name=video.name)
+        attempts.console.write("重建轨迹：建图 → 逐图定位与合并 → IMU 融合", recording=recording_name, step=(3, 4))
+        attempt = attempts.run_attempts(videos, run_inputs, context, recording_name=video.name)
         summary["tries"] = attempt.attempts
         if attempt.reason:
             raise ProcessingError(attempt.failed_stage or stage, attempt.reason)
@@ -171,7 +171,7 @@ def _run_recording(video: Path, output_root: Path, request: TrajectoryRequest) -
 
         # 4. 用本次选中的相机与夹爪几何，将融合结果转换为相机/TCP 轨迹。
         stage = "生成轨迹产物"
-        reconstruction.console.write("生成轨迹、地图、视频与报告", recording=recording_name, step=(4, 4))
+        attempts.console.write("生成轨迹、地图、视频与报告", recording=recording_name, step=(4, 4))
         _write_results(summary, attempt, run_inputs, context, settings, selected, fingerprint, provenance,
                          request, paths, video)
         summary["status"] = "ok"
@@ -218,7 +218,7 @@ def _reconstruction_settings(video: Path, paths, selected, environment_assets, r
     rear_manifest = (calibration_assets.freeze_rear_calibration(environment_assets.rear, paths.output/'devices/rear')
                      if environment_assets.rear else None)
     rear_measured = calibration_assets.load_frozen_rear(rear_manifest) if rear_manifest else None
-    settings = reconstruction.reconstruction_settings(dict(os.environ), camera_json=selected.assets.camera_json,
+    settings = attempts.reconstruction_settings(dict(os.environ), camera_json=selected.assets.camera_json,
                                                 front_mask=selected.assets.front_mask,
                                                 output=paths.debug / "settings", parameters=request.configuration.values,
                                                 **(dict(rear_measurement=rear_measured) if rear_measured is not None else {}))
@@ -230,7 +230,7 @@ def _reconstruction_settings(video: Path, paths, selected, environment_assets, r
         poster_manifest = calibration_assets.prepare_poster(
             video, paths.output/'environment_poster', environment_assets.poster.path,
             rear_manifest.parent/'calibration.json', request.configuration.values.environment_tags,
-            expected=expected_poster_hashes, progress=reconstruction.console.write)
+            expected=expected_poster_hashes, progress=attempts.console.write)
         settings = replace(settings, poster_manifest=poster_manifest)
     return settings
 
@@ -246,7 +246,8 @@ def _write_results(summary: dict, attempt, run_inputs, context, settings, select
     if settings.poster_manifest is not None:
         calibration_record['environment_poster_manifest'] = str(settings.poster_manifest)
     metrics = postprocess.write_trajectories(attempt.directory, run_inputs.manifest, paths.output, request.mode, video.name,
-                                     calibration_record, parameters=context.parameters, command={
+                                     calibration_record, parameters=context.parameters,
+                                     fusion_output=attempt.fusion.result if attempt.fusion is not None else None, command={
         "parameters": provenance, "max_tries": request.max_tries, "chosen_try": attempt.chosen, "tries": attempt.attempts,
         "allow_irregular": request.allow_irregular, "keep_work": request.keep_work, "force": request.force, "cores": request.cores or None,
         "UMI_TRAJ_CALIB": os.environ.get("UMI_TRAJ_CALIB") or None,

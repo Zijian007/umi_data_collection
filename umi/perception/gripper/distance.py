@@ -195,7 +195,7 @@ def _cache_paths(cache: Path, fingerprint: dict) -> tuple[Path, Path]:
 
 
 def process(request: TagDistanceRequest, cache: Path, *,
-            progress: ProgressCallback | None = None) -> TagDistanceResult:
+            progress: ProgressCallback | None = None, strict: bool = True) -> TagDistanceResult:
     started = time.monotonic()
     detections = SampledDetectionCache(request.video, cache, request.recording_sha256,
                                        request.video_times_s, progress, roi_px=request.roi_px)
@@ -234,14 +234,28 @@ def process(request: TagDistanceRequest, cache: Path, *,
     if not completion_path.is_file():
         write_npz_cache(measurements_path, completion_path, fingerprint, distance_mm=distances_mm, source=sources)
     gap_reports = []
-    if request.verified_gap_recovery and stop_reason != 'accepted':
+    short_report = None
+    if request.verified_gap_recovery:
         from umi.perception.gripper import gap_recovery
-        gaps = missing_runs(valid)
-        overlong = gaps[gaps[:, 1] - gaps[:, 0] > request.max_missing_frames]
-        gap_reports = gap_recovery.recover(detections, overlong, valid, estimator, distances_mm, sources,
-                                           fingerprint, progress)
-        if gap_reports:
-            stop_reason = 'accepted' if acceptance_report(valid, request)['passed'] else 'verified_gaps_insufficient'
+        if stop_reason != 'accepted':
+            gaps = missing_runs(valid)
+            overlong = gaps[gaps[:, 1] - gaps[:, 0] > request.max_missing_frames]
+            gap_reports = gap_recovery.recover(detections, overlong, valid, estimator, distances_mm, sources,
+                                               fingerprint, progress)
+            if gap_reports:
+                stop_reason = 'verified_gaps_insufficient'
+        eligible = ~valid & ~detections.blocked & np.isfinite(detections.native_times_s)
+        eligible &= np.isin(sources, ('missing', 'high_reprojection_error'))
+        for begin, end in missing_runs(valid):
+            if end - begin > request.max_missing_frames:
+                eligible[begin:end] = False
+        if len(short_rows := np.flatnonzero(eligible)):
+            budget = settings.values('gripper_tag_detection')['recovery_batch_size']
+            ordered = recovery_order(short_rows, detections.corners)
+            short_report = gap_recovery.recover_short(detections, np.sort(ordered[:budget]), valid, estimator,
+                                                     distances_mm, sources, fingerprint, progress)
+        if acceptance_report(valid, request)['passed']:
+            stop_reason = 'accepted'
     aligned_series = TagDistanceSeries(np.asarray(request.video_times_s) + request.episode_offset_s,
                                        distances_mm, sources)
     source_names, source_counts = np.unique(aligned_series.source, return_counts=True)
@@ -255,11 +269,13 @@ def process(request: TagDistanceRequest, cache: Path, *,
                        stop_reason=stop_reason, elapsed_s=time.monotonic() - started))
     if request.verified_gap_recovery:
         report['detection']['verified_gap_recovery'] = gap_reports
+        if short_report is not None:
+            report['detection']['short_gap_recovery'] = short_report
     if progress:
         progress(f'夹爪标签中心距验收：{report["acceptance"]["valid_rows"]}/{len(distances_mm)} 帧'
                  f'（{report["valid_fraction"]:.1%}），最长连续缺失 '
                  f'{report["acceptance"]["longest_missing_frames"]} 帧，'
                  f'耗时 {report["detection"]["elapsed_s"]:.1f} 秒')
-    if not report['acceptance']['passed']:
+    if strict and not report['acceptance']['passed']:
         raise TagDistanceAcceptanceError(report)
     return TagDistanceResult(aligned_series, report)

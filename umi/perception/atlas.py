@@ -18,22 +18,23 @@ class MapDataError(ValueError):
     pass
 
 
-def read_atlas(archive: Path, output: Path, *, log: Path | None = None) -> dict:
+def read_atlas(archive: Path, output: Path, *, log: Path | None = None, environment=None) -> dict:
     """Convert an atlas read-only, optionally leaving a durable engine log."""
-    executable, vocabulary = exporter_paths()
+    environment = dict(os.environ if environment is None else environment)
+    executable, vocabulary = exporter_paths(environment)
     timeout = settings.values('runtime')['map_export_timeout_s']
     command = [str(executable), str(archive), str(vocabulary), str(output)]
     if log is not None:
         if not executable.is_file():
             raise MapDataError('缺少 umi_export_atlas，请运行 install.sh 更新轨迹组件')
         runtime.run_logged(['timeout', str(timeout), *command], log,
-                           stage='转换地图图集', environment=dict(os.environ))
+                           stage='转换地图图集', environment=environment)
     else:
         for path in (archive, executable, vocabulary):
             if not path.is_file():
                 raise MapDataError(f'地图读取缺少 {path.name}；图集转换工具可通过 install.sh 安装')
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+            result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, env=environment)
         except subprocess.TimeoutExpired as error:
             raise MapDataError('地图读取超时') from error
         if result.returncode:

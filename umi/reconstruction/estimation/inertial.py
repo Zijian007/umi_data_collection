@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.spatial.transform import Rotation as Rot
 
 from umi.config.parameter_models import FusionParameters
 
@@ -18,46 +17,135 @@ def estimate_gyro_bias(gyro: np.ndarray, parameters: FusionParameters) -> np.nda
     return np.zeros(3)
 
 
+def _rodrigues_batch(rotvecs: np.ndarray) -> np.ndarray:
+    """将一批旋转向量转换为 3×3 旋转矩阵，避免逐样本调用 scipy Rotation。"""
+    theta2 = np.sum(rotvecs * rotvecs, axis=1)
+    theta = np.sqrt(theta2)
+    small = theta < 1e-8
+    safe_theta = np.where(small, 1., theta)
+    safe_theta2 = np.where(small, 1., theta2)
+    a = np.where(small, 1. - theta2 / 6. + theta2 * theta2 / 120., np.sin(theta) / safe_theta)
+    b = np.where(small, .5 - theta2 / 24. + theta2 * theta2 / 720., (1. - np.cos(theta)) / safe_theta2)
+    wx, wy, wz = rotvecs[:, 0], rotvecs[:, 1], rotvecs[:, 2]
+    matrices = np.empty((len(rotvecs), 3, 3), dtype=float)
+    matrices[:, 0, 0] = 1. - b * (wy * wy + wz * wz)
+    matrices[:, 0, 1] = b * wx * wy - a * wz
+    matrices[:, 0, 2] = b * wx * wz + a * wy
+    matrices[:, 1, 0] = b * wx * wy + a * wz
+    matrices[:, 1, 1] = 1. - b * (wx * wx + wz * wz)
+    matrices[:, 1, 2] = b * wy * wz - a * wx
+    matrices[:, 2, 0] = b * wx * wz - a * wy
+    matrices[:, 2, 1] = b * wy * wz + a * wx
+    matrices[:, 2, 2] = 1. - b * (wx * wx + wy * wy)
+    return matrices
+
+
+def _interval_durations(imu_video_times_s: np.ndarray, start_time_s: float, end_time_s: float):
+    """按零阶保持规则切片区间内的 IMU 样本下标与持续时间。"""
+    start_sample = int(np.searchsorted(imu_video_times_s, start_time_s))
+    end_sample = int(np.searchsorted(imu_video_times_s, end_time_s))
+    lo = max(start_sample - 1, 0)
+    hi = min(end_sample + 1, len(imu_video_times_s))
+    if lo >= hi:
+        return np.empty(0, dtype=int), np.empty(0, dtype=float)
+    times = imu_video_times_s[lo:hi]
+    next_times = np.empty(hi - lo, dtype=float)
+    next_times[:-1] = np.minimum(times[1:], end_time_s)
+    next_times[-1] = min(imu_video_times_s[hi], end_time_s) if hi < len(imu_video_times_s) else end_time_s
+    # 注意：原循环在 duration_s <= 0 时（preintegrate_samples）不更新 previous_time_s；
+    # 而在单调递增时间轴上，除了起始样本之前外 next_times 与 previous_time_s 始终单调。
+    indices, durations = [], []
+    previous_time_s = start_time_s
+    for offset in range(hi - lo):
+        next_time_s = float(next_times[offset])
+        duration_s = next_time_s - max(previous_time_s, float(times[offset]))
+        if duration_s > 0:
+            indices.append(lo + offset)
+            durations.append(duration_s)
+            previous_time_s = next_time_s
+            if next_time_s >= end_time_s:
+                break
+        elif next_time_s >= end_time_s:
+            # 保持与原 integrate_gyro_rotation / preintegrate_samples 的边界行为一致
+            previous_time_s = next_time_s
+            break
+        else:
+            previous_time_s = next_time_s
+    return np.asarray(indices, dtype=int), np.asarray(durations, dtype=float)
+
+
 def integrate_gyro_rotation(imu_video_times_s: np.ndarray, gyro: np.ndarray, initial_gyro_bias: np.ndarray,
                             start_time_s: float, end_time_s: float) -> np.ndarray:
-    start_sample, end_sample = np.searchsorted(imu_video_times_s, start_time_s), np.searchsorted(imu_video_times_s, end_time_s)
+    indices, durations = _interval_durations(imu_video_times_s, start_time_s, end_time_s)
     gyro_rotation = np.eye(3)
-    previous_time_s = start_time_s
-    for sample_index in range(max(start_sample - 1, 0), min(end_sample + 1, len(imu_video_times_s))):
-        next_time_s = min(imu_video_times_s[sample_index + 1], end_time_s) if sample_index + 1 < len(imu_video_times_s) else end_time_s
-        duration_s = next_time_s - max(previous_time_s, imu_video_times_s[sample_index])
-        if duration_s > 0:
-            gyro_rotation = gyro_rotation @ Rot.from_rotvec((gyro[sample_index] - initial_gyro_bias) * duration_s).as_matrix()
-        previous_time_s = next_time_s
-        if next_time_s >= end_time_s:
-            break
+    if len(indices) == 0:
+        return gyro_rotation
+    steps = _rodrigues_batch((gyro[indices] - initial_gyro_bias) * durations[:, None])
+    for step in steps:
+        gyro_rotation = gyro_rotation @ step
     return gyro_rotation
+
+
+def camera_gyro_rotations(video_times, imu, imu_from_camera_rotation, parameters):
+    """Integrate only between covered exposures on the camera clock."""
+    from scipy.spatial.transform import Rotation
+
+    if (len(imu) < 2 or len(video_times) < 2 or not np.isfinite(imu[:, :4]).all()
+            or not np.isfinite(video_times).all() or np.any(np.diff(imu[:, 0]) <= 0)
+            or np.any(np.diff(video_times) <= 0)):
+        raise ValueError('陀螺仪辅助建图需要有限且递增的原片与 IMU 时间轴')
+    imu_times, gyro = imu[:, 0], imu[:, 1:4]
+    bias = estimate_gyro_bias(gyro[imu_times <= video_times[0]], parameters)
+    # Treat a missing stretch of IMU samples as a boundary instead of holding an
+    # angular rate across it. Median cadence accommodates different IMU devices.
+    steps = np.diff(imu_times)
+    gap_starts = imu_times[:-1][steps > max(.015, 5 * np.median(steps))]
+    gap_ends = imu_times[1:][steps > max(.015, 5 * np.median(steps))]
+    rotation = np.eye(3)
+    extrinsic = imu_from_camera_rotation
+    segment, previous = -1, None
+    samples = []
+    for index, time in enumerate(video_times):
+        inside_gap = np.searchsorted(gap_starts, time, side='left') > np.searchsorted(gap_ends, time, side='right')
+        if time < imu_times[0] or time > imu_times[-1] or inside_gap:
+            previous = None
+            continue
+        if (previous is None or time - previous > .15
+                or np.searchsorted(gap_starts, previous) != np.searchsorted(gap_ends, time, side='right')):
+            segment += 1
+            rotation = np.eye(3)
+        else:
+            delta = integrate_gyro_rotation(imu_times, gyro, bias, previous, time)
+            rotation = rotation @ extrinsic.T @ delta @ extrinsic
+        samples.append((index, segment, rotation.copy()))
+        previous = time
+    if not samples or len(samples) == segment + 1:
+        raise ValueError('无连续录像曝光获得充分的 IMU 覆盖')
+    quaternions = Rotation.from_matrix([rotation for _, _, rotation in samples]).as_quat()
+    return np.column_stack(([(index, segment) for index, segment, _ in samples], quaternions)), bias
 
 
 def preintegrate_samples(imu_video_times_s: np.ndarray, gyro: np.ndarray, acc: np.ndarray,
                         start_time_s: float, end_time_s: float, gyro_bias: np.ndarray,
                         acc_bias: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
-    start_sample, end_sample = np.searchsorted(imu_video_times_s, start_time_s), np.searchsorted(imu_video_times_s, end_time_s)
+    indices, durations = _interval_durations(imu_video_times_s, start_time_s, end_time_s)
     delta_rotation = np.eye(3)
     delta_velocity = np.zeros(3)
     delta_position = np.zeros(3)
     velocity_bias_jacobian = np.zeros((3, 3))
     position_bias_jacobian = np.zeros((3, 3))
-    previous_time_s = start_time_s
-    for sample_index in range(max(start_sample - 1, 0), min(end_sample + 1, len(imu_video_times_s))):
-        next_time_s = min(imu_video_times_s[sample_index + 1], end_time_s) if sample_index + 1 < len(imu_video_times_s) else end_time_s
-        duration_s = next_time_s - max(previous_time_s, imu_video_times_s[sample_index])
-        if duration_s <= 0:
-            continue
-        specific_acceleration = acc[sample_index] - acc_bias
-        delta_position = delta_position + delta_velocity * duration_s + 0.5 * delta_rotation @ specific_acceleration * duration_s * duration_s
-        position_bias_jacobian = position_bias_jacobian + velocity_bias_jacobian * duration_s - 0.5 * delta_rotation * duration_s * duration_s
-        delta_velocity = delta_velocity + delta_rotation @ specific_acceleration * duration_s
-        velocity_bias_jacobian = velocity_bias_jacobian - delta_rotation * duration_s
-        delta_rotation = delta_rotation @ Rot.from_rotvec((gyro[sample_index] - gyro_bias) * duration_s).as_matrix()
-        previous_time_s = next_time_s
-        if next_time_s >= end_time_s:
-            break
+    if len(indices):
+        steps = _rodrigues_batch((gyro[indices] - gyro_bias) * durations[:, None])
+        specific_accs = acc[indices] - acc_bias
+        for index in range(len(indices)):
+            dt = float(durations[index])
+            half_dt2 = 0.5 * dt * dt
+            rotated_acc = delta_rotation @ specific_accs[index]
+            delta_position = delta_position + delta_velocity * dt + half_dt2 * rotated_acc
+            position_bias_jacobian = position_bias_jacobian + velocity_bias_jacobian * dt - half_dt2 * delta_rotation
+            delta_velocity = delta_velocity + rotated_acc * dt
+            velocity_bias_jacobian = velocity_bias_jacobian - delta_rotation * dt
+            delta_rotation = delta_rotation @ steps[index]
     return delta_rotation, delta_velocity, delta_position, velocity_bias_jacobian, position_bias_jacobian, end_time_s - start_time_s
 
 
@@ -125,8 +213,9 @@ def build_inertial_graph(times, imu, rotations, positions, velocities, fusion_pa
     initial_bias = gtsam.imuBias.ConstantBias(
         np.zeros(3) if initial_acc_bias is None else initial_acc_bias, gyro_bias)
     graph, values = gtsam.NonlinearFactorGraph(), gtsam.Values()
+    rotation_matrices = rotations.as_matrix()
     for frame_index in range(len(times)):
-        values.insert(pose_key_fn(frame_index), gtsam.Pose3(gtsam.Rot3(rotations[frame_index].as_matrix()), positions[frame_index]))
+        values.insert(pose_key_fn(frame_index), gtsam.Pose3(gtsam.Rot3(rotation_matrices[frame_index]), positions[frame_index]))
         values.insert(velocity_key_fn(frame_index), velocities[frame_index])
         values.insert(bias_key_fn(frame_index), initial_bias)
     graph.add(gtsam.PriorFactorVector(velocity_key_fn(0), velocities[0], gtsam.noiseModel.Isotropic.Sigma(3, fusion_parameters.velocity_prior_sigma_m_s)))

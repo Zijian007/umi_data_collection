@@ -91,11 +91,11 @@ def reliable_times(observations, board, recording, parameters, *, solve_candidat
     return np.asarray(accepted), rejection_counts
 
 
-def crop_recording(recording, begin, end):
+def crop_recording(recording, begin, end, *, directory=None):
     """Create an isolated view; never mutate preparation caches or INSV files."""
     if begin == 0 and end == len(recording.video_times_s):
         return recording
-    paths = RecordingPaths(recording.context.paths.output / 'tag_trim')
+    paths = RecordingPaths(directory if directory is not None else recording.context.paths.output / 'tag_trim')
     source = recording.context.paths.dataset
     cam = paths.dataset / 'mav0/cam0'
     cam.mkdir(parents=True, exist_ok=True)
@@ -178,10 +178,13 @@ def prepare(inputs):
     # Save the chosen window before preparing the cropped time tables.
     report['status'] = 'selected'
     write_json(report_path, report)
-    recordings = {arm: crop_recording(recording, *ranges[arm]) for arm, recording in inputs.recordings.items()}
+    work = getattr(inputs, 'work_directory', None)
+    recordings = {arm: crop_recording(recording, *ranges[arm],
+                                     directory=work / arm / 'tag_trim' if work is not None else None)
+                  for arm, recording in inputs.recordings.items()}
     report['status'] = 'applied'
     write_json(report_path, report)
     inputs.console.write(f'环境标签首尾裁剪：共同时间 {start:.3f}–{end:.3f}s；' + '；'.join(
         f'{arm} 去头 {item["removed_head_s"]:.3f}s、去尾 {item["removed_tail_s"]:.3f}s'
         for arm, item in report['arms'].items()), recording=episode.root.name)
-    return replace(inputs, recordings=recordings, poster_pnp_candidates=pnp_candidates), report
+    return replace(inputs, recordings=recordings, detections=snapshots, poster_pnp_candidates=pnp_candidates), report

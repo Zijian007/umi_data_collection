@@ -10,6 +10,12 @@ import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
 
+def skew(vector) -> np.ndarray:
+    """Return the cross-product matrix of a three-vector."""
+    x, y, z = vector
+    return np.array([[0., -z, y], [z, 0., -x], [-y, x, 0.]])
+
+
 def transform(rotation, translation) -> np.ndarray:
     result = np.eye(4)
     result[:3, :3], result[:3, 3] = rotation, translation
@@ -24,6 +30,22 @@ def validate_transform(value) -> np.ndarray:
             or not np.isclose(np.linalg.det(matrix[:3, :3]), 1, atol=1e-6)):
         raise ValueError('需要有限、右手、正交的 SE(3) 变换')
     return matrix
+
+
+def validate_transforms(value) -> np.ndarray:
+    """向量化校验一批 [N,4,4] 的有限、右手、正交 SE(3) 变换。"""
+    matrices = np.asarray(value, float)
+    if matrices.ndim != 3 or matrices.shape[1:] != (4, 4) or not np.isfinite(matrices).all():
+        raise ValueError('需要有限、右手、正交的 SE(3) 变换')
+    if len(matrices) == 0:
+        return matrices
+    rotations = matrices[:, :3, :3]
+    gram = np.einsum('nji,njk->nik', rotations, rotations)
+    if (not np.allclose(matrices[:, 3, :], [0., 0., 0., 1.], atol=1e-8)
+            or not np.allclose(gram, np.eye(3), atol=1e-6)
+            or not np.allclose(np.linalg.det(rotations), 1., atol=1e-6)):
+        raise ValueError('需要有限、右手、正交的 SE(3) 变换')
+    return matrices
 
 
 def imu_from_camera(measured: dict) -> np.ndarray:
@@ -74,6 +96,24 @@ def resample_pose_series(times_s: np.ndarray, poses: np.ndarray, query_s: np.nda
     result[:, :3, :3] = Slerp(times_s, Rotation.from_matrix(poses[:, :3, :3]))(query_s).as_matrix()
     result[:, :3, 3] = np.column_stack([np.interp(query_s, times_s, poses[:, k, 3]) for k in range(3)])
     return result
+
+
+def select_pose_keyframes(times, poses, *, maximum_dt_s, minimum_translation_m, minimum_rotation_deg):
+    """Keep endpoints and sample poses by elapsed time, translation, and rotation."""
+    times, poses = np.asarray(times), np.asarray(poses)
+    if not maximum_dt_s or len(times) < 2:
+        return np.arange(len(times))
+    selected = [0]
+    for index in range(1, len(times) - 1):
+        previous = selected[-1]
+        angle = Rotation.from_matrix(poses[previous, :3, :3].T @ poses[index, :3, :3]).magnitude()
+        # Take the preceding sample before the interval would exceed its limit.
+        if (times[index + 1] - times[previous] > maximum_dt_s + 1e-9
+                or np.linalg.norm(poses[index, :3, 3] - poses[previous, :3, 3]) >= minimum_translation_m
+                or np.degrees(angle) >= minimum_rotation_deg):
+            selected.append(index)
+    selected.append(len(times) - 1)
+    return np.asarray(selected, dtype=int)
 
 
 def relative_pose_series(first: np.ndarray, second: np.ndarray) -> np.ndarray:

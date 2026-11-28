@@ -23,7 +23,11 @@ from umi.config import audio_sync as sync_config
 from umi.config.audio_sync import AUDIO_SYNC_RECIPES
 from umi.config.audio_sync import KiwiParameters as SyncParams
 from umi.devices.x3.insv_reader import metadata_summary, read_metadata
-from umi.perception.audio.specialist_audio import AudioSyncError, AudioSyncEstimate
+from umi.perception.audio.specialist_audio import AudioSyncError, AudioSyncEstimate, estimate_offset_from_files as specialist_from_files
+
+
+class LandmarkMatchError(AudioSyncError):
+    """Audio is usable, but spectral landmarks could not confirm an offset."""
 
 
 def _block_median(values: np.ndarray, rows: int) -> float:
@@ -627,16 +631,16 @@ def _estimate_pcm(reference: np.ndarray, other: np.ndarray, p: SyncParams) -> Au
     try:
         vote = vote_offset(reference, other, params=p)
     except RuntimeError as error:
-        raise AudioSyncError('没有匹配的音频指纹') from error
+        raise LandmarkMatchError('没有匹配的音频指纹') from error
     if vote.votes < p.min_votes:
-        raise AudioSyncError(f'匹配指纹票数不足（{vote.votes} 票，至少 {p.min_votes} 票，次峰 {vote.runner_up} 票）')
+        raise LandmarkMatchError(f'匹配指纹票数不足（{vote.votes} 票，至少 {p.min_votes} 票，次峰 {vote.runner_up} 票）')
     if vote.votes < p.vote_margin * vote.runner_up:
-        raise AudioSyncError(f'音频指纹匹配有歧义（{vote.votes} 票对 {vote.runner_up} 票，票数比至少 {p.vote_margin:g}）')
+        raise LandmarkMatchError(f'音频指纹匹配有歧义（{vote.votes} 票对 {vote.runner_up} 票，票数比至少 {p.vote_margin:g}）')
     if vote.support_span_s < p.min_vote_span_s:
-        raise AudioSyncError(f'匹配指纹仅覆盖 {vote.support_span_s:.2f} 秒（至少 {p.min_vote_span_s:g} 秒）')
+        raise LandmarkMatchError(f'匹配指纹仅覆盖 {vote.support_span_s:.2f} 秒（至少 {p.min_vote_span_s:g} 秒）')
     if (vote.overlap_s < p.min_overlap_s or vote.matched_fraction < p.min_landmark_match_fraction
             or vote.support_coverage < p.min_support_coverage):
-        raise AudioSyncError(f'共同音频不足或指纹覆盖不足（共同音频 {vote.overlap_s:.2f} 秒）')
+        raise LandmarkMatchError(f'共同音频不足或指纹覆盖不足（共同音频 {vote.overlap_s:.2f} 秒）')
 
     try:
         refined = _refine_recording(reference, other, vote.offset_s, p, anchor_times_s=vote.anchor_times_s)
@@ -724,8 +728,84 @@ def estimate_offset_from_files(reference: Path, other: Path, *,
     parameters = parameters if parameters is not None else sync_config.load('kiwi')
     ref_samples, ref_mode = _read_recording(reference, parameters)
     other_samples, other_mode = _read_recording(other, parameters)
-    estimate = _estimate_pcm(ref_samples, other_samples, parameters)
+    _validate_pair_mode(reference, other, ref_mode, other_mode)
+    return _estimate_pcm(ref_samples, other_samples, parameters)
+
+
+def _validate_pair_mode(reference, other, ref_mode, other_mode):
     ref_model, other_model = (metadata_summary(read_metadata(path))['model'] for path in (reference, other))
     if not ref_model or ref_model != other_model or ref_mode != other_mode:
         raise AudioSyncError('两段录像的相机型号或录制模式无法确认一致，需要实测音视频延迟才能同步')
-    return estimate
+
+
+def verified_specialist_from_files(reference: Path, other: Path, *, parameters: SyncParams,
+                                   specialist_parameters: sync_config.SpecialistParameters) -> AudioSyncEstimate:
+    """Corroborate an envelope candidate with independently matched PCM windows."""
+    coarse = specialist_from_files(reference, other, parameters=specialist_parameters)
+    a, _ = _read_recording(reference, parameters)
+    b, _ = _read_recording(other, parameters)
+    return _verify_specialist(a, b, coarse, parameters, specialist_parameters.min_peak_ratio)
+
+
+def _repeat_strength(samples: np.ndarray, first: int, last: int) -> np.ndarray:
+    """Measure how nearly the waveform repeats at each competing lag."""
+    centered = samples - samples.mean()
+    size = 1 << (len(centered) + last - 1).bit_length()
+    spectrum = np.fft.rfft(centered, size)
+    autocorrelation = np.fft.irfft(np.abs(spectrum) ** 2, size)[first:last + 1]
+    energy = np.concatenate(([0.], np.cumsum(centered ** 2)))
+    lags = np.arange(first, last + 1)
+    scale = np.sqrt(energy[-1 - lags] * (energy[-1] - energy[lags]))
+    return np.divide(np.abs(autocorrelation), scale, out=np.zeros_like(scale), where=scale > 0)
+
+
+def _verify_specialist(a, b, coarse, p, minimum_peak_ratio) -> AudioSyncEstimate:
+    candidate = -coarse.other_started_later_s
+    a_overlap, b_overlap, shift, start = _aligned_audio(a, b, candidate, p.sample_rate)
+    # Non-overlapping windows must resolve the same peak within well under one output frame.
+    tolerance_s = .020
+    size = min(6 * p.sample_rate, len(a_overlap) // 3)
+    if size < 3 * p.sample_rate:
+        raise AudioSyncError('specialist 分窗复核需要至少 3 段独立音频，每段至少 3 秒')
+    window_s = size / p.sample_rate
+    count = len(a_overlap) // size
+    first_rival = math.floor(tolerance_s * p.sample_rate) + 1
+    last_rival = min(size // 2, math.floor(p.refine_window_s * p.sample_rate))
+    windows = []
+    for i in np.linspace(0, count - 1, min(count, 9), dtype=int):
+        cut = slice(i * size, (i + 1) * size)
+        lags, correlation = gcc_phat(a_overlap[cut], b_overlap[cut])
+        local = np.abs(lags) <= p.refine_window_s * p.sample_rate
+        times, peaks = lags[local] / p.sample_rate, np.abs(correlation[local])
+        peak = int(np.argmax(peaks))
+        lag = float(times[peak])
+        rivals = peaks[np.abs(times - lag) > tolerance_s]
+        rival = float(rivals.max(initial=0.))
+        ratio = float(peaks[peak] / rival) if rival > 0 else None
+        agreed = (0 < peak < len(times) - 1 and abs(shift + lag - candidate) <= tolerance_s
+                  and ratio is not None and ratio >= minimum_peak_ratio)
+        shared_repeat = None
+        if agreed and first_rival <= last_rival:
+            # PHAT can suppress alternate peaks of periodic audio at window edges.
+            repeat_a = _repeat_strength(a_overlap[cut], first_rival, last_rival)
+            repeat_b = _repeat_strength(b_overlap[cut], first_rival, last_rival)
+            shared_repeat = float(np.minimum(repeat_a, repeat_b).max())
+            agreed = shared_repeat < 1 / minimum_peak_ratio
+        windows.append(dict(start_s=float(start + i * window_s), offset_s=shift + lag,
+                            peak_ratio=ratio, shared_repeat=shared_repeat, agreed=bool(agreed)))
+    offsets = [window['offset_s'] for window in windows if window['agreed']]
+    if len(offsets) < 3 or len(offsets) * 2 <= len(windows):
+        raise AudioSyncError(f'specialist 分窗复核不一致（{len(offsets)}/{len(windows)} 段）')
+    if max(offsets) - min(offsets) > tolerance_s:
+        raise AudioSyncError(f'specialist 分窗偏移相差超过 {tolerance_s * 1000:.0f} ms')
+    offset = float(np.median(offsets))
+    overlap = len(a_overlap) / p.sample_rate
+    if overlap >= p.drift_min_duration_s:
+        drift = estimate_drift(a, b, offset, params=p)
+        status, bounded, budget_ok, _ = _drift_checks(drift, overlap, p)
+        if not (bounded and budget_ok):
+            raise AudioSyncError(f'specialist 分窗复核的时钟漂移未通过校验：{status}')
+    return dataclasses.replace(coarse, other_started_later_s=-offset, sample_rate_hz=p.sample_rate,
+        method=sync_config.KIWI_FALLBACK_RECIPE,
+        diagnostics=dict(specialist_candidate_s=candidate, window_duration_s=window_s,
+                         agreed_windows=len(offsets), windows=windows))

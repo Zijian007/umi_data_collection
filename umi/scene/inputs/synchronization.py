@@ -27,6 +27,10 @@ def format_offsets(offsets_s: dict[str, float]) -> str:
 
 
 def format_audio_evidence(record: dict) -> str:
+    if record.get('fallback'):
+        evidence = record['diagnostics']
+        return (f'specialist 回退 · {evidence["agreed_windows"]}/{len(evidence["windows"])} 段独立音频复核一致'
+                f' · Kiwi {record["fallback"]["reason"]}')
     if votes := record.get('diagnostics'):
         return (f'音频指纹 {votes["landmark_votes"]} 票，次峰 {votes["landmark_runner_up_votes"]} 票，'
                 f'支持时段跨度 {votes["landmark_support_span_s"]:.2f} 秒')
@@ -64,7 +68,7 @@ def _resolved_record(record: dict, recordings: dict[str, Path], path: Path | Non
         fine_method=record.get('fine_method'),
         sync_record_sha256=provenance.file_hash(path) if path is not None and path.is_file() else None,
     )
-    for key in ('algorithm', 'diagnostics'):
+    for key in ('algorithm', 'diagnostics', 'fallback'):
         if key in record:
             resolved[key] = record[key]
     if 'parameters' in record['inputs']:
@@ -87,6 +91,17 @@ def _identity(recordings: dict[str, Path], algorithm: str,
                 reference_arm=arms[0], other_arm=arms[1])
 
 
+def _fallback_identity(specialist_parameters) -> dict:
+    return dict(recipe=sync_config.KIWI_FALLBACK_RECIPE, specialist=sync_config.snapshot(specialist_parameters))
+
+
+def _matches_identity(record, expected, algorithm):
+    inputs = record.get('inputs')
+    if algorithm == 'kiwi' and isinstance(inputs, dict) and 'fallback' in inputs:
+        expected = dict(expected, fallback=_fallback_identity(sync_config.load('specialist')))
+    return inputs == expected
+
+
 def estimate_audio_sync(recordings: dict[str, Path], *, algorithm: str | None = None,
                         output: Path | None = None,
                         force: bool = False,
@@ -105,12 +120,26 @@ def estimate_audio_sync(recordings: dict[str, Path], *, algorithm: str | None = 
     reference, other = identity['reference_arm'], identity['other_arm']
     if output is not None and output.is_file() and not force:
         cached = json.loads(output.read_text(encoding='utf-8'))
-        if cached.get('inputs') == identity:
+        if cached.get('status') == 'ready' and _matches_identity(cached, identity, algorithm):
             return cached
 
     estimator = landmark_audio.estimate_offset_from_files if algorithm == 'kiwi' else estimate_offset_from_files
+    fallback = None
+    paths = (Path(recordings[reference]), Path(recordings[other]))
     try:
-        estimate = estimator(Path(recordings[reference]), Path(recordings[other]), parameters=parameters)
+        try:
+            estimate = estimator(*paths, parameters=parameters)
+        except landmark_audio.LandmarkMatchError as error:
+            if algorithm != 'kiwi':
+                raise
+            specialist = sync_config.load('specialist')
+            identity['fallback'] = _fallback_identity(specialist)
+            fallback = dict(algorithm='specialist', reason=str(error))
+            try:
+                estimate = landmark_audio.verified_specialist_from_files(
+                    *paths, parameters=parameters, specialist_parameters=specialist)
+            except AudioSyncError as rejected:
+                raise AudioSyncError(f'{error}；specialist 回退未通过：{rejected}') from rejected
     except Exception as error:
         # Persist the failed attempt against the exact recording fingerprints.
         # This makes a rejected pair visible to offline operators and prevents
@@ -119,6 +148,8 @@ def estimate_audio_sync(recordings: dict[str, Path], *, algorithm: str | None = 
                       status='failed', algorithm=algorithm, reference_arm=reference, other_arm=other,
                       inputs=identity, error_type=type(error).__name__, error=str(error),
                       confirmed=False)
+        if algorithm == 'kiwi':
+            failed['fallback_policy'] = sync_config.KIWI_FALLBACK_RECIPE
         if output is not None:
             write_json(output, failed)
         raise AudioSyncError(f'{algorithm} 音频同步失败：{error}') from error
@@ -146,6 +177,8 @@ def estimate_audio_sync(recordings: dict[str, Path], *, algorithm: str | None = 
     }
     if estimate.diagnostics:
         result['diagnostics'] = estimate.diagnostics
+    if fallback is not None:
+        result['fallback'] = fallback
     if output is not None:
         write_json(output, result)
     return result
@@ -180,7 +213,9 @@ def load_ready_audio_sync(path: Path, recordings: dict[str, Path], *,
     parameters = parameters if parameters is not None else sync_config.load(algorithm)
     expected = _identity(recordings, algorithm, parameters)
     if record.get('status') == 'failed':
-        if inputs == expected:
+        if algorithm == 'kiwi' and record.get('fallback_policy') != sync_config.KIWI_FALLBACK_RECIPE:
+            return None  # Re-evaluate older rejections using the verified fallback path.
+        if _matches_identity(record, expected, algorithm):
             raise ValueError(f'上次 {algorithm} 音频同步失败：{record.get("error", "未知原因")}；请使用 force 重新估计')
         return None
     if record.get('status') != 'ready':
@@ -192,7 +227,9 @@ def load_ready_audio_sync(path: Path, recordings: dict[str, Path], *,
     if inputs.get('parameters') != expected['parameters']:
         return None
     # Old synchronization records without an algorithm were produced by Specialist.
-    if inputs != expected or record.get('algorithm', 'specialist') != algorithm:
+    if 'fallback' in inputs and not _matches_identity(record, expected, algorithm):
+        return None
+    if not _matches_identity(record, expected, algorithm) or record.get('algorithm', 'specialist') != algorithm:
         raise ValueError('sync.json 的算法或参考手记录不一致，请重新同步')
     offsets = record.get('offsets_s')
     arms = tuple(recordings)

@@ -96,6 +96,35 @@ def run_reference(root: Path, run: Path) -> str:
     return os.path.relpath(run, root)
 
 
+def run_audit(run: Path) -> Path:
+    return run / 'audit'
+
+
+def last_run_log(task: Path) -> Path | None:
+    runs = metadata(task, 'runs')
+    legacy = metadata(task, 'logs')
+    last_attempt = read_state(task).get('attempt', {}).get('run')
+    old_logs = list(legacy.glob('*/run.log'))
+    if last_attempt:
+        run = (task / last_attempt).resolve()
+        for path in (run_audit(run) / 'run.log', legacy / run.name / 'run.log'):
+            if path.is_file():
+                return path
+        matching = []
+        for log in old_logs:
+            try:
+                saved = json.loads(log.with_name('run_manifest.json').read_text())
+            except (OSError, ValueError):
+                continue
+            if saved.get('run_directory') and Path(saved['run_directory']).name == run.name:
+                matching.append(log)
+        if matching:
+            return max(matching, key=lambda path: (path.stat().st_mtime_ns, path))
+    candidates = (*runs.glob('*/audit/run.log'), *old_logs)
+    return max((path for path in candidates if path.is_file()),
+               key=lambda path: (path.stat().st_mtime_ns, path), default=None)
+
+
 def read_state(root: Path) -> dict:
     path = manifest(root, 'state.json')
     state = json.loads(path.read_text()) if path.is_file() else {}

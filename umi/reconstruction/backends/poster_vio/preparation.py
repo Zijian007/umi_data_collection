@@ -1,10 +1,14 @@
-"""Poster VIO 观测准备、执行与回放。"""
+"""Poster VIO 每手初始化、视觉观测与求解输入准备。"""
 
 from __future__ import annotations
 
+import os
 import shutil
+import threading
 import time
-from dataclasses import asdict, dataclass, field, replace
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -15,16 +19,16 @@ from umi.core.timing import video_to_imu_seconds
 from umi.infra.concurrency import daemon_map
 from umi.infra.file_store import write_json
 from umi.infra.provenance import file_hash
+from umi.perception import runtime
+from umi.perception.models import OrbUnavailable
 from umi.perception.poster import detection
 from umi.perception.poster.geometry import camera_model
-from umi.perception.poster.layout import load as load_board
 from umi.perception.poster.quality import cull_threshold
 from umi.reconstruction.backends import PosterVioQualityError
 from umi.reconstruction.backends.poster_vio import base_tags, front_map
 from umi.reconstruction.backends.poster_vio.frontend import FeatureCameraInput, track_cameras
 from umi.reconstruction.backends.poster_vio.initialization import (
     InertialAlignmentLimitError,
-    PosterInitializationQualityError,
     align_inertial,
     estimate_static_tag_extrinsic,
     inertial_tail_seed,
@@ -37,273 +41,18 @@ from umi.reconstruction.backends.poster_vio.models import (
     FeatureTrackingParameters,
     PosterVioObservation,
     PosterVioParameters,
-    PosterVioPolicy,
     PosterVioProblem,
-    assess_observations,
-    validate_problem,
 )
 from umi.reconstruction.backends.poster_vio.solver import (
     ArmSolveInput,
     NaturalCamera,
-    PosterSolveQualityError,
-    natural_camera,
     natural_support_nodes,
     natural_training,
     select_holdout,
-    solve_joint_poster_imu,
 )
-from umi.reconstruction.estimation.constraint_quality import longest_gap, maximum_support_gap
-from umi.reconstruction.estimation.models import FusedTrajectory
 from umi.store import layout
-from umi.store.models import ArmExecutionResult, TaskInputs
+from umi.store.models import TaskInputs
 from umi.store.result_io import task_poster_frame
-
-
-def execute_task(inputs: TaskInputs, *, fallback=None) -> ArmExecutionResult:
-    """Prepare numerical inputs from the task recordings and solve."""
-    scene = inputs.episode.scene
-    require_poster(scene)
-    try:
-        request, arms, board_seed = prepare_task_inputs(inputs)
-    except PosterInitializationQualityError as error:
-        raise PosterVioQualityError(f'poster_vio 前端准备质量不足：{error}') from error
-    return _solve_task(inputs, request, arms, board_seed, fallback=fallback)
-
-
-def replay_task(inputs: TaskInputs, *, request: PosterVioRequest, arms: tuple[ArmSolveInput, ...],
-                board_seed: np.ndarray) -> ArmExecutionResult:
-    """Replay against the already prepared recordings and their frozen time grids."""
-    require_poster(inputs.episode.scene)
-    if request is None or arms is None or board_seed is None:
-        raise ValueError('poster_vio 冻结请求、数值输入和海报初值必须一起提供')
-    return _solve_task(inputs, request, arms, board_seed, fallback=None)
-
-
-def _solve_task(inputs: TaskInputs, request, arms, board_seed, *, fallback) -> ArmExecutionResult:
-    """校验冻结请求 → 观测质量 → 联合求解 → 质量与支持验收 → 写出轨迹。"""
-    episode = inputs.episode
-    request.validate_assets()
-    problem = request.problem()
-    validate_problem(problem)
-    if (set(request.arms) != set(episode.expected_arms) or set(inputs.recordings) != set(request.arms)
-            or tuple(item.arm for item in arms) != request.arms):
-        raise ValueError('poster_vio 数值输入必须覆盖任务的全部预期使用手')
-    _validate_frozen_request(inputs, request, arms)
-
-    parameters = episode.scene.parameters
-    policy = PosterVioPolicy(parameters.poster_vio_minimum_tag_frames,
-                             parameters.poster_vio_maximum_observation_gap_s,
-                             parameters.poster_vio_minimum_time_span_s)
-    quality = assess_observations(problem, policy)
-    if quality.status != 'ready':
-        raise PosterVioQualityError(f'poster_vio 海报观测质量不足：{quality.status}')
-    directory = inputs.directory / 'poster_vio'
-    has_maps = any(item.front_maps for item in arms)
-    selection = {'selected': 'with_front_maps'} if has_maps else None
-    try:
-        solved, results = _validated_solution(inputs, request, problem, arms, board_seed, directory / 'quality.json')
-    except PosterVioQualityError as error:
-        if not has_maps:
-            raise
-        rejected = directory / 'front_map_attempt.json'
-        quality_path = directory / 'quality.json'
-        if quality_path.is_file():
-            quality_path.replace(rejected)
-        selection = dict(selected=None, rejected_reason=str(error))
-        if rejected.exists():
-            selection['rejected_evidence'] = rejected.name
-        write_json(directory / 'front_map_selection.json', selection)
-        inputs.console.write(f'工作镜头地图增强解未通过验收，复用冻结输入重算基础 VIO：{error}',
-                             recording=episode.root.name, step=(2, 3))
-        base_arms = tuple(replace(item, front_maps=()) for item in arms)
-        solved, results = _validated_solution(inputs, request, problem, base_arms, board_seed, quality_path)
-        selection['selected'] = 'without_front_maps'
-    coordinate = dict(request.coordinate_record, **task_poster_frame(episode, request.board_asset_hash),
-                       reconstruction_backend='poster_vio', quality=asdict(solved.quality))
-    if fallback:
-        coordinate['fallback'] = dict(fallback)
-    if selection is not None:
-        coordinate['front_map_selection'] = selection
-        write_json(directory / 'front_map_selection.json', selection)
-    # Validate both arms before writing either arm into the isolated run directory.
-    write_json(inputs.directory / 'reconstruction.json', dict(
-        requested_mode=episode.scene.reconstruction_mode, selected_backend='poster_vio',
-        scene_map_priors_used=False, coordinate=coordinate, observation_policy=asdict(policy)))
-    return inputs.services.write_task_results(inputs, results, coordinate, parallel=bool(inputs.arm_cpu_sets))
-
-
-def _validated_solution(inputs, request, problem, arms, board_seed, quality_path):
-    solved = _run_solver(inputs, problem, arms, board_seed)
-    write_json(quality_path, dict(
-        quality=asdict(solved.quality), arms=solved.arm_evidence,
-        scene_map_priors_used=False, actual_error='not_measured'))
-    if solved.quality.status != 'solved':
-        detail = _quality_rejection_detail(solved)
-        raise PosterVioQualityError(f'poster_vio 联合图质量拒绝：{solved.quality.status}；{detail}')
-    return solved, {item.arm: _arm_trajectory(inputs, item, solved, request) for item in arms}
-
-
-def _validate_frozen_request(inputs: TaskInputs, request, arms) -> None:
-    """冻结请求必须与本任务的布局、相机、IMU、基座标签和时钟完全一致（重放时尤其重要）。"""
-    episode = inputs.episode
-    board = load_board(episode.scene.tag_layout)
-    if request.board_asset_hash != board.asset_hash:
-        raise ValueError('poster_vio 冻结请求的海报布局身份不匹配')
-    observations = {observation.arm: observation for observation in request.observations}
-    for item in arms:
-        observation = observations[item.arm]
-        recording = inputs.recordings[item.arm]
-        if (request.camera_assets[item.arm].get('asset_hashes') != recording.camera.asset_hashes
-                or not np.array_equal(item.imu, recording.imu)):
-            raise ValueError('poster_vio 冻结请求的相机或 IMU 与任务输入不一致')
-        try:
-            points = np.array([board.corners_m[int(tag)] for tag in observation.tag_ids])
-        except KeyError as error:
-            raise ValueError('poster_vio 标签 ID 不在冻结布局中') from error
-        if not np.array_equal(item.board_points_m, points):
-            raise ValueError('poster_vio 数值角点与冻结布局或 ID 不一致')
-        used_cameras = {track.get('camera', 'rear') for track in item.natural_tracks or observation.natural_tracks}
-        if len(observation.base_tag_times_s) or item.front_maps:
-            used_cameras.add('front')
-        base_spec = (getattr(recording.camera, 'base_tag', None)
-                      if episode.scene.poster_vio_base_tag_enabled else None)
-        expected_spec = (None if base_spec is None else dict(id=base_spec['id'],
-            size_m=base_spec['size_mm'] / 1000., dictionary=base_spec.get('dictionary', 'DICT_4X4_100')))
-        if request.base_tag_specs.get(item.arm) != expected_spec:
-            raise ValueError('poster_vio base tag 配置与冻结任务资产不一致')
-        if request.base_tag_specs:
-            clock_offset = (float(inputs.offsets_s[item.arm])
-                            - recording.camera.measurements['front']['cam_time_offset_ns'] * 1e-9)
-            if not np.isclose(request.clock_offsets_s.get(item.arm, np.nan), clock_offset, rtol=0, atol=1e-9):
-                raise ValueError('poster_vio base tag 时钟与冻结任务同步不一致')
-        for lens in used_cameras:
-            calibration = natural_camera(item, lens)
-            measured = recording.camera.measurements[lens]
-            expected_model = camera_model(measured)
-            if (not np.allclose(calibration.T_cam_imu, np.linalg.inv(imu_from_camera(measured)), rtol=0, atol=1e-10)
-                    or any(getattr(calibration.model, name, None) != getattr(expected_model, name)
-                           for name in ('fx', 'fy', 'cx', 'cy', 'k1', 'k2', 'k3', 'k4'))):
-                raise ValueError(f'poster_vio {lens} 自然特征标定与冻结任务资产不一致')
-
-
-def _run_solver(inputs: TaskInputs, problem, arms, board_seed):
-    episode = inputs.episode
-    try:
-        started = time.monotonic()
-        inputs.console.write('联合优化', recording=episode.root.name, step=(2, 3))
-
-        def solve(_):
-            return solve_joint_poster_imu(
-                problem, tuple(arms), np.asarray(board_seed, dtype=float),
-                progress=lambda message: inputs.console.write(
-                    message, recording=episode.root.name, step=(2, 3),
-                    visible=not message.startswith('LM 迭代 ')))
-
-        # GTSAM may stay in native code for a long LM iteration and cannot
-        # observe Python's SIGINT handler.  Keep the worker daemonized so the
-        # outer run boundary can record an interrupted attempt immediately.
-        solved = daemon_map(solve, (None,))[0]
-        inputs.console.write(f'联合优化耗时 {time.monotonic() - started:.1f}s',
-                             recording=episode.root.name, step=(2, 3))
-    except PosterSolveQualityError as error:
-        raise PosterVioQualityError(f'poster_vio 联合求解质量不足：{error}') from error
-    return solved
-
-
-def _quality_rejection_detail(solved) -> str:
-    """把各手留出验证的拒绝原因汇总成一行，便于终端直接定位。"""
-    diagnostics = []
-    for arm, evidence in solved.arm_evidence.items():
-        for step in evidence.get('refinement', {}).get('rounds', []):
-            if step.get('status') == 'rejected' and 'round_limit' in step.get('reasons', []):
-                diagnostics.append(f"{arm} 第 {step['round'] + 1} 轮达到剔除上限，仍有 {len(step['removed'])} 个待剔除观测")
-        holdout = evidence.get('holdout', {})
-        if holdout.get('status') == 'rejected':
-            depth_summary = holdout.get('depth_summary') or {}
-            invalid_depth_details = holdout.get('invalid_depth_details') or []
-            affected_times = {
-                detail.get('imu_time_s')
-                for detail in invalid_depth_details
-                if detail.get('imu_time_s') is not None
-            }
-            depth_detail = ''
-            if depth_summary.get('min_m') is not None:
-                depth_detail = (
-                    f', 最小深度={depth_summary["min_m"]:.6g}m'
-                    f', P01={depth_summary.get("p01_m", float("nan")):.6g}m'
-                    f', 受影响时刻={len(affected_times)}')
-            diagnostics.append(
-                f'{arm} 标签留出拒绝'
-                f'(非正深度={holdout.get("invalid_depth_observations", 0)}'
-                f', RMS={holdout.get("metrics", {}).get("rms_px")}'
-                f'{depth_detail})')
-        natural = evidence.get('natural_holdout', {})
-        if natural.get('status') == 'rejected':
-            diagnostics.append(
-                f'{arm} 自然点留出拒绝'
-                f'(非正深度={natural.get("invalid_depth_observations", 0)}'
-                f', RMS={natural.get("metrics", {}).get("rms_px")})')
-    return '；'.join(diagnostics) if diagnostics else '详见 poster_vio/quality.json'
-
-
-def _arm_trajectory(inputs: TaskInputs, item, solved, request) -> FusedTrajectory:
-    """一只手：取工作镜头曝光时刻的优化状态，验收位置支持并整理证据。"""
-    episode, parameters = inputs.episode, inputs.episode.scene.parameters
-    arm = item.arm
-    recording = inputs.recordings[arm]
-    output_imu_times = video_to_imu_seconds(recording.video_times_s,
-        recording.camera.measurements['front']['cam_time_offset_ns'])
-    # Output rows are actual optimized states, never a linear fill across keyframes.
-    indices = np.searchsorted(item.times_s, np.round(output_imu_times, 9))
-    if (np.any(indices >= len(item.times_s))
-            or not np.allclose(item.times_s[indices], output_imu_times, rtol=0, atol=1e-9)):
-        raise PosterVioQualityError(f'{arm} poster_vio 缺少工作镜头曝光时刻的优化状态')
-    arm_evidence = solved.arm_evidence[arm]
-    front_offset = float(recording.camera.measurements['front']['cam_time_offset_ns']) * 1e-9
-    observation_times = np.asarray(arm_evidence['observation_imu_times_s']) - front_offset
-    support = arm_evidence['position_support']
-    frames = [dict(frame, video_time_s=float(frame['video_time_s'] - front_offset))
-              for frame in support['frames']]
-    supported_times = np.array([frame['video_time_s'] for frame in frames if frame['position_supported']])
-    by_camera = arm_evidence['natural_by_camera']
-    boundaries = (recording.video_times_s[:-1] + recording.video_times_s[1:]) / 2
-    camera_masks = {}
-    for lens, camera_evidence in by_camera.items():
-        times = np.asarray(camera_evidence['support_imu_times_s']) - front_offset
-        mask = np.zeros(len(output_imu_times), dtype=bool)
-        mask[np.searchsorted(boundaries, times, side='right')] = True
-        camera_masks[lens] = mask
-    map_times = np.asarray([t for segment in arm_evidence.get('front_maps', [])
-                            for t in segment.get('position_support', {}).get('supported_imu_times_s', [])]) - front_offset
-    map_mask = np.zeros(len(output_imu_times), dtype=bool)
-    map_mask[np.searchsorted(boundaries, map_times, side='right')] = True
-    camera_masks['front'] |= map_mask
-    tracked = camera_masks['front'] | camera_masks['rear']
-    natural_times = np.asarray(arm_evidence['natural_support_imu_times_s']) - front_offset
-    # Reporting uses nearest output cells; acceptance keeps exact exposure times.
-    gap = maximum_support_gap(recording.video_times_s, np.zeros(len(tracked), dtype=bool),
-                               np.unique(np.r_[natural_times, supported_times, map_times]))
-    if (support['supported_frames'] < episode.scene.parameters.tag_minimum_frames
-            or gap > parameters.poster_vio_maximum_position_support_gap_s):
-        raise PosterVioQualityError(f'{arm} poster_vio 海报几何支持不足或共同位置支持缺口过长：{gap:.3f} s')
-    poster = dict(status='fused', layout=dict(asset_hash=request.board_asset_hash),
-                   final_reprojection_rms_px=arm_evidence['tag_metrics']['rms_px'],
-                   final_reprojection_metrics=arm_evidence['tag_metrics'],
-                   observation_video_times_s=observation_times.tolist(),
-                   position_support_video_times_s=supported_times.tolist(),
-                   position_support=dict(support, frames=frames), actual_error='not_measured')
-    return FusedTrajectory(solved.trajectories[arm][indices], tracked,
-        camera_masks['front'], dict(
-            mode='poster_vio', reconstruction_backend='poster_vio', scene_map_priors_used=False,
-            actual_error='not_measured', poster_vio_quality=asdict(solved.quality),
-            poster_vio=arm_evidence, environment_poster=poster,
-            maximum_position_support_gap_s=gap,
-            maximum_visual_gap_s=longest_gap(recording.video_times_s, tracked),
-            frame_provenance=[dict(constraint='full' if observed else 'imu',
-                visual_lens='front' if camera_masks['front'][index] else 'rear' if observed else None,
-                visual_lenses=[lens for lens in ('front', 'rear') if camera_masks[lens][index]],
-                **({'map_role': 'task_front_map'} if map_mask[index] else {}))
-                for index, observed in enumerate(tracked)]))
 
 
 @dataclass(frozen=True)
@@ -318,6 +67,7 @@ class PosterVioRequest:
     coordinate_record: dict[str, Any]
     base_tag_specs: dict[str, dict[str, Any]] = field(default_factory=dict)
     clock_offsets_s: dict[str, float] = field(default_factory=dict)
+    front_map_selection: dict | None = None
 
     def problem(self) -> PosterVioProblem:
         return PosterVioProblem(self.arms, self.observations, self.base_tag_specs, self.clock_offsets_s)
@@ -377,7 +127,7 @@ class _PreparedArm:
 
 
 def prepare_task_inputs(inputs: TaskInputs):
-    """Use only this task's pixels, IMU, layout and frozen camera assets."""
+    """Prepare per-arm seeds, assemble observations and freeze the solver inputs."""
     episode, scene = inputs.episode, inputs.episode.scene
     parameters = scene.parameters.for_algorithm(PosterVioParameters)
     tracking = scene.parameters.for_algorithm(FeatureTrackingParameters)
@@ -386,24 +136,63 @@ def prepare_task_inputs(inputs: TaskInputs):
     if set(inputs.recordings) != set(arms):
         raise ValueError('poster_vio 需要所有预期使用手的录像')
     base_tag_specs = _base_tag_specs(inputs, arms)
-    snapshots, board, owners_by_tag_id, base_tag_cache_dirs = _detect(inputs, arms, base_tag_specs)
 
-    inputs.console.write('海报姿态初始化与 IMU 对齐', recording=episode.root.name, step=(2, 3))
-    prepared_arms = [
-        _prepare_arm(inputs, arm, snapshot, board, parameters,
-                     base_tag_cache_dir=base_tag_cache_dirs.get(arm), owners_by_tag_id=owners_by_tag_id)
-        for arm, snapshot in zip(arms, snapshots)]
+    with _preparation_jobs(inputs, arms) as jobs:
+        _report_stage(inputs, '准备每手初值')
+        snapshots, board, owners_by_tag_id, base_tag_cache_dirs = _detect(inputs, arms, base_tag_specs)
+        prepared_arms = _prepare_arms(inputs, arms, snapshots, board, parameters,
+                                      base_tag_cache_dirs, owners_by_tag_id)
+        jobs.start_deferred_front_videos()
 
-    tracked = _track_features(inputs, prepared_arms, tracking)
-    _recover_partner_coverage(inputs, prepared_arms, tracked, snapshots, board, parameters, tracking,
-                              base_tag_cache_dirs, owners_by_tag_id)
+        _report_stage(inputs, '组装视觉观测')
+        tracked = _track_features(inputs, prepared_arms, tracking)
+        _recover_partner_coverage(inputs, prepared_arms, tracked, snapshots, board, parameters, tracking,
+                                  base_tag_cache_dirs, owners_by_tag_id)
+        request, solve_inputs, diagnostics, shared_gravity = _assemble_solver_inputs(
+            inputs, arms, prepared_arms, tracked, parameters, board, base_tag_specs)
+        solve_inputs = jobs.attach_front_maps(solve_inputs)
+        if jobs.front_map_selection is not None:
+            request = replace(request, front_map_selection=jobs.front_map_selection)
+        jobs.wait_for_front_videos()
+
+    _report_stage(inputs, '冻结求解输入')
+    _freeze_inputs(inputs, request, solve_inputs, board, diagnostics, shared_gravity)
+    return request, solve_inputs, np.eye(4)
+
+
+def _report_stage(inputs: TaskInputs, message: str) -> None:
+    inputs.console.write(f'VIO 阶段 · {message}', recording=inputs.episode.root.name, step=(2, 3))
+
+
+def _prepare_arms(inputs, arms, snapshots, board, parameters, base_tag_cache_dirs, owners_by_tag_id):
+    parallel_init = len(arms) > 1
+    init_started = time.monotonic()
+    inputs.console.write(
+        '海报姿态初始化与 IMU 对齐' + ('（双手并行）' if parallel_init else ''),
+        recording=inputs.episode.root.name, step=(2, 3))
+
+    def prepare_one_arm(pair):
+        arm, snapshot = pair
+        return _prepare_arm(inputs, arm, snapshot, board, parameters,
+                            base_tag_cache_dir=base_tag_cache_dirs.get(arm), owners_by_tag_id=owners_by_tag_id)
+
+    arm_pairs = list(zip(arms, snapshots))
+    prepared_arms = (list(daemon_map(prepare_one_arm, arm_pairs)) if parallel_init
+                     else [prepare_one_arm(pair) for pair in arm_pairs])
+    inputs.console.write(
+        f'海报姿态初始化与 IMU 对齐耗时 {time.monotonic() - init_started:.1f}s',
+        recording=inputs.episode.root.name, step=(2, 3))
+    return prepared_arms
+
+
+def _assemble_solver_inputs(inputs, arms, prepared_arms, tracked, parameters, board, base_tag_specs):
+    episode, scene = inputs.episode, inputs.episode.scene
     observations, solve_inputs, camera_assets, imu_assets, diagnostics = _assemble(
         inputs, prepared_arms, tracked, parameters)
     solve_inputs, shared_gravity, difference = _share_gravity(solve_inputs, scene)
     coordinate = dict(name=scene.name, session=episode.session.name, version=None,
-                       **task_poster_frame(episode, board.asset_hash), gravity_difference_deg=difference)
-    # Native IMU -> common task clock. Lens calibration offset must be removed
-    # before applying the cross-camera video-clock shift.
+                      **task_poster_frame(episode, board.asset_hash), gravity_difference_deg=difference)
+    # Native IMU -> common task clock. Remove the lens calibration offset before the video-clock shift.
     clock_offsets = {arm: float(inputs.offsets_s[arm])
                      - inputs.recordings[arm].camera.measurements['front']['cam_time_offset_ns'] * 1e-9
                      for arm in arms}
@@ -411,20 +200,131 @@ def prepare_task_inputs(inputs: TaskInputs):
                                coordinate, base_tag_specs=base_tag_specs, clock_offsets_s=clock_offsets)
     solve_inputs = _fit_base_tag_mounts(inputs, request, solve_inputs, observations, base_tag_specs, diagnostics)
     solve_inputs = base_tags.expand_nodes(request.problem(), solve_inputs)
-    if scene.parameters.front_map_pixel_fusion:
-        inputs.console.write('工作镜头 ORB 地图定位与像素权重', recording=episode.root.name, step=(2, 3))
-        solve_inputs = tuple(replace(item, front_maps=front_map.prepare(
-            inputs.recordings[item.arm], item, inputs.directory / 'poster_vio' / item.arm / 'front_map',
-            scene.trajectory.values.fusion.node_stride)) for item in solve_inputs)
-    assets = _write_numerical_inputs(inputs, solve_inputs, observations)
+    return request, solve_inputs, diagnostics, shared_gravity
+
+
+def _freeze_inputs(inputs, request, solve_inputs, board, diagnostics, shared_gravity):
+    assets = _write_numerical_inputs(inputs, solve_inputs, request.observations)
     write_json(inputs.directory / 'poster_vio' / 'inputs.json', dict(
         kind='umi_poster_vio_inputs', schema_version=1,
-        board=board.record(), camera_assets=camera_assets, imu_assets=imu_assets,
+        board=board.record(), camera_assets=request.camera_assets, imu_assets=request.imu_assets,
         assets=assets, diagnostics=diagnostics, shared_gravity_m_s2=shared_gravity.tolist(),
-        coordinate=coordinate, base_tag_specs=base_tag_specs,
-        clock_offsets_s=clock_offsets,
+        coordinate=request.coordinate_record, base_tag_specs=request.base_tag_specs,
+        clock_offsets_s=request.clock_offsets_s,
+        **(dict(front_map_selection=request.front_map_selection) if request.front_map_selection else {}),
         scene_map_priors_used=False))
-    return request, solve_inputs, np.eye(4)
+
+
+class _PreparationJobs:
+    """Manage the optional front videos and ORB maps around numerical preparation."""
+
+    def __init__(self, inputs: TaskInputs, arms: tuple[str, ...], stack: ExitStack):
+        self.inputs, self.arms, self.stack = inputs, arms, stack
+        self.cancel_event = threading.Event()
+        scene = inputs.episode.scene
+        self.front_map_enabled = scene.parameters.poster_vio_front_map_enabled
+        self.can_background = bool(inputs.arm_cpu_sets) or (len(arms) == 1 and (os.cpu_count() or 1) >= 8)
+        self.stride = scene.trajectory.values.fusion.node_stride
+        self.front_map_started = None
+        self.front_map_futures = {}
+        self.front_video_futures = {}
+        self.front_map_selection = None
+
+    def start_front_maps(self):
+        if not self.front_map_enabled or not self.can_background:
+            return
+        pool = self.stack.enter_context(ThreadPoolExecutor(max_workers=len(self.arms)))
+        self.front_map_started = time.monotonic()
+        inputs = self.inputs
+        inputs.console.write('工作镜头 ORB 地图定位与像素权重（后台并行）',
+                             recording=inputs.episode.root.name, step=(2, 3))
+        self.front_map_futures = {
+            arm: pool.submit(_optional_front_map, front_map.build_and_localize, inputs.recordings[arm],
+                             inputs.directory / 'poster_vio' / arm / 'front_map', self.stride,
+                             cancel_event=self.cancel_event)
+            for arm in self.arms}
+
+    def start_deferred_front_videos(self):
+        if self.front_map_enabled or not self.can_background:
+            return
+        recordings = self.inputs.recordings
+        deferred_arms = [
+            arm for arm in self.arms
+            if getattr(recordings[arm], 'render_lens', None) is not None
+            and not any(v.lens == 'front' for v in getattr(recordings[arm], 'lens_videos', ()))]
+        if not deferred_arms:
+            return
+        pool = self.stack.enter_context(ThreadPoolExecutor(max_workers=len(deferred_arms)))
+
+        def prerender_front(arm):
+            with runtime.cancellation_scope(self.cancel_event):
+                return recordings[arm].lens_video('front')
+
+        self.front_video_futures = {arm: pool.submit(prerender_front, arm) for arm in deferred_arms}
+
+    def attach_front_maps(self, solve_inputs):
+        if not self.front_map_enabled:
+            return solve_inputs
+        inputs = self.inputs
+        recording = inputs.episode.root.name
+        started = time.monotonic()
+        if self.front_map_started is not None:
+            localizations = {arm: future.result() for arm, future in self.front_map_futures.items()}
+            maps = {}
+            for item in solve_inputs:
+                localization = localizations[item.arm]
+                if isinstance(localization, OrbUnavailable):
+                    maps[item.arm] = localization
+                else:
+                    maps[item.arm] = front_map.align_observations(inputs.recordings[item.arm], item, localization)
+            message = (f'工作镜头地图准备完成（总耗时 {time.monotonic() - self.front_map_started:.1f}s，'
+                       f'主线程等待 {time.monotonic() - started:.1f}s）')
+        else:
+            inputs.console.write('工作镜头 ORB 地图定位与像素权重', recording=recording, step=(2, 3))
+
+            def prepare(item):
+                return _optional_front_map(front_map.prepare, inputs.recordings[item.arm], item,
+                                           inputs.directory / 'poster_vio' / item.arm / 'front_map', self.stride)
+
+            maps = {item.arm: prepare(item) for item in solve_inputs}
+            message = f'工作镜头地图准备耗时 {time.monotonic() - started:.1f}s'
+
+        failures = [dict(arm=arm, category=value.category, reason=str(value), return_code=value.return_code)
+                    for arm, value in maps.items() if isinstance(value, OrbUnavailable)]
+        if not failures and not any(maps.values()):
+            failures = [dict(category='no_usable_map', reason='未发现可用的工作镜头地图段')]
+        if failures:
+            self.front_map_selection = dict(selected='without_front_maps', preparation_failures=failures,
+                                            retry_preparation=True)
+            write_json(inputs.directory / 'poster_vio' / 'front_map_selection.json', self.front_map_selection)
+            inputs.console.write('工作镜头地图准备失败，回到基础 VIO · ' + '；'.join(item['reason'] for item in failures),
+                                 recording=recording, step=(2, 3))
+            return solve_inputs
+        inputs.console.write(message, recording=recording, step=(2, 3))
+        return tuple(replace(item, front_maps=maps[item.arm]) for item in solve_inputs)
+
+    def wait_for_front_videos(self):
+        for future in self.front_video_futures.values():
+            future.result()
+
+
+def _optional_front_map(prepare, *args, **kwargs):
+    try:
+        return prepare(*args, **kwargs)
+    except OrbUnavailable as error:
+        return error
+
+
+@contextmanager
+def _preparation_jobs(inputs, arms):
+    with ExitStack() as stack:
+        jobs = _PreparationJobs(inputs, arms, stack)
+        try:
+            jobs.start_front_maps()
+            yield jobs
+        except BaseException:
+            jobs.cancel_event.set()
+            raise
 
 
 def _base_tag_specs(inputs: TaskInputs, arms: tuple[str, ...]) -> dict[str, dict]:

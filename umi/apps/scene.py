@@ -11,11 +11,11 @@ from pathlib import Path
 from umi.config import collection_defaults
 from umi.config import operational_settings as settings
 from umi.infra.paths import PROJECT_ROOT
-from umi.scene import episodes
+from umi.scene import task_state
 from umi.scene import run as scene_run
 from umi.scene.collection import batch as batch_inputs
 from umi.scene.collection.configuration import SceneOverrides
-from umi.scene.episodes import episode_paths
+from umi.scene.collection.batch import episode_paths
 from umi.scene.errors import ITEM_FAILURES
 from umi.scene.maps import versions
 from umi.scene.maps import epochs as map_epoch_selection
@@ -215,7 +215,7 @@ def _status(args):
     tasks = []
     for path in episode_paths(args.paths):
         try:
-            tasks.append(episodes.task_status(path))
+            tasks.append(task_state.task_status(batch_inputs.read_episode(path, verify=False)))
         except ITEM_FAILURES as error:
             tasks.append(dict(path=str(path), status='invalid', reason=str(error)))
     if args.json:

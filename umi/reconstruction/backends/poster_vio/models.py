@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from umi.core.geometry import validate_transform
+from umi.core.geometry import validate_transforms
 from umi.perception.poster.quality import PosterTagParameters
 
 
@@ -50,6 +50,8 @@ class PosterVioParameters(PosterTagParameters):
     poster_vio_per_tag_huber: bool = False
     poster_vio_robust_inertial_seed: bool = False
     poster_vio_board_tilt_minimum_gap_s: float = 0.0
+    poster_vio_front_map_cauchy_scale: float = 8.0
+    poster_vio_front_map_minimum_cull_rounds: int = 6
 
 
 @dataclass(frozen=True)
@@ -224,5 +226,4 @@ def validate_result(result: PosterVioResult, arms: tuple[str, ...]) -> None:
         array = np.asarray(trajectory)
         if array.ndim != 3 or array.shape[1:] != (4, 4) or len(array) < 2 or not np.isfinite(array).all():
             raise ValueError(f'poster_vio {arm} 轨迹必须是有限的 [N,4,4]')
-        for pose in array:
-            validate_transform(pose)
+        validate_transforms(array)

@@ -15,14 +15,14 @@
 | 标定 | [标定代码指南](../../umi/calibration/README.md)：`umi/apps/calib.py` → `calibration/workflow.run()` / `verify()` |
 | 场景任务 | [场景代码指南](../../umi/scene/README.md)：`umi/apps/scene.py` → `scene/run.run()` → `scene/run.run_episodes()` 与按需地图绑定 |
 | 任务后端 | `scene/run.execute_episode()` → `scene/routing.execute()` → `scene_map` / `poster_independent` / `poster_vio`（`auto` 由 `_AutoRoute` 按顺序尝试） |
-| 内部逐段引擎 | [逐段引擎指南](../../umi/reconstruction/segment/README.md)：`umi/apps/segment.py` → `segment/workflow.run_batch()` → `run_recording()` → `reconstruction.run_attempts()` |
-| 无场景地图的 VIO | [poster_vio 代码指南](../../umi/reconstruction/backends/poster_vio/README.md)：`reconstruction/backends/poster_vio/run.prepare_task_inputs()` → `reconstruction/backends/poster_vio/solver.solve_joint_poster_imu()` |
+| 内部逐段引擎 | [逐段引擎指南](../../umi/reconstruction/segment/README.md)：`umi/apps/segment.py` → `segment/workflow.run_batch()` → `run_recording()` → `attempts.run_attempts()` |
+| 无场景地图的 VIO | [poster_vio 代码指南](../../umi/reconstruction/backends/poster_vio/README.md)：`reconstruction/backends/poster_vio/preparation.prepare_task_inputs()` → `reconstruction/backends/poster_vio/solver.solve_joint_poster_imu()` |
 | 三维查看 | [查看器代码指南](../../umi/apps/viewer/README.md)：`apps/viewer/server.main()` → `RecordingCatalog` → 浏览器播放状态 |
 | 共用视觉 | [视觉代码指南](../../umi/perception/README.md)：录像准备、ORB 建图/定位、海报检测 |
 | 相机数据 | [extraction.py](../../umi/devices/x3/extraction.py) 提取时间戳和 IMU；[frame.py](../../umi/core/frame.py) 定义录制几何、裁剪、帧率和时钟约定 |
 | 设备选择 | [registry.py](../../umi/devices/registry.py) 读取内部序列号、选择标定与夹爪并核对哈希 |
 
-`workflow.py` 展示顺序、阶段衔接与失败收尾；阶段函数返回具名结果。标定的 `acceptance.py` 决定验收，`result_io.py` 保存和校验记录，`reports.py` 只负责展示；第三方进程、依赖与日志在 `pipeline/runtime.py`，Basalt 适配在 `solve/basalt.py`。场景发布、报告和审计在 `scene/publication.py`，阶段缓存在 `umi/store/cache.py`；`umi/perception/decoding.py` 一次解码向多个检测器分发帧。标定的完整数据流、状态、恢复与登记契约见[标定架构与验证](标定架构与验证.md)。
+`workflow.py` 展示顺序、阶段衔接与失败收尾；阶段函数返回具名结果。标定的 `acceptance.py` 决定验收，`result_io.py` 保存和校验记录，`reports.py` 只负责展示；第三方进程、依赖与日志在 `pipeline/runtime.py`，Basalt 适配在 `solve/basalt.py`。场景发布和报告在 `scene/publication.py`，运行审计在 `scene/task_state.py`，阶段缓存在 `umi/store/cache.py`；`umi/perception/decoding.py` 一次解码向多个检测器分发帧。标定的完整数据流、状态、恢复与登记契约见[标定架构与验证](标定架构与验证.md)。
 
 ## 分层结构
 

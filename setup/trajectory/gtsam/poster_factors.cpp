@@ -144,6 +144,73 @@ class PosterDepthFactor final : public NoiseModelFactor {
   Matrix points_;
   double min_depth_, tau_, sigma_;
 };
+
+Matrix3 right_jacobian_inverse(const Vector3& phi) {
+  const double theta = phi.norm();
+  const Matrix3 K = skewSymmetric(phi);
+  if (theta < 1e-6) {
+    return Matrix3::Identity() + 0.5 * K;
+  }
+  const double coeff = 1.0 / (theta * theta) - (1.0 + std::cos(theta)) / (2.0 * theta * std::sin(theta));
+  return Matrix3::Identity() + 0.5 * K + coeff * (K * K);
+}
+
+class FrontMapFactor final : public NoiseModelFactor {
+ public:
+  FrontMapFactor(const SharedNoiseModel& noise, const KeyVector& keys, const Matrix3& measured_rotation,
+                 const Vector3& measured_position, const Vector3& lever)
+      : NoiseModelFactor(noise, keys),
+        measured_rotation_(measured_rotation),
+        measured_position_(measured_position),
+        lever_(lever) {
+    if (keys.size() != 3 || !noise || noise->dim() != 6)
+      throw std::invalid_argument("Invalid front map factor dimensions");
+  }
+
+  NonlinearFactor::shared_ptr clone() const override {
+    return std::make_shared<FrontMapFactor>(*this);
+  }
+
+  Vector unwhitenedError(const Values& state, OptionalMatrixVecType H = nullptr) const override {
+    const Pose3 body = state.at<Pose3>(keys()[0]);
+    const Pose3 placement = state.at<Pose3>(keys()[1]);
+    const Vector scale_vec = state.at<Vector>(keys()[2]);
+    if (scale_vec.size() != 1) throw std::invalid_argument("FrontMapFactor scale must be 1D");
+    const double scale = std::exp(scale_vec[0]);
+    const Matrix3 R_map = placement.rotation().matrix();
+    const Matrix3 R_body = body.rotation().matrix();
+    const Matrix3 relative = (R_map * measured_rotation_).transpose() * R_body;
+    const Vector3 angle = Rot3::Logmap(Rot3(relative));
+    const Vector3 center = body.translation() + R_body * lever_;
+    const Vector3 position = (R_map.transpose() * (center - placement.translation())) / scale;
+    Vector residual(6);
+    residual.head<3>() = angle;
+    residual.tail<3>() = position - measured_position_;
+    if (H) {
+      const Matrix3 angular = right_jacobian_inverse(angle);
+      const Matrix3 linear = (R_map.transpose() * R_body) / scale;
+      Matrix& body_jac = (*H)[0];
+      body_jac.setZero(6, 6);
+      body_jac.topLeftCorner<3, 3>() = angular;
+      body_jac.bottomLeftCorner<3, 3>() = -linear * skewSymmetric(lever_);
+      body_jac.bottomRightCorner<3, 3>() = linear;
+      Matrix& map_jac = (*H)[1];
+      map_jac.setZero(6, 6);
+      map_jac.topLeftCorner<3, 3>() = -angular * relative.transpose() * measured_rotation_.transpose();
+      map_jac.bottomLeftCorner<3, 3>() = skewSymmetric(position);
+      map_jac.bottomRightCorner<3, 3>() = -Matrix3::Identity() / scale;
+      Matrix& scale_jac = (*H)[2];
+      scale_jac.setZero(6, 1);
+      scale_jac.bottomRows<3>() = -position;
+    }
+    return residual;
+  }
+
+ private:
+  Matrix3 measured_rotation_;
+  Vector3 measured_position_;
+  Vector3 lever_;
+};
 }  // namespace
 
 void bind_poster_factors(pybind11::module_& m) {
@@ -162,4 +229,8 @@ void bind_poster_factors(pybind11::module_& m) {
       m, "PosterDepthFactor")
       .def(pybind11::init<const gtsam::SharedNoiseModel&, const gtsam::KeyVector&, const gtsam::Matrix4&,
                           const gtsam::Matrix&, double, double, double>());
+  pybind11::class_<FrontMapFactor, gtsam::NoiseModelFactor, std::shared_ptr<FrontMapFactor>>(
+      m, "FrontMapFactor")
+      .def(pybind11::init<const gtsam::SharedNoiseModel&, const gtsam::KeyVector&, const gtsam::Matrix3&,
+                          const gtsam::Vector3&, const gtsam::Vector3&>());
 }

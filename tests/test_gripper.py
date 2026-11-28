@@ -43,7 +43,6 @@ from umi.scene.collection import batch as batches
 from umi.scene.collection import configuration as scene_inputs
 from umi.scene.collection import kit as kit_inputs
 from umi.scene.inputs import recordings as camera_assets
-from umi.store import layout
 from umi.store.cache import camera_identity
 
 """真实 KB4 投影下的中心间距、拒绝条件、尺寸配置、缓存和场景输出。"""
@@ -281,6 +280,17 @@ class DistanceWorkflowTests(unittest.TestCase):
 
 
 class GapRecoveryTests(unittest.TestCase):
+    def test_native_code_check_compensates_for_a_brightness_gradient(self):
+        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        marker = cv2.aruco.generateImageMarker(dictionary, 1, 72)
+        grid = marker[6::12, 6::12] > 0
+        level = np.mgrid[0:6, 0:6][0] * 28. + 20. + grid * 65.
+        patch = np.pad(np.repeat(np.repeat(level, 12, axis=0), 12, axis=1), 6, mode='edge').astype('uint8')
+        other = cv2.aruco.generateImageMarker(dictionary, 0, 72)[6::12, 6::12] > 0
+        self.assertFalse(recovery._reads_code(patch, grid))
+        self.assertTrue(recovery._reads_code(patch, grid, local_contrast=True))
+        self.assertFalse(recovery._reads_code(patch, other, local_contrast=True))
+
     def setUp(self):
         self.estimator = estimator()
         self.pair, self.expected = projected()
@@ -324,6 +334,45 @@ class GapRecoveryTests(unittest.TestCase):
         sources = np.where(valid, 'two_tags', 'missing').astype('<U32')
         reports = recovery.recover(self.cache, [[1, 6]], valid, self.estimator, distances, sources, {}, None)
         return valid, distances, reports
+
+    def test_raw_border_refinement_brings_perturbed_corners_back_to_known_edges(self):
+        true = np.float32(self.pair - self.origin)
+        seed = np.float32(true + [[2., 0.], [1., -2.], [-2., 1.], [0., 1.]])
+        raw = cv2.GaussianBlur(self.gray, (3, 3), .65).astype(np.float32)
+        fitted = np.asarray([recovery._refine_border(raw, corners) for corners in seed])
+        self.assertLess(np.linalg.norm(fitted - true, axis=-1).mean(), .6)
+        distance, status = self.estimator.distance(fitted + self.origin)
+        self.assertEqual(status, 'two_tags')
+        self.assertAlmostEqual(distance, self.expected, delta=.7)
+
+    def test_enhancement_methods_cannot_both_pass_with_disagreeing_corners(self):
+        native = self.pair - self.origin
+        choices = [sampling._frame_detection(native), sampling._frame_detection(native + [4., 0.])]
+        detector = recovery._DirectDetector(self.cache.roi_px, self.estimator)
+        with (patch.object(detector.detector, 'detect', side_effect=choices),
+              patch.object(detector, '_valid', return_value=True),
+              patch.object(recovery, '_refine_border', side_effect=lambda image, corners: corners)):
+            _, method = detector.detect(self.gray, [])
+        self.assertEqual(method, 'conflict')
+
+    def test_short_gap_recovery_keeps_existing_rows_and_reuses_verified_candidates(self):
+        rows = np.array([2, 4])
+
+        def recover():
+            valid = self.valid.copy()
+            distances = np.where(valid, self.expected, np.nan)
+            sources = np.where(valid, 'two_tags', 'missing').astype('<U32')
+            report = recovery.recover_short(self.cache, rows, valid, self.estimator, distances, sources, {}, None)
+            self.assertEqual(report['accepted_rows'], [2, 4])
+            np.testing.assert_array_equal(valid, [True, False, True, False, True, False, True])
+            np.testing.assert_array_equal(distances[[0, -1]], [self.expected] * 2)
+            return distances
+
+        with (patch.object(sampling, 'sampled_frames', side_effect=self.scan),
+              patch.object(recovery.frames, 'crop_gray', side_effect=lambda frame, *_: frame)):
+            initial = recover()
+        with patch.object(sampling, 'sampled_frames', side_effect=AssertionError('unexpected decode')):
+            np.testing.assert_array_equal(recover(), initial)
 
     def test_cached_native_measurements_preserve_anchors_and_reject_blocked_frames(self):
         self.cache.blocked[3] = True
@@ -916,7 +965,7 @@ class TagDistanceAcceptanceTests(unittest.TestCase):
             self.assertEqual(report['passed'], expected)
             self.assertEqual(report['longest_missing_frames'], count)
 
-    def test_each_arm_must_pass_and_failure_preserves_previous_success(self):
+    def test_each_arm_reports_measurement_quality_without_blocking_accepted_tracks(self):
         import test_scene
 
         from umi.scene import run as workflow
@@ -927,7 +976,6 @@ class TagDistanceAcceptanceTests(unittest.TestCase):
         workflow.run_episode(fixture.episode_path)
         output = fixture.task_root / 'results'
         previous = output.resolve()
-        original = (previous / 'data/episode.json').read_bytes()
         for video, camera in list(fixture.cameras.items()):
             path = camera.files['front'].parent / 'tags.json'
             write_json(path, SIZES)
@@ -941,22 +989,24 @@ class TagDistanceAcceptanceTests(unittest.TestCase):
 
         def measure(request, cache, **kwargs):
             calls.append(request)
-            if request.video == fixture.recording_paths['right']:
-                raise tag_distance.TagDistanceAcceptanceError(report)
+            self.assertFalse(kwargs['strict'])
             times = request.video_times_s + request.episode_offset_s
+            if request.video == fixture.recording_paths['right']:
+                return TagDistanceResult(TagDistanceSeries(times, np.full(len(times), np.nan),
+                                                           np.full(len(times), 'missing')), report)
             return TagDistanceResult(TagDistanceSeries(times, np.full(len(times), 50.),
-                                                       np.full(len(times), 'two_tags')), {})
+                np.full(len(times), 'two_tags')), dict(valid_fraction=1., acceptance=dict(
+                    passed=True, longest_missing_frames=0, maximum_missing_frames=15)))
 
         with patch.object(tag_distance, 'process', side_effect=measure), \
-                patch('umi.perception.decoding.VideoDecode.run', return_value=[]), \
-                self.assertRaisesRegex(ValueError, 'right.*40.0%.*50.0%'):
-            workflow.run_episode(fixture.episode_path)
-        self.assertEqual(output.resolve(), previous)
-        self.assertEqual((previous / 'data/episode.json').read_bytes(), original)
+                patch('umi.perception.decoding.VideoDecode.run', return_value=[]):
+            result = workflow.run_episode(fixture.episode_path)
+        self.assertEqual(result['status'], 'ok')
+        self.assertNotEqual(output.resolve(), previous)
         self.assertEqual(len(calls), 2)
-        diagnostics = list((layout.metadata(output.parent, 'runs')).glob('failed-*/right/tag_distance.json'))
-        self.assertEqual(len(diagnostics), 1)
-        self.assertEqual(json.loads(diagnostics[0].read_text())['acceptance']['passed'], False)
+        episode = json.loads((output / 'data/episode.json').read_text())
+        self.assertTrue(episode['tag_distance']['left']['acceptance']['passed'])
+        self.assertFalse(episode['tag_distance']['right']['acceptance']['passed'])
 
 
 # 真实编码/解码验证宽度预览：标记叠加、原始像素单位、缺失与时间轴。

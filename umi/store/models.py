@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from umi.perception.poster.detection import DetectionSnapshot
     from umi.scene.collection.configuration import SceneOverrides
     from umi.store.cache import CacheAudit
+    from umi.store.coordinates import OutputCoordinates
 
 
 _AlgorithmParameters = TypeVar('_AlgorithmParameters')
@@ -133,10 +134,15 @@ class SceneParameters:
     poster_vio_per_tag_huber: bool = False
     poster_vio_robust_inertial_seed: bool = False
     tag_distance_verified_gap_recovery: bool = False
-    front_map_pixel_fusion: bool = False
+    poster_vio_front_map_enabled: bool = False
+    poster_independent_front_map_pixel_weights: bool = False
     poster_vio_board_tilt_minimum_gap_s: float = 0.0
     poster_independent_node_stride: int = 0
     poster_independent_imu_white_noise_multiplier: float = 1.0
+    poster_independent_keyframe_maximum_dt_s: float = 0.0
+    poster_independent_guidance: bool = False
+    poster_vio_front_map_cauchy_scale: float = 8.0
+    poster_vio_front_map_minimum_cull_rounds: int = 6
 
     def for_algorithm(self, parameter_type: type[_AlgorithmParameters]) -> _AlgorithmParameters:
         """Project the resolved configuration onto the algorithm's declared fields."""
@@ -324,11 +330,10 @@ class PreparedRecording:
 
 @dataclass(frozen=True)
 class BackendServices:
-    """Task-owned detection and output functions provided to the reconstruction backend."""
+    """Task-owned detection functions provided to the reconstruction backend."""
 
     prepare_detection_group: Callable
     prepare_task_detections: Callable
-    write_task_results: Callable
 
 
 @dataclass(frozen=True)
@@ -344,11 +349,12 @@ class TaskInputs:
     detections: dict[str, DetectionSnapshot | None] = field(default_factory=dict)
     poster_pnp_candidates: dict[str, Callable] = field(default_factory=dict)
     backend_services: BackendServices | None = None
+    work_directory: Path | None = None
 
     @property
     def services(self) -> BackendServices:
         if self.backend_services is None:
-            raise RuntimeError('重建后端缺少任务检测和轨迹输出服务')
+            raise RuntimeError('重建后端缺少任务检测服务')
         return self.backend_services
 
 
@@ -359,6 +365,7 @@ class ArmExecutionResult:
     width_reports: dict[str, dict]
     tag_distance_reports: dict[str, dict]
     coordinate_record: dict
+    coordinates: OutputCoordinates | None = None
 
 
 class BuildSceneResult(TypedDict, total=False):

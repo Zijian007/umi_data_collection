@@ -2,12 +2,12 @@
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from umi.core.geometry import skew
 from umi.devices.x3.factory_geometry import Kb4Model
 from umi.perception.poster.geometry import (
     PosterGeometryError,
     residual_and_jacobians,
     rotation_correction_jacobian,
-    skew,
     skew_batch,
     tag_camera_points,
     tag_pose_jacobians,

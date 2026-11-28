@@ -48,16 +48,15 @@ backends:
 
 ## 调用链
 
-`umi.scene.routing.execute()` → `run.execute_task()` → `run.prepare_task_inputs()` → `solve_joint_poster_imu()` → 公共 TCP、测量和原子发布。
+`task.execute_task()` → `preparation.prepare_task_inputs()` → `solver.solve_joint_poster_imu()` → 公共 TCP、测量和原子发布。
 
 - `models.py` 定义输入输出、任务坐标及观测质量校验。
+- `preparation.py` 先准备每手初值，再组装视觉观测、统一重力、对齐基座标签时刻并接入可选的工作镜头地图，最后冻结求解输入。`task.py` 负责执行、冻结输入回放、地图增强解回退和发布。
 - `initialization.py`：逐帧整板/多标签子集的 KB4 PnP 假设、完整标签多数一致性、平面多解、跨帧/IMU 旋转连续性和累计剔除预算；单个标签不能作为位姿种子。先按保留标签旋转与陀螺仪积分拟合零偏，再估计速度、加速度零偏、海报坐标重力。种子只作初值。
 - 被初始化拒绝的弱标签观测不会伪造相机姿态；相邻有效种子之间的输出节点仍由 IMU 链连接，明确作为无直接海报支持的桥接状态。
 - `frontend.py`：顺序解码一次原始 INSV，同时处理 front/rear 各自的 1440 标定裁切；前后向光流检查、补点、长度/数量上限、视差和正深度三角化。front 使用冻结遮手图，rear 排除已检测的标签区域。不把缓存帧号或像素吸附到另一个镜头。KB4 视线极几何、确定性本质矩阵 RANSAC、分批三角化和基于 ORB 描述子的重关联也由前端负责。
 - `base_tags.py`：刚性安装变量、自身与跨相机观测、精确异步时间节点和质量证据。
-- `solver.py`：两手分别持有位姿、速度和零偏，自然点按“手臂 + 镜头 + 特征 ID”隔离；共享海报规范和初始化后的重力。两镜头像素连接同一组 IMU 状态，内外参和时差固定；先短求解、后验剔除后热启动，保持物理时间对应的状态键不变，优先消元三维点。
-初始化按时间、平移和旋转选择关键帧。求解器将标签和自然观测时刻保留为主图节点，并用固定端点的局部惯性图恢复其余输出时刻。
-- `solver.py` 在初始化前划分标签留出时刻，按原始训练观测检查累计剔除预算、时间覆盖与剩余轨迹几何；保留每轮决策和原始观测索引。
+- `solver.py` 为每手建立位姿、速度和零偏变量，自然点按手、镜头和特征 ID 索引。两镜头像素连接该手同一条 IMU 链，两手共用海报坐标约束和初始化后的重力。各轮保留相同的图节点和物理时间，以原始训练观测为基准检查累计剔除预算。剔除结束后，固定图节点状态恢复全帧轨迹，再检查留出观测和可选地图的位置支持。
 
 `umi/reconstruction/estimation/poster_factors.py` 为每条自然轨迹按最多四个观测建立一个 Huber 因子。Linux x86_64 上的 `install.sh` 会为项目锁定的 GTSAM 4.3.0 wheel 编译 `setup/trajectory/gtsam/natural_factor.cpp`，直接在 C++ 中计算 KB4 残差和解析雅可比。其他环境以及自定义相机模型使用 Python 实现。两种实现使用相同的分组、噪声和 GTSAM 右扰动约定。海报角点和深度因子也可用同一原生扩展。角点沿用当前配置的 Huber 分组，开启 `per_tag_huber` 时，每个标签的四个角点单独加权。标签噪声、因子和条件几何支持诊断复用 `umi/perception/poster/`。只靠 IMU 安静不能确认零速度，因此当前不添加 ZUPT。
 
@@ -141,7 +140,7 @@ LM 在接受一步后按相对目标函数下降提前停止，当前阈值为 `
 
 ## 配置和边界
 
-在 collection.yaml 设置 `backend.mode: poster_vio`。可在批次或任务的 `backend.poster_vio.maximum_observation_gap_s` 设置海报观测间隔上限。算法默认值位于 `config/algorithms/reconstruction.yaml`，可通过 `backends.poster_vio` 专家覆盖。`culling.maximum_rounds: 0` 关闭重求解，`holdout.stride: 0` 和 `natural_stride: 0` 分别关闭标签和自然点留出。海报像素和条件几何质量使用公共环境标签参数。[场景处理](../../../../docs/03-场景处理.md#选择轨迹估计后端)
+在 collection.yaml 设置 `backend.mode: poster_vio`。可在批次或任务的 `backend.poster_vio.maximum_observation_gap_s` 设置海报观测间隔上限。算法默认值位于 `config/algorithms/reconstruction/poster_vio.yaml`，可通过 `backends.poster_vio` 专家覆盖。`culling.maximum_rounds: 0` 关闭重求解，`holdout.stride: 0` 和 `natural_stride: 0` 分别关闭标签和自然点留出。海报像素和条件几何质量使用公共环境标签参数。[场景处理](../../../../docs/03-场景处理.md#选择轨迹估计后端)
 
 当前已接入整板鲁棒初始化、双镜头自然点、几何异常筛选、描述子重关联、有限轮热启动剔除、标签/自然点留出，以及关键帧和条件惯性恢复。语义动态分割、滑窗边缘化和 GPU 加速未接入；真实录像精度和规模基准仍待验收。当前遇到几何冲突或质量不足会拒绝；不声称具备长期标签失联恢复能力。`auto` 按 `backend.auto_order` 尝试后端，轮到 `scene_map` 时才准备地图。[后端顺序配置](../../../../docs/03-场景处理.md#选择轨迹估计后端)
 

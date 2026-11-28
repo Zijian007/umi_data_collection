@@ -1,5 +1,5 @@
 %YAML:1.0
-# Camera geometry template. Runtime appends algorithm settings from config/algorithms/reconstruction.yaml.
+# Camera geometry template. Runtime appends algorithm settings from config/algorithms/reconstruction/common.yaml.
 # Front-lens ORB-SLAM3 settings. The 1440 crop of the sample calibration, scaled to 720:
 # f' = f/2, c' = (c - 0.5) / 2. KB4 distortion is unchanged. See umi/reconstruction/segment/calibration/assets.py.
 

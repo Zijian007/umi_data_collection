@@ -37,8 +37,8 @@ def generate_trajectory(video: Path, execution, *, trajectory_configuration,
     trajectory_python = python_executable(os.environ, default=sys.executable)
     # The outer calibration workflow decides cleanup after board-based acceptance.
     command = [trajectory_python, "-m", "umi.apps.segment", str(video), "--out", str(output), "--force", "--keep-work"]
-    trajectory_config = execution.paths.work / "reconstruction.yaml"
-    # Child CLI reads the exact resolved configuration as a complete reconstruction.yaml overlay.
+    trajectory_config = execution.paths.work / "trajectory_parameters.yaml"
+    # Child CLI reads the exact resolved parameters through its expert overlay loader.
     from umi.config.loader import write_yaml
     write_yaml(trajectory_config, trajectory_configuration.values)
     command += ["--config", str(trajectory_config)]

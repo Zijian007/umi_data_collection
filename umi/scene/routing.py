@@ -11,12 +11,13 @@ from av.error import InvalidDataError
 from umi.config.collection_schema import apply_scene_map_poster_policy, uses_edge_trim
 from umi.infra.file_store import write_json
 from umi.reconstruction.backends import PosterIndependentQualityError, PosterVioQualityError
-from umi.reconstruction.backends.poster_independent import run as poster_independent
-from umi.reconstruction.backends.scene_map import run as scene_map
+from umi.reconstruction.backends import poster_independent as poster_independent
+from umi.reconstruction.backends import scene_map as scene_map
 from umi.reconstruction.estimation.fixed_map.fusion import SceneFusionQualityError
+from umi.reconstruction.estimation.models import BackendDiagnostics, BackendResult
 from umi.scene import measurements, publication
 from umi.scene.errors import MapUnavailableError, fallback_record
-from umi.scene.inputs import recording_intervals as tag_trimming
+from umi.scene.inputs import trimming as tag_trimming
 from umi.scene.maps.binding import MapSelection
 from umi.store.models import ArmExecutionResult, BackendServices, TaskInputs
 
@@ -25,11 +26,10 @@ def backend_services() -> BackendServices:
     return BackendServices(
         prepare_detection_group=measurements.prepare_detection_group,
         prepare_task_detections=measurements.prepare_task_detections,
-        write_task_results=publication.write_task_results,
     )
 
 
-def _run_scene_map(inputs: TaskInputs, selection: MapSelection) -> ArmExecutionResult:
+def _run_scene_map(inputs: TaskInputs, selection: MapSelection) -> BackendResult:
     manifest = selection.manifest
     if manifest is None:
         raise ValueError('scene_map 估计器需要已验证的场景地图')
@@ -42,19 +42,28 @@ def _run_scene_map(inputs: TaskInputs, selection: MapSelection) -> ArmExecutionR
     scene = apply_scene_map_poster_policy(episode.scene)
     if scene is not episode.scene:
         inputs = replace(inputs, episode=replace(episode, session=replace(episode.session, scene=scene)))
-    return scene_map.execute_task(
-        inputs, map_dir=selection.directory, map_manifest=manifest, coordinate_record=coordinate_record,
-        allow_local_fallback=allow_local_fallback)
+    diagnostics = BackendDiagnostics()
+    try:
+        return scene_map.execute_task(
+            inputs, map_dir=selection.directory, map_manifest=manifest, coordinate_record=coordinate_record,
+            allow_local_fallback=allow_local_fallback, diagnostics=diagnostics)
+    except Exception as error:
+        if diagnostics.partial is not None:
+            try:
+                publication.write_backend_result(inputs, diagnostics.partial, parallel=bool(inputs.arm_cpu_sets))
+            except Exception as write_error:
+                error.add_note(f'保留已求解手的诊断轨迹失败：{write_error}')
+        raise
 
 
-def _run_poster_independent(inputs: TaskInputs, selection: MapSelection) -> ArmExecutionResult:
+def _run_poster_independent(inputs: TaskInputs, selection: MapSelection) -> BackendResult:
     return poster_independent.execute_task(inputs, fallback=selection.failure)
 
 
-def _run_poster_vio(inputs: TaskInputs, selection: MapSelection) -> ArmExecutionResult:
+def _run_poster_vio(inputs: TaskInputs, selection: MapSelection) -> BackendResult:
     if selection.manifest is not None:
         raise ValueError('poster_vio 不接受场景地图输入')
-    from umi.reconstruction.backends.poster_vio import run as poster_vio
+    from umi.reconstruction.backends.poster_vio import task as poster_vio
 
     return poster_vio.execute_task(inputs, fallback=selection.failure)
 
@@ -65,7 +74,8 @@ ESTIMATORS = {'scene_map': _run_scene_map, 'poster_independent': _run_poster_ind
               'poster_vio': _run_poster_vio}
 
 
-def execute(inputs: TaskInputs, selection: MapSelection, *, resolve_map=None, prepare_independent=None) -> ArmExecutionResult:
+def execute(inputs: TaskInputs, selection: MapSelection, *, resolve_map=None, prepare_independent=None,
+            freeze_candidate=None, select_candidate=None) -> ArmExecutionResult:
     """Run one explicit backend or the ordered whole-task auto chain.
 
     Explicit modes execute exactly one backend. Auto follows the configured
@@ -78,8 +88,10 @@ def execute(inputs: TaskInputs, selection: MapSelection, *, resolve_map=None, pr
         result = ESTIMATORS[mode](trimmed, selection)
         if report is not None:
             result.coordinate_record['recording_trim'] = report
-        return result
-    return _AutoRoute(inputs, selection, resolve_map=resolve_map, prepare_independent=prepare_independent).run()
+        return publication.write_backend_result(trimmed, result,
+                                                parallel=bool(trimmed.arm_cpu_sets) and mode != 'poster_independent')
+    return _AutoRoute(inputs, selection, resolve_map=resolve_map, prepare_independent=prepare_independent,
+                      freeze_candidate=freeze_candidate, select_candidate=select_candidate).run()
 
 
 # 允许 auto 换下一个后端的失败类型：(异常类型, 记录类别, 只对哪个后端生效)。
@@ -99,16 +111,18 @@ _CANDIDATE_FAILURES = (
 class _AutoRoute:
     """auto：按顺序尝试候选后端，每个候选在独立目录运行，成功者的产物移入任务目录。"""
 
-    def __init__(self, inputs: TaskInputs, selection: MapSelection, *, resolve_map, prepare_independent):
+    def __init__(self, inputs: TaskInputs, selection: MapSelection, *, resolve_map, prepare_independent,
+                 freeze_candidate=None, select_candidate=None):
         self.inputs, self.selection = inputs, selection
         self.resolve_map = resolve_map
         self.prepare_independent = prepare_independent
+        self.freeze_candidate = freeze_candidate
+        self.select_candidate = select_candidate
         self.candidates = tuple(backend for backend in inputs.episode.scene.auto_order
                                 if backend != 'scene_map' or resolve_map is not None or selection.manifest is not None)
         self.attempts_root = inputs.directory / 'reconstruction_attempts'
         self.attempts: list[dict] = []
         self.failure = dict(selection.failure) if selection.failure else None
-        self._trimmed = None
 
     def message(self, text: str) -> None:
         console = getattr(self.inputs, 'console', None)
@@ -125,7 +139,7 @@ class _AutoRoute:
             attempt_dir.mkdir()
             next_backend = self.candidates[index + 1] if index + 1 < len(self.candidates) else None
             try:
-                result = self._run_candidate(backend, attempt_dir)
+                candidate = self._run_candidate(backend, attempt_dir)
             except Exception as error:
                 category = (error.category if backend == 'scene_map' and isinstance(error, MapUnavailableError)
                             else next((category for kind, category, only in _CANDIDATE_FAILURES
@@ -137,7 +151,7 @@ class _AutoRoute:
                 if next_backend is None:
                     raise
                 continue
-            if result is None:
+            if candidate is None:
                 if (not self.attempts or self.attempts[-1]['backend'] != backend
                         or self.attempts[-1]['status'] != 'skipped'):
                     raise RuntimeError(f'{backend} 未返回重建结果')
@@ -146,31 +160,43 @@ class _AutoRoute:
                 if next_backend is None:
                     raise MapUnavailableError(details['reason'])
                 continue
-            return self._adopt(backend, attempt_dir, result)
+            inputs, selection, result = candidate
+            try:
+                written = publication.write_backend_result(inputs, result,
+                    parallel=bool(inputs.arm_cpu_sets) and backend != 'poster_independent')
+                if self.select_candidate is not None:
+                    self.select_candidate(inputs, selection)
+                return self._adopt(backend, attempt_dir, written)
+            except Exception as error:
+                self._record_fatal(backend, error)
+                raise
         raise MapUnavailableError('自动重建没有可尝试的后端')
 
-    def _run_candidate(self, backend: str, attempt_dir: Path) -> ArmExecutionResult | None:
-        inputs, trim_report = self.inputs, None
+    def _run_candidate(self, backend: str, attempt_dir: Path) -> tuple[TaskInputs, MapSelection, BackendResult] | None:
+        work = self.inputs.work_directory
+        inputs = replace(self.inputs, directory=attempt_dir,
+                         work_directory=work / attempt_dir.name if work else None,
+                         detections=dict(self.inputs.detections),
+                         poster_pnp_candidates=dict(self.inputs.poster_pnp_candidates))
+        trim_report = None
         selection = self.selection
         if backend == 'scene_map' and self.resolve_map is not None:
             inputs, selection = self.resolve_map(inputs)
             if selection.manifest is None:
                 self._record_details(backend, selection.failure, status='skipped')
                 return None
+        elif self.freeze_candidate is not None:
+            inputs = self.freeze_candidate(inputs)
         if backend == 'poster_independent' and self.prepare_independent is not None:
             self.prepare_independent()
         if uses_edge_trim(inputs.episode.scene, backend):
-            if self._trimmed is None:
-                self._trimmed = tag_trimming.prepare(inputs)
-            trimmed, trim_report = self._trimmed
-            inputs = replace(inputs, recordings=trimmed.recordings, detections=trimmed.detections,
-                             poster_pnp_candidates=trimmed.poster_pnp_candidates)
+            inputs, trim_report = tag_trimming.prepare(inputs)
         if backend != 'scene_map':
             selection = MapSelection.without_map(self.failure)
-        result = ESTIMATORS[backend](replace(inputs, directory=attempt_dir), selection)
+        result = ESTIMATORS[backend](inputs, selection)
         if trim_report is not None:
             result.coordinate_record['recording_trim'] = trim_report
-        return result
+        return inputs, selection, result
 
     def _write_attempts(self, selected_backend: str | None) -> None:
         write_json(self.attempts_root / 'attempts.json', dict(
@@ -178,6 +204,8 @@ class _AutoRoute:
 
     def _record_failure(self, backend, error, *, category, next_backend=None) -> None:
         details = fallback_record(error, category=category)
+        if isinstance(error, PosterVioQualityError) and error.retry_preparation:
+            details['retry_preparation'] = True
         self._record_details(backend, details, status='failed')
         if next_backend is None:
             self.message(f'后端失败：{backend}；类别={category}；原因={details["reason"]}')

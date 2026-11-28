@@ -45,8 +45,8 @@ from umi.perception.gripper import frame_detection, width_estimation
 from umi.perception.gripper.marker_detection import MarkerDetector
 from umi.perception.runtime import prepare_mask
 from umi.reconstruction.estimation.models import FusionArtifacts, TrajectoryRequest
-from umi.reconstruction.segment import reconstruction, results, workflow
-from umi.reconstruction.segment import reconstruction as runtime
+from umi.reconstruction.segment import attempts as reconstruction, results, workflow
+from umi.reconstruction.segment import attempts as runtime
 from umi.reconstruction.segment import workflow as reuse
 from umi.scene.inputs import recordings
 from umi.store.models import SceneParameters
@@ -84,9 +84,9 @@ class ConfigTests(unittest.TestCase):
 
         trajectory = config.load('trajectory')
         scene = load_scene_parameters()
-        self.assertEqual(trajectory.sources, (str(reconstruction.DEFAULT_PATH),))
+        self.assertEqual(trajectory.sources, (str(reconstruction.COMMON_PATH), str(reconstruction.SEGMENT_DEFAULT_PATH)))
         shared = [(path, targets) for path, targets in reconstruction.FIELDS.items()
-                  if path[0] == 'poster' and len(targets) == 2 and targets[0][0] == 'trajectory']
+                  if path[:2] == ('shared', 'poster') and len(targets) == 2 and targets[0][0] == 'trajectory']
         self.assertEqual(len(shared), 13)
         defaults = reconstruction.defaults()
         for path, (trajectory_target, scene_target) in shared:
@@ -109,7 +109,7 @@ class ConfigTests(unittest.TestCase):
             config.load('calibration', self.overlay('checks:\n  intrinsics_reprojection_px: 1.1\n'))
 
     def test_cli_only_overrides_explicit_fields(self):
-        path = self.overlay("input:\n  mode: \"dual\"\n  allow_irregular_frames: true\nretry:\n  maximum_tries: 7\n")
+        path = self.overlay("standalone:\n  input:\n    mode: dual\n    allow_irregular_frames: true\nsegment_engine:\n  retry:\n    maximum_tries: 7\n")
         with patch.object(workflow, 'run_batch', return_value=0) as run:
             cli.main(['video.insv', '--config', str(path)])
             request = config.resolve_trajectory_request(run.call_args.args[2])
@@ -120,19 +120,19 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(request.configuration.snapshot()['cli_overrides'], dict(input=dict(mode='handheld', allow_irregular=False), retry=dict(max_tries=1)))
 
     def test_strict_validation_rejects_unknown_wrong_type_nonfinite_and_bad_ranges(self):
-        bad = ["fusoin:\n  solver: {}", "fusion:\n  solver:\n    stride: 5",
-               "fusion:\n  alignment:\n    step_frames: true", "fusion:\n  solver:\n    node_stride: 1.5",
-               "fusion:\n  imu:\n    acc_noise: 0", "fusion:\n  imu:\n    gyro_noise: .nan",
-               "fusion:\n  visual:\n    position_sigma_m: .inf",
-               "video:\n  size_px: 719", "video:\n  size_px: 1442", "video:\n  size_px: 0",
-               "video:\n  size_px: true", "video:\n  size_px: 720.0",
-               "video:\n  crf: 52", "video:\n  preset: \"made-up\"", "input:\n  mode: \"rear\"",
-               "retry:\n  target_localized_fraction: 1.1", "retry:\n  maximum_tries: 0",
-               "fusion:\n  chains:\n    group_scale_ratio: 0.5",
-               "fusion:\n  initial_gyro_bias:\n    minimum_samples: 3000",
-               "vision:\n  orb:\n    scale_factor: 1.0", "vision:\n  orb:\n    minimum_fast: 30", "schema_version: 2",
-               "fusion:\n  alignment:\n    step_frames: \"10\"", "fusion: 10", "fusion:\n  zupt:\n    enabled: 1",
-               "localization:\n  minimum_localized_fraction: 0.4", "trajectory:\n  fusion: {}"]
+        bad = ["fusoin:\n  solver: {}", "shared:\n  solver:\n    stride: 5",
+               "shared:\n  alignment:\n    step_frames: true", "shared:\n  solver:\n    node_stride: 1.5",
+               "shared:\n  imu:\n    noise:\n      acc_noise: 0", "shared:\n  imu:\n    noise:\n      gyro_noise: .nan",
+               "shared:\n  visual:\n    position_sigma_m: .inf",
+               "recording:\n  video:\n    size_px: 719", "recording:\n  video:\n    size_px: 1442", "recording:\n  video:\n    size_px: 0",
+               "recording:\n  video:\n    size_px: true", "recording:\n  video:\n    size_px: 720.0",
+               "recording:\n  video:\n    crf: 52", "recording:\n  video:\n    preset: \"made-up\"", "standalone:\n  input:\n    mode: rear",
+               "segment_engine:\n  retry:\n    target_localized_fraction: 1.1", "segment_engine:\n  retry:\n    maximum_tries: 0",
+               "segment_engine:\n  chains:\n    group_scale_ratio: 0.5",
+               "shared:\n  imu:\n    initial_gyro_bias:\n      minimum_samples: 3000",
+               "shared:\n  orb:\n    scale_factor: 1.0", "shared:\n  orb:\n    minimum_fast: 30", "schema_version: 2",
+               "shared:\n  alignment:\n    step_frames: \"10\"", "shared: 10", "shared:\n  zupt:\n    enabled: 1",
+               "backends:\n  scene_map:\n    localization:\n      minimum_localized_fraction: 0.4", "trajectory:\n  fusion: {}"]
         for text in bad:
             with self.subTest(text=text), self.assertRaises(ValueError):
                 config.load('trajectory', self.overlay(text))
@@ -152,13 +152,13 @@ class ConfigTests(unittest.TestCase):
 
     def test_yaml_rejects_duplicate_keys_at_any_level(self):
         for text in ('schema_version: 1\nschema_version: 1\n',
-                     'fusion:\n  step: 10\n  step: 20\n'):
+                     'shared:\n  alignment:\n    step_frames: 10\n    step_frames: 20\n'):
             with self.subTest(text=text), self.assertRaisesRegex(ValueError, 'duplicate key'):
                 config.load('trajectory', self.overlay(text))
 
     def test_yaml_requires_mapping_roots_and_string_keys(self):
         for text in ('', '# empty', 'null', '[]', '42', '1: value',
-                     'fusion:\n  1: 2\n', 'fusion: []', '{}\n---\n{}'):
+                     'shared:\n  1: 2\n', 'shared: []', '{}\n---\n{}'):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 config.load('trajectory', self.overlay(text))
         self.assertEqual(config.load('trajectory', self.overlay('{}')).values,
@@ -167,15 +167,15 @@ class ConfigTests(unittest.TestCase):
     def test_yaml_boolean_semantics_and_safe_tags(self):
         for word in ('on', 'off', 'yes', 'no'):
             with self.subTest(word=word), self.assertRaises(ValueError):
-                config.load('trajectory', self.overlay(f'input:\n  allow_irregular_frames: {word}'))
-        for text in ('%YAML 1.1\n---\ninput:\n  allow_irregular_frames: on\n',
-                     'fusion:\n  alignment:\n    step_frames: !!python/object/apply:builtins.int ["7"]',
-                     'fusion:\n  alignment:\n    step_frames: !custom 7'):
+                config.load('trajectory', self.overlay(f'standalone:\n  input:\n    allow_irregular_frames: {word}'))
+        for text in ('%YAML 1.1\n---\nstandalone:\n  input:\n    allow_irregular_frames: on\n',
+                     'shared:\n  alignment:\n    step_frames: !!python/object/apply:builtins.int ["7"]',
+                     'shared:\n  alignment:\n    step_frames: !custom 7'):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 config.load('trajectory', self.overlay(text))
 
     def test_yaml_scientific_notation_and_complete_snapshot_roundtrip(self):
-        resolved = config.load('trajectory', self.overlay('fusion:\n  imu:\n    gyro_noise: 2e-4\n  solver:\n    linear_tolerance: 1e-12'))
+        resolved = config.load('trajectory', self.overlay('shared:\n  imu:\n    noise:\n      gyro_noise: 2e-4\n  solver:\n    linear_tolerance: 1e-12'))
         self.assertEqual(resolved.values.fusion.gyro_noise, .0002)
         self.assertEqual(resolved.values.fusion.linear_tolerance, 1e-12)
         for kind in ('calibration', 'trajectory'):
@@ -189,16 +189,16 @@ class ConfigTests(unittest.TestCase):
 
     def test_comments_key_order_location_and_integer_float_spelling_do_not_change_hashes(self):
         a = config.load('trajectory', self.overlay(
-            "fusion:\n  visual:\n    position_sigma_m: 1\n  alignment:\n    step_frames: 15\n", 'a.yaml'))
+            "shared:\n  visual:\n    position_sigma_m: 1\n  alignment:\n    step_frames: 15\n", 'a.yaml'))
         b = config.load('trajectory', self.overlay(
-            "# comment\nfusion:\n  alignment:\n    step_frames: 15\n  visual:\n    position_sigma_m: 1.0\n", 'b.yaml'))
+            "# comment\nshared:\n  alignment:\n    step_frames: 15\n  visual:\n    position_sigma_m: 1.0\n", 'b.yaml'))
         self.assertEqual((a.computation_hash, a.evaluation_hash), (b.computation_hash, b.evaluation_hash))
         self.assertNotEqual(a.sources, b.sources)
 
     def test_numerical_and_evaluation_hashes_are_independent(self):
         default = config.load('trajectory')
-        notes = config.load('trajectory', self.overlay("reporting:\n  warnings:\n    minimum_localized_fraction: 0.8"))
-        retry = config.load('trajectory', self.overlay("retry:\n  target_localized_fraction: 0.8"))
+        notes = config.load('trajectory', self.overlay("segment_engine:\n  reporting:\n    warnings:\n      minimum_localized_fraction: 0.8"))
+        retry = config.load('trajectory', self.overlay("segment_engine:\n  retry:\n    target_localized_fraction: 0.8"))
         self.assertEqual(notes.computation_hash, default.computation_hash)
         self.assertNotEqual(notes.evaluation_hash, default.evaluation_hash)
         self.assertNotEqual(retry.computation_hash, default.computation_hash)
@@ -213,7 +213,7 @@ class ConfigTests(unittest.TestCase):
         defaults.mkdir()
         document = (config.ALGORITHM_DIRECTORY / 'calibration.yaml').read_text()
         (defaults / 'calibration.yaml').write_text(document.replace('config: ""', 'config: validation.yaml', 1))
-        (defaults / 'validation.yaml').write_text('fusion:\n  solver:\n    node_stride: 3\n')
+        (defaults / 'validation.yaml').write_text('shared:\n  solver:\n    node_stride: 3\n')
         expert = self.overlay('checks:\n  ate_fail_mm: 20\n')
         with patch.object(config, 'ALGORITHM_DIRECTORY', defaults):
             calibration = config.load('calibration', expert)
@@ -221,8 +221,8 @@ class ConfigTests(unittest.TestCase):
 
     def test_c_applies_relative_trajectory_overrides_with_calibration_constraints(self):
         tuning = self.overlay(
-            'vision:\n  initial_tag:\n    size_m: 0.024\nfusion:\n  solver:\n    node_stride: 3\n'
-            'poster:\n  standalone_fusion: true\ninput:\n  mode: dual\n', 'trajectory-tuning.yaml')
+            'shared:\n  orb:\n    initial_tag:\n      size_m: 0.024\n  solver:\n    node_stride: 3\n'
+            'standalone:\n  poster_fusion: true\n  input:\n    mode: dual\n', 'trajectory-tuning.yaml')
         standalone = config.load('trajectory', tuning).values
         self.assertTrue(standalone.environment_tags.tag_fusion_enabled)
         self.assertEqual(standalone.input.mode, 'dual')
@@ -262,7 +262,7 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(reconstruction.assess_try(result, replace(p, minimum_full_fraction=.8))['suspicious'])
 
     def test_slam_generation_uses_both_measurement_and_algorithm_config(self):
-        p = config.load('trajectory', self.overlay("vision:\n  orb:\n    features: 777\n    initial_fast: 21")).values
+        p = config.load('trajectory', self.overlay("shared:\n  orb:\n    features: 777\n    initial_fast: 21")).values
         camera = calibration_assets.read_basalt(calibration_assets.SAMPLE_CAMERA_JSON)
         yaml = trajectory_calibration.slam_settings_text(camera, p)
         self.assertIn('ORBextractor.nFeatures: 777', yaml)
@@ -373,7 +373,7 @@ class SafetyTests(segment_tests.RecordingFixture):
         self.successful_result()
         before = self.tree_snapshot(self.output)
         path = self.root / 'bad.yaml'
-        path.write_text("fusion:\n  imu:\n    acc_noise: -1")
+        path.write_text("shared:\n  imu:\n    noise:\n      acc_noise: -1")
         with patch.object(trajectory_calibration, 'select_calibration') as select, patch.object(runtime.console, 'write'):
             self.assertEqual(workflow.run_batch([str(self.video)], self.output.parent,
                              TrajectoryRequest(config=path, force=True)), 1)
@@ -423,7 +423,7 @@ class SafetyTests(segment_tests.RecordingFixture):
     def test_video_size_change_invalidates_cached_trajectory(self):
         self.successful_result()
         path = self.root / 'resolution.yaml'
-        path.write_text('video:\n  size_px: 960\n')
+        path.write_text('recording:\n  video:\n    size_px: 960\n')
         fingerprint = self.fingerprint(TrajectoryRequest(config=path))
         self.assertIn('算法参数已变化', reuse.reuse_decision(
             self.output, fingerprint, notes=config.load('trajectory').values.notes).reason)
@@ -493,7 +493,7 @@ class EvaluationTests(unittest.TestCase):
             trajectory = helper.output / 'traj_tcp.txt'
             before = trajectory.read_bytes()
             cfg = helper.root / 'notes.yaml'
-            cfg.write_text("reporting:\n  warnings:\n    minimum_localized_fraction: 0.8")
+            cfg.write_text("segment_engine:\n  reporting:\n    warnings:\n      minimum_localized_fraction: 0.8")
             with patch.object(reconstruction, 'run_attempts') as reconstruct:
                 self.assertEqual(helper.run_recording(TrajectoryRequest(config=cfg))['status'], 'skipped')
             reconstruct.assert_not_called()
@@ -964,7 +964,7 @@ class CollectionSchemaTests(unittest.TestCase):
             normalize_collection(dict(kit='kit_001', arms=['right'], reconstruction=dict(mode='auto')))
 
 
-# reconstruction.yaml 公开参数树与内部轨迹/场景字段之间的契约测试。
+# 公开重建参数树与内部轨迹、场景字段的契约测试。
 
 
 def _leaf_paths(values: dict, prefix=()):
@@ -988,22 +988,63 @@ class ReconstructionSchemaTests(unittest.TestCase):
         self.assertEqual(set(targets), trajectory | scene)
 
     def test_project_defaults_are_complete_and_strict(self):
-        document = read_yaml(reconstruction_config.DEFAULT_PATH)
+        document = read_yaml(reconstruction_config.COMMON_PATH)
         self.assertEqual(document['schema_version'], reconstruction_config.SCHEMA_VERSION)
+        common_fields = {key for key in reconstruction_config.FIELDS if key[0] not in ('backends', 'standalone')}
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'reconstruction.yaml'
+            path = Path(directory) / 'common.yaml'
             for mutate, message in (
-                    (lambda d: d['fusion']['solver'].pop('node_stride'), '缺少字段'),
-                    (lambda d: d['fusion']['solver'].update(stride=5), '未知字段'),
+                    (lambda d: d['shared']['solver'].pop('node_stride'), '缺少字段'),
+                    (lambda d: d['shared']['solver'].update(stride=5), '未知字段'),
+                    (lambda d: d.update(standalone=dict(input=dict(mode='dual'))), '不属于此文件'),
                     (lambda d: d.update(schema_version=2), 'schema_version'),
-                    (lambda d: d.update(schema_version=3.0), 'schema_version'),
+                    (lambda d: d.update(schema_version=4.0), 'schema_version'),
                     (lambda d: d.pop('schema_version'), 'schema_version'),
                     (lambda d: d.update(trajectory={}), 'trajectory 是未知字段')):
                 broken = copy.deepcopy(document)
                 mutate(broken)
                 write_yaml(path, broken)
                 with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
-                    reconstruction_config.split(read_yaml(path), label=str(path), complete=True)
+                    reconstruction_config._read_default_fields(path, common_fields)
+
+    def test_backend_default_file_checks_its_own_fields(self):
+        prefix = ('backends', 'poster_vio')
+        fields = {key for key in reconstruction_config.FIELDS if key[:2] == prefix}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'poster_vio.yaml'
+            document = read_yaml(reconstruction_config.BACKEND_PATHS['poster_vio'])
+            document['frontend'].pop('maximum_features')
+            write_yaml(path, document)
+            with self.assertRaisesRegex(ValueError, r'poster_vio\.yaml.*缺少字段.*maximum_features'):
+                reconstruction_config._read_default_fields(path, fields, prefix=prefix)
+            document['poster_guidance'] = True
+            write_yaml(path, document)
+            with self.assertRaisesRegex(ValueError, r'poster_vio\.yaml.*poster_guidance.*未知字段'):
+                reconstruction_config._read_default_fields(path, fields, prefix=prefix)
+
+    def test_standalone_defaults_are_separate_from_scene_and_calibration(self):
+        from umi.scene.collection.configuration import apply_overrides, load_scene_parameters
+
+        values = dict(input=dict(mode='dual', allow_irregular=True),
+                      environment_tags=dict(tag_fusion_enabled=True), retry=dict(maximum_position_support_gap_s=9.))
+        with patch.object(reconstruction_config, '_standalone_defaults', return_value=values) as standalone_defaults:
+            scene, _ = apply_overrides(None, load_scene_parameters(), None)
+            calibration_c = config.load('calibration').load_trajectory_validation()
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / 'child.yaml'
+                config.write_yaml(path, calibration_c.values)
+                self.assertEqual(config.load('trajectory', path).values, calibration_c.values)
+            standalone_defaults.assert_not_called()
+            standalone = config.load('trajectory').values
+        for trajectory in (scene, calibration_c):
+            self.assertEqual(trajectory.values.input.mode, 'handheld')
+            self.assertFalse(trajectory.values.input.allow_irregular)
+            self.assertFalse(trajectory.values.environment_tags.tag_fusion_enabled)
+            self.assertNotIn(str(reconstruction_config.SEGMENT_DEFAULT_PATH), trajectory.sources)
+        self.assertEqual(standalone.input.mode, 'dual')
+        self.assertTrue(standalone.input.allow_irregular)
+        self.assertTrue(standalone.environment_tags.tag_fusion_enabled)
+        self.assertEqual(standalone.retry.maximum_position_support_gap_s, 9.)
 
     def test_public_tree_round_trips_the_resolved_values(self):
         from umi.scene.collection.configuration import load_scene_parameters
@@ -1011,8 +1052,10 @@ class ReconstructionSchemaTests(unittest.TestCase):
         scene = asdict(load_scene_parameters())
         tree = reconstruction_config.public_tree(trajectory=trajectory, scene=scene)
         self.assertEqual(tree['schema_version'] if 'schema_version' in tree else None, None)
-        document = read_yaml(reconstruction_config.DEFAULT_PATH)
+        document = read_yaml(reconstruction_config.COMMON_PATH)
         document.pop('schema_version')
+        document['backends'] = {name: read_yaml(path) for name, path in reconstruction_config.BACKEND_PATHS.items()}
+        document['standalone'] = read_yaml(reconstruction_config.SEGMENT_DEFAULT_PATH)['standalone']
         for path in reconstruction_config.OPTIONAL:
             tree_section = tree
             for key in path[:-1]:
@@ -1020,14 +1063,21 @@ class ReconstructionSchemaTests(unittest.TestCase):
             tree_section.pop(path[-1])
         self.assertEqual(tree, document)
 
+    def test_old_expert_paths_and_schema_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'schema_version: 4'):
+            reconstruction_config.split(dict(schema_version=3), label='expert', scene_overrides=True)
+        for path in ('video', 'fusion', 'poster', 'mapping', 'localization'):
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, f'{path} 是未知字段'):
+                reconstruction_config.split({path: {}}, label='expert', scene_overrides=True)
+
     def test_shared_poster_fields_reach_both_engines(self):
-        result = reconstruction_config.split(dict(poster=dict(acceptance=dict(maximum_position_std_m=.02))), label='x')
+        result = reconstruction_config.split(dict(shared=dict(poster=dict(acceptance=dict(maximum_position_std_m=.02)))), label='x')
         self.assertEqual(result.trajectory, dict(environment_tags=dict(tag_maximum_position_std_m=.02)))
         self.assertEqual(result.scene, dict(tag_maximum_position_std_m=.02))
 
     def test_backend_gap_overrides_the_shared_default_regardless_of_yaml_order(self):
         document = dict(backends=dict(poster_independent=dict(maximum_position_support_gap_s=4.)),
-                        poster=dict(acceptance=dict(maximum_position_support_gap_s=3.)))
+                        shared=dict(poster=dict(acceptance=dict(maximum_position_support_gap_s=3.))))
         origins = {}
         values = reconstruction_config.split(document, label='expert.yaml', gap_sources=origins).scene
         self.assertEqual(values['poster_maximum_position_support_gap_s'], 4.)
@@ -1035,13 +1085,13 @@ class ReconstructionSchemaTests(unittest.TestCase):
         self.assertEqual(origins['poster_maximum_position_support_gap_s'],
                          'expert.yaml:backends.poster_independent.maximum_position_support_gap_s')
         self.assertEqual(origins['poster_vio_maximum_position_support_gap_s'],
-                         'expert.yaml:poster.acceptance.maximum_position_support_gap_s')
+                         'expert.yaml:shared.poster.acceptance.maximum_position_support_gap_s')
 
     def test_segment_overlays_reject_scene_only_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'segment.yaml'
-            write_yaml(path, dict(localization=dict(minimum_localized_fraction=.4)))
+            write_yaml(path, dict(backends=dict(scene_map=dict(localization=dict(minimum_localized_fraction=.4)))))
             with self.assertRaisesRegex(ValueError, '只用于场景流程'):
                 reconstruction_config.read_overlay(path, trajectory_only=True)
-            write_yaml(path, dict(poster=dict(acceptance=dict(maximum_position_std_m=.02))))
+            write_yaml(path, dict(shared=dict(poster=dict(acceptance=dict(maximum_position_std_m=.02)))))
             self.assertEqual(reconstruction_config.read_overlay(path, trajectory_only=True).scene, {})

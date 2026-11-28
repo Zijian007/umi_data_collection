@@ -27,7 +27,7 @@ class AlignmentResult:
     acc: np.ndarray
     initial_gyro_bias: np.ndarray
     estimates: dict
-    initial_lens: str
+    initial_lens: str | None
     diagnostics: dict
 
 
@@ -50,8 +50,8 @@ def chains_of(observations: dict[int, tuple[np.ndarray, np.ndarray]]) -> list[tu
 
 
 def align_recording(inputs: FusionInputs, parameters: parameter_models.TrajectoryParameters, *, log=print,
-                    refine_initialization: bool = False) -> AlignmentResult:
-    """细分不一致观测，估计各连续跟踪段的尺度与重力，选择初始化镜头。"""
+                    refine_initialization: bool = False, require_usable: bool = True) -> AlignmentResult:
+    """细分和对齐跟踪段，按需保留没有合格初始化镜头的诊断与轨迹段。"""
     fusion_parameters = parameters.fusion
     frame_rate_hz = float(output_frame_rate(parameters.video.frame_step))
     R_imu_rear_camera = inputs.rear_rotation
@@ -80,7 +80,7 @@ def align_recording(inputs: FusionInputs, parameters: parameter_models.Trajector
     initial_gyro_bias = estimate_gyro_bias(gyro, fusion_parameters)
     estimates, initial_lens, diagnostics = align_lenses(
         lenses, video_times_s, imu, initial_gyro_bias, fusion_parameters, log=log, check_stability=True,
-        refine_initialization=refine_initialization)
+        refine_initialization=refine_initialization, require_usable=require_usable)
     return AlignmentResult(lenses, video_times_s, imu_video_times_s, gyro, acc, initial_gyro_bias,
                            estimates, initial_lens, diagnostics)
 
@@ -214,7 +214,7 @@ def _estimate_supported_chains(lenses: dict, video_times_s: np.ndarray, imu: np.
 def align_lenses(lenses: dict, video_times_s: np.ndarray, imu: np.ndarray,
                  initial_gyro_bias: np.ndarray, fusion_parameters: parameter_models.FusionParameters,
                  *, log=print, check_stability: bool = False,
-                 refine_initialization: bool = False) -> tuple[dict, str, dict]:
+                 refine_initialization: bool = False, require_usable: bool = True) -> tuple[dict, str | None, dict]:
     """筛选运动段、复核初始化并选择镜头；原位更新 lenses 的连续段。"""
     split_counts = _split_tracking_chains(lenses, video_times_s, imu, initial_gyro_bias, fusion_parameters)
     log('chain_splits', split_counts, flush=True)
@@ -256,7 +256,9 @@ def align_lenses(lenses: dict, video_times_s: np.ndarray, imu: np.ndarray,
     if not candidate_lenses:
         candidate_lenses = [lens_name for lens_name in lenses if alignment_estimates[lens_name] is not None and any(chain["good"] for chain in alignment_estimates[lens_name]["chains"])]
     if not candidate_lenses:
-        raise AlignmentError(diagnostics)
+        if require_usable:
+            raise AlignmentError(diagnostics)
+        return alignment_estimates, None, diagnostics
     initial_lens = min(candidate_lenses, key=lambda lens_name: alignment_estimates[lens_name]["pos_rms"])
     log("init_lens", initial_lens, flush=True)
 

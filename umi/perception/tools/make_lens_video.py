@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('insv', 'mav0', 'out', 'half'):
         parser.add_argument(name)
-    parser.add_argument('--config', type=Path, required=True, help='父流程按 reconstruction.yaml 结构写出的轨迹参数')
+    parser.add_argument('--config', type=Path, required=True, help='父流程写出的有效轨迹参数')
     parser.add_argument('--source-frame-start', type=int, default=0, help='原片中保留的第一帧')
     args = parser.parse_args(argv)
     parameters = config.load('trajectory', args.config).values

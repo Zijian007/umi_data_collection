@@ -43,6 +43,7 @@ class OrbParameters:
     aruco_dictionary: int
     initial_tag_id: int
     initial_tag_size_m: float
+    gyro_aided_mapping: bool = False
 
 
 @dataclass(frozen=True)

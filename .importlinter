@@ -12,6 +12,7 @@ layers =
     umi.scene
     umi.reconstruction.backends
     umi.reconstruction.segment
+    umi.reconstruction.mapping
     umi.reconstruction.estimation
     umi.store
     umi.perception

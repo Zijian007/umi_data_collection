@@ -22,8 +22,8 @@ from umi.perception.poster import geometry
 from umi.perception.poster import layout as tag_board
 from umi.perception.poster.geometry import camera_model, project_observations
 from umi.reconstruction.backends.poster_vio import base_tags
-from umi.reconstruction.backends.poster_vio import run as poster_vio
-from umi.reconstruction.backends.poster_vio import run as poster_vio_inputs
+from umi.reconstruction.backends.poster_vio import preparation as poster_vio_inputs
+from umi.reconstruction.backends.poster_vio import task as poster_vio
 from umi.reconstruction.backends.poster_vio import solver as refinement
 from umi.reconstruction.backends.poster_vio.frontend import (
     FeatureCameraInput,
@@ -54,7 +54,7 @@ from umi.reconstruction.backends.poster_vio.models import (
     validate_problem,
     validate_result,
 )
-from umi.reconstruction.backends.poster_vio.run import PosterVioRequest
+from umi.reconstruction.backends.poster_vio.task import PosterVioRequest
 from umi.reconstruction.backends.poster_vio.solver import ArmSolveInput, solve_joint_poster_imu
 from umi.reconstruction.estimation import poster_factors as factors
 from umi.scene import measurements, publication, routing
@@ -1099,6 +1099,35 @@ class PosterVioRefinementTests(unittest.TestCase):
         self.assertFalse(audit['rounds'][0]['applied'])
         self.assertEqual(audit['rounds'][0]['reasons'], ['round_limit'])
 
+    def test_round_limit_allows_only_one_extra_solve_for_one_natural_track(self):
+        request, arms, seed = self.prepared()
+        arms = tuple(replace(item, parameters=replace(item.parameters, poster_vio_maximum_cull_rounds=1))
+                     for item in arms)
+        natural = dict(kind='natural', camera='rear', track_id=7)
+        cases = (
+            ('single track clears', [[natural], [natural, natural], []], 'solved', True, 3),
+            ('extra round still has outliers', [[natural], [natural], [natural]], 'rejected', True, 3),
+            ('several tracks', [[natural], [natural, dict(natural, track_id=8)]], 'rejected', False, 2),
+            ('tag observation', [[natural], [dict(kind='tag')]], 'rejected', False, 2),
+        )
+        for name, rounds, expected, extended, solves in cases:
+            def propose(item, observation, selection, evidence, *, poses):
+                removed = next(remaining) if item.arm == 'right' else []
+                return selection, dict(status='refine' if removed else 'clean', removed=removed,
+                                       natural_recovery_cameras=[])
+
+            with self.subTest(name=name), patch.object(refinement, 'propose_cull', side_effect=propose):
+                remaining = iter(rounds)
+                result = solve_joint_poster_imu(request.problem(), arms, seed)
+                audit = result.arm_evidence['right']['refinement']
+                self.assertEqual(result.quality.status, expected)
+                self.assertEqual(audit['solves'], solves)
+                self.assertEqual(audit['rounds'][1].get('round_limit_extended', False), extended)
+                self.assertEqual(audit['rounds'][1]['applied'], extended)
+                if expected == 'rejected':
+                    self.assertEqual(audit['rounds'][-1]['reasons'], ['round_limit'])
+                    self.assertFalse(audit['rounds'][-1]['applied'])
+
     def test_nonfinite_holdout_projection_cannot_pass_comparisons(self):
         from umi.reconstruction.backends.poster_vio import solver
 
@@ -1495,8 +1524,16 @@ class PosterVioWorkflowTests(unittest.TestCase):
         return {}
 
     def test_two_arms_arbitrary_poster_and_front_time_offset_recover_metric_poses(self):
-        request, arms, board_seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
-        result = solve_joint_poster_imu(request.problem(), arms, board_seed)
+        messages = []
+        with patch.object(self.inputs.console, 'write', side_effect=lambda message, **kwargs: messages.append(message)):
+            request, arms, board_seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
+        with patch.object(refinement, '_recover_final_states', wraps=refinement._recover_final_states) as recover:
+            result = solve_joint_poster_imu(request.problem(), arms, board_seed, progress=messages.append)
+        recover.assert_called_once()
+        self.assertEqual([message for message in messages if message.startswith('VIO 阶段')], [
+            'VIO 阶段 · 准备每手初值', 'VIO 阶段 · 组装视觉观测', 'VIO 阶段 · 冻结求解输入',
+            'VIO 阶段 · 联合求解', 'VIO 阶段 · 恢复全帧轨迹', 'VIO 阶段 · 最终验收',
+        ])
         self.assertEqual(result.quality.status, 'solved')
         expected_gravity = self.board_pose[:3, :3].T @ [0., 0., -9.81]
         for item in arms:
@@ -1506,6 +1543,46 @@ class PosterVioWorkflowTests(unittest.TestCase):
             self.assertEqual(result.arm_evidence[item.arm]['natural_tracks'], 0)
             self.assertTrue((self.inputs.directory / 'poster_vio' / item.arm / 'numerical_inputs.npz').is_file())
         self.assertTrue((self.inputs.directory / 'poster_vio/inputs.json').is_file())
+
+    def test_background_front_maps_start_before_detection_and_cancel_before_join(self):
+        from threading import Event
+
+        inputs = replace(self.inputs, arm_cpu_sets={'left': '0', 'right': '1'})
+        parameters = inputs.episode.scene.parameters
+        self.addCleanup(setattr, inputs.episode.scene, 'parameters', parameters)
+        inputs.episode.scene.parameters = replace(parameters, poster_vio_front_map_enabled=True)
+        started = Event()
+        stopped = []
+
+        def build(*args, cancel_event):
+            started.set()
+            stopped.append(cancel_event.wait(timeout=5))
+
+        def detect(*args):
+            self.assertTrue(started.wait(timeout=5))
+            raise KeyboardInterrupt
+
+        with patch.object(poster_vio_inputs.front_map, 'build_and_localize', side_effect=build), \
+                patch.object(poster_vio_inputs, '_detect', side_effect=detect), self.assertRaises(KeyboardInterrupt):
+            poster_vio_inputs.prepare_task_inputs(inputs)
+        self.assertEqual(stopped, [True, True])
+        self.assertFalse((inputs.directory / 'poster_vio/inputs.json').exists())
+
+    def test_optional_orb_execution_failure_keeps_frozen_base_inputs(self):
+        from umi.perception.models import OrbUnavailable, ProcessingError
+
+        scene = self.inputs.episode.scene
+        scene.parameters = replace(scene.parameters, poster_vio_front_map_enabled=True)
+        failure = OrbUnavailable('建图', 'fixture crashed', category='engine_failed', return_code=124)
+        with patch.object(poster_vio_inputs.front_map, 'prepare', side_effect=failure):
+            request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
+        self.assertTrue(request.front_map_selection['retry_preparation'])
+        self.assertEqual(request.front_map_selection['preparation_failures'][0]['return_code'], 124)
+        self.assertFalse(any(item.front_maps for item in arms))
+        self.assertEqual(solve_joint_poster_imu(request.problem(), arms, seed).quality.status, 'solved')
+        with patch.object(poster_vio_inputs.front_map, 'prepare', side_effect=ProcessingError('定位', 'malformed CSV')):
+            with self.assertRaisesRegex(ProcessingError, 'malformed CSV'):
+                poster_vio_inputs.prepare_task_inputs(self.inputs)
 
     def test_collection_switch_skips_kit_base_tag_assets(self):
         for index, arm in enumerate(('left', 'right'), start=2):
@@ -1525,7 +1602,9 @@ class PosterVioWorkflowTests(unittest.TestCase):
             return object(), None, None
 
         with patch.object(publication, 'write_arm_result', side_effect=write):
-            result = poster_vio.execute_task(self.inputs)
+            solved = poster_vio.execute_task(self.inputs)
+            self.assertFalse(written)
+            result = publication.write_backend_result(self.inputs, solved)
         self.assertEqual(set(result.tracks), {'left', 'right'})
         self.assertEqual(result.coordinate_record['reconstruction_backend'], 'poster_vio')
         for arm, trajectory in written.items():
@@ -1545,6 +1624,7 @@ class PosterVioWorkflowTests(unittest.TestCase):
         with patch.object(poster_vio, '_run_solver', side_effect=[rejected, baseline]) as solve, \
              patch.object(publication, 'write_arm_result', return_value=(object(), None, None)) as write:
             result = poster_vio.replay_task(self.inputs, request=request, arms=enhanced, board_seed=seed)
+            publication.write_backend_result(self.inputs, result)
         self.assertEqual(write.call_count, 2)
         retry_arms = solve.call_args_list[1].args[2]
         for retry, original in zip(retry_arms, enhanced):
@@ -1566,7 +1646,8 @@ class PosterVioWorkflowTests(unittest.TestCase):
         request, arms, seed = poster_vio_inputs.prepare_task_inputs(self.inputs)
         with patch.object(poster_vio, 'prepare_task_inputs', side_effect=AssertionError('must use frozen inputs')), \
              patch.object(publication, 'write_arm_result', return_value=(object(), None, None)) as write:
-            result = poster_vio.replay_task(self.inputs, request=request, arms=arms, board_seed=seed)
+            solved = poster_vio.replay_task(self.inputs, request=request, arms=arms, board_seed=seed)
+            result = publication.write_backend_result(self.inputs, solved)
 
         self.assertEqual(set(result.tracks), {'left', 'right'})
         self.assertEqual(result.coordinate_record['reconstruction_backend'], 'poster_vio')
@@ -1852,7 +1933,7 @@ class CrossCameraBaseTagTests(unittest.TestCase):
 
 class BaseTagWorkflowTests(unittest.TestCase):
     def prepared(self):
-        from umi.reconstruction.backends.poster_vio import run as poster_vio_inputs
+        from umi.reconstruction.backends.poster_vio import preparation as poster_vio_inputs
         helper = PosterVioWorkflowTests('runTest')
         helper.setUp()
         self.addCleanup(helper.doCleanups)
@@ -1969,7 +2050,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
 
     def production_fixture(self, *, pairs=(), self_frames=None, single=False, outside_only=False):
         from umi.perception.poster import geometry
-        from umi.reconstruction.backends.poster_vio import run as poster_vio_inputs
+        from umi.reconstruction.backends.poster_vio import preparation as poster_vio_inputs
         helper = PosterVioWorkflowTests('runTest')
         helper.setUp()
         self.addCleanup(helper.doCleanups)
@@ -2021,7 +2102,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
 
-        from umi.reconstruction.backends.poster_vio import run as poster_vio_inputs
+        from umi.reconstruction.backends.poster_vio import preparation as poster_vio_inputs
         helper, mounts, detect = self.production_fixture(pairs=(('left', 'right'), ('right', 'left')))
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect):
             request, arms, _ = poster_vio_inputs.prepare_task_inputs(helper.inputs)
@@ -2039,7 +2120,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
     def test_single_hand_skips_base_detection_and_fitting_with_declared_tag(self):
         from unittest.mock import patch
 
-        from umi.reconstruction.backends.poster_vio import run as poster_vio_inputs
+        from umi.reconstruction.backends.poster_vio import preparation as poster_vio_inputs
         helper, _, detect = self.production_fixture(single=True)
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect) as detector, \
                 patch.object(poster_vio_inputs, 'estimate_static_tag_extrinsic') as fit:
@@ -2057,7 +2138,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
     def test_self_only_sparse_observations_do_not_fit_or_reject_trajectories(self):
         from unittest.mock import patch
 
-        from umi.reconstruction.backends.poster_vio import run as poster_vio_inputs
+        from umi.reconstruction.backends.poster_vio import preparation as poster_vio_inputs
         helper, _, detect = self.production_fixture(self_frames={'left': 1, 'right': 1})
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
                 patch.object(poster_vio_inputs, 'estimate_static_tag_extrinsic') as fit:
@@ -2075,7 +2156,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
     def test_one_way_cross_sighting_only_fits_owner_mount(self):
         from unittest.mock import patch
 
-        from umi.reconstruction.backends.poster_vio import run as poster_vio_inputs
+        from umi.reconstruction.backends.poster_vio import preparation as poster_vio_inputs
         helper, mounts, detect = self.production_fixture(pairs=(('left', 'right'),), self_frames={'left': 1})
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
                 patch.object(poster_vio_inputs, 'estimate_static_tag_extrinsic',
@@ -2094,7 +2175,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
     def test_cross_sighting_outside_overlap_does_not_require_mount(self):
         from unittest.mock import patch
 
-        from umi.reconstruction.backends.poster_vio import run as poster_vio_inputs
+        from umi.reconstruction.backends.poster_vio import preparation as poster_vio_inputs
         helper, _, detect = self.production_fixture(pairs=(('left', 'right'),), outside_only=True,
                                                    self_frames={'left': 1, 'right': 1})
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
@@ -2110,7 +2191,7 @@ class BaseTagWorkflowTests(unittest.TestCase):
     def test_required_owner_still_needs_sufficient_self_observations(self):
         from unittest.mock import patch
 
-        from umi.reconstruction.backends.poster_vio import run as poster_vio_inputs
+        from umi.reconstruction.backends.poster_vio import preparation as poster_vio_inputs
         helper, _, detect = self.production_fixture(pairs=(('left', 'right'),), self_frames={'right': 1})
         with patch.object(poster_vio_inputs.detection, 'cached', side_effect=detect), \
                 self.assertRaisesRegex(ValueError, 'right.*自身观测'):
@@ -2210,8 +2291,10 @@ class FrontMapPixelTests(unittest.TestCase):
         self.assertEqual(len({key for arm in range(2) for index in range(3)
                               for key in placement_keys(arm, index)}), 12)
         keys = [gtsam.symbol('x', 0), mk, sk]
-        factor = map_factor(gtsam.noiseModel.Unit.Create(6), *keys, pose.rotation().matrix(),
-                            np.array([.3, -.2, .1]), np.array([.01, -.02, .02]))
+        py_factor = map_factor(gtsam.noiseModel.Unit.Create(6), *keys, pose.rotation().matrix(),
+                               np.array([.3, -.2, .1]), np.array([.01, -.02, .02]), native=False)
+        native_factor = map_factor(gtsam.noiseModel.Unit.Create(6), *keys, pose.rotation().matrix(),
+                                   np.array([.3, -.2, .1]), np.array([.01, -.02, .02]))
 
         def values(dx):
             result = gtsam.Values()
@@ -2219,10 +2302,15 @@ class FrontMapPixelTests(unittest.TestCase):
                 result.insert(key, value)
             return result
 
-        numerical = np.column_stack([(factor.unwhitenedError(values(v)) - factor.unwhitenedError(values(-v))) / 2e-6
-                                     for v in 1e-6 * np.eye(13)])
-        analytical, _ = factor.linearize(values(np.zeros(13))).jacobian()
-        np.testing.assert_allclose(analytical, numerical, atol=1e-7)
+        zero = values(np.zeros(13))
+        for factor in (py_factor, native_factor):
+            numerical = np.column_stack([(factor.unwhitenedError(values(v)) - factor.unwhitenedError(values(-v))) / 2e-6
+                                         for v in 1e-6 * np.eye(13)])
+            analytical, _ = factor.linearize(zero).jacobian()
+            np.testing.assert_allclose(analytical, numerical, atol=1e-7)
+        np.testing.assert_allclose(native_factor.unwhitenedError(zero), py_factor.unwhitenedError(zero), atol=1e-12)
+        np.testing.assert_allclose(native_factor.linearize(zero).jacobian()[0],
+                                   py_factor.linearize(zero).jacobian()[0], atol=1e-12)
 
     def test_map_support_propagates_board_map_and_log_scale_jointly(self):
         from umi.reconstruction.backends.poster_vio.map_support import placement_jacobian
@@ -2312,3 +2400,494 @@ class FrontMapPixelTests(unittest.TestCase):
         graph.add(gtsam.CustomFactor(gtsam.noiseModel.Unit.Create(2), [point_key], bearing))
         map_support.evaluate(joint, values, solved)
         self.assertEqual(evidence['position_support']['supported_imu_times_s'], [0.])
+
+    def test_effective_covariance_floors_orb_map_drift_and_rejects_outliers(self):
+        from umi.reconstruction.backends.poster_vio.front_map import FrontMap, effective_covariance
+        from umi.reconstruction.backends.poster_vio.map_support import assess_segment
+
+        fusion = SimpleNamespace(maximum_relative_scale_std=.2, visual_rotation_sigma_deg=.5, position_sigma_m=.004)
+        scale = .25
+        raw = np.diag([1e-8] * 3 + [1e-7] * 3)
+        eff = effective_covariance(raw, scale, fusion)
+        np.testing.assert_allclose(np.diag(eff)[:3], 1e-8 + np.deg2rad(.5) ** 2)
+        np.testing.assert_allclose(np.diag(eff)[3:], 1e-7 + (.004 / scale) ** 2)
+
+        item = SimpleNamespace(parameters=SimpleNamespace(tag_maximum_position_std_m=.05,
+                               tag_maximum_rotation_std_deg=5.),
+                               fusion_parameters=fusion)
+        observations = FrontMap('m0', np.array([0., 1., 2.]), np.zeros((3, 3)), np.tile(np.eye(3), (3, 1, 1)),
+                                np.tile(raw, (3, 1, 1)), scale, np.eye(4))
+        bodies = np.tile(np.eye(4), (3, 1, 1))
+        bodies[1, 0, 3] = .003   # 3 mm drift: within physical floor, must pass
+        bodies[2, 0, 3] = .030   # 30 mm outlier: must still be rejected
+        report = assess_segment(observations, np.eye(4), scale, np.eye(13) * 1e-6, bodies, np.zeros(3), item)
+        self.assertEqual(report['supported_imu_times_s'], [0., 1.])
+        self.assertFalse(report['frames'][2]['position_supported'])
+
+    def test_front_map_prepare_materializes_symlinks_for_reuse(self):
+        from umi.reconstruction.backends.poster_vio import front_map
+
+        camera = dict(q_xyzw=[0., 0., 0., 1.], p=[0., 0., 0.], cam_time_offset_ns=0)
+        video_times = np.arange(3) / 30
+        recording = SimpleNamespace(context=None, camera=SimpleNamespace(measurements={'front': camera}),
+                                    video_times_s=video_times)
+        item = SimpleNamespace(times_s=np.round(video_times, 9), seed_poses=np.repeat(np.eye(4)[None, ...], 3, axis=0))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            external = root / 'work_video.mp4'
+            external.write_bytes(b'video')
+            fm_dir = root / 'front_map'
+            frames_csv = root / 'frames.csv'
+            frames_csv.write_text('frame_idx,ok,state,map,tx,ty,tz,qx,qy,qz,qw,camera_information\n')
+
+            def fake_build(rec, lens, directory):
+                (directory / 'front').mkdir(parents=True, exist_ok=True)
+                (directory / 'front' / 'front.mp4').symlink_to(external)
+                return SimpleNamespace()
+
+            with patch.object(front_map.mapping, 'build', side_effect=fake_build), patch.object(
+                    front_map.slam, 'relocalize_all_maps', return_value=(SimpleNamespace(frames_csv=frames_csv),)):
+                front_map.prepare(recording, item, fm_dir, 1)
+            external.unlink()
+            materialized = fm_dir / 'front' / 'front.mp4'
+            self.assertFalse(materialized.is_symlink())
+            self.assertTrue(materialized.is_file())
+            self.assertEqual(materialized.read_bytes(), b'video')
+
+    def test_vectorized_kb4_inertial_validation_and_position_support_parity(self):
+        from umi.core.geometry import validate_transforms
+        from umi.perception.poster.geometry import residual_and_jacobians
+        from umi.perception.poster.quality import PosterTagParameters, corner_sigma_px, position_support_metrics
+        from umi.reconstruction.estimation.inertial import integrate_gyro_rotation, preintegrate_samples
+
+        # 1. KB4 project / unproject round-trip including center & empty input.
+        model = Kb4Model(460., 462., 719., 721., -0.02, 0.005, -0.001, 0.0002)
+        self.assertEqual(model.project(np.empty((0, 3))).shape, (0, 2))
+        self.assertEqual(model.unproject(np.empty((0, 2))).shape, (0, 3))
+        sample_uv = np.array([[719., 721.], [400., 500.], [1200., 1150.], [80., 1360.]])
+        rays = model.unproject(sample_uv)
+        np.testing.assert_allclose(model.project(rays), sample_uv, atol=1e-11)
+
+        # 2. Vectorized SE(3) batch validation accepts valid poses and rejects invalid ones.
+        rot = Rotation.from_rotvec([0.3, -0.2, 0.5]).as_matrix()
+        good = np.tile(np.eye(4), (3, 1, 1))
+        good[1, :3, :3], good[1, :3, 3] = rot, [0.1, -0.2, 0.3]
+        validate_transforms(good)
+        for bad in (
+            np.where(np.arange(16).reshape(4, 4) == 15, 2., good[0])[None],
+            np.array([np.diag([1., 1., -1., 1.])]),
+            np.array([np.diag([2., 1., 1., 1.])]),
+        ):
+            with self.assertRaises(ValueError):
+                validate_transforms(bad)
+
+        # 3. Vectorized Rodrigues gyro/IMU preintegration matches scipy per-sample loop.
+        rng = np.random.default_rng(11)
+        t_imu = np.linspace(0., 0.25, 251)
+        gyro = rng.normal(0., 0.8, (len(t_imu), 3))
+        acc = rng.normal([0., 0., 9.81], 0.5, (len(t_imu), 3))
+        bg, ba = np.array([0.01, -0.02, 0.005]), np.array([0.05, -0.04, 0.03])
+        R_fast = integrate_gyro_rotation(t_imu, gyro, bg, 0.0123, 0.2178)
+        dR, dV, dP, Jv, Jp, dt_tot = preintegrate_samples(t_imu, gyro, acc, 0.0123, 0.2178, bg, ba)
+        # Reference scalar scipy loop
+        ref_R, ref_V, ref_P = np.eye(3), np.zeros(3), np.zeros(3)
+        ref_Jv, ref_Jp = np.zeros((3, 3)), np.zeros((3, 3))
+        prev = 0.0123
+        for k in range(max(int(np.searchsorted(t_imu, 0.0123)) - 1, 0), min(int(np.searchsorted(t_imu, 0.2178)) + 1, len(t_imu))):
+            nxt = min(t_imu[k + 1], 0.2178) if k + 1 < len(t_imu) else 0.2178
+            dt = nxt - max(prev, t_imu[k])
+            if dt <= 0:
+                continue
+            sa = acc[k] - ba
+            ref_P = ref_P + ref_V * dt + 0.5 * ref_R @ sa * dt * dt
+            ref_Jp = ref_Jp + ref_Jv * dt - 0.5 * ref_R * dt * dt
+            ref_V = ref_V + ref_R @ sa * dt
+            ref_Jv = ref_Jv - ref_R * dt
+            ref_R = ref_R @ Rotation.from_rotvec((gyro[k] - bg) * dt).as_matrix()
+            prev = nxt
+            if nxt >= 0.2178:
+                break
+        np.testing.assert_allclose(R_fast, ref_R, atol=1e-13)
+        np.testing.assert_allclose(dR, ref_R, atol=1e-13)
+        np.testing.assert_allclose(dV, ref_V, atol=1e-13)
+        np.testing.assert_allclose(dP, ref_P, atol=1e-13)
+        np.testing.assert_allclose(Jv, ref_Jv, atol=1e-13)
+        np.testing.assert_allclose(Jp, ref_Jp, atol=1e-13)
+        self.assertAlmostEqual(dt_tot, 0.2178 - 0.0123)
+
+        # 4. Vectorized position_support_metrics matches per-sighting reference.
+        params = PosterTagParameters(12., 3, 1., 10., 1.345, 5., 0.05, 5., 0.15, 0.7, False, 0.1, 2.)
+        board = np.eye(4)
+        cam_from_imu = np.eye(4)
+        body = np.eye(4)
+        body[:3, 3] = [0., 0., -1.2]
+        points = np.array([
+            [[-0.2, -0.2, 0.], [0.0, -0.2, 0.], [0.0, 0.0, 0.], [-0.2, 0.0, 0.]],
+            [[0.1, 0.1, 0.], [0.3, 0.1, 0.], [0.3, 0.3, 0.], [0.1, 0.3, 0.]],
+            [[-0.3, 0.2, 0.], [-0.1, 0.2, 0.], [-0.1, 0.4, 0.], [-0.3, 0.4, 0.]],
+        ])
+        bodies = np.tile(body, (3, 1, 1))
+        pixels = np.stack([model.project(p - body[:3, 3]) for p in points])
+        pixels[2] += 4.5  # trigger Huber downweight
+        times = np.array([1.0, 1.0, 1.0])
+        got = position_support_metrics(bodies, board, cam_from_imu, points, pixels, model, times, params)['frames'][0]
+        jacs, ress, errs = [], [], []
+        for i in range(3):
+            res, jac, _ = residual_and_jacobians(bodies[i], board, cam_from_imu, points[i], pixels[i], model)
+            sig = np.repeat(corner_sigma_px(pixels[i], model, params), 2)
+            wh = res / sig
+            w = min(1., params.tag_huber / max(np.linalg.norm(wh), 1e-12))
+            jacs.append(jac / sig[:, None] * np.sqrt(w))
+            ress.append(wh * np.sqrt(w))
+            errs.extend(np.linalg.norm(res.reshape(-1, 2), axis=1))
+        J = np.concatenate(jacs)
+        _, sv, vt = np.linalg.svd(J, full_matrices=False)
+        infl = max(1., float(np.sum(np.concatenate(ress) ** 2)) / max(1, len(J) - 6))
+        cov = (vt.T / sv ** 2) @ vt * infl
+        self.assertAlmostEqual(got['position_std_m'], float(np.sqrt(max(0., np.linalg.eigvalsh(cov[3:, 3:])[-1]))), places=12)
+        self.assertAlmostEqual(got['rotation_std_deg'], float(np.degrees(np.sqrt(max(0., np.linalg.eigvalsh(cov[:3, :3])[-1])))), places=12)
+        self.assertAlmostEqual(got['rms_px'], float(np.sqrt(np.mean(np.square(errs)))), places=12)
+
+    def test_front_map_split_natural_evidence_parity_and_inertial_cache(self):
+        from umi.reconstruction.backends.poster_vio import front_map
+        from umi.reconstruction.backends.poster_vio.solver import (
+            NaturalCamera,
+            _build_arm_inertial,
+            _natural_evidence,
+            _natural_pixel_error,
+            _point_key,
+            _solve_once,
+            graph_indices,
+            graph_input,
+            natural_camera,
+            natural_support_nodes,
+            track_key,
+        )
+        from umi.reconstruction.estimation.inertial import InertialGraphKeys
+
+        # 1. front_map.build_and_localize + align_observations matches prepare (incl. symlink materialization).
+        camera = dict(q_xyzw=[0., 0., 0., 1.], p=[0., 0., 0.], cam_time_offset_ns=0)
+        video_times = np.arange(4) / 30
+        recording = SimpleNamespace(context=None, camera=SimpleNamespace(measurements={'front': camera}),
+                                    video_times_s=video_times)
+        poses = np.repeat(np.eye(4)[None, ...], 4, axis=0)
+        poses[:, :3, 3] = np.column_stack((np.linspace(0., .6, 4), np.zeros((4, 2))))
+        item = SimpleNamespace(times_s=np.round(video_times, 9), seed_poses=poses)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            external = root / 'ext.mp4'
+            external.write_bytes(b'video')
+            frames_csv = root / 'frames.csv'
+            info = ' '.join(map(str, np.eye(6)[np.triu_indices(6)]))
+            rows = ['frame_idx,ok,state,map,tx,ty,tz,qx,qy,qz,qw,camera_information']
+            for idx in range(4):
+                rows.append(f'{idx},1,2,m0,{idx * 0.4:.6f},0,0,0,0,0,1,{info}')
+            frames_csv.write_text('\n'.join(rows) + '\n')
+
+            def fake_build(rec, lens, directory):
+                (directory / 'front').mkdir(parents=True, exist_ok=True)
+                (directory / 'front' / 'front.mp4').symlink_to(external)
+                return SimpleNamespace()
+
+            with patch.object(front_map.mapping, 'build', side_effect=fake_build), patch.object(
+                    front_map.slam, 'relocalize_all_maps', return_value=(SimpleNamespace(frames_csv=frames_csv),)):
+                split_loc = front_map.build_and_localize(recording, root / 'fm_split', 1)
+                external.unlink()
+                mat = root / 'fm_split' / 'front' / 'front.mp4'
+                self.assertFalse(mat.is_symlink())
+                self.assertEqual(mat.read_bytes(), b'video')
+                maps_split = front_map.align_observations(recording, item, split_loc)
+
+            external.write_bytes(b'video')
+            with patch.object(front_map.mapping, 'build', side_effect=fake_build), patch.object(
+                    front_map.slam, 'relocalize_all_maps', return_value=(SimpleNamespace(frames_csv=frames_csv),)):
+                maps_full = front_map.prepare(recording, item, root / 'fm_full', 1)
+            self.assertEqual(len(maps_split), len(maps_full))
+            np.testing.assert_allclose(maps_split[0].positions, maps_full[0].positions)
+            np.testing.assert_allclose(maps_split[0].initial_pose, maps_full[0].initial_pose)
+            self.assertAlmostEqual(maps_split[0].initial_scale, maps_full[0].initial_scale)
+
+        # 2. Vectorized _natural_evidence matches per-observation _natural_pixel_error reference.
+        model = Kb4Model(460., 460., 720., 720., -0.02, 0.005, 0., 0.)
+        cam_front = NaturalCamera(np.eye(4), model)
+        cam_rear = NaturalCamera(np.diag([-1., 1., -1., 1.]), model)
+        body_poses = np.repeat(np.eye(4)[None, ...], 5, axis=0)
+        body_poses[:, 0, 3] = np.linspace(0., 0.4, 5)
+        p_front = np.array([0.2, 0.1, 2.0])
+        p_rear = np.array([0.2, -0.1, -2.0])
+        p_bad = np.array([0.2, 0.0, -2.0])  # behind front camera!
+        tracks = (
+            dict(camera='front', track_id=0, node_indices=np.array([0, 1, 2]),
+                 pixels=model.project(np.tile(p_front, (3, 1)) - body_poses[:3, :3, 3])),
+            dict(camera='rear', track_id=1, node_indices=np.array([1, 2, 3]),
+                 pixels=model.project(np.stack([cam_rear.T_cam_imu[:3, :3] @ (p_rear - body_poses[i, :3, 3])
+                                                for i in (1, 2, 3)]))),
+            dict(camera='front', track_id=2, node_indices=np.array([2, 3, 4]),
+                 pixels=np.tile([720., 720.], (3, 1))),  # invalid depth in front cam
+        )
+        # Inject one large residual (> threshold) on front track 0 node 1
+        tracks[0]['pixels'][1] += 12.0
+        values = gtsam.Values()
+        values.insert(_point_key(0, 'front', 0), p_front)
+        values.insert(_point_key(0, 'rear', 1), p_rear)
+        values.insert(_point_key(0, 'front', 2), p_bad)
+        mock_item = SimpleNamespace(
+            arm='left', times_s=np.arange(5, dtype=float) * 0.1,
+            natural_tracks=tracks,
+            natural_cameras={'front': cam_front, 'rear': cam_rear},
+            parameters=SimpleNamespace(tag_maximum_reprojection_rms_px=5.0),
+        )
+        got_ev = _natural_evidence(mock_item, 0, body_poses, values)
+        # Scalar reference check
+        ref_residuals = []
+        ref_errors_by_cam = {'front': [], 'rear': []}
+        ref_nodes_by_cam = {'front': [], 'rear': []}
+        for tr in tracks:
+            cname = tr['camera']
+            cam = natural_camera(mock_item, cname)
+            pt = np.asarray(values.atPoint3(_point_key(0, cname, tr['track_id'])))
+            t_errs, t_inv = [], []
+            for nd, px in zip(tr['node_indices'], tr['pixels']):
+                err, inv = _natural_pixel_error(body_poses[int(nd)], pt, cam, px)
+                t_errs.append(err)
+                t_inv.append(inv)
+                ref_errors_by_cam[cname].append(err)
+                if err <= 5.0:
+                    ref_nodes_by_cam[cname].append(int(nd))
+            ref_residuals.append(dict(key=list(track_key(tr)), errors_px=t_errs, invalid_projections=t_inv))
+        self.assertEqual([r['key'] for r in got_ev.residuals], [r['key'] for r in ref_residuals])
+        for g_r, r_r in zip(got_ev.residuals, ref_residuals):
+            np.testing.assert_allclose(g_r['errors_px'], r_r['errors_px'], atol=1e-12)
+            self.assertEqual(g_r['invalid_projections'], r_r['invalid_projections'])
+        self.assertEqual(got_ev.by_camera['front']['invalid_depth_observations'], 3)
+        self.assertEqual(got_ev.by_camera['rear']['invalid_depth_observations'], 0)
+        self.assertTrue(got_ev.rejected)
+        np.testing.assert_array_equal(got_ev.supported_nodes, natural_support_nodes(ref_nodes_by_cam['rear']))
+
+        # 3. Cached inertial subgraph produces identical _solve_once result and leaves cached Values untouched.
+        from umi.config.loader import load as load_config
+        from umi.config.reconstruction import defaults as reconstruction_defaults
+        from umi.reconstruction.backends.poster_vio.models import PosterVioObservation, PosterVioParameters, PosterVioProblem
+        from umi.reconstruction.backends.poster_vio.solver import ArmSolveInput, _board_pose_prior
+
+        scene_dict = reconstruction_defaults().scene
+        vio_params = PosterVioParameters(**{k: scene_dict[k] for k in PosterVioParameters.__dataclass_fields__ if k in scene_dict})
+        fusion = load_config('trajectory').values.fusion
+        times_s = np.arange(6, dtype=float) * 0.1
+        imu_t = np.linspace(-0.01, 0.55, 120)
+        imu_data = np.zeros((len(imu_t), 7))
+        imu_data[:, 0] = imu_t
+        imu_data[:, 6] = fusion.gravity_m_s2
+        seed = np.repeat(np.eye(4)[None, ...], 6, axis=0)
+        seed[:, 2, 3] = -1.2
+        tag_pts = np.array([
+            [[-0.2, -0.2, 0.], [0.0, -0.2, 0.], [0.0, 0.0, 0.], [-0.2, 0.0, 0.]],
+            [[0.1, 0.1, 0.], [0.3, 0.1, 0.], [0.3, 0.3, 0.], [0.1, 0.3, 0.]],
+        ])
+        b_pts = np.concatenate([tag_pts] * 4, axis=0)
+        t_idx = np.repeat([0, 2, 4, 5], 2)
+        b_pix = model.project((b_pts.reshape(-1, 3) - seed[t_idx, :3, 3][:, None, :].repeat(4, axis=1).reshape(-1, 3))).reshape(-1, 4, 2)
+        arm_in = ArmSolveInput(
+            arm='left', times_s=times_s, imu=imu_data, seed_poses=seed, T_cam_imu=np.eye(4),
+            camera_model=model, board_points_m=b_pts, pixels=b_pix, tag_indices=t_idx,
+            fusion_parameters=fusion, parameters=vio_params,
+            gravity_m_s2=np.array([0., 0., -fusion.gravity_m_s2]),
+            initial_acc_bias=np.zeros(3), seed_velocities=np.zeros((6, 3)), initial_gyro_bias=np.zeros(3),
+        )
+        prob = PosterVioProblem(('left',), (PosterVioObservation('left', times_s[t_idx], np.zeros(len(t_idx), dtype=int), b_pix),))
+        gnodes = {'left': graph_indices(arm_in)}
+        bprior = _board_pose_prior(np.eye(4), arm_in.gravity_m_s2, False)
+        cache = {'left': _build_arm_inertial(graph_input(arm_in, gnodes['left']), InertialGraphKeys(0))}
+        before_pose0 = cache['left'][1].atPose3(InertialGraphKeys(0).pose(0)).matrix().copy()
+        res_uncached, _, _, _ = _solve_once(prob, (arm_in,), np.eye(4), board_prior=bprior, graph_nodes=gnodes)
+        res_cached, _, _, _ = _solve_once(prob, (arm_in,), np.eye(4), board_prior=bprior, graph_nodes=gnodes,
+                                          inertial_cache=cache)
+        after_pose0 = cache['left'][1].atPose3(InertialGraphKeys(0).pose(0)).matrix().copy()
+        np.testing.assert_allclose(before_pose0, after_pose0, atol=0.)
+        np.testing.assert_allclose(res_uncached.trajectories['left'], res_cached.trajectories['left'], atol=1e-12)
+
+    def test_runtime_cancellation_aborts_subprocess_and_front_map(self):
+        import sys
+        import threading
+        import time
+        from umi.perception import runtime
+        from umi.reconstruction.backends.poster_vio import front_map
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            event = threading.Event()
+            timer = threading.Timer(0.2, event.set)
+            timer.start()
+            started = time.monotonic()
+            try:
+                with runtime.cancellation_scope(event):
+                    with self.assertRaises(runtime.OperationCancelled):
+                        runtime.run_logged(
+                            [sys.executable, '-c', 'import time; time.sleep(30)'],
+                            root / 'sleep.log', stage='睡眠取消测试', environment={},
+                        )
+            finally:
+                timer.cancel()
+            self.assertLess(time.monotonic() - started, 2.0)
+
+            pre_cancelled = threading.Event()
+            pre_cancelled.set()
+            with patch.object(front_map.mapping, 'build') as build_mock, patch.object(
+                    front_map.slam, 'relocalize_all_maps') as loc_mock:
+                with self.assertRaises(runtime.OperationCancelled):
+                    front_map.build_and_localize(SimpleNamespace(), root / 'fm_cancel', 1, cancel_event=pre_cancelled)
+                build_mock.assert_not_called()
+                loc_mock.assert_not_called()
+
+    def test_inprocess_slam_localization_capabilities_validation_and_fallback(self):
+        import json
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from umi.infra import orb_install
+        from umi.perception import slam
+        from umi.perception.models import LensVideo, ProcessingError
+        from umi.reconstruction.backends.poster_vio import front_map
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orb_dir = root / 'orb'
+            exe = orb_install.orb_executable(orb_dir)
+            exe.parent.mkdir(parents=True)
+
+            # 1. orb_capabilities: missing binary -> {}
+            self.assertEqual(orb_install.orb_capabilities(orb_dir), {})
+
+            exe.write_text('#!/bin/sh\n')
+            orb_install._CAPABILITIES_CACHE.clear()
+            cap_json = json.dumps({'schema_version': 1, 'inprocess_localization': True})
+            with patch.object(orb_install.subprocess, 'run',
+                              return_value=SimpleNamespace(stdout=cap_json)) as run_mock:
+                self.assertEqual(orb_install.orb_capabilities(orb_dir).get('inprocess_localization'), True)
+                self.assertEqual(orb_install.orb_capabilities(orb_dir).get('inprocess_localization'), True)
+                self.assertEqual(run_mock.call_count, 1)
+
+            # Non-matching context or bad JSON -> False / {}
+            exe.write_text('#!/bin/sh\necho changed\n')
+            with patch.object(orb_install.subprocess, 'run', return_value=SimpleNamespace(stdout='not-json')):
+                self.assertEqual(orb_install.orb_capabilities(orb_dir), {})
+            self.assertFalse(slam.supports_inprocess_localization(SimpleNamespace(settings=None)))
+
+            # Set up synthetic context with inprocess_localization=True
+            vocab = root / 'ORBvoc.txt'
+            vocab.write_text('v')
+            video_path = root / 'front.mp4'
+            video_path.write_bytes(b'video')
+            settings_yaml = root / 'front.yaml'
+            settings_yaml.write_text('cam')
+            mask_png = root / 'mask.png'
+            mask_png.write_bytes(b'mask')
+
+            ctx = SimpleNamespace(
+                frame_count=4,
+                cores=None,
+                parameters=SimpleNamespace(orb=SimpleNamespace(aruco_dictionary=0, initial_tag_id=13, initial_tag_size_m=0.16)),
+                settings=SimpleNamespace(
+                    orb_directory=orb_dir,
+                    vocabulary=vocab,
+                    tools_python='/bin/python',
+                    environment={},
+                ),
+            )
+            video = LensVideo('front', video_path, settings_yaml, mask_png)
+
+            def _write_csv(path: Path, with_info: bool):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                header = 'frame_idx,t,state,ok,tx,ty,tz,qx,qy,qz,qw' + (',camera_information' if with_info else '')
+                info = ',1 0 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0 0 1 0 1' if with_info else ''
+                rows = [header] + [f'{i},{i * 0.1:.3f},2,1,0,0,0,0,0,0,1{info}' for i in range(4)]
+                path.write_text('\n'.join(rows) + '\n')
+
+            commands = []
+
+            def fake_run_logged(command, log, *, stage, environment, cwd=None, stderr=None, check=True):
+                log.parent.mkdir(parents=True, exist_ok=True)
+                commands.append(list(command))
+                if './x3_mono_slam' in command:
+                    out_csv = Path(command[command.index('--output_frames_csv') + 1])
+                    save_map = Path(command[command.index('--save_map') + 1])
+                    inproc = Path(command[command.index('--localize_after_mapping_dir') + 1])
+                    save_map.write_bytes(b'atlas')
+                    _write_csv(out_csv, with_info=False)
+                    _write_csv(inproc / 'loc_m0/frames.csv', with_info=True)
+                    log.write_text(
+                        'atlas_map index 0 id 0 keyframes 12 mappoints 100\n'
+                        'TRACKED 4 / 4\nLOCALIZED_MAP 0 TRACKED 4 / 4\n',
+                        encoding='utf-8',
+                    )
+                    if stderr is not None:
+                        stderr.write_text('', encoding='utf-8')
+                    return 0
+                out_merged = Path(command[command.index('--out') + 1])
+                _write_csv(out_merged, with_info=True)
+                log.write_text('merged ok\n', encoding='utf-8')
+                return 0
+
+            with patch.object(slam, 'supports_inprocess_localization', return_value=True), patch.object(
+                    slam.runtime, 'run_logged', side_effect=fake_run_logged):
+                out_dir = root / 'single_pass'
+                (out_dir / 'logs').mkdir(parents=True)
+                atlases, locs = slam.build_and_localize_maps((video,), ctx, out_dir, front_information_stride=5)
+                self.assertEqual(len(atlases), 1)
+                self.assertEqual(len(locs), 1)
+                slam_cmds = [c for c in commands if './x3_mono_slam' in c]
+                self.assertEqual(len(slam_cmds), 1)
+                self.assertIn('--localize_after_mapping_dir', slam_cmds[0])
+                self.assertIn('--front_information_stride', slam_cmds[0])
+                tracking = json.loads((out_dir / 'logs/tracking.json').read_text())
+                self.assertEqual(tracking['front/loc_m0']['tracked'], 4)
+                self.assertTrue(tracking['front/loc_m0']['inprocess'])
+
+            # Missing LOCALIZED_MAP summary must fail validation
+            def fake_missing_loc(command, log, *, stage, environment, cwd=None, stderr=None, check=True):
+                log.parent.mkdir(parents=True, exist_ok=True)
+                out_csv = Path(command[command.index('--output_frames_csv') + 1])
+                save_map = Path(command[command.index('--save_map') + 1])
+                save_map.write_bytes(b'atlas')
+                _write_csv(out_csv, with_info=False)
+                log.write_text('atlas_map index 0 id 0 keyframes 12 mappoints 100\nTRACKED 4 / 4\n', encoding='utf-8')
+                if stderr is not None:
+                    stderr.write_text('', encoding='utf-8')
+                return 0
+
+            with patch.object(slam, 'supports_inprocess_localization', return_value=True), patch.object(
+                    slam.runtime, 'run_logged', side_effect=fake_missing_loc):
+                bad_dir = root / 'missing_loc'
+                (bad_dir / 'logs').mkdir(parents=True)
+                with self.assertRaises(ProcessingError):
+                    slam.build_and_localize_maps((video,), ctx, bad_dir, front_information_stride=5)
+
+            # Fallback to 2-pass when mask differs (stride=0 with mask) or capability is False
+            with patch.object(slam, 'supports_inprocess_localization', return_value=True), patch.object(
+                    slam, 'build_maps', return_value=('a',)) as build_m, patch.object(
+                    slam, 'relocalize_all_maps', return_value=('l',)) as reloc_m:
+                slam.build_and_localize_maps((video,), ctx, root / 'fb_mask', front_information_stride=0)
+                build_m.assert_called_once()
+                reloc_m.assert_called_once()
+
+            with patch.object(slam, 'supports_inprocess_localization', return_value=False), patch.object(
+                    slam, 'build_maps', return_value=('a',)) as build_m, patch.object(
+                    slam, 'relocalize_all_maps', return_value=('l',)) as reloc_m:
+                slam.build_and_localize_maps((video,), ctx, root / 'fb_cap', front_information_stride=5)
+                build_m.assert_called_once()
+                reloc_m.assert_called_once()
+
+            # front_map.build_and_localize uses single-pass when capable and materializes symlinks
+            fm_rec = SimpleNamespace(context=ctx, lens_video=lambda lens: video)
+
+            def fake_single_pass(videos, c, d, *, front_information_stride=0):
+                (d / 'front').mkdir(parents=True)
+                (d / 'front/front.mp4').symlink_to(video_path.resolve())
+                return ('atlas',), (SimpleNamespace(frames_csv=d / 'front/loc/frames.csv'),)
+
+            with patch.object(front_map.slam, 'supports_inprocess_localization', return_value=True), patch.object(
+                    front_map.slam, 'build_and_localize_maps', side_effect=fake_single_pass) as single_mock:
+                fm_dir = root / 'fm_single'
+                front_map.build_and_localize(fm_rec, fm_dir, 5)
+                single_mock.assert_called_once()
+                self.assertFalse((fm_dir / 'front/front.mp4').is_symlink())
+                self.assertEqual((fm_dir / 'front/front.mp4').read_bytes(), b'video')

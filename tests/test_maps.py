@@ -29,12 +29,12 @@ from umi.perception import slam as visual_slam
 from umi.perception.models import LensVideo, MapAtlas, ProcessingError
 from umi.perception.poster import detection as poster_detection
 from umi.perception.poster import layout as tag_board
-from umi.reconstruction.estimation import mapping
-from umi.reconstruction.estimation import mapping as slam
+from umi.reconstruction import mapping
+from umi.reconstruction import mapping as slam
 from umi.reconstruction.estimation.fixed_map import geometry, poster
 from umi.reconstruction.estimation.fixed_map import geometry as relocalization
 from umi.reconstruction.estimation.fixed_map.parameters import MapPlacementParameters, PosterScaleParameters
-from umi.reconstruction.estimation.mapping import correct_poster_placement
+from umi.reconstruction.mapping import correct_poster_placement
 from umi.reconstruction.segment import map_data
 from umi.scene.collection import batch as batch_inputs
 from umi.scene.collection import configuration as scene_inputs
@@ -1276,7 +1276,7 @@ class PosterMappingWorkflowTests(unittest.TestCase):
         declaration.setdefault('map', {})['poster_scale'] = 'correct' if correction else 'diagnose'
         write_yaml(declaration_path, declaration)
         expert = helper.root / 'expert.yaml'
-        write_yaml(expert, dict(mapping=dict(poster_scale=dict(minimum_observation_times=6))))
+        write_yaml(expert, dict(backends=dict(scene_map=dict(mapping=dict(poster_scale=dict(minimum_observation_times=6))))))
         helper.scene_overrides = SceneOverrides.load(expert)
         helper.scene = batch_inputs.read_batch(helper.session_path, overrides=helper.scene_overrides).scene
         for video, camera in list(helper.cameras.items()):

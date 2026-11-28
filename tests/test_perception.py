@@ -48,12 +48,13 @@ from umi.reconstruction.estimation.fixed_map.fusion import SceneFusionQualityErr
 from umi.scene import measurements
 from umi.scene import routing as estimation
 from umi.scene.collection import configuration as scene_inputs
-from umi.scene.inputs import recording_intervals as trim
+from umi.scene.inputs import trimming as trim
 from umi.scene.inputs import recordings
 from umi.scene.maps import binding as estimation_binding
 from umi.store import layout
 from umi.store.cache import StageCache
-from umi.store.models import ArmExecutionResult, TaskInputs
+from umi.reconstruction.estimation.models import BackendResult
+from umi.store.models import TaskInputs
 
 # 固定裁剪是既有标定的像素约定，简化几何实现时仍需严格保持。
 
@@ -807,7 +808,8 @@ class SharedDecodingTests(unittest.TestCase):
         clipped = sampled_detection.SampledDetectionCache(self.video, cache, self.digest, self.queries[1:], None)
         with patch('av.open', side_effect=AssertionError('clipped quick scan should reuse source corners')), \
              patch.object(measurements, 'prepare_detections', side_effect=AssertionError('duplicate stage')):
-            self.assertIs(measurements.prepare_task_detections(replace(inputs, directory=batch / 'fallback'), 'left'),
+            self.assertIs(measurements.prepare_task_detections(
+                replace(inputs, directory=batch / 'fallback', detections={'left': snapshot}), 'left'),
                           snapshot)
             full.load()
             clipped.load(quick_source=full)
@@ -835,7 +837,8 @@ class SharedDecodingTests(unittest.TestCase):
         scene.environment_tag_detection = True
         with patch('av.open', wraps=av.open) as opened:
             snapshot = measurements.prepare_task_detections(inputs, 'left')
-            self.assertIs(measurements.prepare_task_detections(inputs, 'left'), snapshot)
+            self.assertIs(measurements.prepare_task_detections(replace(inputs, detections={'left': snapshot}), 'left'),
+                          snapshot)
         self.assertEqual(opened.call_count, 1)
         self.assertGreater(len(snapshot.observations.tag_ids), 0)
 
@@ -949,7 +952,7 @@ class TagTrimmingTests(unittest.TestCase):
             with patch.object(trim.measurements, 'prepare_task_detections',
                               side_effect=lambda current, arm, **kwargs: snapshots[arm]), \
                  patch.object(trim, 'reliable_times', side_effect=[(t, {}) for t in times]), \
-                 patch.object(trim, 'crop_recording', side_effect=lambda r, a, b: (a, b)):
+                 patch.object(trim, 'crop_recording', side_effect=lambda r, a, b, **kwargs: (a, b)):
                 result, report = trim.prepare(inputs)
             self.assertEqual(result.recordings, dict(left=(20, 81), right=(15, 76)))
             self.assertEqual(report['common_episode_interval_s'], [2., 8.])
@@ -963,18 +966,18 @@ class TagTrimmingTests(unittest.TestCase):
             inputs.episode.scene.recording_trim = {}
             self.assertEqual(trim.prepare(inputs), (inputs, None))
             inputs.episode.scene.recording_trim = dict(enabled=True)
-            result = ArmExecutionResult({}, {}, {}, {})
+            result = BackendResult({}, {}, {})
             with patch.object(trim, 'prepare', side_effect=AssertionError('must not trim')), \
                  patch.dict(estimation.ESTIMATORS, scene_map=lambda *args: result):
-                self.assertIs(estimation.execute(inputs, estimation_binding.MapSelection.without_map()), result)
+                self.assertIs(estimation.execute(inputs, estimation_binding.MapSelection.without_map()).coordinate_record,
+                              result.coordinate_record)
 
-    def test_auto_reuses_identical_trimmed_inputs_for_both_poster_backends(self):
+    def test_auto_prepares_trim_for_each_poster_backend(self):
         with tempfile.TemporaryDirectory() as temporary:
             inputs = self.inputs(Path(temporary), mode='auto')
             recordings = {'right': object()}
             candidates = {'right': object()}
-            trimmed = replace(inputs, recordings=recordings, poster_pnp_candidates=candidates)
-            result = ArmExecutionResult({}, {}, {}, {})
+            result = BackendResult({}, {}, {})
             seen = []
             def vio(current, selection):
                 seen.append(current)
@@ -982,17 +985,19 @@ class TagTrimmingTests(unittest.TestCase):
             def independent(current, selection):
                 seen.append(current)
                 return result
-            with patch.object(trim, 'prepare', return_value=(trimmed, dict(status='applied'))) as prepare, \
+            with patch.object(trim, 'prepare', side_effect=lambda current: (
+                    replace(current, recordings=recordings, poster_pnp_candidates=candidates), dict(status='applied'))) as prepare, \
                  patch.dict(estimation.ESTIMATORS, poster_vio=vio, poster_independent=independent):
                 estimation.execute(inputs, estimation_binding.MapSelection.without_map())
-            prepare.assert_called_once_with(inputs)
+            self.assertEqual([call.args[0].directory.name for call in prepare.call_args_list],
+                             ['00_poster_vio', '01_poster_independent'])
             self.assertEqual(len(seen), 2)
             for current in seen:
                 self.assertIs(current.recordings, recordings)
                 self.assertIs(current.poster_pnp_candidates, candidates)
             self.assertEqual(result.coordinate_record['recording_trim']['status'], 'applied')
 
-    def test_auto_reuses_scene_map_edge_trim_when_poster_constraint_is_enabled(self):
+    def test_auto_trims_scene_map_when_poster_constraint_is_enabled(self):
         for constraint in (True, False):
             with self.subTest(constraint=constraint), tempfile.TemporaryDirectory() as temporary:
                 inputs = self.inputs(Path(temporary), mode='auto')
@@ -1000,7 +1005,7 @@ class TagTrimmingTests(unittest.TestCase):
                 scene.scene_map_edge_trim = True
                 scene.scene_map_poster_constraint_enabled = constraint
                 cropped = replace(inputs, recordings={'left': object(), 'right': object()})
-                result = ArmExecutionResult({}, {}, {}, {})
+                result = BackendResult({}, {}, {})
                 seen = {}
 
                 def scene_map(current, selection):
@@ -1011,10 +1016,11 @@ class TagTrimmingTests(unittest.TestCase):
                     seen['vio'] = current.recordings
                     return result
 
-                with patch.object(trim, 'prepare', return_value=(cropped, dict(status='applied'))) as prepare, \
+                with patch.object(trim, 'prepare', side_effect=lambda current: (
+                        replace(current, recordings=cropped.recordings), dict(status='applied'))) as prepare, \
                      patch.dict(estimation.ESTIMATORS, scene_map=scene_map, poster_vio=vio):
                     estimation.execute(inputs, estimation_binding.MapSelection.available(Path(temporary), {}))
-                prepare.assert_called_once_with(inputs)
+                self.assertEqual(prepare.call_count, 2 if constraint else 1)
                 self.assertIs(seen['map'], cropped.recordings if constraint else inputs.recordings)
                 self.assertIs(seen['vio'], cropped.recordings)
                 self.assertEqual(result.coordinate_record['recording_trim']['status'], 'applied')
@@ -1054,7 +1060,7 @@ class TagTrimmingTests(unittest.TestCase):
     def test_cropped_vio_features_keep_original_insv_indices(self):
         from test_poster_vio import PosterVioWorkflowTests
 
-        from umi.reconstruction.backends.poster_vio import run as poster_vio_inputs
+        from umi.reconstruction.backends.poster_vio import preparation as poster_vio_inputs
         fixture = PosterVioWorkflowTests()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)

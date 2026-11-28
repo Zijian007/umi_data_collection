@@ -9,17 +9,23 @@ from typing import Callable
 import gtsam
 import numpy as np
 from gtsam.symbol_shorthand import B, V, X
+from scipy.spatial.distance import pdist
 from scipy.spatial.transform import Rotation as Rot
 
 from umi.config import parameter_models
 from umi.core.frame import output_frame_rate
+from umi.core.geometry import skew
 from umi.reconstruction.estimation.fusion.alignment import AlignmentResult
-from umi.reconstruction.estimation.fusion.data import MapPlacements
+from umi.reconstruction.estimation.fusion.data import MapAnchor, MapPlacements, PoseAnchor
 from umi.reconstruction.estimation.map_information import map_factor_covariance
+from umi.reconstruction.estimation.so3 import right_jacobian_inverse, rotation_log
 
 SEGMENT_SYMBOLS = {"rear": ("m", "n", "o", "u"), "front": ("p", "q", "r", "w")}
 REAR_LEVER_KEY = gtsam.symbol("l", 0)
 FRONT_LEVER_KEY = gtsam.symbol("k", 0)
+_ZUPT_MAXIMUM_VISUAL_DISPLACEMENT_M = .004
+_ZUPT_MAXIMUM_VISUAL_ROTATION_DEG = .5
+_LM_RELATIVE_ERROR_TOL = 1e-4
 
 
 def segment_variable_keys(lens: str, segment_id: int):
@@ -44,6 +50,54 @@ def _detect_zero_velocity_frames(video_times_s: np.ndarray, imu_video_times_s: n
     return stationary
 
 
+def _confirm_visual_stationarity(aligned: AlignmentResult, placements: MapPlacements,
+                                 candidates: np.ndarray, half_window_s: float,
+                                 frame_rate_hz: float) -> tuple[np.ndarray, int]:
+    """Confirm IMU candidates with observed motion inside one metric front ORB chain."""
+    times = aligned.video_times_s
+    confirmed = np.zeros(len(times), dtype=bool)
+    candidate_frames = np.flatnonzero(candidates)
+    if not len(candidate_frames):
+        return confirmed, 0
+
+    lens = aligned.lenses['front']
+    chain_for_frame = np.full(len(times), -1, dtype=int)
+    positions = np.empty((len(times), 3))
+    quaternions = np.empty((len(times), 4))
+    for chain_id, placement in placements.chains['front'].items():
+        if placement['kind'] != 'full':
+            continue
+        start, end = lens['chains'][chain_id]
+        observations = [lens['obs'][k] for k in range(start, end + 1)]
+        centers, rotations = (np.stack(values) for values in zip(*observations))
+        frames = slice(start, end + 1)
+        # Convert camera centers to metric IMU origins in the map axes.
+        # A constant world rotation and translation cannot change the window motion.
+        positions[frames] = placement['s'] * centers + rotations @ lens['lever']
+        quaternions[frames] = Rot.from_matrix(rotations).as_quat()
+        chain_for_frame[frames] = chain_id
+
+    first = np.searchsorted(times, times[candidate_frames] - half_window_s + 1e-9, side='right') - 1
+    last = np.searchsorted(times, times[candidate_frames] + half_window_s - 1e-9)
+    timestamp_gaps = np.r_[0, np.cumsum(np.diff(times) > 1.5 / frame_rate_hz + 1e-9)]
+    min_rotation_dot = np.cos(np.radians(_ZUPT_MAXIMUM_VISUAL_ROTATION_DEG * .5))
+    covered = 0
+    for frame, start, end in zip(candidate_frames, first, last):
+        if (start < 0 or end >= len(times) or start >= end
+                or chain_for_frame[start] < 0 or chain_for_frame[start] != chain_for_frame[end]
+                or timestamp_gaps[start] != timestamp_gaps[end]):
+            continue
+        if (times[frame] - half_window_s < aligned.imu_video_times_s[0] - 1e-9
+                or times[frame] + half_window_s > aligned.imu_video_times_s[-1] + 1e-9):
+            continue
+        covered += 1
+        window = slice(start, end + 1)
+        q = quaternions[window]
+        confirmed[frame] = (np.all(pdist(positions[window]) <= _ZUPT_MAXIMUM_VISUAL_DISPLACEMENT_M)
+                            and np.all(np.abs(q @ q.T) >= min_rotation_dot))
+    return confirmed, covered
+
+
 def _preintegrate_between(imu_video_times_s: np.ndarray, acc: np.ndarray, gyro: np.ndarray,
                           preintegration_parameters, start_time_s: float, end_time_s: float,
                           bias: gtsam.imuBias.ConstantBias):
@@ -65,7 +119,7 @@ def _preintegrate_between(imu_video_times_s: np.ndarray, acc: np.ndarray, gyro: 
 
 
 def _initialize_segment_factors(graph, initial_values, lenses, chain_placements, chain_groups,
-                                segments, fusion_parameters, initial_lens, gauge, continuity_noise):
+                                segments, fusion_parameters, world_anchor, continuity_noise):
     """Insert segment variables, priors, continuity factors, and rotation-chain seeds."""
     segment_for_frame = {lens: {} for lens in lenses}
     continuity_factor_counts = {lens: 0 for lens in lenses}
@@ -73,32 +127,36 @@ def _initialize_segment_factors(graph, initial_values, lenses, chain_placements,
         for segment in segments[lens]:
             placement = chain_placements[lens][segment['chain']]
             scale_key, rotation_key, translation_key = segment_variable_keys(lens, segment['sid'])
-            initial_values.insert(scale_key, np.array([np.log(placement['s'])]))
-            initial_values.insert(rotation_key, gtsam.Rot3(placement['R']))
-            initial_values.insert(translation_key, np.array(placement['t'], float))
+            log_scale = np.array([np.log(placement['s'])])
+            rotation = gtsam.Rot3(placement['R'])
+            translation = np.array(placement['t'], float)
+            initial_values.insert(scale_key, log_scale)
+            initial_values.insert(rotation_key, rotation)
+            initial_values.insert(translation_key, translation)
             for frame_index in range(segment['k0'], segment['k1'] + 1):
                 segment_for_frame[lens][frame_index] = segment['sid']
 
             first_segment = segment['k0'] == lenses[lens]['chains'][segment['chain']][0]
             if first_segment:
-                is_gauge_segment = lens == initial_lens and segment['chain'] == gauge
+                is_gauge_segment = (isinstance(world_anchor, MapAnchor)
+                                    and lens == world_anchor.lens and segment['chain'] == world_anchor.chain)
                 rotation_sigma = (fusion_parameters.gauge_rotation_sigma_rad
                                   if is_gauge_segment else fusion_parameters.rotation_prior_sigma_rad)
                 translation_sigma = (fusion_parameters.gauge_position_sigma_m
                                      if is_gauge_segment else fusion_parameters.position_prior_sigma_m)
                 graph.add(gtsam.PriorFactorVector(
                     scale_key,
-                    np.array([np.log(placement['s'])]),
+                    log_scale,
                     gtsam.noiseModel.Isotropic.Sigma(1, fusion_parameters.scale_prior_sigma),
                 ))
                 graph.add(gtsam.PriorFactorRot3(
                     rotation_key,
-                    gtsam.Rot3(placement['R']),
+                    rotation,
                     gtsam.noiseModel.Isotropic.Sigma(3, rotation_sigma),
                 ))
                 graph.add(gtsam.PriorFactorVector(
                     translation_key,
-                    np.array(placement['t'], float),
+                    translation,
                     gtsam.noiseModel.Isotropic.Sigma(3, translation_sigma),
                 ))
             else:
@@ -118,10 +176,8 @@ def _initialize_segment_factors(graph, initial_values, lenses, chain_placements,
                     gtsam.Rot3(placement['R']),
                 )
         for member_chain, leader_chain in chain_groups[lens].items():
-            leader_segment_id = [
-                segment['sid'] for segment in segments[lens]
-                if segment['chain'] == leader_chain
-            ][0]
+            leader_start = lenses[lens]['chains'][leader_chain][0]
+            leader_segment_id = segment_for_frame[lens][leader_start]
             chain_start, chain_end = lenses[lens]['chains'][member_chain]
             for frame_index in range(chain_start, chain_end + 1):
                 segment_for_frame[lens][frame_index] = leader_segment_id
@@ -136,8 +192,6 @@ def _add_visual_observation_factor(graph, lens: str, frame_index: int, observati
                                    hub, lens_noise, rotation_noise, lens_position_sigma,
                                    fusion_parameters) -> str | None:
     """Insert one visual observation and report which factor was added."""
-    if observation is None:
-        return None
     pixel_position, camera_rotation = observation
     body_rotation = camera_rotation @ lens_configuration['R_CI']
     if segment_id is not None:
@@ -201,21 +255,38 @@ def _add_visual_observation_factor(graph, lens: str, frame_index: int, observati
     return None
 
 
-def _run_lm_optimizer(graph, initial_values, maximum_iterations):
-    """Run the configured optimizer and return values, errors, and timing."""
+def _run_lm_optimizer(graph, initial_values, nodes, maximum_iterations, *, log, stage):
+    """Eliminate consecutive inertial states before shared map and board variables."""
     optimization_started_s = time.time()
     optimizer_parameters = gtsam.LevenbergMarquardtParams()
     optimizer_parameters.setMaxIterations(maximum_iterations)
+    optimizer_parameters.setRelativeErrorTol(_LM_RELATIVE_ERROR_TOL)
+    ordering = gtsam.Ordering()
+    inertial_keys = [key for node in nodes for key in (X(node), V(node), B(node))]
+    inertial_key_set = set(inertial_keys)
+    for key in inertial_keys:
+        ordering.push_back(key)
+    for key in initial_values.keys():
+        if key not in inertial_key_set:
+            ordering.push_back(key)
+    optimizer_parameters.setOrdering(ordering)
+
+    def log_iteration(iteration, before, after):
+        log('fusion_lm_iteration', dict(stage=stage, iteration=iteration, error_before=before, error_after=after,
+                                       elapsed_s=round(time.time() - optimization_started_s, 3)), flush=True)
+
+    optimizer_parameters.iterationHook = log_iteration
     optimizer = gtsam.LevenbergMarquardtOptimizer(graph, initial_values, optimizer_parameters)
+    initial_error = optimizer.error()
     optimized_values = optimizer.optimize()
     optimization_finished_s = time.time()
     return dict(
         values=optimized_values,
         started_s=optimization_started_s,
         finished_s=optimization_finished_s,
-        initial_error=float(graph.error(initial_values)),
-        final_error=float(graph.error(optimized_values)),
-        iterations=getattr(optimizer, 'iterations', lambda: -1)(),
+        initial_error=initial_error,
+        final_error=optimizer.error(),
+        iterations=optimizer.iterations(),
     )
 
 
@@ -239,6 +310,7 @@ def _build_optimization_evidence(optimization, nodes, observation_counts, rotati
         ba_final=optimized_values.atConstantBias(B(nodes[-1])).accelerometer().round(4).tolist(),
         graph_error_init=optimization['initial_error'],
         graph_error_final=optimization['final_error'],
+        optimizer=dict(elimination_order='temporal_inertial_then_shared', relative_error_tol=_LM_RELATIVE_ERROR_TOL),
         effective_parameters=effective_parameters,
         params=factor_parameters,
     )
@@ -258,8 +330,8 @@ class TrajectoryOptimizationResult:
 
 def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacements,
                               parameters: parameter_models.TrajectoryParameters, *, log=print, poster=None,
-                              warm_start=None) -> TrajectoryOptimizationResult:
-    """按照固定插入顺序构图和优化，保留原求解器的数值行为。"""
+                              warm_start=None, confirm_zupt_visually=False) -> TrajectoryOptimizationResult:
+    """按时间构建惯性链并联合优化地图和海报约束。"""
     fusion_parameters, zupt_parameters = parameters.fusion, parameters.zupt
     frame_rate_hz = float(output_frame_rate(parameters.video.frame_step))
     lenses, alignment_estimates, initial_lens = aligned.lenses, aligned.estimates, aligned.initial_lens
@@ -267,7 +339,7 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
     video_times_s, imu_video_times_s = aligned.video_times_s, aligned.imu_video_times_s
     gyro, acc, initial_gyro_bias = aligned.gyro, aligned.acc, aligned.initial_gyro_bias
     chain_placements, chain_groups, segments = placements.chains, placements.groups, placements.segments
-    init_pose, gauge = placements.initial_imu_poses, placements.gauge_chain
+    init_pose, world_anchor = placements.initial_imu_poses, placements.world_anchor
     position_sigma_m, lever_sigma_m = fusion_parameters.position_sigma_m, fusion_parameters.lever_sigma_m
     continuity_scale_sigma = fusion_parameters.continuity_log_scale_sigma
     continuity_rotation_sigma_rad = np.radians(fusion_parameters.continuity_rotation_sigma_deg)
@@ -279,6 +351,13 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
     graph = gtsam.NonlinearFactorGraph()
     init = gtsam.Values()
     bias0 = gtsam.imuBias.ConstantBias(alignment_estimates[initial_lens]["ba"], initial_gyro_bias)
+    if isinstance(world_anchor, PoseAnchor):
+        pose = world_anchor.T_world_imu_at_start
+        graph.add(gtsam.PriorFactorPose3(
+            X(0), gtsam.Pose3(gtsam.Rot3(pose[:3, :3]), pose[:3, 3]),
+            gtsam.noiseModel.Diagonal.Sigmas(np.r_[
+                np.repeat(fusion_parameters.gauge_rotation_sigma_rad, 3),
+                np.repeat(fusion_parameters.gauge_position_sigma_m, 3)])))
     hub = gtsam.noiseModel.mEstimator.Huber.Create(fusion_parameters.huber)
     adaptive_sigma = fusion_parameters.adaptive_sigma
     lens_position_sigmas = _lens_position_sigmas(lenses, chain_placements, alignment_estimates, fusion_parameters)
@@ -306,8 +385,7 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
         chain_groups,
         segments,
         fusion_parameters,
-        initial_lens,
-        gauge,
+        world_anchor,
         noise7,
     )
     use_front_lever, use_rear_lever = _add_lever_priors(graph, init, lenses, segments, optimize_front_lever, lever_sigma_m)
@@ -319,11 +397,14 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
     if nodes[-1] != frame_count - 1:
         nodes.append(frame_count - 1)
     build_started_s = time.time()
-    initial_positions = np.array([init_pose[frame_index][1] for frame_index in range(frame_count)])
-    initial_velocities = np.gradient(initial_positions, 1.0 / frame_rate_hz, axis=0)
+    if placements.initial_velocities is not None:
+        initial_velocities = placements.initial_velocities
+    else:
+        initial_positions = np.array([init_pose[frame][1] for frame in range(frame_count)])
+        initial_velocities = np.gradient(initial_positions, 1.0 / frame_rate_hz, axis=0)
     graph.add(gtsam.PriorFactorVector(V(0), initial_velocities[0], gtsam.noiseModel.Isotropic.Sigma(3, fusion_parameters.velocity_prior_sigma_m_s)))
-    # zero-velocity detection: +-0.25 s IMU window static
     zupt = np.zeros(frame_count, bool)
+    zupt_evidence = None
     if use_zero_velocity:
         zupt = _detect_zero_velocity_frames(
             video_times_s,
@@ -333,6 +414,16 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
             initial_gyro_bias,
             zupt_parameters,
         )
+        if confirm_zupt_visually:
+            imu_candidates = int(zupt.sum())
+            zupt, covered = _confirm_visual_stationarity(aligned, placements, zupt,
+                                                        zupt_parameters.half_window_s, frame_rate_hz)
+            zupt_evidence = dict(policy='imu_and_front_orb', imu_candidate_frames=imu_candidates,
+                                 visual_covered_frames=covered, confirmed_frames=int(zupt.sum()),
+                                 factor_nodes=int(zupt[nodes].sum()),
+                                 maximum_visual_displacement_m=_ZUPT_MAXIMUM_VISUAL_DISPLACEMENT_M,
+                                 maximum_visual_rotation_deg=_ZUPT_MAXIMUM_VISUAL_ROTATION_DEG)
+            log('zupt_confirmation', zupt_evidence, flush=True)
         for frame_index in nodes:
             if zupt[frame_index]:
                 graph.add(gtsam.PriorFactorVector(
@@ -340,7 +431,8 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
                     np.zeros(3),
                     gtsam.noiseModel.Isotropic.Sigma(3, zupt_parameters.velocity_sigma_m_s),
                 ))
-        initial_velocities[zupt] = 0.0
+        if poster is None:
+            initial_velocities[zupt] = 0.0
     chain_for_frame = {lens_name: {frame_index: chain_index
                                    for chain_index, (k0, k1) in enumerate(lenses[lens_name]["chains"])
                                    for frame_index in range(k0, k1 + 1)}
@@ -353,53 +445,59 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
     node_times = None
     if poster is not None:
         nodes, node_times, seeds = _poster_seeds(poster, nodes, video_times_s)
-    def add_nodes_and_factors():
-        """Insert visual factors, IMU edges, and initial node values in order."""
-        observation_counts = {lens_name: 0 for lens_name in lenses}
-        rotation_only_counts = {lens_name: 0 for lens_name in lenses}
-        for node_index, frame_index in enumerate(nodes):
-            for lens_name in lenses:
-                if frame_index not in lenses[lens_name]["obs"]:
-                    continue
-                factor_kind = _add_visual_observation_factor(
-                    graph,
-                    lens_name,
-                    frame_index,
-                    lenses[lens_name]["obs"][frame_index],
-                    segment_for_frame[lens_name].get(frame_index),
-                    chain_for_frame[lens_name].get(frame_index),
-                    lenses[lens_name],
-                    chain_placements[lens_name],
-                    segments[lens_name],
-                    optimize_front_lever,
-                    use_map_residual,
-                    map_noise_models,
-                    hub,
-                    noise6m[lens_name],
-                    noise3,
-                    lens_position_sigmas[lens_name],
-                    fusion_parameters,
-                )
-                if factor_kind == 'observation':
-                    observation_counts[lens_name] += 1
-                elif factor_kind == 'rotation':
-                    rotation_only_counts[lens_name] += 1
-            init.insert(X(frame_index), seeds[frame_index][0] if poster is not None else gtsam.Pose3(gtsam.Rot3(init_pose[frame_index][0]), gtsam.Point3(*init_pose[frame_index][1])))
-            init.insert(V(frame_index), seeds[frame_index][1] if poster is not None else initial_velocities[frame_index])
-            init.insert(B(frame_index), bias0)
-            if node_index + 1 < len(nodes):
-                next_frame_index = nodes[node_index + 1]
-                ta, tb = (node_times[frame_index], node_times[next_frame_index]) if node_times is not None else (video_times_s[frame_index], video_times_s[next_frame_index])
-                graph.add(gtsam.CombinedImuFactor(X(frame_index), V(frame_index), X(next_frame_index), V(next_frame_index), B(frame_index), B(next_frame_index), preint_between(ta, tb, bias0)))
-        return observation_counts, rotation_only_counts
+    times = video_times_s if node_times is None else node_times
+    observation_counts = {lens: 0 for lens in lenses}
+    rotation_only_counts = {lens: 0 for lens in lenses}
+    for node_index, frame_index in enumerate(nodes):
+        for lens_name, lens in lenses.items():
+            observation = lens['obs'].get(frame_index)
+            if observation is None:
+                continue
+            factor_kind = _add_visual_observation_factor(
+                graph,
+                lens_name,
+                frame_index,
+                observation,
+                segment_for_frame[lens_name].get(frame_index),
+                chain_for_frame[lens_name].get(frame_index),
+                lens,
+                chain_placements[lens_name],
+                segments[lens_name],
+                optimize_front_lever,
+                use_map_residual,
+                map_noise_models,
+                hub,
+                noise6m[lens_name],
+                noise3,
+                lens_position_sigmas[lens_name],
+                fusion_parameters,
+            )
+            if factor_kind == 'observation':
+                observation_counts[lens_name] += 1
+            elif factor_kind == 'rotation':
+                rotation_only_counts[lens_name] += 1
+        if poster is None:
+            rotation, position = init_pose[frame_index]
+            pose = gtsam.Pose3(gtsam.Rot3(rotation), gtsam.Point3(*position))
+            velocity = initial_velocities[frame_index]
+        else:
+            pose, velocity = seeds[frame_index]
+        init.insert(X(frame_index), pose)
+        init.insert(V(frame_index), velocity)
+        init.insert(B(frame_index), bias0)
+        if node_index + 1 < len(nodes):
+            next_frame = nodes[node_index + 1]
+            integrated = preint_between(times[frame_index], times[next_frame], bias0)
+            graph.add(gtsam.CombinedImuFactor(X(frame_index), V(frame_index), X(next_frame), V(next_frame),
+                                              B(frame_index), B(next_frame), integrated))
 
-    observation_counts, rotation_only_counts = add_nodes_and_factors()
     if poster is not None:
         poster.add_factors(graph, init)
         if warm_start is not None:
             warm_start.apply(init, node_times)
     log("graph", {"factors": graph.size(), "lens": observation_counts, "rot_only": rotation_only_counts, "cont": continuity_factor_counts, "zupt_frames": int(zupt.sum())}, flush=True)
-    optimization = _run_lm_optimizer(graph, init, fusion_parameters.lm_iterations)
+    optimization = _run_lm_optimizer(graph, init, nodes, fusion_parameters.lm_iterations,
+                                     log=log, stage='poster' if poster is not None else 'baseline')
     evidence = _build_optimization_evidence(
         optimization,
         nodes,
@@ -434,6 +532,8 @@ def optimize_fused_trajectory(aligned: AlignmentResult, placements: MapPlacement
             "lever_sigma": lever_sigma_m,
         },
     )
+    if zupt_evidence is not None:
+        evidence['zupt_confirmation'] = zupt_evidence
     if poster is not None:
         from umi.reconstruction.estimation.fusion.poster import PosterCullRequest, PosterWarmStart
 
@@ -499,28 +599,13 @@ def _poster_seeds(poster, nodes, video_times_s):
     from umi.core.geometry import resample_pose_series
     nodes, node_times = poster.augment_nodes(nodes, video_times_s)
     query = np.array([node_times[frame_index] for frame_index in nodes])
-    poses = resample_pose_series(poster.baseline.video_times_s, poster.baseline.T_world_imu, query)
-    velocities = np.column_stack([np.interp(query, poster.baseline.video_times_s,
-                                             poster.baseline.velocities[:, axis_index])
+    seed = poster.trajectory_seed
+    poses = resample_pose_series(seed.video_times_s, seed.T_world_imu, query)
+    velocities = np.column_stack([np.interp(query, seed.video_times_s, seed.velocities[:, axis_index])
                                    for axis_index in range(3)])
     seeds = {frame_index: (gtsam.Pose3(pose), velocity)
              for frame_index, pose, velocity in zip(nodes, poses, velocities)}
     return nodes, node_times, seeds
-
-
-def skew(w):
-    return np.array([[0, -w[2], w[1]], [w[2], 0, -w[0]], [-w[1], w[0], 0]])
-
-
-def jr_inv(phi):
-    th = np.linalg.norm(phi); K = skew(phi)
-    if th < 1e-6:
-        return np.eye(3) + 0.5 * K
-    return np.eye(3) + 0.5 * K + (1.0 / th ** 2 - (1 + np.cos(th)) / (2 * th * np.sin(th))) * K @ K
-
-
-def logR(Rm):
-    return gtsam.Rot3.Logmap(gtsam.Rot3(Rm))
 
 
 # ---------------- custom factors (analytic Jacobians; checked by --selftest) ----------------
@@ -533,11 +618,11 @@ def make_lens_factor(noise, kx, kl, kr, kt, klev, p_m, M, R_m, lever_fixed):
         T = v.atPose3(ks[0]); sc = np.exp(v.atVector(ks[1])[0]); Rwm = v.atRot3(ks[2]).matrix(); tt = v.atVector(ks[3])
         lv = v.atVector(ks[4]) if klev is not None else lever_fixed
         Rx, px = T.rotation().matrix(), T.translation()
-        e_rot = logR((Rwm @ M).T @ Rx)
+        e_rot = rotation_log((Rwm @ M).T @ Rx)
         w = sc * p_m + R_m @ lv
         e_pos = px - Rwm @ w - tt
         if H is not None:
-            Ji = jr_inv(e_rot); C = (Rwm @ M).T @ Rx
+            Ji = right_jacobian_inverse(e_rot); C = (Rwm @ M).T @ Rx
             HX = np.zeros((6, 6)); HX[:3, :3] = Ji; HX[3:, 3:] = Rx
             HS = np.zeros((6, 1)); HS[3:, 0] = -Rwm @ p_m * sc
             HR = np.zeros((6, 3)); HR[:3, :] = -Ji @ C.T @ M.T; HR[3:, :] = Rwm @ skew(w)
@@ -558,12 +643,12 @@ def make_lens_factor_map(noise, kx, kl, kr, kt, klev, p_m, M, R_m, lever_fixed):
         T = v.atPose3(ks[0]); sc = np.exp(v.atVector(ks[1])[0]); Rwm = v.atRot3(ks[2]).matrix(); tt = v.atVector(ks[3])
         lv = v.atVector(ks[4]) if klev is not None else lever_fixed
         Rx, px = T.rotation().matrix(), T.translation()
-        e_rot = logR((Rwm @ M).T @ Rx)
+        e_rot = rotation_log((Rwm @ M).T @ Rx)
         wv = Rwm.T @ (px - tt)
         u = wv - R_m @ lv
         e_pos = u / sc - p_m
         if H is not None:
-            Ji = jr_inv(e_rot); C = (Rwm @ M).T @ Rx
+            Ji = right_jacobian_inverse(e_rot); C = (Rwm @ M).T @ Rx
             HX = np.zeros((6, 6)); HX[:3, :3] = Ji; HX[3:, 3:] = Rwm.T @ Rx / sc
             HS = np.zeros((6, 1)); HS[3:, 0] = -u / sc
             HR = np.zeros((6, 3)); HR[:3, :] = -Ji @ C.T @ M.T; HR[3:, :] = skew(wv) / sc
@@ -579,9 +664,9 @@ def make_rot_factor(noise, kx, kr, M):
     def f(this, v, H):
         ks = this.keys()
         Rx = v.atPose3(ks[0]).rotation().matrix(); Rwm = v.atRot3(ks[1]).matrix()
-        e = logR((Rwm @ M).T @ Rx)
+        e = rotation_log((Rwm @ M).T @ Rx)
         if H is not None:
-            Ji = jr_inv(e); C = (Rwm @ M).T @ Rx
+            Ji = right_jacobian_inverse(e); C = (Rwm @ M).T @ Rx
             HX = np.zeros((3, 6)); HX[:, :3] = Ji
             H[0], H[1] = HX, -Ji @ C.T @ M.T
         return e
@@ -595,10 +680,10 @@ def make_cont_factor(noise, ka, kb, p_b):
         la, Ra, ta = v.atVector(ks[0])[0], v.atRot3(ks[1]).matrix(), v.atVector(ks[2])
         lb, Rb, tb = v.atVector(ks[3])[0], v.atRot3(ks[4]).matrix(), v.atVector(ks[5])
         sa, sb = np.exp(la), np.exp(lb)
-        eR = logR(Ra.T @ Rb)
+        eR = rotation_log(Ra.T @ Rb)
         ep = sb * Rb @ p_b + tb - sa * Ra @ p_b - ta
         if H is not None:
-            Ji = jr_inv(eR)
+            Ji = right_jacobian_inverse(eR)
             Hla = np.zeros((7, 1)); Hla[0, 0] = -1; Hla[4:, 0] = -sa * Ra @ p_b
             HRa = np.zeros((7, 3)); HRa[1:4, :] = -Ji @ Rb.T @ Ra; HRa[4:, :] = sa * Ra @ skew(p_b)
             Hta = np.zeros((7, 3)); Hta[4:, :] = -np.eye(3)

@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,11 +30,11 @@ from umi.perception.poster import geometry as poster_pose
 from umi.perception.poster import layout as tag_board
 from umi.perception.poster.layout import DEFAULT_LAYOUT, load, resolve_layout_path
 from umi.reconstruction.backends import PosterVioQualityError
-from umi.reconstruction.backends.poster_independent import run as independent_reconstruction
-from umi.reconstruction.backends.poster_independent import run as poster_independent
-from umi.reconstruction.backends.poster_vio import run as poster_vio
+from umi.reconstruction.backends import poster_independent as independent_reconstruction
+from umi.reconstruction.backends import poster_independent as poster_independent
+from umi.reconstruction.backends.poster_vio import task as poster_vio
 from umi.reconstruction.backends.poster_vio.initialization import PosterInitializationQualityError
-from umi.reconstruction.backends.scene_map import run as scene_reconstruction
+from umi.reconstruction.backends import scene_map as scene_reconstruction
 from umi.reconstruction.estimation import poster_factors
 from umi.reconstruction.estimation.fixed_map import fusion, poster
 from umi.reconstruction.estimation.fixed_map.fusion import SceneFusionQualityError
@@ -47,7 +47,7 @@ from umi.reconstruction.estimation.fixed_map.parameters import (
 from umi.reconstruction.estimation.fusion import poster as fusion_poster
 from umi.reconstruction.estimation.fusion import solver as fusion_solver
 from umi.reconstruction.estimation.fusion.data import FusionInputs
-from umi.reconstruction.estimation.models import FusedTrajectory
+from umi.reconstruction.estimation.models import BackendResult, FusedTrajectory
 from umi.scene import measurements
 from umi.scene import run as workflow
 from umi.scene.collection import batch as batches
@@ -895,7 +895,7 @@ class PosterWorkflowTests(unittest.TestCase):
                                   poster=dict(layout=str(tag_board.DEFAULT_LAYOUT), detection=True),
                                   backend=dict(mode='scene_map', scene_map=dict(poster_constraint='staged'))))
             expert = Path(temporary)/'expert.yaml'
-            write_yaml(expert, dict(poster=dict(standalone_fusion=True)))
+            write_yaml(expert, dict(standalone=dict(poster_fusion=True)))
             with self.assertRaisesRegex(ValueError, 'collection.yaml'):
                 SceneOverrides.load(expert)
             self.assertTrue(scene_inputs.read_scene(path).scene_map_poster_constraint_enabled)
@@ -1010,6 +1010,92 @@ class IndependentPosterTests(unittest.TestCase):
     def solve(self, inputs, parameters):
         return fusion_solver.solve(inputs,parameters,log=lambda *a,**k:None)
 
+    def fragmented_front(self):
+        inputs, parameters = independent_poster_fixture(tuple(tag_board.load().ids))
+        front = {k: observation for k, observation in inputs.observations['front'].items() if k % 18 < 15}
+        maps = {k: 'one-map' for k in front}
+        return replace(inputs, observations=dict(front=front, rear={}), map_ids=dict(front=maps, rear={})), parameters
+
+    def test_poster_initializes_fragments_and_recovers_the_shared_map_scale(self):
+        from umi.reconstruction.estimation.fusion.alignment import AlignmentError, align_recording
+
+        inputs, parameters = self.fragmented_front()
+        with self.assertRaises(AlignmentError):
+            align_recording(inputs, parameters, log=lambda *a, **k: None)
+        result = self.solve(inputs, parameters)
+        self.assertEqual(result.evidence['init_lens'], 'poster')
+        self.assertEqual(result.evidence['poster_initialization']['status'], 'accepted')
+        self.assertEqual(result.evidence['environment_poster']['status'], 'fused')
+        self.assertGreater(result.evidence['obs']['front'], 0)
+        self.assertEqual(result.evidence['segments']['front'], 1)
+        self.assertAlmostEqual(result.evidence['seg_scale_range']['front'][1], 2.3, delta=.03)
+        np.testing.assert_array_equal(result.video_times_s, inputs.video_times_s)
+        self.assertTrue(np.isfinite(result.T_world_imu).all())
+
+    def test_poster_initialization_rejects_short_coverage_and_conflicting_imu(self):
+        from umi.reconstruction.estimation.fusion.alignment import AlignmentError
+
+        inputs, parameters = self.fragmented_front()
+        tags = inputs.poster.observations
+        short = replace(tags, usable=tags.usable & (tags.video_times_s[tags.sample_indices] < 1.))
+        imu = inputs.imu_video_clock.copy()
+        imu[:, 1:4] *= -6
+        tests = [(replace(inputs, poster=replace(inputs.poster, observations=short)), '位置观测缺口'),
+                 (replace(inputs, imu_video_clock=imu), '三帧窗口不足')]
+        for bad, reason in tests:
+            with self.subTest(reason=reason):
+                with self.assertRaises(AlignmentError) as failure:
+                    self.solve(bad, parameters)
+                evidence = failure.exception.diagnostics['poster_initialization']
+                self.assertEqual(evidence['status'], 'rejected')
+                self.assertIn(reason, evidence['reason'])
+                json.dumps(failure.exception.diagnostics, allow_nan=False)
+
+    def test_poster_only_support_passes_without_an_unestimated_map_scale(self):
+        from umi.reconstruction.estimation.fusion.data import write_solution
+        from umi.reconstruction.estimation.models import FusionArtifacts
+        from umi.reconstruction.segment.attempts import assess_try
+
+        inputs, parameters = self.fragmented_front()
+        inputs = replace(inputs, observations=dict(front={}, rear={}), map_ids=dict(front={}, rear={}))
+        result = self.solve(inputs, parameters)
+        self.assertEqual(result.evidence['init_lens'], 'poster')
+        self.assertEqual(result.evidence['chains']['front'], [])
+        self.assertEqual(result.evidence['scale_consistency']['status'], 'unavailable')
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)
+            write_solution(result, path)
+            artifacts = FusionArtifacts(path/'traj_tum.txt', path/'fuse_info.json')
+            quality = assess_try(artifacts, parameters.retry, environment_tags=parameters.environment_tags)
+            self.assertEqual(quality['coverage_basis'], 'visual_and_poster')
+            self.assertTrue(quality['usable'])
+            self.assertFalse(quality['suspicious'])
+            retry = replace(parameters.retry, use_poster_position_support=False)
+            self.assertFalse(assess_try(artifacts, retry, environment_tags=parameters.environment_tags)['usable'])
+
+    def test_exposure_sampling_keeps_visible_span_endpoints_and_all_selected_tags(self):
+        times = np.array([0., .04, .08, .12, .16, .64, .68, .72])
+        tag_times = np.repeat(times, 2)
+        observations = SimpleNamespace(usable=np.ones(len(tag_times), bool), side_px=np.full(len(tag_times), 20.),
+                                       imu_times_s=lambda offset: tag_times)
+        rear = dict(cam_time_offset_ns=0, q_xyzw=[0., 0., 0., 1.], p=[0., 0., 0.])
+        inputs = SimpleNamespace(camera={'cam_time_offset_ns': 0},
+                                 poster=SimpleNamespace(observations=observations, measured=rear))
+        baseline = SimpleNamespace(video_times_s=times, T_world_imu=np.repeat(np.eye(4)[None], len(times), axis=0))
+        parameters = SimpleNamespace(tag_minimum_side_px=8., tag_minimum_frames=3)
+
+        retained, eligible = fusion_poster.sample_exposures(inputs, baseline, parameters, .1)
+        np.testing.assert_array_equal(retained, times[[0, 2, 4, 5, 7]])
+        self.assertEqual(eligible, len(times))
+        rows, sampled = fusion_poster.eligible_sightings(inputs, times, parameters, exposure_times=retained)
+        np.testing.assert_array_equal(sampled, np.repeat(retained, 2))
+        observations.usable[rows[:2]] = False
+        _, after_cull = fusion_poster.eligible_sightings(inputs, times, parameters, exposure_times=retained)
+        np.testing.assert_array_equal(after_cull, np.repeat(retained[1:], 2))
+        parameters.tag_minimum_frames = 7
+        dense, _ = fusion_poster.sample_exposures(inputs, baseline, parameters, .1)
+        np.testing.assert_array_equal(dense, times[1:])
+
     def test_clock_shift_requires_independent_rear_confirmation_and_imu_coverage(self):
         from umi.core.frame import FPS_SRC
         from umi.reconstruction.estimation.fusion.clock_check import correct_recording_clock
@@ -1058,6 +1144,8 @@ class IndependentPosterTests(unittest.TestCase):
         inputs,parameters = independent_poster_fixture()
         result = self.solve(inputs,parameters)
         evidence = result.evidence['environment_poster']
+        self.assertEqual(result.evidence['init_lens'], 'front')
+        self.assertNotIn('poster_initialization', result.evidence)
         self.assertEqual(evidence['status'],'fused')
         self.assertGreater(evidence['added_nodes'],0)
         self.assertEqual(evidence['frames'],len(inputs.poster.observations.video_times_s))
@@ -1395,16 +1483,11 @@ class AutomaticBackendChainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             calls = []
-            @dataclass(frozen=True)
-            class Inputs:
-                directory: Path
-                episode: object
-                console: object
             console = SimpleNamespace(messages=[], write=lambda message, **_: console.messages.append(message))
             policy = SimpleNamespace(reconstruction_mode='auto', recording_trim={},
                                      auto_order=('scene_map', 'poster_vio', 'poster_independent'))
-            inputs = Inputs(root, SimpleNamespace(scene=policy), console)
-            expected = SimpleNamespace(coordinate_record={})
+            inputs = TaskInputs(SimpleNamespace(scene=policy), {}, {}, root, None, None, console)
+            expected = BackendResult({}, {}, {})
 
             def scene(inputs, selection):
                 calls.append('scene_map')
@@ -1421,7 +1504,7 @@ class AutomaticBackendChainTests(unittest.TestCase):
             with patch.dict(estimation.ESTIMATORS, dict(scene_map=scene, poster_vio=vio,
                                                         poster_independent=independent)):
                 result = estimation.execute(inputs, MapSelection.available(root / 'map', {'version': 'v'}))
-            self.assertIs(result, expected)
+            self.assertIs(result.coordinate_record, expected.coordinate_record)
             self.assertEqual([item if isinstance(item, str) else item[0] for item in calls],
                              ['scene_map', 'poster_vio', 'poster_independent'])
             failure = calls[-1][1]
@@ -1467,6 +1550,8 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         collection = h.batch_root / 'collection.yaml'
         doc = read_yaml(collection)
         doc['backend'] = dict(mode=mode, scene_map=dict(poster_constraint='joint'))
+        if mode == 'auto':
+            doc['backend']['auto_order'] = ['scene_map', 'poster_vio', 'poster_independent']
         doc['poster'] = dict(layout=str(tag_board.DEFAULT_LAYOUT), detection=True)
         doc['tasks'] = dict(take_001=dict(instruction='move both grippers', arms=['left', 'right'], sync=dict(
             mode='manual', offsets_s=dict(left=0., right=0.), confirmed=confirmed,
@@ -1476,8 +1561,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
             h.cameras[video] = replace(camera, files=dict(camera.files, rear=camera.files['front']),
                                       measurements=dict(camera.measurements, rear=camera.measurements['front']))
 
-    def solved(self, episode, arm, recording, directory, *, require_poster=False):
-        self.assertTrue(require_poster)
+    def solved(self, episode, arm, recording, directory, *, poster_detection=None):
         raw = self.helper.raw[arm].T_reference_camera.copy()
         raw[:, :3, 3] *= 2.3
         return FusedTrajectory(raw, np.ones(len(raw), bool), np.ones(len(raw), bool), dict(
@@ -1489,7 +1573,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
                 position_support_video_times_s=recording.video_times_s.tolist())))
 
     def run_poster(self):
-        with patch.object(independent_reconstruction, 'reconstruct', side_effect=self.solved), \
+        with patch.object(independent_reconstruction, 'reconstruct_with_poster', side_effect=self.solved), \
                 patch.object(poster_vio, 'execute_task', side_effect=PosterVioQualityError('too few tags')):
             return workflow.run_episode(self.helper.episode_path)
 
@@ -1519,6 +1603,24 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         self.assertIn('imu', loaded['tracks'])
         self.assertEqual(workflow.run_episode(h.episode_path)['status'], 'skipped')
 
+    def test_explicit_independent_reuses_across_unused_vio_override_and_upgrades_old_identity(self):
+        self.configure(confirmed=True)
+        h = self.helper
+        self.assertEqual(self.run_poster()['status'], 'ok')
+        expert = h.root / 'vio-only.yaml'
+        write_yaml(expert, {'backends': {'poster_vio': {'culling': {'precull_iterations': 4}}}})
+        with patch.object(independent_reconstruction, 'reconstruct_with_poster',
+                          side_effect=AssertionError('inactive VIO edit must reuse')):
+            effective = SceneOverrides.load(expert)
+            self.assertEqual(workflow.run_episode(h.episode_path, overrides=effective)['status'], 'skipped')
+        path = h.task_root / 'results/data/episode.json'
+        old = json.loads(path.read_text())
+        del old['inputs']['reuse_identity']
+        path.write_text(json.dumps(old))
+        self.assertEqual(self.run_poster()['status'], 'ok')
+        self.assertIn('reuse_identity', json.loads(path.read_text())['inputs'])
+        self.assertEqual(workflow.run_episode(h.episode_path)['status'], 'skipped')
+
     def test_auto_missing_map_falls_back_without_building(self):
         self.configure('auto')
         with patch.object(map_lifecycle_binding, 'build_scene', side_effect=AssertionError('must not build')):
@@ -1544,7 +1646,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
 
         with patch.object(map_repository_binding, 'bind_map') as bind, patch.object(map_repository, 'load_published') as load, \
                 patch.object(poster_vio, 'execute_task', side_effect=vio) as solve, \
-                patch.object(independent_reconstruction, 'reconstruct', side_effect=self.solved):
+                patch.object(independent_reconstruction, 'reconstruct_with_poster', side_effect=self.solved):
             self.assertEqual(workflow.run_episode(h.episode_path, force=True)['status'], 'ok')
         solve.assert_called_once()
         bind.assert_not_called()
@@ -1556,6 +1658,29 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         with patch.object(map_repository, 'load_published') as load:
             self.assertEqual(workflow.run_episode(h.episode_path)['status'], 'skipped')
         load.assert_not_called()
+
+        result_path = h.task_root / 'results/data/episode.json'
+        inputs = manifest['inputs']
+        stored = inputs['reuse_identity']['parameters']['poster_vio']
+        stored['trajectory'] = {name: value for name, value in inputs['trajectory_parameters'].items()
+                                if name not in ('environment_tags', 'retry', 'zupt', 'orb')}
+        for name in ('rear_position_sigma_m', 'visual_rotation_sigma_deg', 'huber'):
+            del stored['parameters'][name]
+        result_path.write_text(json.dumps(manifest))
+        expert_path = h.root / 'independent-only.yaml'
+        write_yaml(expert_path, dict(segment_engine=dict(segments=dict(duration_s=1.),
+                                                        reporting=dict(warnings=dict(minimum_mapping_fraction=.8)))))
+        with patch.object(poster_vio, 'execute_task', side_effect=AssertionError('inactive settings must reuse')):
+            self.assertEqual(workflow.run_episode(h.episode_path, overrides=SceneOverrides.load(expert_path))['status'],
+                             'skipped')
+        for override in (dict(imu=dict(noise=dict(acc_noise=.003))),
+                         dict(visual=dict(map_pose=dict(rear_position_sigma_m=.025)))):
+            with self.subTest(override=override):
+                write_yaml(expert_path, dict(shared=override))
+                with patch.object(poster_vio, 'execute_task', side_effect=RuntimeError('must recompute')), \
+                        self.assertRaisesRegex(RuntimeError, 'must recompute'):
+                    workflow.run_episode(h.episode_path, overrides=SceneOverrides.load(expert_path))
+
         doc['backend']['auto_order'] = ['poster_independent', 'poster_vio', 'scene_map']
         write_yaml(collection, doc)
         with patch.object(map_repository, 'load_published') as load:
@@ -1636,7 +1761,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         doc = read_yaml(path)
         doc['poster']['detection'] = False
         write_yaml(path, doc)
-        with patch.object(independent_reconstruction, 'reconstruct') as solve:
+        with patch.object(independent_reconstruction, 'reconstruct_with_poster') as solve:
             with self.assertRaisesRegex(ValueError, 'poster.detection'):
                 workflow.run_episode(self.helper.episode_path)
         solve.assert_not_called()
@@ -1648,7 +1773,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene',
                           side_effect=SceneFusionQualityError('scene coverage too low')), \
                 patch.object(poster_vio, 'execute_task', side_effect=PosterVioQualityError('too few tags')), \
-                patch.object(independent_reconstruction, 'reconstruct', side_effect=self.solved) as solve:
+                patch.object(independent_reconstruction, 'reconstruct_with_poster', side_effect=self.solved) as solve:
             result = workflow.run_episode(h.episode_path)
         self.assertEqual(result['status'], 'ok')
         self.assertEqual({call.args[1] for call in solve.call_args_list}, {'left', 'right'})
@@ -1662,7 +1787,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         h.build_scene()
         self.configure('auto')
         with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=ValueError('bad IMU')), \
-                patch.object(independent_reconstruction, 'reconstruct') as solve:
+                patch.object(independent_reconstruction, 'reconstruct_with_poster') as solve:
             with self.assertRaisesRegex(ValueError, 'bad IMU'):
                 workflow.run_episode(h.episode_path)
         solve.assert_not_called()
@@ -1673,14 +1798,14 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
         self.configure('auto')
 
         def scene_solve(episode, arm, recording, *args, **kwargs):
-            trajectory = self.solved(episode, arm, recording, h.root, require_poster=True)
+            trajectory = self.solved(episode, arm, recording, h.root)
             trajectory.evidence['environment_poster']['T_scene_board'] = np.eye(4).tolist()
             trajectory = replace(trajectory, evidence=dict(trajectory.evidence, scene_map_priors_used=True,
                                                           visual_consistency_rms_m=0.))
             return scene_reconstruction.ArmReconstruction(trajectory)
 
         with patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=scene_solve), \
-                patch.object(independent_reconstruction, 'reconstruct') as solve:
+                patch.object(independent_reconstruction, 'reconstruct_with_poster') as solve:
             result = workflow.run_episode(h.episode_path)
         solve.assert_not_called()
         self.assertEqual(result['status'], 'ok')
@@ -1703,7 +1828,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
                 return replace(result, evidence=dict(result.evidence, environment_poster=dict(status='insufficient_observations')))
             return result
 
-        with patch.object(independent_reconstruction, 'reconstruct', side_effect=broken):
+        with patch.object(independent_reconstruction, 'reconstruct_with_poster', side_effect=broken):
             with self.assertRaisesRegex(ValueError, '未完成海报融合'):
                 workflow.run_episode(h.episode_path, force=True)
         self.assertEqual((h.task_root / 'results').resolve(), previous)
@@ -1718,7 +1843,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
                     independent=dict(gravity_output_m_s2=[9.81, 0., 0.])))
             return result
 
-        with patch.object(independent_reconstruction, 'reconstruct', side_effect=broken):
+        with patch.object(independent_reconstruction, 'reconstruct_with_poster', side_effect=broken):
             with self.assertRaisesRegex(ValueError, '重力方向不一致'):
                 workflow.run_episode(self.helper.episode_path)
 
@@ -1740,7 +1865,7 @@ class PosterIndependentWorkflowTests(unittest.TestCase):
             return result
 
         prepared = {arm: h.prepared_recordings[path] for arm, path in h.recording_paths.items()}
-        with patch.object(independent_reconstruction, 'reconstruct', side_effect=tilted):
+        with patch.object(independent_reconstruction, 'reconstruct_with_poster', side_effect=tilted):
             poster_independent.solve_task(episode, prepared, h.root / 'solve')
             episode = replace(episode, session=replace(episode.session, scene=replace(episode.scene,
                 parameters=replace(parameters, poster_maximum_gravity_difference_deg=1.))))
@@ -1797,6 +1922,9 @@ class PosterIndependentAdapterTests(unittest.TestCase):
 
         def fuse(request, **options):
             self.assertTrue(request.correct_poster_clock)
+            self.assertTrue(request.confirm_zupt_visually)
+            self.assertEqual(request.poster_keyframe_maximum_dt_s,
+                             h.episode.scene.parameters.poster_independent_keyframe_maximum_dt_s)
             h.engines.fuse(request, **options)
             if True:
                 path = request.output / 'fuse_info.json'
@@ -1813,15 +1941,16 @@ class PosterIndependentAdapterTests(unittest.TestCase):
 
         with patch.object(environment_tags, 'detect', return_value=self.observations), \
                 patch.object(fusion_runner, 'execute', side_effect=fuse):
-            return independent_reconstruction.reconstruct(h.episode, 'right', h.recording,
-                                        h.root / 'poster-independent', require_poster=True)
+            return independent_reconstruction.reconstruct_with_poster(h.episode, 'right', h.recording,
+                                                    h.root / 'poster-independent')
 
     def test_backend_scoped_fusion_settings_reach_the_engine(self):
         h = self.helper
         scene = h.episode.scene
         base = scene.trajectory.values.fusion
         scene.parameters = replace(scene.parameters, poster_independent_node_stride=2,
-                                   poster_independent_imu_white_noise_multiplier=3.)
+                                   poster_independent_imu_white_noise_multiplier=3.,
+                                   poster_independent_keyframe_maximum_dt_s=.1)
         self.execute()
         settings = json.loads((h.root / 'poster-independent/debug/settings/parameters.json').read_text())
         self.assertEqual(settings['fusion']['node_stride'], 2)

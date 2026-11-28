@@ -9,7 +9,7 @@
 | 层级 | 权威入口 | 负责内容 | 典型修改者 |
 |---|---|---|---|
 | 采集声明 | 批次 `collection.yaml`、套件 `hardware/kits/<kit>/kit.yaml` | 场景、任务、使用手、后端、地图、音频同步、环境标签布局、设备和实测资产 | 数据采集者 |
-| 项目默认值 | `collection_defaults.yaml`、`algorithms/*.yaml`、`algorithms/audio_sync/*.yaml` | 批次默认处理策略与算法参数 | 算法维护者 |
+| 项目默认值 | `collection_defaults.yaml`、`algorithms/` | 批次默认处理策略与算法参数 | 算法维护者 |
 | 执行与诊断 | `operations/runtime.yaml`、`operations/viewer.yaml`、`operations/gripper_tag_detection.yaml` | 线程、超时、查看器监听与缓存、夹爪标签 ROI 和检测预算 | 工程维护者 |
 
 批次/套件中的声明是具体数据的权威来源；`config/` 中的 YAML 是项目默认值；`--expert-config` 只覆盖本次算法实验；单次运行的 CPU、并发、端口用命令行参数。运行结果会冻结本次实际配置和来源，不能通过修改默认 YAML 追溯或改写历史结果。
@@ -38,7 +38,7 @@ backend:
 
 需要调整鲁棒惯性初始化或夹爪标签缺口补检时，在批次 `collection.yaml` 填写对应开关。两个开关接受 YAML 布尔值，按项目默认、批次、单次专家覆盖的顺序生效。用 `./umi-scene run <批次或任务> --show-config` 查看各项的值和来源。加 `--json` 可查看 `effective.processing_options`。
 
-| 处理选项 | 项目默认与专家覆盖（`reconstruction.yaml` 结构） | 批次 `collection.yaml` |
+| 处理选项 | 项目默认与专家覆盖（公开重建参数路径） | 批次 `collection.yaml` |
 |---|---|---|
 | VIO 鲁棒惯性初始化 | `backends.poster_vio.initialization.robust_inertial_seed` | `backend.poster_vio.robust_inertial_seed` |
 | 夹爪标签缺口补检 | `measurements.gripper_tags.verified_gap_recovery` | `measurements.gripper_tags.verified_gap_recovery` |
@@ -47,8 +47,8 @@ backend:
 
 | 入口 | 命令行输入 | YAML / 资产 |
 |---|---|---|
-| `umi-scene run` | 路径、`--dry-run`、`--force`、`--status`、`--show-config`、`--json`。单次 CPU 和并发选项见 `umi-scene run --help` | `algorithms/reconstruction.yaml` 提供重建默认值；批次日常配置统一写 `collection.yaml`（场景、kit、手和任务）；专家调参使用 `--expert-config`；`kit.yaml` 选择每镜头当前参数来源与测量文件 |
-| `umi-calib run / verify` | 录像、输出路径、`--tag-size-mm`、`--intrinsics`（仅 run）、`--dry-run`、`--recompute`。CPU 和线程选项见 `umi-calib run --help` | `algorithms/calibration.yaml` 保存求解与验收参数；B 的 IMU 噪声默认值和 C 的重建参数来自 `algorithms/reconstruction.yaml`；板布局和版本化测量是独立资产 |
+| `umi-scene run` | 路径、`--dry-run`、`--force`、`--status`、`--show-config`、`--json`。单次 CPU 和并发选项见 `umi-scene run --help` | `algorithms/reconstruction/` 提供重建默认值；批次日常配置统一写 `collection.yaml`（场景、kit、手和任务）；专家调参使用 `--expert-config`；`kit.yaml` 选择每镜头当前参数来源与测量文件 |
+| `umi-calib run / verify` | 录像、输出路径、`--tag-size-mm`、`--intrinsics`（仅 run）、`--dry-run`、`--recompute`。CPU 和线程选项见 `umi-calib run --help` | `algorithms/calibration.yaml` 保存求解与验收参数；B 的 IMU 噪声默认值和 C 的重建参数来自 `algorithms/reconstruction/common.yaml`；板布局和版本化测量是独立资产 |
 | `umi-view` | 结果根目录、`--host`、`--port` | `operations/viewer.yaml` 管理服务、预览和缓存；读取已有结果，不重新计算轨迹 |
 
 `--expert-config` 仅用于本次专家算法实验；内参来源读取 `kit.yaml`，地图阶段读取 `collection.yaml.tasks` 和 `.pipeline/map_epochs.yaml`。逐个子命令的完整选项、默认值与互斥关系见[命令行参数参考](../docs/命令行参数.md)，也可用 `<入口> <子命令> --help` 查阅。
@@ -92,7 +92,7 @@ UMI_OPENCV_THREADS=2 ./umi-scene run scenes/test_shelf/20261120_002
 
 配置在进程内冻结，派生 Python 子进程继承同一份快照；不会在每帧重新读取文件。`--expert-config` 可用 `measurements.gripper_tags.roi_px` 覆盖本次场景的检测区域。检测预算、线程和查看器设置仍从对应的运行配置读取。`UMI_VIEW_CACHE` 与 `XDG_CACHE_HOME` 保持原有缓存目录规则，查看器 `--show-config` 会给出实际缓存路径，以及旧地图转换所用的 `runtime.map_export_timeout_s` 和来源。降低地图显示点数只抽样浏览器响应，不改写已发布地图及其哈希；提高预算最多显示已发布的 50000 点。
 
-保留为代码常量的内容包括 X3 原片尺寸/镜头半幅/标定区域、实际标签字典与 ID、底层 ArUco 阈值组合、内部后台流水线的调度策略，以及页面轮询节奏。它们分别属于硬件约定、已验证检测实现或内部实现细节，暂不作为日常调参入口。诊断 ROI、对比度和采样频率由相关标定命令控制；轨迹视频编码位于 `reconstruction.yaml` 的 `video`。
+保留为代码常量的内容包括 X3 原片尺寸/镜头半幅/标定区域、实际标签字典与 ID、底层 ArUco 阈值组合、内部后台流水线的调度策略，以及页面轮询节奏。它们分别属于硬件约定、已验证检测实现或内部实现细节，暂不作为日常调参入口。诊断 ROI、对比度和采样频率由相关标定命令控制；轨迹视频编码位于 `reconstruction/common.yaml` 的 `recording.video`。
 
 ## 算法参数归属
 
@@ -112,15 +112,19 @@ UMI_OPENCV_THREADS=2 ./umi-scene run scenes/test_shelf/20261120_002
 | 内容 | 管理位置 | 生效范围 |
 |---|---|---|
 | [calibration.yaml](algorithms/calibration.yaml) | 标定算法、板检测、D 静止窗口、验收规则 | `umi-calib run / verify / recheck` |
-| [reconstruction.yaml](algorithms/reconstruction.yaml) | 输入、视频、视觉、建图、定位、IMU 融合、环境海报、后端、重试、测量和报告 | `umi-scene`、内部逐段引擎与标定 C；标定 B 共用 IMU 噪声默认值 |
+| [common.yaml](algorithms/reconstruction/common.yaml) | 录像准备、共享算法、逐段引擎和夹爪测量 | `umi-scene`、内部逐段引擎与标定 C；标定 B 共用 IMU 噪声默认值 |
+| [scene_map.yaml](algorithms/reconstruction/scene_map.yaml) | 建图、定位、固定地图融合 | `scene_map` |
+| [poster_vio.yaml](algorithms/reconstruction/poster_vio.yaml) | 初始化、自然特征、联合优化和留出验收 | `poster_vio` |
+| [poster_independent.yaml](algorithms/reconstruction/poster_independent.yaml) | 海报引导、采样和后端验收 | `poster_independent` |
+| [segment.yaml](algorithms/segment.yaml) | 前后镜头选择、不规则帧、海报融合开关和海报支持重试门槛 | 独立录像命令 `python -m umi.apps.segment` |
 | 相机内参、实测相机–IMU 参数与时间差 | `hardware/.registry/` 中的版本化相机标定；含实测/工厂内参来源 | 按序列号及套件的前后镜头来源选择当前参数，通过验收后统一执行 `install` |
 | TCP、宽度、遮手图 | 套件引用的测量文件；未自定义遮手图时用 `hardware/grippers/masks/front_hand_mask.png` | 按 `kit.yaml` 选择，更新后重新运行 |
 | 输入/输出路径、CPU、并行数、保留中间文件 | 命令行请求 | 只影响执行方式，不写入算法配置 |
 | 原片规格、标定区域、像素变换与派生帧率规则 | `umi/core/frame.py` | 相机图像规格；在结果中记录 |
 
-`config/algorithms/reconstruction.yaml` 保存重建默认参数；批次 `collection.yaml` 的 `map` 保存地图布局、参考手、默认版本和建图海报尺度用途，`poster` 保存海报布局，`backend` 保存各后端的海报用法，顶层 `description` 保存描述；一次专家实验的算法覆盖写入 `--expert-config` 指定的文件。建图原片位于各批次 `mapping/`，设备与地图快照保存在该批次 `.pipeline/manifest.yaml`。
+`config/algorithms/reconstruction/` 保存重建默认参数；批次 `collection.yaml` 的 `map` 保存地图布局、参考手、默认版本和建图海报尺度用途，`poster` 保存海报布局，`backend` 保存各后端的海报用法，顶层 `description` 保存描述；一次专家实验的算法覆盖写入 `--expert-config` 指定的文件。建图原片位于各批次 `mapping/`，设备与地图快照保存在该批次 `.pipeline/manifest.yaml`。
 
-`input.mode` 和 `input.allow_irregular_frames` 只用于独立逐段引擎。场景使用批次声明的后端与地图布局，并始终校验原片帧时间规则。
+独立录像入口从 `segment.yaml` 取得 `standalone.input`、`standalone.poster_fusion` 和 `standalone.retry` 默认值。场景使用批次声明的后端与地图布局，并校验原片帧时间规则。
 
 每个批次只有一个 `.pipeline/`：`maps/` 保存本批次的地图版本、当前指针和建图缓存，`tasks/<任务>/` 保存任务原片清单、状态、缓存和运行历史。不同批次不自动选择彼此的地图；显式指定 `map.version` 时冻结该版本到本批次。
 
@@ -140,23 +144,24 @@ arms: [right]
 
 | 要查看的流程 | 配置位置 |
 |---|---|
-| 相机标定 | `calibration.yaml` 的 `board`、`factory`、`trajectory_validation`、`gravity`、`checks`，以及 `reconstruction.yaml` 的 `fusion.imu` |
-| 独立录像抽轨迹 | `reconstruction.yaml` 的 `input`、`video`、`vision`、`fusion`、`poster`、`retry` 和 `reporting.warnings` |
-| 多任务共享场景坐标 | `reconstruction.yaml` 的 `input.pairing`、`input.preflight`、`mapping`、`localization`、`fusion.scene_map` 和 `measurements` |
-| 海报后端 | `reconstruction.yaml` 的 `poster` 及 `backends.poster_vio`、`backends.poster_independent` |
+| 相机标定 | `calibration.yaml` 的 `board`、`factory`、`trajectory_validation`、`gravity`、`checks`，以及 `reconstruction/common.yaml` 的 `shared.imu.noise` |
+| 独立录像抽轨迹 | `segment.yaml` 的 `standalone`，以及 `reconstruction/common.yaml` 的 `recording.video`、`shared` 和 `segment_engine` |
+| 多任务共享场景坐标 | `reconstruction/scene_map.yaml` 的 `mapping`、`localization` 和 `fusion` |
+| 海报后端 | `reconstruction/poster_vio.yaml` 或 `reconstruction/poster_independent.yaml`，公共海报观测参数在 `common.yaml` 的 `shared.poster` |
+| 夹爪中心距与开口宽度 | `measurements` |
 
 ## 先分清参数改变了什么
 
 | 类型 | 例子 | 调整后的含义 |
 |---|---|---|
-| 采样与计算预算 | `video.frame_step`、`fusion.solver.node_stride`、`fusion.solver.lm_iterations` | 改变观测密度或计算量；更多迭代不保证更准确 |
-| 优化权重与先验 | `fusion.visual.position_sigma_m`、`fusion.imu.acc_noise`、`fusion.priors.scale_sigma` | 改变观测与初值在求解中的影响；sigma 越小通常约束越强，不是误差上限 |
-| 筛选、验收与选轮 | `localization.minimum_localized_fraction`、`checks`、`retry` | 决定保留哪些观测或结果；放宽门限不会修复观测，也不能证明精度提高 |
-| 质量提醒 | `reporting.warnings` | 按阈值记录风险提醒 |
+| 采样与计算预算 | `recording.video.frame_step`、`shared.solver.node_stride`、`shared.solver.lm_iterations` | 改变观测密度或计算量；更多迭代不保证更准确 |
+| 优化权重与先验 | `shared.visual.position_sigma_m`、`shared.imu.noise.acc_noise`、`segment_engine.placement_priors.scale_sigma` | 改变观测与初值在求解中的影响；sigma 越小通常约束越强，不是误差上限 |
+| 筛选、验收与选轮 | `backends.scene_map.localization.minimum_localized_fraction`、`checks`、`segment_engine.retry` | 决定保留哪些观测或结果；放宽门限不会修复观测，也不能证明精度提高 |
+| 质量提醒 | `segment_engine.reporting.warnings` | 按阈值记录风险提醒 |
 
-独立轨迹的 `retry.target_localized_fraction` 和 `maximum_placements` 是选轮目标，耗尽次数仍可采用最佳有效结果。`maximum_scale_change_ratio` 是硬性保护，超限轮次不能采用。`factory` 内分别列出了候选生成约束和 A 验收项。
+独立轨迹的 `segment_engine.retry.target_localized_fraction` 和 `maximum_placements` 是选轮目标，耗尽次数仍可采用最佳有效结果。`maximum_scale_change_ratio` 是硬性保护，超限轮次不能采用。`factory` 内分别列出了候选生成约束和 A 验收项。
 
-注意单位和计数口径：`fusion.alignment.step_frames`、`fusion.solver.node_stride` 数的是处理后的帧；`fusion.alignment.minimum_pairs` 数的是运动区间对；`fusion.initial_gyro_bias.minimum_samples` 数的是 IMU 样本。`sigma` 是标准差，`integration_covariance` 是直接使用的协方差，不能按同一种量调节。
+注意单位和计数口径：`shared.alignment.step_frames`、`shared.solver.node_stride` 数的是处理后的帧；`shared.alignment.minimum_pairs` 数的是运动区间对；`shared.imu.initial_gyro_bias.minimum_samples` 数的是 IMU 样本。`sigma` 是标准差，`integration_covariance` 是直接使用的协方差，不能按同一种量调节。
 
 ## 怎么使用
 
@@ -167,18 +172,21 @@ arms: [right]
 ./umi-scene run scenes/shelf/20261105_001 --dry-run
 ```
 
-调整默认配置会影响后续使用这些默认值的运行。单次调参时，将需要修改的字段写入一个与 `reconstruction.yaml` 同结构的文件：
+调整默认配置会影响后续使用这些默认值的运行。单次调参时，将需要修改的字段写入一份 YAML。后端文件里的字段在专家覆盖中放在 `backends.<后端名>` 下。
 
 <!-- check: scene-expert -->
 ```yaml
 # experiment.yaml
-video:
-  size_px: 960
-fusion:
+recording:
+  video:
+    size_px: 960
+shared:
   solver:
     node_stride: 3
-localization:
-  minimum_localized_fraction: 0.6
+backends:
+  scene_map:
+    localization:
+      minimum_localized_fraction: 0.6
 ```
 
 ```bash
@@ -188,7 +196,7 @@ localization:
 
 显式覆盖优先于项目默认；支持批次和任务覆盖的门槛，优先级为项目默认、批次、任务、专家覆盖。设备、地图布局和海报用途写在批次或套件中。最终参数与覆盖文件的内容和哈希会记录到新地图或任务结果。数值相同的配置换路径或改注释不会触发重算；只改变任务参数时仍复用兼容地图。
 
-场景专家配置、逐段引擎覆盖和标定 C 的轨迹覆盖均使用 `reconstruction.yaml` 的字段结构。已发布结果记录实际使用的覆盖内容。原片、资产和基础配置变化会触发失效检查。内参来源由 kit 解析，带建图原片的快照也会按显式 `--expert-config` 检查地图兼容性。
+场景 `--expert-config` 接受 `recording`、`shared`、`backends`、`segment_engine` 和 `measurements`。标定 C 的轨迹覆盖及独立录像的 `--config` 只接受逐段引擎读取的字段，独立入口选项在 `standalone` 下。`--show-config` 展示合并后的有效值和默认来源。已发布结果记录实际使用的覆盖内容。内参来源由 kit 解析，带建图原片的快照会按显式 `--expert-config` 检查地图兼容性。
 
 标定的 `--expert-config` 使用 `calibration.yaml` 中的 `board`、`checks` 等顶层字段，也可用 `imu` 单独覆盖本次标定 B 的四项噪声。C 的重建覆盖通过下文的 `trajectory_validation.config` 引用。
 
@@ -198,15 +206,15 @@ localization:
 |---|---|---|
 | A/C 板参考 | `calibration.yaml` 的 `board` | 板检测采样、PnP、精化和覆盖评估 |
 | 工厂内参及 A 验证 | `calibration.yaml` 的 `factory` | MEI → KB4、原片一致性和留出验收 |
-| B 相机–IMU | `reconstruction.yaml` 的 `fusion.imu` | 加速度/角速度噪声密度与零偏随机游走 |
+| B 相机–IMU | `reconstruction/common.yaml` 的 `shared.imu.noise` | 加速度/角速度噪声密度与零偏随机游走 |
 | C 轨迹验证 | `calibration.yaml` 的 `trajectory_validation` | 重建覆盖文件路径；留空时使用重建默认值 |
 | D 与标定验收 | `calibration.yaml` 的 `gravity`、`checks` | 静止窗口、朝向聚类和 A/B/C/D 验收条件 |
-| 镜头视频 | `video` | 裁切、取帧、尺寸、编码和音轨 |
-| 视觉 | `vision.orb`、`vision.initial_tag` | ORB 特征、金字塔、FAST 与初始化标签 |
-| IMU 融合 | `fusion` | 尺度/重力对齐、断链、分段、观测权重、零速度约束和求解预算 |
-| 选轮和提醒 | `retry`、`reporting.warnings` | 重试目标、尺度变化保护和轨迹质量提醒 |
+| 镜头视频 | `recording.video` | 裁切、取帧、尺寸、编码和音轨 |
+| 视觉 | `shared.orb`、`segment_engine.orb` | ORB 特征、金字塔、FAST、初始化标签和逐段引擎的陀螺辅助建图 |
+| IMU 融合 | `shared.imu`、`shared.alignment`、`shared.solver` 和 `shared.zupt` | IMU 噪声、对齐、求解预算和零速度约束 |
+| 选轮和提醒 | `segment_engine.retry`、`segment_engine.reporting.warnings` | 重试目标、尺度变化保护和轨迹质量提醒 |
 
-标定 A/B 的图像准备固定每 2 个原始帧取 1 帧，`board` 的步长在准备后的序列上采样。`video` 控制重建与标定 C 的视频准备。标定板布局见 [标定板说明](../hardware/calibration_targets/README.md)，本次实测标签边长用 `--tag-size-mm` 传入。
+标定 A/B 的图像准备固定每 2 个原始帧取 1 帧，`board` 的步长在准备后的序列上采样。`recording.video` 控制重建与标定 C 的视频准备。标定板布局见 [标定板说明](../hardware/calibration_targets/README.md)，本次实测标签边长用 `--tag-size-mm` 传入。
 
 在标定覆盖文件中用 `trajectory_validation.config` 指定 C 的重建覆盖：
 
@@ -215,25 +223,25 @@ trajectory_validation:
   config: "trajectory-tuning.yaml"
 ```
 
-路径相对于声明它的标定覆盖文件。重建覆盖使用 `reconstruction.yaml` 的结构，填写该验证使用的字段，例如 `video.size_px`。C 子进程读取解析后的参数；报告保存标定和重建的有效配置。
+路径相对于声明它的标定覆盖文件。重建覆盖填写该验证使用的公开字段，例如 `recording.video.size_px`。C 子进程读取解析后的参数；报告保存标定和重建的有效配置。
 
-C 固定 `input.mode: handheld` 并关闭 `poster.standalone_fusion`。环境镜头 C 同时关闭场景的海报任务融合、建图诊断和尺度修正。标定 `run`、`verify` 和 `recheck` 以本次实测标签边长派生 `vision.initial_tag.size_m`，并将派生值写入配置快照、计算身份和子进程配置。日常建图和独立轨迹从重建配置读取该尺寸。
+C 固定 `standalone.input.mode: handheld` 并关闭 `standalone.poster_fusion`。环境镜头 C 同时关闭场景的海报任务融合、建图诊断和尺度修正。标定 `run`、`verify` 和 `recheck` 以本次实测标签边长派生 `shared.orb.initial_tag.size_m`，并将派生值写入配置快照、计算身份和子进程配置。日常建图和独立轨迹从重建配置读取该尺寸。
 
 ## 场景和单段轨迹的参数边界
 
-固定地图任务默认启用 `localization.reverse_fill.enabled`。每个反向连续段至少与正向结果重叠 `minimum_overlap_frames` 帧（默认 3），全部重叠帧须通过 `maximum_position_difference_m`（默认 0.03 m）和 `maximum_rotation_difference_deg`（默认 3°）。位置差使用冻结的地图尺度。`localization.reverse_fill.context_s` 默认 1.0，指定缺口两侧的处理范围。达到全片的 75% 时直接处理全片，短窗未完全补齐时也会回退全片，各次均以原始正向观测核验。
+固定地图任务默认启用 `backends.scene_map.localization.reverse_fill.enabled`。每个反向连续段至少与正向结果重叠 `minimum_overlap_frames` 帧（默认 3），全部重叠帧须通过 `maximum_position_difference_m`（默认 0.03 m）和 `maximum_rotation_difference_deg`（默认 3°）。位置差使用冻结的地图尺度。`backends.scene_map.localization.reverse_fill.context_s` 默认 1.0，指定缺口两侧的处理范围。达到全片的 75% 时直接处理全片，短窗未完全补齐时也会回退全片，各次均以原始正向观测核验。
 
 标签中心距使用 `measurements.gripper_tags.maximum_reprojection_error_px`（默认 2.0 px RMS）和 `measurements.gripper_tags.maximum_center_ambiguity_mm`（默认 2.0 mm）。平面两解的重投影误差之差不超过 0.25 px、中心差超过后者时拒绝观测。夹爪标签边长在套件引用的测量 JSON 中填写。
 
-| 计算位置 | `reconstruction.yaml` 中的生效配置 |
+| 计算位置 | 生效的专家覆盖路径 |
 |---|---|
-| 场景建图的尺度不确定度、重力和加速度零偏门限 | `mapping.alignment` |
-| 场景建图复用的轨迹求解设置 | `fusion.alignment.step_frames`、`fusion.alignment.minimum_pairs`、`fusion.chains` 的断链/细分/最少区间对，以及 `fusion.solver` 的线性求解设置 |
-| 场景固定地图任务的视觉权重 | `fusion.scene_map` |
-| 场景任务复用的惯性设置 | `fusion.imu`、`fusion.initial_gyro_bias`、`fusion.priors` 的速度和零偏先验、`fusion.solver.lm_iterations`、`fusion.zupt` |
-| 内部逐段引擎及工作镜头标定 C | `fusion` 的逐段尺度对齐、链/分段、双镜头一致性和 `fusion.visual` 观测权重 |
+| 场景建图的尺度不确定度、重力和加速度零偏门限 | `backends.scene_map.mapping.alignment` |
+| 场景建图复用的轨迹求解设置 | `shared.alignment.step_frames`、`shared.alignment.minimum_pairs`、`shared.alignment.chains` 的断链/细分/最少区间对，以及 `shared.solver` 的线性求解设置 |
+| 场景固定地图任务的视觉权重 | `backends.scene_map.fusion` 和 `shared.visual.map_pose`，后者也用于 VIO 的尾段初值 |
+| 场景任务复用的惯性设置 | `shared.imu` 的噪声、初始零偏和先验，`shared.solver.lm_iterations` 和 `shared.zupt` |
+| 内部逐段引擎及工作镜头标定 C | `shared.alignment` 与 `shared.visual` 的公共模型，以及 `segment_engine` 的分段、双镜头一致性和选轮参数 |
 
-地图内容指纹记录场景门限与实际使用的轨迹参数。`fusion.imu` 的四项噪声默认值共用于 Basalt 标定和 GTSAM 融合；标定专家文件的 `imu` 可覆盖本次 B 的设置。`gravity` 中的标定 D 重力参考与 `fusion.gravity_m_s2` 各自生效。
+地图内容指纹记录场景门限与实际使用的轨迹参数。`shared.imu.noise` 的四项噪声默认值共用于 Basalt 标定和 GTSAM 融合；标定专家文件的 `imu` 可覆盖本次 B 的设置。`gravity` 中的标定 D 重力参考与 `shared.imu.gravity_m_s2` 各自生效。
 
 ## 固定精度和图像规格
 
@@ -247,7 +255,7 @@ C 固定 `input.mode: handheld` 并关闭 `poster.standalone_fusion`。环境镜
 
 ## 夹爪宽度处理参数
 
-宽度处理默认值位于 `reconstruction.yaml` 的 `measurements.gripper_width`。单次调整沿用相同字段路径。测量 JSON 只保存 anchors、verified 等实测信息。
+宽度处理默认值位于 `reconstruction/common.yaml` 的 `measurements.gripper_width`。单次调整沿用相同字段路径。测量 JSON 只保存 anchors、verified 等实测信息。
 
 | 参数 | 默认值 | 作用 |
 |---|---|---|
@@ -258,35 +266,36 @@ C 固定 `input.mode: handheld` 并关闭 `poster.standalone_fusion`。环境镜
 
 ## 重试与配置校验
 
-`retry.use_poster_position_support` 默认开启。完成海报融合且达到共享观测时刻门槛后，独立轨迹按 `retry.target_maximum_position_support_gap_s`（默认 2 s）判断是否重试。关闭海报支持或缺少统计证据时，使用 `retry.target_localized_fraction`。
+`segment_engine.retry.use_poster_position_support` 默认开启。完成海报融合且达到共享观测时刻门槛后，独立逐段引擎按 `standalone.retry.target_maximum_position_support_gap_s`（默认 2 s）判断是否重试。场景的独立海报后端用 `shared.poster.acceptance.maximum_position_support_gap_s`，也可用 `backends.poster_independent.maximum_position_support_gap_s` 单独覆盖。场景地图的单手回退用 `backends.scene_map.localization.maximum_visual_gap_s`。关闭海报支持或缺少统计证据时，使用 `segment_engine.retry.target_localized_fraction`。
 
-场景海报后端共用 `poster.acceptance.maximum_position_support_gap_s`（默认 2 s），`backends.poster_independent` 和 `backends.poster_vio` 各自可用同名字段覆盖。独立后端将生效值同时用于重试和最终验收，固定地图的单手局部回退用 `localization.maximum_visual_gap_s`。对具体 take 执行 `run --show-config --json` 时，`effective.position_support` 显示候选后端的门槛和来源。
+场景海报后端共用 `shared.poster.acceptance.maximum_position_support_gap_s`（默认 2 s），`backends.poster_independent` 和 `backends.poster_vio` 各自可用同名字段覆盖。`poster_independent` 在选轮前执行发布验收，要求实际融合海报、足够的有效海报位置观测及合格的共同位置支持缺口。`segment_engine.retry.use_poster_position_support` 控制重试采用的覆盖指标，发布验收始终生效。固定地图的单手局部回退用 `backends.scene_map.localization.maximum_visual_gap_s`。对具体 take 执行 `run --show-config --json` 时，`effective.position_support` 显示候选后端的门槛和来源。
 
-`attempts.json` 保留自然视觉的 `full_fraction`，另记 `coverage_basis`、`position_coverage_passed`、`position_support_fraction` 和 `maximum_position_support_gap_s`。多轮先比较放置数量，再比较覆盖是否通过及所用覆盖比例；原始视觉覆盖保留为后续比较依据。
+`attempts.json` 保留自然视觉的 `full_fraction`，另记 `coverage_basis`、`position_coverage_passed`、`position_support_fraction` 和 `maximum_position_support_gap_s`。`poster_independent` 另记发布门槛 `poster_acceptance_passed`。只有通过适用硬门槛的轮次参与排序，先比较放置数量，再比较重试覆盖指标和自然视觉覆盖。
 
-`retry.maximum_scale_change_ratio` 控制重建的尺度发散保护：每个有位置约束的分段比较融合后尺度与自身初始化，使用 `max(后/前, 前/后)`，不同地图之间不直接比较。默认上限为 2 倍，超限轮次重试且不得选中，全部轮次不合格则失败。它不修改融合解，也不放宽 `calibration.checks`；当前上限是粗粒度保护，尚需多录像检验。C 的运行记录保存每轮视觉、对齐和尺度诊断，验收前保留子进程工作数据。
+`segment_engine.retry.maximum_scale_change_ratio` 控制重建的尺度发散保护：每个有位置约束的分段比较融合后尺度与自身初始化，使用 `max(后/前, 前/后)`，不同地图之间不直接比较。默认上限为 2 倍，超限轮次重试且不得选中，全部轮次不合格则失败。它不修改融合解，也不放宽 `calibration.checks`；当前上限是粗粒度保护，尚需多录像检验。C 的运行记录保存每轮视觉、对齐和尺度诊断，验收前保留子进程工作数据。
 
-YAML 使用 1.2 规则，开关写 `true` / `false`，空覆盖写 `{}`；重复字段会报错。未知字段、类型错误、NaN/Inf、无效枚举、非正噪声/计数、越界比例、倒置的 WARN/FAIL 阈值都会在清理旧输出和执行算法之前报错。重建默认文件使用 `schema_version: 3`，专家文件可省略版本号。
+YAML 使用 1.2 规则，开关写 `true` / `false`，空覆盖写 `{}`。重复或未知字段、类型错误、NaN/Inf、越界数值和倒置的 WARN/FAIL 阈值会在运行前报错。`reconstruction/common.yaml` 和 `segment.yaml` 使用 `schema_version: 4`。专家文件可填写版本 4 或省略版本号。
 
 ## 视频处理参数
 
-`config/algorithms/reconstruction.yaml` 的 `video:` 统一配置 INSV → 镜头视频的处理。默认仍为：**3840×1920 原片 → 工作/环境镜头的已标定 1440×1440 区域 → 720×720 H.264 视频，每两帧取一帧**。单次覆盖写在 `--expert-config` 的 `video` 下。
+`config/algorithms/reconstruction/common.yaml` 的 `recording.video` 配置 INSV 到镜头视频的处理。默认从 **3840×1920 原片**裁出工作或环境镜头的已标定 **1440×1440** 区域，每两帧取一帧，输出 **720×720 H.264**。单次覆盖沿用 `recording.video` 路径。
 
 ```yaml
-video:
-  crop:
-    size_px: 1440
-    offset_x_px: 0
-    offset_y_px: 0
-  frame_step: 2
-  size_px: 720
-  resize_filter: area
-  codec: libx264
-  pixel_format: yuv420p
-  crf: 10
-  preset: medium
-  keep_audio: false
-  audio_bitrate_kbps: 128
+recording:
+  video:
+    crop:
+      size_px: 1440
+      offset_x_px: 0
+      offset_y_px: 0
+    frame_step: 2
+    size_px: 720
+    resize_filter: area
+    codec: libx264
+    pixel_format: yuv420p
+    crf: 10
+    preset: medium
+    keep_audio: false
+    audio_bitrate_kbps: 128
 ```
 
 | 参数 | 作用与约束 |
@@ -305,7 +314,7 @@ video:
 
 裁切和缩放会同步变换 SLAM 内参与遮手图：`f'=s·f`，`c'=s·(c−裁切起点+0.5)−0.5`。KB4 畸变系数、相机–IMU 外参、相机–TCP 几何保持原值。遮手图只生成本次运行的处理副本，注册表资产不改写。场景双路模式按套件选择环境镜头参数。内部逐段 `dual` 通过 `--rear-calibration` 选择本设备的登记参数，省略时尝试从 INSV 工厂参数推导。
 
-取帧步长同步用于时间戳提取、MP4 编码、SLAM 帧率、独立融合时间网格、结果中的原片帧号。`fusion.alignment.step_frames`、`fusion.solver.node_stride` 等仍按处理后的帧数计数，改变取帧密度后需结合录像长度核验求解质量。
+取帧步长同步用于时间戳提取、MP4 编码、SLAM 帧率、独立融合时间网格、结果中的原片帧号。`shared.alignment.step_frames`、`shared.solver.node_stride` 等仍按处理后的帧数计数，改变取帧密度后需结合录像长度核验求解质量。
 
 ORB 引擎要求 `Camera.fps` 为整数，因此自动使用四舍五入且至少为 1 的标称帧率（默认 30）；MP4 编码、时间戳和融合仍使用精确帧率（默认 `30000/1001`），无需额外配置。
 
@@ -326,7 +335,7 @@ ORB 引擎要求 `Camera.fps` 为整数，因此自动使用四舍五入且至�
 
 ## 改参数或改代码后如何处理已有结果
 
-**轨迹**：改变重建数值、重试条件、输入或设备资产会重新计算；改变 `reporting.warnings` 只重新评估已有指标、更新配置记录和报告，轨迹文件保持原样。证据缺失会重算。改了算法代码或重编引擎不会自动失效，需要用 `umi-scene run --force` 重算。
+**轨迹**：改变重建数值、重试条件、输入或设备资产会重新计算；改变 `segment_engine.reporting.warnings` 只重新评估已有指标、更新配置记录和报告，轨迹文件保持原样。证据缺失会重算。改了算法代码或重编引擎不会自动失效，需要用 `umi-scene run --force` 重算。
 
 **标定**在输入匹配时自动续跑或复用结果。用 `--recompute` 建立新版本。只有验收规则变化时，可以单独重新验收。
 
@@ -382,9 +391,9 @@ backend:
 `poster.detection` 控制环境标签检测，省略时随用途开启，显式写 `false` 与已开启的用途冲突。`map.poster_scale` 声明建图阶段的海报尺度用途（`off` / `diagnose` / `correct`），`backend.scene_map.poster_constraint` 声明地图定位的海报融合与初值选择（`staged` / `joint` / `off`）。
 省略 `poster` 时，会为需要海报的后端使用项目布局。纯地图任务可以省略海报，显式 `poster: null` 表示不提供布局。使用其他海报或只做建图尺度诊断时，在 `poster.layout` 声明实际布局。
 
-算法默认文件 `reconstruction.yaml` 中的 `poster.detection` 设定标签最短投影边长和最少观测时刻数；`poster.corners` 设定像素噪声和 Huber 阈值；`poster.acceptance` 设定重投影 RMS 及位置、旋转的局部线性化标准差门槛。位置和旋转的默认上限分别是 0.05 m 和 5°。合格的海报时刻可用于评估共同位置支持缺口。输出字段与实测流程见[海报约束质量](../docs/03-场景处理.md#海报约束质量和双手实测评估)。
+算法默认文件 `reconstruction/common.yaml` 中的 `shared.poster.detection` 设定标签最短投影边长和最少观测时刻数；`shared.poster.corners` 设定像素噪声和 Huber 阈值；`shared.poster.acceptance` 设定重投影 RMS 及位置、旋转的局部线性化标准差门槛。位置和旋转的默认上限分别是 0.05 m 和 5°。合格的海报时刻可用于评估共同位置支持缺口。输出字段与实测流程见[海报约束质量](../docs/03-场景处理.md#海报约束质量和双手实测评估)。
 
-`poster.culling.maximum_fraction` 默认 0.15，数量上限向上取整，0 关闭；`poster.culling.minimum_retained_time_fraction` 默认 0.8。各轮按每手的原始观测集合累计验收数量、最少观测时刻和时间跨度。场景单次覆盖这些共享门槛也会影响本次建图尺度估计。记录中的 `culling` 保留阶段、预算及移除的观测。
+`shared.poster.culling.maximum_fraction` 默认 0.15，数量上限向上取整，0 关闭；`shared.poster.culling.minimum_retained_time_fraction` 默认 0.8。各轮按每手的原始观测集合累计验收数量、最少观测时刻和时间跨度。场景单次覆盖这些共享门槛也会影响本次建图尺度估计。记录中的 `culling` 保留阶段、预算及移除的观测。
 
 `poster.rear_rotation_refinement` 默认启用，先验为 0.2 rad，修正角上限为 5°。关闭时严格固定标定外参；开启后超限则拒绝融合。结果的 `rear_rotation_refinement` 记录配置与实际修正角。
 
@@ -392,17 +401,17 @@ backend:
 
 任务估计后端由 `collection.yaml.backend.mode` 选择。每个 take 可在 `tasks.<take>.backend` 覆盖个别字段。数值门槛的优先级由低到高为算法默认值、批次、任务和显式 `--expert-config`。后端顺序、字段与默认值见[估计后端说明](../docs/03-场景处理.md#选择轨迹估计后端)。
 
-`backends.poster_vio` 的 `initialization` 管理整板/标签子集假设上限；`keyframes` 管理时间、位移和旋转选帧，间隔为 0 时保留逐帧对照；`frontend` 管理活动点、轨迹预算、长度、几何筛选及有界重关联；`culling` 管理短求解迭代、热启动重求解轮数和累计剔除预算；`holdout` 管理标签/自然像素留出及验收 RMS。专家选项 `backends.poster_vio.per_tag_huber: true` 在同帧批量投影时为每个标签的四个角点独立计算一个 Huber 权重，默认关闭。默认值见 `algorithms/reconstruction.yaml`，完整覆盖示例及证据边界见[场景处理](../docs/03-场景处理.md#选择轨迹估计后端)。
+`backends.poster_vio` 的 `initialization` 管理整板/标签子集假设上限；`keyframes` 管理时间、位移和旋转选帧，间隔为 0 时保留逐帧对照；`frontend` 管理活动点、轨迹预算、长度、几何筛选及有界重关联；`culling` 管理短求解迭代、热启动重求解轮数和累计剔除预算；`holdout` 管理标签/自然像素留出及验收 RMS。专家选项 `backends.poster_vio.per_tag_huber: true` 在同帧批量投影时为每个标签的四个角点独立计算一个 Huber 权重，默认关闭。默认值见 `algorithms/reconstruction/poster_vio.yaml`，完整覆盖示例及证据边界见[场景处理](../docs/03-场景处理.md#选择轨迹估计后端)。
 
 `map.poster_scale: correct` 开启建图阶段的标签尺度诊断和尺度融合（`diagnose` 只记录证据不修正），会同时开启环境标签检测，并要求建图设备可解析正式 rear 参数或工厂兜底。修正后固定新尺度重求重力与零偏，并复核整图惯性残差；地图形状保持原值。
 
 `mapping.poster_scale` 的 `minimum_observation_times`、`minimum_motion_m`、`minimum_board_extent_m` 和 `maximum_relative_std` 控制海报尺度可用性。`imu_std_floor` 和 `poster_std_floor` 是相对标准差下限，`compatibility_sigma` 和 `maximum_scale_difference` 同时约束两种尺度的差异。共享几何门槛用于海报位姿，建图尺度门槛用于地图尺度修正，`backends.poster_vio.minimum_training_observation_times` 用于每手联合估计的训练观测。
 
-批次后端使用 `backend.mode`、`backend.poster_vio.base_tag` 和 `backend.scene_map.poster_constraint`。单次算法覆盖使用 `reconstruction.yaml` 中的字段路径。
+批次后端使用 `backend.mode`、`backend.poster_vio.base_tag` 和 `backend.scene_map.poster_constraint`。单次算法覆盖从 `backends` 下选择对应后端。
 
 
 ### 独立模式与回退的海报配置
 
-内部独立引擎用 `--tag-layout` 指定布局，`--rear-calibration measured|factory` 选择本设备 rear 来源，省略时尝试工厂兜底；环境海报数值默认来自 `reconstruction.yaml` 的 `poster`。逐段引擎用 `--config` 文件覆盖该组中本引擎使用的字段，以 `poster.standalone_fusion: true` 启用海报优化。默认只诊断，启用需要本设备可用的 rear 参数（正式标定或工厂兜底）；这些参数不自动开启标定 C 验证或共享场景的标签约束。
+内部独立引擎用 `--tag-layout` 指定布局，`--rear-calibration measured|factory` 选择本设备 rear 来源，省略时尝试工厂兜底；环境海报数值默认来自 `reconstruction/common.yaml` 的 `shared.poster`。逐段引擎用 `--config` 文件覆盖该组中本引擎使用的字段，以 `standalone.poster_fusion: true` 启用海报优化。默认只诊断，启用需要本设备可用的 rear 参数（正式标定或工厂兜底）；这些参数不自动开启标定 C 验证或共享场景的标签约束。
 
-地图定位的海报配置位于 `backend.scene_map.poster_constraint`。`staged` 先完成地图与 IMU 基线，再进行海报优化。`joint` 用视觉种子构建包含地图先验、IMU 和海报角点的最终图。默认采用 `staged`。共享海报几何和建图参数分别位于 `reconstruction.yaml` 的 `poster` 和 `mapping`。单手地图定位失败后的独立回退沿用地图任务的海报开关。
+地图定位的海报配置位于 `backend.scene_map.poster_constraint`。`staged` 先完成地图与 IMU 基线，再进行海报优化。`joint` 用视觉种子构建包含地图先验、IMU 和海报角点的最终图。默认采用 `staged`。共享海报几何在 `reconstruction/common.yaml` 的 `shared.poster`，建图默认值在 `reconstruction/scene_map.yaml` 的 `mapping`。单手地图定位失败后的独立回退沿用地图任务的海报开关。

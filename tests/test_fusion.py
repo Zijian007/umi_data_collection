@@ -10,6 +10,7 @@ import io
 import json
 import os
 import tempfile
+import time
 import unittest
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -22,6 +23,7 @@ from scipy.spatial.transform import Rotation
 from scipy.spatial.transform import Rotation as Rot
 
 from umi.config import loader as config
+from umi.core.geometry import imu_from_camera
 from umi.core.timing import (
     canonical_to_video_seconds,
     euroc_ns_to_seconds,
@@ -31,8 +33,8 @@ from umi.core.timing import (
 from umi.devices import calibration_assets
 from umi.perception.poster.geometry import camera_model, transform
 from umi.perception.poster.quality import cull_decision, position_support_metrics
-from umi.reconstruction.backends.scene_map.run import visual_gaps
-from umi.reconstruction.estimation import mapping
+from umi.reconstruction.backends.scene_map import visual_gaps
+from umi.reconstruction import mapping
 from umi.reconstruction.estimation.constraint_quality import (
     maximum_support_gap,
     position_support,
@@ -42,13 +44,18 @@ from umi.reconstruction.estimation.constraint_quality import (
 from umi.reconstruction.estimation.fixed_map import fusion, geometry
 from umi.reconstruction.estimation.fixed_map.geometry import VisualObservations
 from umi.reconstruction.estimation.fixed_map.parameters import FixedMapParameters, MapPlacementParameters
-from umi.reconstruction.estimation.fusion import alignment
+from umi.reconstruction.estimation.fusion import alignment, graph as fusion_graph
 from umi.reconstruction.estimation.fusion.alignment import (
+    AlignmentResult,
     AlignmentError,
     align_lenses,
     estimate_lens_alignment,
     sampling_stability,
 )
+from umi.reconstruction.estimation.fusion.data import MapAnchor, MapPlacements, TrajectorySeed
+from umi.reconstruction.estimation.fusion.poster_initialization import PosterSeed
+from umi.reconstruction.estimation.fusion.poster_localization import write_map_pose_priors
+from umi.reconstruction.estimation.inertial import camera_gyro_rotations
 from umi.scene import publication as trajectory_writers
 from umi.scene.collection import configuration as scene_inputs
 from umi.scene.collection.configuration import load_scene_parameters
@@ -72,12 +79,232 @@ GOLDEN = [
 ]
 
 
+def _fusion_progress_test_initializer(*args):
+    from umi.reconstruction.segment import fusion_runner
+
+    fusion_runner._initialize_worker(*args)
+    fusion_runner.fuse = _fusion_progress_worker
+
+
+def _fusion_progress_worker(acknowledged, *, progress):
+    from umi.reconstruction.segment.fusion_runner import FusionFailed
+
+    progress('running')
+    deadline = time.monotonic() + 5
+    while not acknowledged.exists():
+        if time.monotonic() >= deadline:
+            raise FusionFailed('parent did not receive live progress')
+        time.sleep(.01)
+    progress('final stage')
+    print('worker diagnostic', flush=True)
+    raise FusionFailed('original worker error')
+
+
 def fusion_motion(t):
     t = np.asarray(t)
     rotation = Rot.from_rotvec(np.stack([.12*np.sin(.7*t), .17*np.cos(.9*t), .16*np.sin(1.1*t)], axis=-1)).as_matrix()
     position = np.stack([.2*np.sin(.9*t), .14*np.cos(.7*t), .12*np.sin(1.3*t)], axis=-1)
     acceleration = np.stack([-.2*.9**2*np.sin(.9*t), -.14*.7**2*np.cos(.7*t), -.12*1.3**2*np.sin(1.3*t)], axis=-1)
     return rotation, position, acceleration
+
+
+class PosterLocalizationTests(unittest.TestCase):
+    def test_hints_use_each_maps_scale_and_only_bracketed_frames(self):
+        frame_rate = 30000 / 1001
+        times = np.arange(60) / frame_rate
+        body = np.broadcast_to(np.eye(4), (len(times), 4, 4)).copy()
+        body[:, :3, :3], body[:, :3, 3], _ = fusion_motion(times)
+        supported = np.r_[np.arange(1, 28), np.arange(38, 58)]
+        seed = PosterSeed(TrajectorySeed(times, body, np.zeros((len(times), 3))), times[supported],
+                          np.zeros(3), np.zeros(3), {})
+        calibration = dict(q_xyzw=Rotation.from_euler('y', .27).as_quat(), p=[.04, -.01, .02])
+        camera = body @ imu_from_camera(calibration)
+        keyframes = supported[::3]
+        expected = {}
+        maps = []
+        for index, scale in ((0, .45), (1, 1.7), (2, .7)):
+            rotation = Rotation.from_euler('z', .41 * (index + 1)).as_matrix()
+            translation = np.array([-.5, .2, .1]) * (index + 1)
+            positions = (camera[:, :3, 3] - translation) @ rotation / scale
+            quaternions = Rotation.from_matrix(rotation.T @ camera[:, :3, :3]).as_quat()
+            expected[index] = positions, quaternions
+            if index == 2:
+                positions = positions.copy()
+                positions[keyframes[2::4], 0] += .25
+            maps.append(dict(index=index, keyframes=[
+                dict(time=times[k], position=positions[k], quaternion=quaternions[k]) for k in keyframes]))
+        params = config.load('trajectory').values.fusion
+        with tempfile.TemporaryDirectory() as directory:
+            paths, evidence = write_map_pose_priors(maps, seed, calibration, frame_rate, params, Path(directory))
+            self.assertEqual(set(paths), {0, 1})
+            self.assertEqual(evidence[2]['status'], 'placement_rejected')
+            for index, path in paths.items():
+                rows = np.loadtxt(path)
+                positions, quaternions = expected[index]
+                np.testing.assert_array_equal(rows[:, 0], supported)
+                np.testing.assert_allclose(rows[:, 1:4], positions[supported], atol=1e-8)
+                delta = Rotation.from_quat(rows[:, 4:8]).inv() * Rotation.from_quat(quaternions[supported])
+                np.testing.assert_allclose(delta.magnitude(), 0, atol=1e-8)
+
+
+class MappingGyroTests(unittest.TestCase):
+    def test_rotation_uses_camera_axes_and_restarts_after_an_imu_gap(self):
+        times = np.r_[np.arange(0, 41), np.arange(75, 121)] / 1000
+        imu = np.zeros((len(times), 7))
+        imu[:, 0], imu[:, 3] = times, 2.
+        exposures = np.array([-.01, .01, .03, .05, .08, .11, .13])
+        extrinsic = Rotation.from_euler('x', .3).as_matrix()
+        rows, _ = camera_gyro_rotations(exposures, imu, extrinsic, config.load('trajectory').values.fusion)
+        np.testing.assert_array_equal(rows[:, :2], [[1, 0], [2, 0], [4, 1], [5, 1]])
+        matrix = Rotation.from_quat(rows[:, 2:]).as_matrix()
+        np.testing.assert_allclose(matrix[[0, 2]], np.repeat(np.eye(3)[None], 2, axis=0), atol=1e-12)
+        expected = extrinsic.T @ Rotation.from_rotvec([[0., 0., .04], [0., 0., .06]]).as_matrix() @ extrinsic
+        np.testing.assert_allclose(matrix[[1, 3]], expected, atol=1e-12)
+
+
+def zupt_motion_fixture():
+    """Known metric map, weak visual drift, and motion nearly invisible to the IMU gate."""
+    frame_rate = 30000 / 1001
+    times = np.arange(241) / frame_rate
+    imu_times = np.arange(0., times[-1] + .01, .002)
+    ramp = .15
+
+    def ramp_terms(t, onset):
+        x = np.clip((t - onset) / ramp, 0., 1.)
+        return (ramp * (x**3 - .5*x**4) + np.maximum(t - onset - ramp, 0.),
+                x*x*(3. - 2.*x), 6.*x*(1. - x)/ramp)
+
+    def motion(t, start, end, rate):
+        return tuple(rate*(a-b) for a, b in zip(ramp_terms(t, start), ramp_terms(t, end)))
+
+    translation, velocity, _ = motion(times, 2., 4., .02)
+    yaw, _, _ = motion(times, 4.2, 6., .026)
+    imu_yaw, yaw_rate, _ = motion(imu_times, 4.2, 6., .026)
+    _, _, acceleration = motion(imu_times, 2., 4., .02)
+    gyro = np.column_stack([0.*imu_times, 0.*imu_times, yaw_rate])
+    acc = Rot.from_rotvec(imu_yaw[:, None] * [0., 0., 1.]).inv().apply(
+        np.column_stack([acceleration, 0.*imu_times, np.full_like(imu_times, 9.81)]))
+    rotations = Rot.from_rotvec(yaw[:, None] * [0., 0., 1.]).as_matrix()
+    visual_positions = np.column_stack([translation + .003*times + .0003*np.sin(14.*times), 0.*times, 0.*times])
+    lever, scale = np.array([.04, -.03, .02]), .4
+    centers = (visual_positions - rotations @ lever) / scale
+    gap_start, gap_end, seam = np.searchsorted(times, [6.75, 7.10, 7.5])
+    chains = [(0, gap_start-1), (gap_end, seam-1), (seam, len(times)-1)]
+    frames = [k for start, end in chains for k in range(start, end+1)]
+    front = dict(obs={k: (centers[k], rotations[k]) for k in frames}, chains=chains, lever=lever, R_CI=np.eye(3))
+    rear = dict(obs={}, chains=[], lever=np.zeros(3), R_CI=np.eye(3))
+    aligned = AlignmentResult(dict(front=front, rear=rear), times, imu_times, gyro, acc, np.zeros(3),
+                              dict(front=dict(ba=np.zeros(3), pos_rms=.003), rear=None), 'front', {})
+    chain_placements = {i: dict(kind='full', s=scale, R=np.eye(3), t=np.zeros(3)) for i in range(len(chains))}
+    segments = [dict(chain=i, sid=i, k0=start, k1=end) for i, (start, end) in enumerate(chains)]
+    placements = MapPlacements(dict(front=chain_placements, rear={}), dict(front={}, rear={}),
+                               dict(front=segments, rear=[]), dict(enumerate(zip(rotations, visual_positions))),
+                               MapAnchor('front', 0), [], [])
+    phases = {'static': (.4, 1.5), 'slow': (2.4, 3.7), 'rotation': (4.6, 5.7),
+              'visual_gap': (6.8, 7.0), 'map_switch': (7.45, 7.55)}
+    return aligned, placements, frame_rate, velocity, phases
+
+
+class VisualZuptTests(unittest.TestCase):
+    def test_same_chain_visual_confirmation_filters_imu_candidates(self):
+        aligned, placements, frame_rate, _, phases = zupt_motion_fixture()
+        parameters = config.load('trajectory').values.zupt
+        candidates = fusion_graph._detect_zero_velocity_frames(
+            aligned.video_times_s, aligned.imu_video_times_s, aligned.gyro, aligned.acc,
+            aligned.initial_gyro_bias, parameters)
+        confirmed, covered = fusion_graph._confirm_visual_stationarity(
+            aligned, placements, candidates, parameters.half_window_s, frame_rate)
+        self.assertLess(covered, candidates.sum())
+        for name, (start, end) in phases.items():
+            mask = (aligned.video_times_s >= start) & (aligned.video_times_s <= end)
+            with self.subTest(phase=name):
+                self.assertTrue(mask.any())
+                self.assertTrue(candidates[mask].all())
+                np.testing.assert_array_equal(confirmed[mask], name == 'static')
+        self.assertFalse(confirmed[0] or confirmed[-1])
+
+    def test_visual_zupt_reduces_static_drift_and_avoids_slow_motion_compression(self):
+        from gtsam.symbol_shorthand import V, X
+
+        aligned, placements, _, velocity, phases = zupt_motion_fixture()
+        parameters = config.load('trajectory').values
+        parameters = replace(parameters, fusion=replace(parameters.fusion, node_stride=3))
+        quiet = lambda *args, **kwargs: None
+        off = fusion_graph.optimize_fused_trajectory(aligned, placements,
+            replace(parameters, zupt=replace(parameters.zupt, enabled=False)), log=quiet)
+        imu_only = fusion_graph.optimize_fused_trajectory(aligned, placements, parameters, log=quiet)
+        visual = fusion_graph.optimize_fused_trajectory(aligned, placements, parameters, log=quiet,
+                                                       confirm_zupt_visually=True)
+        static_start, static_stop = phases['static']
+        slow_start, slow_stop = phases['slow']
+        static = [k for k in visual.nodes if static_start <= aligned.video_times_s[k] <= static_stop]
+        slow = [k for k in visual.nodes if slow_start <= aligned.video_times_s[k] <= slow_stop]
+
+        def static_speed_rms(solution):
+            speeds = np.stack([solution.values.atVector(V(k)) for k in static])
+            return np.sqrt(np.mean(np.sum(speeds**2, axis=1)))
+
+        def slow_displacement_error(solution):
+            start, stop = slow[0], slow[-1]
+            expected = velocity[start] * (aligned.video_times_s[stop] - aligned.video_times_s[start])
+            displacement = (solution.values.atPose3(X(stop)).translation()
+                            - solution.values.atPose3(X(start)).translation())
+            return abs(displacement[0] - expected)
+
+        self.assertGreater(visual.evidence['zupt_confirmation']['factor_nodes'], 0)
+        self.assertLess(static_speed_rms(visual), static_speed_rms(off))
+        self.assertLess(slow_displacement_error(visual), slow_displacement_error(imu_only))
+
+
+@unittest.skipUnless(importlib.util.find_spec('gtsam'), 'GTSAM environment required')
+class ConditionalRecoveryTests(unittest.TestCase):
+    def test_fixes_both_endpoint_states_and_splits_at_an_off_grid_poster_node(self):
+        import gtsam
+        from gtsam.symbol_shorthand import B, V, X
+
+        from umi.reconstruction.estimation.fusion.solver import _recover_states
+
+        parameters = config.load('trajectory').values.fusion
+        imu_times = np.arange(-.002, 1.052, .001)
+        acc = np.tile([0., 0., parameters.gravity_m_s2], (len(imu_times), 1))
+        gyro = np.zeros_like(acc)
+        preintegration = fusion_graph._preintegration_parameters(parameters)
+        edges = []
+
+        def integrate(before, after, bias):
+            edges.append((before, after))
+            return fusion_graph._preintegrate_between(imu_times, acc, gyro, preintegration, before, after, bias)
+
+        video_times = np.array([0., .126, .21, .42, .63, .704, .844, 1.05])
+        for poster in (False, True):
+            with self.subTest(poster=poster):
+                edges.clear()
+                nodes = [0, 20 if poster else 3, 7]
+                values = gtsam.Values()
+                for node, position, gyro_bias in zip(nodes, (0., .04, .01), (0., 0., .002)):
+                    values.insert(X(node), gtsam.Pose3(gtsam.Rot3(), np.array([position, 0., 0.])))
+                    values.insert(V(node), np.zeros(3))
+                    values.insert(B(node), gtsam.imuBias.ConstantBias(np.zeros(3), np.array([0., 0., gyro_bias])))
+                node_times = dict(zip(nodes, (0., .42, 1.05))) if poster else None
+                output_times = video_times.copy()
+                if poster:
+                    output_times[3] = .45
+                optimized = fusion_graph.TrajectoryOptimizationResult(values, nodes, integrate, {}, {}, 0., node_times)
+                states = _recover_states(output_times, optimized, parameters.lm_iterations)
+
+                self.assertEqual(set(states), set(range(len(video_times))))
+                for frame in ((0, 7) if poster else (0, 3, 7)):
+                    np.testing.assert_array_equal(states[frame].pose.matrix(), values.atPose3(X(frame)).matrix())
+                    np.testing.assert_array_equal(states[frame].velocity, values.atVector(V(frame)))
+                    np.testing.assert_array_equal(states[frame].bias.vector(), values.atConstantBias(B(frame)).vector())
+                # At 30% of the first interval the constrained motion has already accelerated.
+                # Linear endpoint correction would put it at 12 mm with zero velocity.
+                self.assertAlmostEqual(states[1].pose.x(), .0091, delta=.001)
+                self.assertGreater(states[1].velocity[0], .09)
+                self.assertLess(states[4].velocity[0], -.045)
+                self.assertGreater(states[4].bias.gyroscope()[2], .0004)
+                self.assertFalse(any(before < .42 < after for before, after in edges))
+                self.assertIn((.42, .45 if poster else .63), edges)
 
 
 @unittest.skipUnless(importlib.util.find_spec('gtsam'), 'GTSAM environment required')
@@ -114,6 +341,25 @@ class FrontImuTimingTests(unittest.TestCase):
 
 
 class FusionRegressionTests(unittest.TestCase):
+    def test_worker_reports_live_progress_and_preserves_failure(self):
+        from umi.reconstruction.segment import fusion_runner
+
+        log = self.root / 'fuse.log'
+        acknowledged = self.root / 'acknowledged'
+        messages = []
+
+        def report(message):
+            messages.append(message)
+            if message == 'running':
+                acknowledged.touch()
+                raise OSError('terminal closed')
+
+        with patch.object(fusion_runner, '_initialize_worker', _fusion_progress_test_initializer):
+            with self.assertRaisesRegex(fusion_runner.FusionFailed, 'original worker error'):
+                fusion_runner.execute(acknowledged, log=log, environment=dict(os.environ), progress=report)
+        self.assertEqual(messages, ['running', 'final stage'])
+        self.assertEqual(log.read_text(), 'worker diagnostic\n')
+
     @unittest.skipUnless(importlib.util.find_spec('gtsam'), 'GTSAM environment required')
     def test_map_center_comparison_uses_metric_lever_and_tracked_frames(self):
         from umi.reconstruction.estimation.fusion.solver import _map_center_difference
@@ -169,10 +415,12 @@ class FusionRegressionTests(unittest.TestCase):
             refine_initialization=refine)
         log = self.root/'fuse.log'
         try:
-            fusion_runner.execute(request, log=log, environment=dict(os.environ))
+            solved = fusion_runner.execute(request, log=log, environment=dict(os.environ))
         except fusion_runner.FusionFailed as error:
             self.fail(f'{error}\n{log.read_text()[-1500:]}')
-        return np.loadtxt(output/'traj_tum.txt'), json.loads((output/'fuse_info.json').read_text())
+        tum = np.loadtxt(output/'traj_tum.txt')
+        np.testing.assert_array_equal(solved.tum, tum)
+        return tum, json.loads((output/'fuse_info.json').read_text())
 
     def test_explicit_refinement_reaches_graph_and_published_evidence(self):
         trajectory, info = self.solve(config.load('trajectory').values, refine=True)
@@ -193,6 +441,9 @@ class FusionRegressionTests(unittest.TestCase):
         self.assertEqual(info['stage1']['front']['chains'][0]['k'], [0, 240])
         self.assertTrue(info['stage1']['front']['chains'][0]['good'])
         self.assertEqual(info['nodes'], 49)
+        self.assertEqual(info['optimizer']['relative_error_tol'], 1e-4)
+        self.assertIn('fusion_lm_iteration', (self.root/'fuse.log').read_text())
+        self.assertEqual(info['recovery'], 'conditional_inertial_optimization_fixed_endpoints')
         scale = info['scale_consistency']
         self.assertEqual(scale['status'], 'valid')
         self.assertGreaterEqual(scale['maximum_change_ratio'], 1.)

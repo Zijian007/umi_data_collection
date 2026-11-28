@@ -6,14 +6,11 @@ import csv
 import json
 import os
 import shutil
-import threading
 import time
 import traceback
-from contextlib import suppress
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -32,9 +29,10 @@ from umi.infra.file_store import publish_link, read_yaml, write_json
 from umi.perception.gripper.width_estimation import SOURCE_NAMES
 from umi.perception.gripper.width_estimation import WidthResult
 from umi.reconstruction.estimation.constraint_quality import position_support
-from umi.reconstruction.estimation.models import FusedTrajectory
-from umi.scene import cleanup, episodes
+from umi.reconstruction.estimation.models import BackendResult, FusedTrajectory
+from umi.scene import cleanup, task_state
 from umi.scene.collection.configuration import SceneOverrides
+from umi.scene.inputs.identity import stored_reuse_identity
 from umi.store import layout
 from umi.store.models import ArmExecutionResult, ArmTrajectory, Episode, EpisodeRunResult, PreparedRecording, TaskInputs
 from umi.store.result_io import (
@@ -63,7 +61,7 @@ class PublicationResult:
     quality: dict
 
 
-def _verify_frozen_inputs(episode, input_identity: dict, *, batch_map) -> None:
+def _verify_frozen_inputs(episode, input_identity: dict, *, batch_map, map_attempt_episode=None) -> None:
     """Reject publication if source inputs changed after reconstruction started."""
     current_recordings = {
         arm: recording_identity(video) for arm, video in episode.recordings.items()
@@ -74,7 +72,7 @@ def _verify_frozen_inputs(episode, input_identity: dict, *, batch_map) -> None:
     if episode.scene.reconstruction_mode == 'scene_map' or input_identity.get('auto_map_attempted'):
         from umi.scene.inputs.identity import map_epoch_identity
 
-        current_epoch_plan = map_epoch_identity(episode, selected_only='auto_order' in input_identity
+        current_epoch_plan = map_epoch_identity(map_attempt_episode or episode, selected_only='auto_order' in input_identity
                                                or input_identity.get('selected_epoch_identity', False))
         if input_identity.get('map_epoch_plan_sha256') != current_epoch_plan:
             raise ValueError('地图 epoch 清单在任务期间发生变化，拒绝发布')
@@ -85,7 +83,7 @@ def _verify_frozen_inputs(episode, input_identity: dict, *, batch_map) -> None:
 
 def publish_episode(resolved: ResolvedInputs, *, result: ArmExecutionResult,
                     run_dir: Path, map_path: Path | None, cache_audit, preflight: dict | None,
-                    started: float, started_at: float) -> PublicationResult:
+                    started: float) -> PublicationResult:
     """Write reports, atomically publish the result, and record task state."""
     episode, input_identity = resolved.episode, resolved.identity
     common_interval_s = write_bimanual_trajectory(result.tracks, run_dir)
@@ -94,6 +92,7 @@ def publish_episode(resolved: ResolvedInputs, *, result: ArmExecutionResult,
         episode,
         input_identity,
         batch_map=resolved.batch_map,
+        map_attempt_episode=resolved.map_attempt_episode,
     )
     quality = quality_summary({arm: track.metadata for arm, track in result.tracks.items()},
                               result.coordinate_record, common_interval_s)
@@ -116,8 +115,7 @@ def publish_episode(resolved: ResolvedInputs, *, result: ArmExecutionResult,
     is_local = is_local_scene(result.coordinate_record)
     output = episode.root / 'local_results' if is_local else episode.output
     publish_link(result_paths(run_dir).published, output)
-    episodes.record_attempt(episode, 'local_ok' if is_local else 'ok', run_dir)
-    cleanup.after_task(episode.root, used_since=started_at)
+    task_state.record_attempt(episode, 'local_ok' if is_local else 'ok', run_dir)
     return PublicationResult(output=output, is_local=is_local, common_interval_s=common_interval_s, quality=quality)
 
 
@@ -138,8 +136,9 @@ def reuse_episode(episode: Episode, input_identity: dict, *, force: bool, identi
         old = read_result(paths)
         if old.get('kind') not in kinds or old.get('schema_version') not in SCENE_RESULT_VERSIONS:
             continue
-        current = identify_previous(old) if identify_previous is not None else input_identity
-        if old.get('inputs') != current:
+        stored = stored_reuse_identity(old.get('inputs') or {})
+        current = identify_previous(old) if identify_previous is not None else input_identity.get('reuse_identity')
+        if not stored or stored.get('retry_preparation') or stored != current:
             continue
         if 'runtime_overrides' in old:
             try:
@@ -151,8 +150,8 @@ def reuse_episode(episode: Episode, input_identity: dict, *, force: bool, identi
             continue
         reference = scene_reference(old)
         validate_result(paths, old)
-        episodes.record_attempt(episode, status, paths.run)
-        restore_task_log_link(episode.root)
+        task_state.record_attempt(episode, status, paths.run)
+        task_state.restore_task_log_link(episode.root)
         cleanup.after_task(episode.root)
         quality = quality_summary(old['arm_results'], old['scene'], old['common_interval_s'])
         return dict(status=status, output=str(output), frame_id=reference['frame_id'],
@@ -168,42 +167,11 @@ def record_failure(episode: Episode, directory: Path, reason: str, *, identity: 
     if any(output.is_symlink() and result_paths(output).run == directory.resolve()
            for output in (episode.output, episode.root / 'local_results')):
         return directory
-    key = artifact_identity.canonical_hash(dict(inputs=identity, reason=reason, status=status))[:24]
-    target = directory.parent / ('failed-' + key)
     write_json(directory / 'error.json', dict(status=status, reason=reason,
         traceback=''.join(traceback.format_exception(error)) if error else '', input_hash=artifact_identity.canonical_hash(identity),
         inputs=identity, batch=read_yaml(episode.session.path)))
-    if target.exists():
-        shutil.rmtree(directory)
-    else:
-        directory.rename(target)
-        _rewrite_failure_paths(target, directory, target)
-    episodes.record_attempt(episode, status, target)
-    cleanup.after_task(episode.root)
-    return target
-
-
-def _rewrite_failure_paths(root: Path, old_root: Path, new_root: Path) -> None:
-    """Keep diagnostics valid after a failed run receives its stable name.
-
-    External reconstruction stages receive the temporary run directory as an
-    absolute path and persist it in logs and JSON.  Failed runs are renamed to
-    ``failed-<content hash>`` during collection, so those references need to
-    follow the rename for the retained evidence to remain directly usable.
-    """
-    old_text, new_text = str(old_root), str(new_root)
-    if old_text == new_text:
-        return
-    text_suffixes = {'.json', '.log', '.txt', '.csv', '.yaml', '.yml'}
-    for path in root.rglob('*'):
-        if not path.is_file() or path.is_symlink() or path.suffix.lower() not in text_suffixes:
-            continue
-        try:
-            content = path.read_text(encoding='utf-8')
-        except (OSError, UnicodeError):
-            continue
-        if old_text in content:
-            path.write_text(content.replace(old_text, new_text), encoding='utf-8')
+    task_state.record_attempt(episode, status, directory)
+    return directory
 
 
 def write_diagnostics(directory: Path, tracks: dict[str, ArmTrajectory],
@@ -294,7 +262,10 @@ def _format_episode_report(episode: Episode, tracks: dict[str, ArmTrajectory], *
         strategy = {'audio_auto': '自动音频', 'manual': '人工偏移',
                     'assumed_simultaneous': '假设同时开录'}[method]
         if method == 'audio_auto' and sync.get('algorithm'):
-            strategy += f'（{sync["algorithm"]}）'
+            algorithm = sync['algorithm']
+            if fallback := sync.get('fallback'):
+                algorithm += f' → {fallback["algorithm"]}'
+            strategy += f'（{algorithm}）'
         status = '已确认' if sync['confirmed'] else '待确认'
         offsets = '，'.join(f'{hand[arm]} {value:+.3f} s' for arm, value in video_offsets_s.items())
         lines.append(f'同步：{strategy} · {status} · {offsets}')
@@ -342,7 +313,12 @@ def _format_episode_report(episode: Episode, tracks: dict[str, ArmTrajectory], *
                 lines.append(f'{lens} 反向定位补入 {recovery["added_frames"]} 帧')
         measurements = []
         if arm in tag_distance:
-            measurements.append(f'标签中心间距有效 {tag_distance[arm]["valid_fraction"]:.1%}')
+            distance = tag_distance[arm]
+            text = f'标签中心间距有效 {distance["valid_fraction"]:.1%}'
+            if not distance.get('acceptance', {}).get('passed', True):
+                longest = distance['acceptance']['longest_missing_frames']
+                text += f'（未通过测距验收，最长缺失 {longest} 帧）'
+            measurements.append(text)
         if arm in gripper_width:
             measurements.append(f'开口宽度有效 {gripper_width[arm]["valid_fraction"]:.1%}')
         if measurements:
@@ -414,152 +390,6 @@ def write_episode_result(episode: Episode, tracks: dict[str, ArmTrajectory], dir
     preflight_path.unlink(missing_ok=True)
 
 
-def _publish_task_log(task: Path, source: Path) -> Path:
-    link = task / 'run.log'
-    try:
-        publish_link(source, link, target_is_directory=False)
-    except (OSError, ValueError):
-        return source
-    return link
-
-
-def restore_task_log_link(task: Path) -> None:
-    """Expose an existing audit log when reusing results from an earlier version."""
-    with suppress(OSError):
-        if (task / 'run.log').exists():
-            return
-        logs = (path for path in layout.metadata(task, 'logs').glob('*/run.log') if path.is_file())
-        latest = max(logs, key=lambda path: (path.stat().st_mtime_ns, path), default=None)
-        if latest is not None:
-            _publish_task_log(task, latest)
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec='milliseconds')
-
-
-def _json_safe(value: Any) -> Any:
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    try:
-        json.dumps(value, allow_nan=False)
-    except (TypeError, ValueError):
-        return str(value)
-    return value
-
-
-class RunAudit:
-    """Append-only event log plus a final, human-readable run manifest."""
-
-    schema_version = 1
-
-    def __init__(self, task: Path, *, session: str, run_directory: Path,
-                 input_identity: dict | None = None, command: str = 'umi-scene run'):
-        self.directory = layout.metadata(task, 'logs') / run_directory.name
-        self.directory.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
-        self._started_clock = time.monotonic()
-        self._started_at = _now()
-        self._command = command
-        self._task = task.name
-        self._session = session
-        self._run_directory = run_directory
-        self._input_hash = (artifact_identity.canonical_hash(input_identity)
-                            if input_identity is not None else None)
-        self._manifest_path = self.directory / 'run_manifest.json'
-        self._events_path = self.directory / 'events.jsonl'
-        self._log_path = self.directory / 'run.log'
-        self.log_path = self._log_path
-        self._write_manifest(dict(
-            schema_version=self.schema_version,
-            status='running',
-            command=command,
-            task=self._task,
-            session=session,
-            input_hash=self._input_hash,
-            started_at=self._started_at,
-        ))
-        self.event('run_started')
-        with suppress(OSError):
-            self._log_path.touch()
-            self.log_path = _publish_task_log(task, self._log_path)
-
-    def write_line(self, line: str) -> None:
-        try:
-            with self._lock, self._log_path.open('a', encoding='utf-8') as stream:
-                stream.write(line.rstrip('\n') + '\n')
-        except OSError:
-            pass
-
-    def event(self, kind: str | dict, **fields: Any) -> None:
-        event = dict(kind=kind if isinstance(kind, str) else 'event',
-                     timestamp=_now(), elapsed_s=round(time.monotonic() - self._started_clock, 3))
-        if isinstance(kind, dict):
-            event.update(kind)
-        event.update(_json_safe(fields))
-        try:
-            with self._lock, self._events_path.open('a', encoding='utf-8') as stream:
-                stream.write(json.dumps(event, ensure_ascii=False, allow_nan=False) + '\n')
-        except (OSError, TypeError, ValueError):
-            pass
-
-    def update_input_identity(self, input_identity: dict) -> str:
-        self._input_hash = artifact_identity.canonical_hash(input_identity)
-        return self._input_hash
-
-    def finish(self, status: str, *, output: Path | str | None = None,
-               error: Exception | None = None, directory: Path | None = None) -> Path:
-        """Write the final manifest and return the audit directory.
-
-        ``directory`` is the retained scene run directory.  It is recorded as a
-        reference but audit files stay in the task log store, so published result
-        layouts remain backwards compatible.
-        """
-        if directory is not None:
-            self._run_directory = directory
-        self.event('run_finished', status=status)
-        artifacts = []
-        if self.directory.is_dir():
-            for path in sorted(self.directory.rglob('*')):
-                if not path.is_file() or path.name == 'run_manifest.json':
-                    continue
-                try:
-                    artifacts.append(dict(path=str(path.relative_to(self.directory)),
-                                         bytes=path.stat().st_size))
-                except OSError:
-                    continue
-        document = dict(
-            schema_version=self.schema_version,
-            status=status,
-            command=self._command,
-            task=self._task,
-            session=self._session,
-            started_at=self._started_at,
-            finished_at=_now(),
-            duration_s=round(time.monotonic() - self._started_clock, 3),
-            input_hash=self._input_hash,
-            artifacts=artifacts,
-        )
-        if self._run_directory is not None:
-            document['run_directory'] = str(self._run_directory)
-        if output is not None:
-            document['output'] = str(output)
-        if error is not None:
-            document['error'] = dict(type=type(error).__name__, message=str(error))
-        self._write_manifest(document)
-        return self.directory
-
-    def _write_manifest(self, document: dict) -> None:
-        try:
-            write_json(self._manifest_path, _json_safe(document))
-        except (OSError, TypeError, ValueError):
-            pass
-
-
 if TYPE_CHECKING:
     from umi.perception.gripper.distance import TagDistanceResult
 
@@ -573,7 +403,7 @@ def write_arm_result(inputs: TaskInputs, arm: str, fusion_result: FusedTrajector
     recording = inputs.recordings[arm]
     video_offset_s = inputs.offsets_s[arm]
     directory = inputs.directory / arm
-    measured = measurements.measure(episode, arm, recording, video_offset_s, directory)
+    measured = measurements.measure(episode, arm, recording, video_offset_s)
     track = write_arm_trajectory(
         recording, fusion_result, video_offset_s, coordinate_record, directory,
         width=measured.width, tag_distance=measured.tag_distance,
@@ -584,6 +414,16 @@ def write_arm_result(inputs: TaskInputs, arm: str, fusion_result: FusedTrajector
         measured.width.report if measured.width is not None else None,
         measured.tag_distance.report if measured.tag_distance is not None else None,
     )
+
+
+def write_backend_result(inputs: TaskInputs, result: BackendResult, *, parallel=False) -> ArmExecutionResult:
+    for arm, trajectory in result.trajectories.items():
+        times = result.video_times_s[arm]
+        if (len(trajectory.T_reference_imu) != len(times)
+                or not np.array_equal(times, inputs.recordings[arm].video_times_s)):
+            raise ValueError(f'{arm} 重建结果与候选录像时间轴不一致')
+    written = write_task_results(inputs, result.trajectories, result.coordinate_record, parallel=parallel)
+    return replace(written, coordinates=result.coordinates)
 
 
 def write_task_results(inputs: TaskInputs, trajectories: dict[str, FusedTrajectory],
@@ -694,6 +534,9 @@ def write_arm_trajectory(recording: PreparedRecording, result: FusedTrajectory,
         T_camera_tcp=geometry['T_camera_tcp'],
         frame_geometry=geometry_record(video_parameters.size_px,
             mode='dual' if 'rear' in localization_lenses else 'shared_front', video=video_parameters))
+    if tag_distance is not None and (assessment := tag_distance.report.get('acceptance')):
+        metadata['tag_distance'] = dict(valid_fraction=tag_distance.report['valid_fraction'],
+            **{name: assessment[name] for name in ('passed', 'longest_missing_frames', 'maximum_missing_frames')})
     if recording.source_frame_start:
         metadata['video_time_offset_s'] = float(times[0])
     metadata['position_support'] = dict(

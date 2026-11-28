@@ -34,12 +34,17 @@ from umi.reconstruction.segment.results import plot
 
 def write_trajectories(reconstruction_dir: Path, extract_manifest: dict, out_dir: Path, mode: str, name: str,
                 calib: dict | None = None, command: dict | None = None, *,
-                parameters: TrajectoryParameters | None = None) -> dict:
+                parameters: TrajectoryParameters | None = None, fusion_output=None) -> dict:
     """calib = umi.devices.registry.resolve_insv(...). command = extra trajectory flags recorded in run_settings.json."""
     reconstruction_dir, out_dir = Path(reconstruction_dir), Path(out_dir)
     fuse = reconstruction_dir / "fuse"
-    segment_diagnostics = json.loads((fuse / "fuse_info.json").read_text(encoding="utf-8"))
-    tc, p_imu, q_imu = read_tum(fuse / "traj_tum.txt")
+    if fusion_output is None:
+        segment_diagnostics = json.loads((fuse / "fuse_info.json").read_text(encoding="utf-8"))
+        tc, p_imu, q_imu = read_tum(fuse / "traj_tum.txt")
+    else:
+        segment_diagnostics = fusion_output.evidence
+        tum = fusion_output.tum
+        tc, p_imu, q_imu = tum[:, 0], tum[:, 1:4], tum[:, 4:]
     if parameters is None:
         snapshot = (command or {}).get('parameters', {}).get('configuration')
         parameters = config.decode_parameters('trajectory', snapshot['values']) if snapshot else config.load('trajectory').values

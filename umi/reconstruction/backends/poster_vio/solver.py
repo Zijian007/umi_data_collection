@@ -13,7 +13,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from umi.config.parameter_models import FusionParameters
-from umi.core.geometry import validate_transform
+from umi.core.geometry import validate_transform, validate_transforms
 from umi.perception.poster.geometry import project_observations, residual_metrics
 from umi.perception.poster.quality import cull_decision, cull_threshold, position_support_metrics
 from umi.reconstruction.backends.poster_vio import base_tags, front_map, map_support
@@ -28,8 +28,13 @@ from umi.reconstruction.backends.poster_vio.models import (
     validate_result,
 )
 from umi.reconstruction.estimation import poster_factors as factors
+from umi.reconstruction.estimation.conditional_inertial import (
+    ConditionalInertialError,
+    InertialState,
+    solve_fixed_endpoints,
+)
 from umi.reconstruction.estimation.constraint_quality import residual_summary
-from umi.reconstruction.estimation.inertial import InertialGraphKeys, build_inertial_graph, preintegrate_samples
+from umi.reconstruction.estimation.inertial import InertialGraphKeys, build_inertial_graph, integrate_samples, preintegrate_samples
 
 _BOARD_KEY = gtsam.symbol('l', 0)
 _MIN_NATURAL_DEPTH_M = 1e-3
@@ -131,8 +136,7 @@ def _validate_arm_input(item: ArmSolveInput) -> None:
         raise ValueError(f'{item.arm} poster_vio 时间轴必须有限、严格递增且至少有三个节点')
     if poses.shape != (len(times), 4, 4):
         raise ValueError(f'{item.arm} poster_vio 初始位姿必须是 [N,4,4]')
-    for pose in poses:
-        validate_transform(pose)
+    validate_transforms(poses)
     validate_transform(item.T_cam_imu)
     if (imu.ndim != 2 or imu.shape[1] < 7 or len(imu) < 2 or not np.isfinite(imu).all()
             or not np.all(np.diff(imu[:, 0]) > 0)
@@ -156,8 +160,7 @@ def _validate_arm_input(item: ArmSolveInput) -> None:
                 or prior_poses.shape != (len(prior_nodes), 4, 4)
                 or np.any(prior_nodes < 0) or np.any(prior_nodes >= len(times))):
             raise ValueError(f'{item.arm} 留出位姿先验形状或节点无效')
-        for pose in prior_poses:
-            validate_transform(pose)
+        validate_transforms(prior_poses)
     if (item.depth_barrier_points_m is None) != (item.depth_barrier_indices is None):
         raise ValueError(f'{item.arm} 正深度屏障输入必须成对提供')
     if item.depth_barrier_points_m is not None:
@@ -273,10 +276,11 @@ def _resolve_inputs(request, arms):
 
 
 def _solve_once(request, arms, board_seed, *, board_prior, graph_nodes, warm=None, initial_lambda=None,
-                maximum_iterations=None, progress: Callable[[str], None] | None = None):
-    """Build one graph from the currently retained training observations."""
-    full_arms = arms
-    graph = _JointGraph.build(request, arms, board_seed, graph_nodes, board_prior)
+                maximum_iterations=None, progress: Callable[[str], None] | None = None,
+                inertial_cache: dict[str, tuple] | None = None):
+    """Solve the graph and evaluate the retained training observations at graph nodes."""
+    graph = _JointGraph.build(request, arms, board_seed, graph_nodes, board_prior,
+                              inertial_cache=inertial_cache)
     solver = _lm_parameters(graph, warm=warm, initial_lambda=initial_lambda,
                             maximum_iterations=maximum_iterations)
     initial_error = float(graph.graph.error(graph.values))
@@ -287,15 +291,15 @@ def _solve_once(request, arms, board_seed, *, board_prior, graph_nodes, warm=Non
     board_pose = optimized.atPose3(graph.board_key).matrix()
 
     trajectories, evidence, counts, support_fraction, rms_values = {}, {}, {}, {}, []
-    base_evidence, base_rejected = base_tags.evaluate(full_arms, graph.base_tag_keys, graph.base_records, optimized)
+    base_evidence, base_rejected = base_tags.evaluate(arms, graph.base_tag_keys, graph.base_records, optimized)
     rejected = base_rejected or not np.isfinite(final_error) or final_error > initial_error + 1e-5
     for record in base_evidence.values():
         for kind in ('self', 'cross'):
             if record[kind]['rms_px'] is not None:
                 rms_values.append(record[kind]['rms_px'])
-    for arm_index, item in enumerate(full_arms):
-        poses, _, biases, recovery = recover_states(item, graph_nodes[item.arm], optimized,
-                                                    graph.keys_by_arm[item.arm])
+    for arm_index, item in enumerate(arms):
+        poses, biases, recovery = _graph_node_states(item, graph_nodes[item.arm], optimized,
+                                                     graph.keys_by_arm[item.arm])
         if not np.isfinite(poses).all():
             raise PosterSolveQualityError('poster_vio 优化后位姿非有限')
         prediction, camera_points = project_observations(
@@ -358,7 +362,8 @@ class _JointGraph:
     base_records: Any
 
     @classmethod
-    def build(cls, request, arms, board_seed, graph_nodes, board_prior) -> '_JointGraph':
+    def build(cls, request, arms, board_seed, graph_nodes, board_prior,
+              *, inertial_cache: dict[str, tuple] | None = None) -> '_JointGraph':
         graph, values = gtsam.NonlinearFactorGraph(), gtsam.Values()
         board_key = _BOARD_KEY
         board_pose = gtsam.Pose3(board_seed)
@@ -369,22 +374,31 @@ class _JointGraph:
         for arm_index, item in enumerate(arms):
             keys = InertialGraphKeys(arm_index * 1_000_000)
             keys_by_arm[item.arm] = keys
-            _add_arm(graph, values, item, arm_index, keys, board_key)
+            _add_arm(graph, values, item, arm_index, keys, board_key, inertial_cache=inertial_cache)
         base_tag_keys, base_records = base_tags.add_graph(
             request, arms, graph, values, keys_by_arm, natural_camera)
         return cls(graph, values, board_key, keys_by_arm, arms, base_tag_keys, base_records)
 
 
-def _add_arm(graph, values, item, arm_index: int, keys: InertialGraphKeys, board_key) -> None:
+def _build_arm_inertial(item, keys: InertialGraphKeys):
+    """为冻结图节点网格构造单手惯性因子图与初始 Values，供跨剔除轮复用。"""
     positions = item.seed_poses[:, :3, 3]
     velocities = (np.gradient(positions, item.times_s, axis=0)
                   if item.seed_velocities is None else item.seed_velocities)
-    arm_graph, arm_values = build_inertial_graph(
+    return build_inertial_graph(
         item.times_s, item.imu, Rotation.from_matrix(item.seed_poses[:, :3, :3]), positions,
         velocities, item.fusion_parameters, pose_key_fn=keys.pose,
         velocity_key_fn=keys.velocity, bias_key_fn=keys.bias,
         gravity_m_s2=item.gravity_m_s2, initial_acc_bias=item.initial_acc_bias,
         initial_gyro_bias=item.initial_gyro_bias)
+
+
+def _add_arm(graph, values, item, arm_index: int, keys: InertialGraphKeys, board_key,
+             *, inertial_cache: dict[str, tuple] | None = None) -> None:
+    if inertial_cache is not None and item.arm in inertial_cache:
+        arm_graph, arm_values = inertial_cache[item.arm]
+    else:
+        arm_graph, arm_values = _build_arm_inertial(item, keys)
     graph.push_back(arm_graph)
     values.insert(arm_values)
     # Quiet IMU measurements also occur during constant-velocity motion.
@@ -539,30 +553,60 @@ def _natural_pixel_error(pose, point, camera, observed):
 
 
 def _natural_evidence(item, arm_index: int, poses, optimized) -> _NaturalEvidence:
-    """自然点重投影：逐观测残差、各镜头 RMS 与位置支持节点（同一镜头至少三个地标）。"""
-    natural_errors = []
+    """自然点重投影：按镜头批量投影，保持逐观测残差、各镜头 RMS 与位置支持节点等价。"""
     per_camera = {name: dict(errors=[], nodes=[], tracks=0, invalid_depth_observations=0)
                   for name in ('front', 'rear')}
-    natural_residuals = []
-    for track in item.natural_tracks:
+    n_tracks = len(item.natural_tracks)
+    natural_residuals = [None] * n_tracks
+    grouped = {'front': [], 'rear': []}
+    for track_index, track in enumerate(item.natural_tracks):
         camera_name = track.get('camera', 'rear')
+        per_camera[camera_name]['tracks'] += 1
+        nodes = np.asarray(track['node_indices'], dtype=int)
+        pixels = np.asarray(track['pixels'], dtype=float)
+        point = np.asarray(optimized.atPoint3(_point_key(arm_index, camera_name, track['track_id'])), dtype=float)
+        grouped[camera_name].append((track_index, track, nodes, pixels, point))
+
+    max_rms = item.parameters.tag_maximum_reprojection_rms_px
+    for camera_name in ('front', 'rear'):
+        entries = grouped[camera_name]
+        if not entries:
+            continue
         camera = natural_camera(item, camera_name)
         camera_evidence = per_camera[camera_name]
-        camera_evidence['tracks'] += 1
-        track_errors, invalid_projections = [], []
-        point = np.asarray(optimized.atPoint3(_point_key(arm_index, camera_name, track['track_id'])))
-        for node, observed in zip(track['node_indices'], track['pixels']):
-            error, invalid = _natural_pixel_error(poses[int(node)], point, camera, observed)
-            if invalid:
-                camera_evidence['invalid_depth_observations'] += 1
-            natural_errors.append(error)
-            track_errors.append(error)
-            invalid_projections.append(invalid)
-            camera_evidence['errors'].append(error)
-            if error <= item.parameters.tag_maximum_reprojection_rms_px:
-                camera_evidence['nodes'].append(int(node))
-        natural_residuals.append(dict(key=list(track_key(track)), errors_px=track_errors,
-                                      invalid_projections=invalid_projections))
+        all_nodes = np.concatenate([entry[2] for entry in entries])
+        all_pixels = np.concatenate([entry[3] for entry in entries])
+        repeats = np.fromiter((len(entry[2]) for entry in entries), dtype=int, count=len(entries))
+        all_points = np.repeat(np.stack([entry[4] for entry in entries], axis=0), repeats, axis=0)
+        obs_poses = poses[all_nodes]
+        in_body = np.einsum('nji,nj->ni', obs_poses[:, :3, :3], all_points - obs_poses[:, :3, 3])
+        in_camera = in_body @ camera.T_cam_imu[:3, :3].T + camera.T_cam_imu[:3, 3]
+        valid_depth = np.isfinite(in_camera).all(axis=1) & (in_camera[:, 2] > _MIN_NATURAL_DEPTH_M)
+        all_errors = np.full(len(all_nodes), _INVALID_NATURAL_RESIDUAL_PX, dtype=float)
+        all_invalid = np.ones(len(all_nodes), dtype=bool)
+        valid_indices = np.flatnonzero(valid_depth)
+        if len(valid_indices):
+            projected = camera.model.project(in_camera[valid_indices])
+            norm_errors = np.linalg.norm(projected - all_pixels[valid_indices], axis=1)
+            finite_mask = np.isfinite(norm_errors)
+            good_indices = valid_indices[finite_mask]
+            all_errors[good_indices] = norm_errors[finite_mask]
+            all_invalid[good_indices] = False
+
+        camera_evidence['invalid_depth_observations'] = int(np.count_nonzero(all_invalid))
+        camera_evidence['errors'] = all_errors.tolist()
+        camera_evidence['nodes'] = all_nodes[all_errors <= max_rms].tolist()
+        offset = 0
+        for track_index, track, nodes, _, _ in entries:
+            length = len(nodes)
+            end = offset + length
+            natural_residuals[track_index] = dict(
+                key=list(track_key(track)),
+                errors_px=all_errors[offset:end].tolist(),
+                invalid_projections=all_invalid[offset:end].tolist())
+            offset = end
+
+    natural_errors = [error for entry in natural_residuals for error in entry['errors_px']]
     finite_natural_errors = [error for error in natural_errors
                              if np.isfinite(error) and error < _INVALID_NATURAL_RESIDUAL_PX]
     natural_rms = (float(np.sqrt(np.mean(np.square(finite_natural_errors))))
@@ -576,7 +620,7 @@ def _natural_evidence(item, arm_index: int, poses, optimized) -> _NaturalEvidenc
                if finite_errors else None)
         if rms is not None:
             camera_rms_values.append(rms)
-            rejected |= rms > item.parameters.tag_maximum_reprojection_rms_px
+            rejected |= rms > max_rms
         rejected |= camera_evidence['invalid_depth_observations'] > 0
         # Require three landmarks in one camera, without mixing lens pixels.
         nodes = natural_support_nodes(camera_evidence['nodes'])
@@ -604,6 +648,17 @@ def _board_pose_prior(board_seed, gravity, refine_tilt):
     return gtsam.PriorFactorPose3(_BOARD_KEY, pose, gtsam.noiseModel.Gaussian.Covariance(covariance))
 
 
+@dataclass(frozen=True)
+class _RefinementResult:
+    solved: PosterVioResult
+    optimized: gtsam.Values
+    graph: _JointGraph
+    graph_nodes: dict[str, np.ndarray]
+    selections: dict[str, dict]
+    records: dict[str, list[dict]]
+    budget_rejected: bool
+
+
 def solve_joint_poster_imu(request: PosterVioProblem, arms: tuple[ArmSolveInput, ...],
                            board_seed: np.ndarray, *,
                            progress: Callable[[str], None] | None = None) -> PosterVioResult:
@@ -619,45 +674,72 @@ def solve_joint_poster_imu(request: PosterVioProblem, arms: tuple[ArmSolveInput,
     gravity = arms[0].gravity_m_s2 if arms[0].gravity_m_s2 is not None else np.array([0., 0., -1.])
     board_prior = _board_pose_prior(board_seed, gravity, refine_tilt)
     max_rounds = min(item.parameters.poster_vio_maximum_cull_rounds for item in arms)
-    solved, warm, selections, records, budget_rejected, final_graph = _refine(
+    if max_rounds > 0 and any(item.front_maps for item in arms):
+        # Front-map constraints can shift marginal poster tags in decaying waves;
+        # allow additional rounds while keeping the exact same cumulative budget.
+        front_map_rounds = max(getattr(item.parameters, 'poster_vio_front_map_minimum_cull_rounds', 0) for item in arms)
+        max_rounds = max(max_rounds, front_map_rounds)
+    if progress is not None:
+        progress('VIO 阶段 · 联合求解')
+    refinement = _refine(
         request, arms, observations, board_seed, board_prior=board_prior, max_rounds=max_rounds, progress=progress)
-    world_from_board = warm.atPose3(_BOARD_KEY).matrix()
+    if progress is not None:
+        progress('VIO 阶段 · 恢复全帧轨迹')
+    solved = _recover_final_states(arms, refinement.graph_nodes, refinement.optimized, refinement.graph,
+                                   refinement.solved)
+    if progress is not None:
+        progress('VIO 阶段 · 最终验收')
+    return _evaluate_final_result(request, arms, observations, board_seed, refinement, solved,
+                                  gravity=gravity, gaps=gaps, refine_tilt=refine_tilt, max_rounds=max_rounds)
+
+
+def _evaluate_final_result(request, arms, observations, board_seed, refinement: _RefinementResult,
+                           solved: PosterVioResult, *, gravity, gaps, refine_tilt, max_rounds) -> PosterVioResult:
+    """Evaluate untouched observations and qualify front-map support on the recovered solution."""
+    world_from_board = refinement.optimized.atPose3(_BOARD_KEY).matrix()
     vertical_before = board_seed[:3, :3].T @ gravity
     vertical_after = world_from_board[:3, :3].T @ gravity
     tilt_deg = float(np.degrees(np.arctan2(np.linalg.norm(np.cross(vertical_before, vertical_after)),
                                           vertical_before @ vertical_after)))
-    rejected = budget_rejected or solved.quality.status != 'solved'
+    rejected = refinement.budget_rejected or solved.quality.status != 'solved'
     rms_values = [solved.quality.reprojection_rms_px]
     for item in arms:
         evidence = solved.arm_evidence[item.arm]
         evidence['board_tilt'] = dict(applied=refine_tilt, correction_deg=tilt_deg,
             observation_gap_s=gaps[item.arm], minimum_gap_s=item.parameters.poster_vio_board_tilt_minimum_gap_s)
-        evidence['refinement'] = _refinement_summary(item, observations[item.arm], selections[item.arm],
-                                                     records[item.arm], max_rounds)
+        evidence['refinement'] = _refinement_summary(item, observations[item.arm], refinement.selections[item.arm],
+                                                     refinement.records[item.arm], max_rounds)
         evidence['holdout'], failed, rms = _tag_holdout(item, solved, observations[item.arm])
         rejected |= failed
         if rms is not None:
             rms_values.append(rms)
         evidence['natural_holdout'], failed, rms = _natural_holdout(
-            item, request.arms.index(item.arm), solved, warm, world_from_board)
+            item, request.arms.index(item.arm), solved, refinement.optimized, world_from_board)
         rejected |= failed
         if rms is not None:
             rms_values.append(rms)
     if not rejected and any(item.front_maps for item in arms):
-        map_support.evaluate(final_graph, warm, solved)
+        map_support.evaluate(refinement.graph, refinement.optimized, solved)
     result = replace(solved, quality=replace(solved.quality, status='rejected' if rejected else 'solved',
                                             reprojection_rms_px=float(max(rms_values))))
     validate_result(result, request.arms)
     return result
 
 
-def _refine(request, arms, observations, board_seed, *, board_prior, max_rounds: int, progress):
+def _refine(request, arms, observations, board_seed, *, board_prior, max_rounds: int, progress) -> _RefinementResult:
     """按累计预算逐轮剔除训练观测并重求解；首轮可先短求解，必要时再完整求解。"""
     selections = {item.arm: dict(initial_selection(item), base_tags=np.ones(
         len(observations[item.arm].base_tag_times_s), dtype=bool)) for item in arms}
     records = {item.arm: [] for item in arms}
     budget_rejected = False
     graph_nodes = {item.arm: graph_indices(item) for item in arms}
+    inertial_cache = {
+        item.arm: _build_arm_inertial(
+            replace(item, times_s=item.times_s[graph_nodes[item.arm]],
+                    seed_poses=item.seed_poses[graph_nodes[item.arm]],
+                    seed_velocities=None if item.seed_velocities is None else item.seed_velocities[graph_nodes[item.arm]]),
+            InertialGraphKeys(arm_index * 1_000_000))
+        for arm_index, item in enumerate(arms)}
     warm, damping = None, None
     full_iterations = arms[0].fusion_parameters.lm_iterations
     # A recovered seed can be far from the pixel optimum. Judge culling budgets
@@ -669,7 +751,8 @@ def _refine(request, arms, observations, board_seed, *, board_prior, max_rounds:
             f'{item.arm} 节点={len(graph_nodes[item.arm])}，标签观测={len(item.pixels)}，'
             f'自然轨迹={len(item.natural_tracks)}'
             for item in arms))
-    for round_index in range(max_rounds + 1):
+    round_limit = max_rounds
+    for round_index in range(max_rounds + 2):
         training = [subset(item, observations[item.arm], selections[item.arm]) for item in arms]
         training_request = replace(request, observations=tuple(pair[1] for pair in training))
         limit = initial_iterations if round_index == 0 else full_iterations
@@ -677,37 +760,48 @@ def _refine(request, arms, observations, board_seed, *, board_prior, max_rounds:
             stage = '首轮预优化' if limit < full_iterations else '完整优化'
             started = time.monotonic()
             if progress is not None:
-                progress(f'联合优化第 {round_index + 1}/{max_rounds + 1} 轮：{stage}，最大迭代={limit}')
+                progress(f'联合优化第 {round_index + 1}/{round_limit + 1} 轮：{stage}，最大迭代={limit}')
             solved, warm, damping, final_graph = _solve_once(training_request, tuple(pair[0] for pair in training), board_seed,
                 board_prior=board_prior, graph_nodes=graph_nodes, warm=warm, initial_lambda=damping, maximum_iterations=limit,
-                progress=progress)
+                progress=progress, inertial_cache=inertial_cache)
             if progress is not None:
                 iterations = max(int(evidence['optimizer_iterations'])
                                  for evidence in solved.arm_evidence.values())
                 progress(f'联合优化第 {round_index + 1} 轮完成：耗时 {time.monotonic() - started:.1f} 秒；'
                          f'实际迭代={iterations}；残差={solved.quality.reprojection_rms_px:.3f}px')
-            proposals, changed = {}, False
+            proposals, decisions = {}, {}
             for item in arms:
                 evidence = solved.arm_evidence[item.arm]
-                proposal, decision = propose_cull(item, observations[item.arm], selections[item.arm], evidence)
+                proposal, decision = propose_cull(item, observations[item.arm], selections[item.arm], evidence,
+                                                  poses=solved.trajectories[item.arm])
                 decision.update(round=round_index, stage='precull' if limit < full_iterations else 'full',
                     warm_started=evidence['warm_started'], optimizer_iterations=evidence['optimizer_iterations'],
                     initial_error=evidence['initial_error'], final_error=evidence['final_error'],
                     tag_metrics=evidence['tag_metrics'], natural_metrics=residual_summary(
                         [error for track in evidence['natural_residuals'] for error in track['errors_px']]))
-                if decision['status'] == 'refine' and round_index == max_rounds:
-                    decision.update(status='rejected', reasons=['round_limit'])
-                records[item.arm].append(decision)
-                budget_rejected |= decision['status'] == 'rejected'
                 proposals[item.arm] = proposal
-                changed |= decision['status'] == 'refine'
-            for item in arms:
-                decision = records[item.arm][-1]
+                decisions[item.arm] = decision
+            pending = [decision for decision in decisions.values() if decision['status'] == 'refine']
+            if pending and round_index == round_limit:
+                if max_rounds > 0 and round_limit == max_rounds and _can_extend_natural_culling(decisions):
+                    round_limit += 1
+                    for decision in pending:
+                        decision['round_limit_extended'] = True
+                    if progress is not None:
+                        progress('仅剩一条自然特征轨迹需剔除，追加一轮联合优化')
+                else:
+                    for decision in pending:
+                        decision.update(status='rejected', reasons=['round_limit'])
+                    pending.clear()
+            changed = bool(pending)
+            budget_rejected = any(decision['status'] == 'rejected' for decision in decisions.values())
+            for arm, decision in decisions.items():
+                records[arm].append(decision)
                 decision['applied'] = bool(changed and not budget_rejected and decision['status'] == 'refine')
                 if progress is not None and decision['applied']:
                     for camera in decision['natural_recovery_cameras']:
                         budget = decision['natural_budgets'][camera]
-                        progress(f'{item.arm}/{camera} 自然点：剔除 {budget["invalid_projections_removed"]} 个'
+                        progress(f'{arm}/{camera} 自然点：剔除 {budget["invalid_projections_removed"]} 个'
                                  '无效训练投影后重求解')
             if (not budget_rejected and not changed and limit < full_iterations
                     and solved.arm_evidence[arms[0].arm]['optimizer_iterations'] >= limit):
@@ -717,7 +811,56 @@ def _refine(request, arms, observations, board_seed, *, board_prior, max_rounds:
         if budget_rejected or not changed:
             break
         selections = proposals
-    return solved, warm, selections, records, budget_rejected, final_graph
+    return _RefinementResult(solved, warm, final_graph, graph_nodes, selections, records, budget_rejected)
+
+
+def _can_extend_natural_culling(decisions: dict[str, dict]) -> bool:
+    """At the round limit, allow a final fit for a single track inside the ordinary budgets."""
+    tracks = set()
+    for arm, decision in decisions.items():
+        if decision['status'] == 'rejected' or decision.get('natural_recovery_cameras'):
+            return False
+        for observation in decision['removed']:
+            if observation['kind'] != 'natural':
+                return False
+            tracks.add((arm, observation['camera'], observation['track_id']))
+    return len(tracks) == 1
+
+
+def _graph_node_states(item, indices, values, keys):
+    """提取图节点位姿与偏置用于中间剔除轮；非图节点保留有效种子位姿。"""
+    poses = np.array(item.seed_poses, dtype=float, copy=True)
+    biases = []
+    for index, node in enumerate(indices):
+        poses[node] = values.atPose3(keys.pose(index)).matrix()
+        biases.append(values.atConstantBias(keys.bias(index)))
+    return poses, biases, dict(global_nodes=len(indices), output_nodes=len(item.times_s),
+                               recovered_nodes=0, recovery='deferred',
+                               zero_residual_intervals=0, maximum_interval_final_error=0.,
+                               independent_physical_accuracy=False)
+
+
+def _recover_final_states(arms, graph_nodes, optimized, final_graph, solved: PosterVioResult) -> PosterVioResult:
+    """对最终收敛图执行一次完整的非关键帧条件惯性恢复并刷新轨迹与偏置校验。"""
+    board_pose = optimized.atPose3(final_graph.board_key).matrix()
+    board_inverse = np.linalg.inv(board_pose)
+    trajectories = dict(solved.trajectories)
+    rejected = solved.quality.status != 'solved'
+    for item in arms:
+        poses, _, biases, recovery = recover_states(
+            item, graph_nodes[item.arm], optimized, final_graph.keys_by_arm[item.arm])
+        if not np.isfinite(poses).all():
+            raise PosterSolveQualityError('poster_vio 优化后位姿非有限')
+        max_acc_bias = max(float(np.linalg.norm(bias.accelerometer())) for bias in biases)
+        rejected |= max_acc_bias > item.fusion_parameters.maximum_acc_bias_m_s2
+        trajectories[item.arm] = board_inverse @ poses
+        evidence = solved.arm_evidence[item.arm]
+        evidence['keyframes'] = recovery
+        evidence['maximum_acc_bias_m_s2'] = max_acc_bias
+    quality = replace(solved.quality, status='rejected' if rejected else 'solved')
+    result = replace(solved, trajectories=trajectories, quality=quality)
+    validate_result(result, tuple(item.arm for item in arms))
+    return result
 
 
 def _refinement_summary(item, observation, selection, records, max_rounds) -> dict:
@@ -864,7 +1007,15 @@ def recover_states(item, indices, values, keys):
         biases[node] = values.atConstantBias(keys.bias(index))
     recovered, maximum_error, zero_residual_intervals = 0, 0., 0
     parameters = item.fusion_parameters
-    gravity = np.array([0., 0., -parameters.gravity_m_s2]) if item.gravity_m_s2 is None else item.gravity_m_s2
+    gravity = np.array([0., 0., -parameters.gravity_m_s2]) if item.gravity_m_s2 is None else np.asarray(item.gravity_m_s2, dtype=float)
+    preintegration_parameters = gtsam.PreintegrationParams(gravity)
+    preintegration_parameters.setAccelerometerCovariance(np.eye(3) * parameters.acc_noise ** 2)
+    preintegration_parameters.setGyroscopeCovariance(np.eye(3) * parameters.gyro_noise ** 2)
+    preintegration_parameters.setIntegrationCovariance(np.eye(3) * parameters.integration_covariance)
+    bias_random_walk = np.r_[np.repeat(parameters.acc_bias_rw, 3), np.repeat(parameters.gyro_bias_rw, 3)]
+    local_keys = InertialGraphKeys(0)
+    settings = gtsam.LevenbergMarquardtParams()
+    settings.setMaxIterations(parameters.lm_iterations)
     for start, end in zip(indices[:-1], indices[1:]):
         if end == start + 1:
             continue
@@ -900,40 +1051,36 @@ def recover_states(item, indices, values, keys):
             recovered += end - start - 1
             zero_residual_intervals += 1
             continue
-        local_keys = InertialGraphKeys(0)
-        graph, local_values = build_inertial_graph(times, item.imu,
-            Rotation.from_matrix(initial_poses[:, :3, :3]), initial_poses[:, :3, 3], initial_velocities,
-            parameters, pose_key_fn=local_keys.pose, velocity_key_fn=local_keys.velocity, bias_key_fn=local_keys.bias,
-            gravity_m_s2=gravity, initial_acc_bias=bias.accelerometer(), initial_gyro_bias=bias.gyroscope())
         # Initial V/B priors belong to the global graph. The local conditional
         # problem uses only IMU/random-walk factors and fixed endpoint states.
+        initial_bias = gtsam.imuBias.ConstantBias(bias.accelerometer(), bias.gyroscope())
         conditional = gtsam.NonlinearFactorGraph()
-        for index in range(graph.size()):
-            factor = graph.at(index)
-            if len(factor.keys()) > 1:
-                conditional.add(factor)
-        for local, global_node in ((0, start), (len(times) - 1, end)):
-            pose, velocity, bias = gtsam.Pose3(poses[global_node]), velocities[global_node], biases[global_node]
-            local_values.update(local_keys.pose(local), pose)
-            local_values.update(local_keys.velocity(local), velocity)
-            local_values.update(local_keys.bias(local), bias)
-            conditional.add(gtsam.NonlinearEqualityPose3(local_keys.pose(local), pose))
-            conditional.add(gtsam.NonlinearEqualityPoint3(local_keys.velocity(local), velocity))
-            conditional.add(gtsam.NonlinearEqualityConstantBias(local_keys.bias(local), bias))
-        settings = gtsam.LevenbergMarquardtParams()
-        settings.setMaxIterations(parameters.lm_iterations)
-        initial_error = float(conditional.error(local_values))
-        optimized = gtsam.LevenbergMarquardtOptimizer(conditional, local_values, settings).optimize()
-        final_error = float(conditional.error(optimized))
-        if not np.isfinite(final_error) or final_error > initial_error + 1e-5:
-            raise PosterSolveQualityError('poster_vio 关键帧间条件惯性恢复失败')
+        initial_states = [InertialState(gtsam.Pose3(poses[start]), velocities[start], biases[start])]
+        for pose, velocity in zip(initial_poses[1:-1], initial_velocities[1:-1]):
+            initial_states.append(InertialState(
+                gtsam.Pose3(gtsam.Rot3(pose[:3, :3]), pose[:3, 3]), velocity, initial_bias))
+        initial_states.append(InertialState(gtsam.Pose3(poses[end]), velocities[end], biases[end]))
+        for local_index, (before, after) in enumerate(zip(times[:-1], times[1:])):
+            integrated = gtsam.PreintegratedImuMeasurements(preintegration_parameters, initial_bias)
+            for frame_duration_s, gyro, acc in integrate_samples(item.imu, before, after):
+                integrated.integrateMeasurement(acc, gyro, frame_duration_s)
+            conditional.add(gtsam.ImuFactor(
+                local_keys.pose(local_index), local_keys.velocity(local_index),
+                local_keys.pose(local_index + 1), local_keys.velocity(local_index + 1),
+                local_keys.bias(local_index), integrated))
+            conditional.add(gtsam.BetweenFactorConstantBias(
+                local_keys.bias(local_index), local_keys.bias(local_index + 1),
+                gtsam.imuBias.ConstantBias(),
+                gtsam.noiseModel.Diagonal.Sigmas(bias_random_walk * np.sqrt(after - before))))
+        try:
+            interval_states, final_error = solve_fixed_endpoints(
+                conditional, initial_states, settings, error_increase_tolerance=1e-5)
+        except ConditionalInertialError as error:
+            raise PosterSolveQualityError('poster_vio 关键帧间条件惯性恢复失败') from error
         maximum_error = max(maximum_error, final_error)
-        for local in range(1, len(times) - 1):
-            node = start + local
-            poses[node] = optimized.atPose3(local_keys.pose(local)).matrix()
-            velocities[node] = optimized.atVector(local_keys.velocity(local))
-            biases[node] = optimized.atConstantBias(local_keys.bias(local))
-            recovered += 1
+        for node, state in enumerate(interval_states, start + 1):
+            poses[node], velocities[node], biases[node] = state.pose.matrix(), state.velocity, state.bias
+        recovered += len(interval_states)
     if not np.isfinite(poses).all() or not np.isfinite(velocities).all():
         raise PosterSolveQualityError('poster_vio 关键帧恢复产生非有限状态')
     return poses, velocities, biases, dict(global_nodes=len(indices), output_nodes=count,
@@ -1030,9 +1177,10 @@ def subset(item, observation, selection):
                     base_tag_corners_px=observation.base_tag_corners_px[base_selected]))
 
 
-def propose_cull(item, observation, selection, evidence):
+def propose_cull(item, observation, selection, evidence, *, poses=None):
     """Propose all outliers together; never trim a bad set to fit the budget."""
     parameters = item.parameters
+    triangulation_poses = item.seed_poses if poses is None else poses
     tags = selection['tags'].copy()
     tag_indices = np.flatnonzero(tags)
     tag_errors = np.asarray(evidence['tag_observation_rms_px'])
@@ -1064,7 +1212,7 @@ def propose_cull(item, observation, selection, evidence):
             ext = item.T_cam_imu if camera is None else camera.T_cam_imu
             model = item.camera_model if camera is None else camera.model
             if triangulate_track(np.asarray(track['node_indices'])[keep], np.asarray(track['pixels'])[keep],
-                    item.seed_poses, ext, model,
+                    triangulation_poses, ext, model,
                     maximum_rms_px=parameters.poster_vio_natural_cull_threshold_px) is None:
                 keep[:] = False
         for index, error, invalid_projection, is_bad in zip(indices, errors, invalid, bad):

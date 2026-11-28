@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 import gtsam
@@ -17,26 +18,50 @@ from scipy.spatial.transform import Rotation as Rot
 
 from umi.config import parameter_models
 from umi.core.frame import output_frame_rate
-from umi.perception.poster.quality import cumulative_culling_record
-from umi.reconstruction.estimation.constraint_quality import scale_consistency
-from umi.reconstruction.estimation.fusion.alignment import AlignmentResult, align_recording, summarize_alignment
-from umi.reconstruction.estimation.fusion.data import FusionInputs, FusionSolution, MapPlacements, retime_rear
+from umi.perception.poster.geometry import PosterGeometryError
+from umi.reconstruction.estimation.conditional_inertial import (
+    ConditionalInertialError,
+    InertialState,
+    solve_fixed_endpoints,
+)
+from umi.reconstruction.estimation.constraint_quality import (
+    assess_required_poster_support,
+    frame_constraints,
+    scale_consistency,
+    scale_failure,
+)
+from umi.reconstruction.estimation.fusion.alignment import (
+    AlignmentError,
+    AlignmentResult,
+    align_recording,
+)
+from umi.reconstruction.estimation.fusion.data import (
+    FusionInputs,
+    FusionSolution,
+    MapAnchor,
+    MapPlacements,
+    PoseAnchor,
+    TrajectorySeed,
+    retime_rear,
+)
 from umi.reconstruction.estimation.fusion.graph import (
     FRONT_LEVER_KEY,
     REAR_LEVER_KEY,
     TrajectoryOptimizationResult,
-    logR,
     optimize_fused_trajectory,
     segment_variable_keys,
 )
+from umi.reconstruction.estimation.fusion.poster_solve import solve_poster_graph
+from umi.reconstruction.estimation.so3 import rotation_log
 
 
 def solve(inputs: FusionInputs, parameters: parameter_models.TrajectoryParameters, *, log=print,
-          refine_initialization=False) -> FusionSolution:
+          refine_initialization=False, poster_keyframe_maximum_dt_s=0., confirm_zupt_visually=False,
+          early_poster_seed=None, progress: Callable[[str], None] | None = None) -> FusionSolution:
+    if progress is None:
+        progress = lambda message: None
     if parameters.environment_tags.tag_fusion_enabled and inputs.poster is None:
         raise ValueError('启用独立海报融合需要布局、原始角点和完整 rear 标定')
-    if inputs.poster is not None:
-        from umi.reconstruction.estimation.fusion import poster as fusion_poster
     rear = inputs.rear_camera or (inputs.poster.measured if inputs.poster is not None else None)
     if inputs.rear_camera is not None and inputs.poster is not None:
         from umi.infra.provenance import canonical_hash
@@ -45,49 +70,124 @@ def solve(inputs: FusionInputs, parameters: parameter_models.TrajectoryParameter
             raise ValueError('海报与地图定位的 rear 标定不一致')
     if rear is not None:
         inputs = retime_rear(inputs, rear)
-    aligned = align_recording(inputs, parameters, log=log, refine_initialization=refine_initialization)
-    placements = place_maps(aligned, parameters, log=log)
-    optimized = optimize_fused_trajectory(aligned, placements, parameters, log=log)
-    baseline = recover_trajectory(aligned, placements, optimized, parameters)
-    if inputs.poster is None:
-        return baseline
-    poster, evidence = fusion_poster.prepare(inputs, baseline, parameters)
-    if poster is None:
-        return replace(baseline,evidence=dict(baseline.evidence,environment_poster=evidence))
-    stages = [evidence] if evidence.get('culled_observations') else []
-    observations = inputs.poster.observations
-    # One initial graph and at most two post-fit culls. Reuse the same alignment,
-    # placements and baseline. A second cull must be smaller than the first.
-    warm_start = None
-    for solve_index in range(3):
+    allow_poster_seed = (parameters.environment_tags.tag_fusion_enabled and parameters.input.mode == 'handheld'
+                         and inputs.video_times_s is not None)
+    progress('融合阶段 · 尺度、重力与初值')
+    aligned = align_recording(inputs, parameters, log=log, refine_initialization=refine_initialization,
+                              require_usable=not allow_poster_seed)
+    options = dict(log=log, progress=progress, poster_keyframe_maximum_dt_s=poster_keyframe_maximum_dt_s,
+                   confirm_zupt_visually=confirm_zupt_visually)
+    if (allow_poster_seed and early_poster_seed is not None and early_poster_seed.covers_recording
+            and np.array_equal(early_poster_seed.trajectory.video_times_s, aligned.video_times_s)):
         try:
-            optimized = optimize_fused_trajectory(aligned, placements, parameters, log=log, poster=poster,
-                                                  warm_start=warm_start)
-            break
-        except fusion_poster.PosterCullRequest as request:
-            warm_start = request.warm_start
-            step = request.audit
-            if solve_index == 2 or (solve_index and step['culled_observations'] >= stages[-1]['culled_observations']):
-                raise fusion_poster.PosterGeometryError('独立海报优化后异常观测未在有限轮次内消除',
-                                                       metrics=step) from request
-            stages.append(step)
-            selected, times = fusion_poster.eligible_sightings(inputs, baseline, parameters.environment_tags)
-            total = cumulative_culling_record(stages, selected, observations.sample_indices[selected],
-                                              observations.tag_ids[selected], times, parameters.environment_tags)
-            removed = [entry['observation'] for entry in total['culling']['removed']]
-            usable = observations.usable.copy()
-            usable[removed] = False
-            filtered = replace(inputs, poster=replace(inputs.poster, observations=replace(observations, usable=usable)))
-            poster, _ = fusion_poster.prepare(filtered, baseline, parameters, _allow_cull=False)
-            if poster is None:
-                raise fusion_poster.PosterGeometryError('独立海报剔除后观测不足')
-            poster.evidence.update(total, pre_cull_reprojection_rms_px=stages[0]['pre_cull_reprojection_rms_px'],
-                                   pre_cull_reprojection_metrics=stages[0]['pre_cull_reprojection_metrics'],
-                                   pre_cull_invalid_depth_sightings=step['pre_cull_invalid_depth_sightings'])
-    result = recover_trajectory(aligned, placements, optimized, parameters)
+            guided = _solve_aligned(inputs, aligned, parameters, poster_seed=early_poster_seed, **options)
+        except (ValueError, RuntimeError) as error:
+            if aligned.initial_lens is None:
+                raise
+            reason = str(error)
+        else:
+            if aligned.initial_lens is None:
+                return guided
+            reason = scale_failure(guided.evidence['scale_consistency'], parameters.retry.maximum_scale_change_ratio)
+            if reason is None:
+                return guided
+        log('poster_initialization_fallback', reason, flush=True)
+        progress('融合初值 · 海报引导回退到 ORB + IMU')
+    return _solve_aligned(inputs, aligned, parameters, **options)
+
+
+@dataclass(frozen=True)
+class _FusionInitialization:
+    aligned: AlignmentResult
+    placements: MapPlacements
+    seed: TrajectorySeed
+    baseline: FusionSolution | None = None
+
+
+def _solve_aligned(inputs, aligned, parameters, *, log, progress, poster_keyframe_maximum_dt_s,
+                   confirm_zupt_visually, poster_seed=None):
+    initial = _initialize_fusion(inputs, aligned, parameters, poster_seed, log=log, progress=progress,
+                                 confirm_zupt_visually=confirm_zupt_visually)
+    if inputs.poster is None and initial.baseline is not None:
+        return initial.baseline
+
+    progress('融合阶段 · 海报联合求解')
+    poster = solve_poster_graph(inputs, initial.aligned, initial.placements, initial.seed, parameters, log=log,
+                                poster_keyframe_maximum_dt_s=poster_keyframe_maximum_dt_s,
+                                confirm_zupt_visually=confirm_zupt_visually)
+    if poster.optimized is None:
+        if initial.baseline is None:
+            raise PosterGeometryError('海报初始化后，联合图可用观测不足', metrics=poster.evidence)
+        progress('融合阶段 · 恢复与验收（使用 ORB + IMU 基线）')
+        return replace(initial.baseline, evidence=dict(
+            initial.baseline.evidence, environment_poster=dict(poster.evidence, **poster.sampling)))
+
+    progress('融合阶段 · 恢复与验收')
+    return _recover_poster_solution(initial, poster.optimized, poster.sampling, parameters)
+
+
+def _initialize_fusion(inputs, aligned, parameters, poster_seed, *, log, progress,
+                        confirm_zupt_visually) -> _FusionInitialization:
+    if poster_seed is not None or aligned.initial_lens is None:
+        from umi.reconstruction.estimation.fusion.poster_initialization import estimate_poster_seed, use_poster_seed
+
+        progress('融合初值 · 海报 + IMU')
+        if poster_seed is None:
+            audit = {}
+            try:
+                poster_seed = estimate_poster_seed(inputs, parameters, audit, video_times_s=aligned.video_times_s)
+            except ValueError as error:
+                audit.update(status='rejected', reason=str(error))
+                log('poster_initialization', audit, flush=True)
+                raise AlignmentError(dict(aligned.diagnostics, poster_initialization=audit)) from error
+        aligned = use_poster_seed(aligned, poster_seed)
+        log('poster_initialization', poster_seed.diagnostics, flush=True)
+        placements = _place_maps_from_poster(aligned, poster_seed, parameters, log=log)
+        return _FusionInitialization(aligned, placements, poster_seed.trajectory)
+
+    progress('融合初值 · ORB + IMU 基线')
+    placements = place_maps(aligned, parameters, log=log)
+    optimized = optimize_fused_trajectory(aligned, placements, parameters, log=log,
+                                          confirm_zupt_visually=confirm_zupt_visually)
+    if inputs.poster is None:
+        progress('融合阶段 · 恢复与验收')
+    baseline = recover_trajectory(aligned, placements, optimized, parameters)
+    seed = TrajectorySeed(baseline.video_times_s, baseline.T_world_imu, baseline.velocities)
+    return _FusionInitialization(aligned, placements, seed, baseline)
+
+
+def _recover_poster_solution(initial, optimized, sampling, parameters) -> FusionSolution:
+    result = recover_trajectory(initial.aligned, initial.placements, optimized, parameters)
     if not np.isfinite(result.T_world_imu).all():
         raise ValueError('独立海报融合输出非有限位姿')
+    if sampling:
+        result.evidence['environment_poster'].update(sampling)
+    if initial.aligned.initial_lens == 'poster':
+        natural_visual = frame_constraints(result.evidence, len(result.video_times_s)) == 'full'
+        support, failure = assess_required_poster_support(
+            result.video_times_s, natural_visual, result.evidence['environment_poster'],
+            minimum_frames=parameters.environment_tags.tag_minimum_frames,
+            maximum_gap_s=parameters.retry.maximum_position_support_gap_s)
+        if failure:
+            raise PosterGeometryError(f'海报初始化后的联合图位置支持不足：{failure}', metrics=support)
     return result
+
+
+def _place_maps_from_poster(aligned, poster_seed, parameters, *, log) -> MapPlacements:
+    from umi.reconstruction.estimation.fusion.poster_initialization import front_map_placements
+
+    front, groups, gates = front_map_placements(aligned, poster_seed, parameters.fusion)
+    chain_placements = {'front': front, 'rear': {}}
+    chain_groups = {'front': groups, 'rear': {}}
+    segments = _map_segments(aligned.lenses, chain_placements, chain_groups, parameters.fusion.segment_s,
+                             float(output_frame_rate(parameters.video.frame_step)))
+    trajectory = poster_seed.trajectory
+    init_pose = {k: (pose[:3, :3], pose[:3, 3]) for k, pose in enumerate(trajectory.T_world_imu)}
+    dropped = [gate for gate in gates if gate['kind'] == 'dropped']
+    log('poster_map_placements', dict(full=sum(value['kind'] == 'full' for value in front.values()),
+                                     grouped=len(groups), dropped=len(dropped)), flush=True)
+    return MapPlacements(chain_placements, chain_groups, segments, init_pose, PoseAnchor(trajectory.T_world_imu[0]),
+                         dropped, gates, initial_velocities=trajectory.velocities)
 
 
 def place_maps(aligned: AlignmentResult, parameters: parameter_models.TrajectoryParameters, *, log=print) -> MapPlacements:
@@ -148,7 +248,7 @@ def place_maps(aligned: AlignmentResult, parameters: parameter_models.Trajectory
             else:
                 leaders.append(i)
         for i, j in chain_groups[m].items():   # members use the leader's placement (same map frame)
-            chain_placements[m][i] = dict(chain_placements[m][j], leader=j)
+            chain_placements[m][i] = chain_placements[m][j]
 
 
     if group_scale_ratio > 1.0:
@@ -162,8 +262,14 @@ def place_maps(aligned: AlignmentResult, parameters: parameter_models.Trajectory
         if placement["kind"] == "full":
             for k in range(ch0[i][0], ch0[i][1] + 1):
                 cover[k] = placed_imu_pose(initial_lens, k, placement)
-    tk = np.array(sorted(cover))
-    init_pose = {k: cover[int(tk[np.argmin(np.abs(tk - k))])] for k in range(frame_count)}
+    covered_frames = np.array(sorted(cover))
+    frames = np.arange(frame_count)
+    right = np.searchsorted(covered_frames, frames)
+    before = covered_frames[np.maximum(0, right - 1)]
+    after = covered_frames[np.minimum(right, len(covered_frames) - 1)]
+    # Match argmin's preference for the earlier frame when distances tie.
+    nearest = np.where(np.abs(frames - before) <= np.abs(after - frames), before, after)
+    init_pose = {k: cover[source] for k, source in enumerate(nearest)}
     for m in lenses:
         if m == initial_lens or alignment_estimates[m] is None:
             continue
@@ -195,7 +301,7 @@ def place_maps(aligned: AlignmentResult, parameters: parameter_models.Trajectory
                 rms = float(np.sqrt(((A @ sol - y) ** 2).reshape(-1, 3).sum(1).mean()))
                 gate["ls_scale"] = round(float(sol[0]), 5)
                 gate["ls_rms_mm"] = round(1e3 * rms, 2)
-                if st["good"] and sol[0] > 0 and rms <= other_lens_rms_m:  # gate: chain is IMU-consistent on its own and not grossly off
+                if sol[0] > 0 and rms <= other_lens_rms_m:
                     chain_placements[m][i] = {"s": float(sol[0]), "R": Rm_W, "t": sol[1:4], "kind": "full"}
                     gates.append(dict(gate, kind="full"))
                     continue
@@ -208,12 +314,19 @@ def place_maps(aligned: AlignmentResult, parameters: parameter_models.Trajectory
                 group_full_chains(m, lambda i, m=m: chain_placements[m][i]["s"])
     log("chain_groups", json.dumps({m: {str(lenses[m]["chains"][i]): str(lenses[m]["chains"][j]) for i, j in g.items()} for m, g in chain_groups.items()}), flush=True)
 
-    # ---------------- segments ----------------
+    segments = _map_segments(lenses, chain_placements, chain_groups, segment_duration_s, frame_rate_hz)
+    log("chains", json.dumps({m: [[list(lenses[m]["chains"][i]), placement["kind"]] for i, placement in sorted(chain_placements[m].items())] for m in lenses}),
+          "segments", {m: len(segments[m]) for m in lenses}, "gates", json.dumps(gates), flush=True)
+
+    return MapPlacements(chain_placements, chain_groups, segments, init_pose, MapAnchor(initial_lens, gauge), dropped, gates)
+
+
+def _map_segments(lenses, chain_placements, chain_groups, segment_duration_s, frame_rate_hz):
     segment_frames = int(round(segment_duration_s * frame_rate_hz)) if segment_duration_s > 0 else 10 ** 9
     segments = {m: [] for m in lenses}  # list of dicts: chain, k0, k1, sid
     for m in lenses:
         for i, placement in sorted(chain_placements[m].items()):
-            if placement["kind"] != "full" or "leader" in placement:
+            if placement["kind"] != "full" or i in chain_groups[m]:
                 continue
             k0, k1 = lenses[m]["chains"][i]
             cuts = list(range(k0, k1 + 1, segment_frames))
@@ -222,79 +335,59 @@ def place_maps(aligned: AlignmentResult, parameters: parameter_models.Trajectory
             for n, c0 in enumerate(cuts):
                 c1 = (cuts[n + 1] - 1) if n + 1 < len(cuts) else k1
                 segments[m].append({"chain": i, "k0": c0, "k1": c1, "sid": len(segments[m])})
-    log("chains", json.dumps({m: [[list(lenses[m]["chains"][i]), placement["kind"]] for i, placement in sorted(chain_placements[m].items())] for m in lenses}),
-          "segments", {m: len(segments[m]) for m in lenses}, "gates", json.dumps(gates), flush=True)
-
-    return MapPlacements(chain_placements, chain_groups, segments, init_pose, gauge, dropped, gates)
+    return segments
 
 
-@dataclass(frozen=True)
-class RecoveredState:
-    pose: gtsam.Pose3
-    velocity: np.ndarray
-    bias: gtsam.imuBias.ConstantBias
+def _recover_interval(times_s, start, end, integrate_between, settings):
+    """Optimize the conditional inertial chain with pose, velocity and bias fixed at both ends."""
+    graph = gtsam.NonlinearFactorGraph()
+    last = len(times_s) - 1
+    prediction = gtsam.NavState(start.pose, start.velocity)
+    initial_states = [start]
+    for node, (before, after) in enumerate(zip(times_s[:-1], times_s[1:])):
+        preintegrated = integrate_between(before, after, start.bias)
+        if preintegrated.deltaTij() <= 0:
+            raise ValueError(f'条件惯性恢复缺少 IMU 测量（{before:.9f}–{after:.9f} s）')
+        graph.add(gtsam.CombinedImuFactor(X(node), V(node), X(node + 1), V(node + 1),
+                                          B(node), B(node + 1), preintegrated))
+        if node + 1 < last:
+            prediction = preintegrated.predict(prediction, start.bias)
+            initial_states.append(InertialState(prediction.pose(), prediction.velocity(), start.bias))
+    initial_states.append(end)
+    try:
+        recovered, _ = solve_fixed_endpoints(graph, initial_states, settings)
+    except ConditionalInertialError as error:
+        raise ValueError(f'条件惯性恢复未收敛（{times_s[0]:.9f}–{times_s[-1]:.9f} s）') from error
+    except RuntimeError as error:
+        raise ValueError(f'条件惯性恢复求解失败（{times_s[0]:.9f}–{times_s[-1]:.9f} s）：{error}') from error
+    return recovered
 
 
-def _recover_states(video_times_s: np.ndarray, optimized: TrajectoryOptimizationResult) -> dict[int, RecoveredState]:
-    """保留节点解；区间内从前节点积分，按既有帧比例吸收终点误差。"""
-    states = {}
-    if optimized.node_times is not None:
-        return _recover_timed_states(video_times_s, optimized)
-    values, nodes = optimized.values, optimized.nodes
-    for node_index, start_frame in enumerate(nodes):
-        start_pose = values.atPose3(X(start_frame))
-        start_velocity = values.atVector(V(start_frame))
-        start_bias = values.atConstantBias(B(start_frame))
-        states[start_frame] = RecoveredState(start_pose, start_velocity, start_bias)
-        if node_index + 1 >= len(nodes):
-            break
-        end_frame = nodes[node_index + 1]
-        if end_frame == start_frame + 1:
-            continue
-        initial_state = gtsam.NavState(start_pose, start_velocity)
-        predictions = {
-            frame_index: optimized.integrate_between(
-                video_times_s[start_frame], video_times_s[frame_index], start_bias).predict(initial_state, start_bias)
-            for frame_index in range(start_frame + 1, end_frame + 1)
-        }
-        end_pose = values.atPose3(X(end_frame))
-        position_error = end_pose.translation() - predictions[end_frame].pose().translation()
-        rotation_error = gtsam.Rot3.Logmap(predictions[end_frame].pose().rotation().between(end_pose.rotation()))
-        velocity_error = values.atVector(V(end_frame)) - predictions[end_frame].velocity()
-        for frame_index in range(start_frame + 1, end_frame):
-            fraction = (frame_index - start_frame) / (end_frame - start_frame)
-            predicted = predictions[frame_index]
-            rotation = predicted.pose().rotation().compose(gtsam.Rot3.Expmap(fraction * rotation_error))
-            pose = gtsam.Pose3(rotation, gtsam.Point3(*(predicted.pose().translation() + fraction * position_error)))
-            states[frame_index] = RecoveredState(pose, predicted.velocity() + fraction * velocity_error, start_bias)
-    return states
-
-
-def _recover_timed_states(video_times_s, optimized):
-    """海报插入真实时刻后，在相邻实际节点间恢复输出帧；不跨过海报节点。"""
-    values, nodes = optimized.values, optimized.nodes
-    times = np.array([optimized.node_times[k] for k in nodes])
-    states = {}
-    for frame, query in enumerate(video_times_s):
-        right = int(np.searchsorted(times,query))
-        exact = next((i for i in (right,right-1) if 0 <= i < len(times) and abs(times[i]-query) <= 1e-9),None)
-        if exact is not None:
-            k = nodes[exact]
-            states[frame] = RecoveredState(values.atPose3(X(k)),values.atVector(V(k)),values.atConstantBias(B(k)))
-            continue
-        if not 0 < right < len(times): raise ValueError('独立海报恢复禁止外推')
-        left, end = nodes[right-1],nodes[right]
-        bias = values.atConstantBias(B(left))
-        state = gtsam.NavState(values.atPose3(X(left)),values.atVector(V(left)))
-        predicted = optimized.integrate_between(times[right-1],query,bias).predict(state,bias)
-        at_end = optimized.integrate_between(times[right-1],times[right],bias).predict(state,bias)
-        fraction = (query-times[right-1])/(times[right]-times[right-1])
-        target = values.atPose3(X(end))
-        dr = gtsam.Rot3.Logmap(at_end.pose().rotation().between(target.rotation()))
-        pose = gtsam.Pose3(predicted.pose().rotation().compose(gtsam.Rot3.Expmap(fraction*dr)),
-                          predicted.position()+fraction*(target.translation()-at_end.position()))
-        velocity = predicted.velocity()+fraction*(values.atVector(V(end))-at_end.velocity())
-        states[frame] = RecoveredState(pose,velocity,bias)
+def _recover_states(video_times_s: np.ndarray, optimized: TrajectoryOptimizationResult,
+                    maximum_iterations: int) -> dict[int, InertialState]:
+    """Recover each output frame between adjacent optimized nodes, including off-grid rear exposures."""
+    nodes = optimized.nodes
+    times = (video_times_s[nodes] if optimized.node_times is None
+             else np.array([optimized.node_times[node] for node in nodes]))
+    endpoints = [InertialState.from_values(optimized.values, node) for node in nodes]
+    states, intervals = {}, {}
+    for frame, (query, right) in enumerate(zip(video_times_s, np.searchsorted(times, video_times_s))):
+        if right < len(times) and abs(times[right] - query) <= 1e-9:
+            states[frame] = endpoints[right]
+        elif right > 0 and abs(times[right - 1] - query) <= 1e-9:
+            states[frame] = endpoints[right - 1]
+        elif 0 < right < len(times):
+            intervals.setdefault(right, []).append(frame)
+        else:
+            raise ValueError('条件惯性恢复禁止外推')
+    settings = gtsam.LevenbergMarquardtParams()
+    settings.setMaxIterations(maximum_iterations)
+    settings.setLinearSolverType('MULTIFRONTAL_QR')
+    for right, frames in intervals.items():
+        interval_times = np.r_[times[right - 1], video_times_s[frames], times[right]]
+        recovered = _recover_interval(interval_times, endpoints[right - 1], endpoints[right],
+                                      optimized.integrate_between, settings)
+        states.update(zip(frames, recovered))
     return states
 
 
@@ -327,7 +420,7 @@ def _describe_segments(placements: MapPlacements, values: gtsam.Values, aligned:
             scale_key, rotation_key, translation_key = segment_variable_keys(lens_name, segment['sid'])
             placement = placements.chains[lens_name][segment['chain']]
             rotation = values.atRot3(rotation_key).matrix()
-            rotation_change_deg = np.degrees(np.linalg.norm(logR(placement['R'].T @ rotation)))
+            rotation_change_deg = np.degrees(np.linalg.norm(rotation_log(placement['R'].T @ rotation)))
             translation = values.atVector(translation_key)
             scale = float(np.exp(values.atVector(scale_key)[0]))
             final_scales[lens_name].append(scale)
@@ -349,9 +442,10 @@ def recover_trajectory(aligned: AlignmentResult, placements: MapPlacements,
                        optimized: TrajectoryOptimizationResult, parameters: parameter_models.TrajectoryParameters) -> FusionSolution:
     fusion_parameters = parameters.fusion
     frame_count = len(aligned.video_times_s)
-    states = _recover_states(aligned.video_times_s, optimized)
+    recovered = _recover_states(aligned.video_times_s, optimized, fusion_parameters.lm_iterations)
     recovery_finished_s = time.time()
-    poses = np.stack([states[k].pose.matrix() for k in range(frame_count)])
+    states = [recovered[k] for k in range(frame_count)]
+    poses = np.stack([state.pose.matrix() for state in states])
     segment_rows, scale_segments, final_scales = _describe_segments(placements, optimized.values, aligned, poses)
     parameter_evidence = dict(group_chains=fusion_parameters.group_scale_ratio,
         chain_groups={lens_name: {str(aligned.lenses[lens_name]['chains'][chain_index]):
@@ -364,12 +458,12 @@ def recover_trajectory(aligned: AlignmentResult, placements: MapPlacements,
         accept_rms=fusion_parameters.other_lens_rms_m, accept_rot_deg=fusion_parameters.other_lens_rotation_deg,
         **optimized.evidence['params'])
     chain_diagnostics = dict(optimized.evidence, version='kiwi_fuse3s', init_lens=aligned.initial_lens, frames=frame_count,
+        recovery='conditional_inertial_optimization_fixed_endpoints',
         dropped=placements.dropped, gates=placements.gates, scale_consistency=scale_consistency(scale_segments),
         chains={lens_name: [[list(aligned.lenses[lens_name]['chains'][chain_index]), placement['kind']]
                            for chain_index, placement in sorted(placements.chains[lens_name].items())]
                 for lens_name in aligned.lenses},
-        stage1={lens_name: summarize_alignment(aligned.estimates[lens_name], lens['chains'])
-                for lens_name, lens in aligned.lenses.items()},
+        stage1=aligned.diagnostics['stage1'],
         sampling_stability=aligned.diagnostics.get('sampling_stability', {}),
         initialization_refinement=aligned.diagnostics.get('initialization_refinement', {}),
         linear_stage1=aligned.diagnostics.get('linear_stage1', {}),
@@ -378,8 +472,9 @@ def recover_trajectory(aligned: AlignmentResult, placements: MapPlacements,
                                     if scales else None) for lens_name, scales in final_scales.items()},
         timing_s=dict(optimized.timing_s, fill=round(recovery_finished_s - optimized.optimization_finished_s, 1)),
         params=parameter_evidence)
-    ordered_states = [states[frame_index] for frame_index in range(frame_count)]
-    return FusionSolution(aligned.video_times_s, poses, np.asarray([state.velocity for state in ordered_states]),
-                          np.asarray([state.bias.gyroscope() for state in ordered_states]),
-                          np.asarray([state.bias.accelerometer() for state in ordered_states]),
+    if 'poster_initialization' in aligned.diagnostics:
+        chain_diagnostics['poster_initialization'] = aligned.diagnostics['poster_initialization']
+    return FusionSolution(aligned.video_times_s, poses, np.asarray([state.velocity for state in states]),
+                          np.asarray([state.bias.gyroscope() for state in states]),
+                          np.asarray([state.bias.accelerometer() for state in states]),
                           tuple(segment_rows), chain_diagnostics)

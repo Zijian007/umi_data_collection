@@ -84,6 +84,14 @@ class ProcessingError(RuntimeError):
         self.return_code = return_code
 
 
+class OrbUnavailable(ProcessingError):
+    """ORB could not execute or did not produce a usable map."""
+
+    def __init__(self, stage: str, reason: str, *, category: str, return_code: int = 1):
+        super().__init__(stage, reason, return_code=return_code)
+        self.category = category
+
+
 @dataclass(frozen=True)
 class VisualContext:
     paths: RecordingPaths

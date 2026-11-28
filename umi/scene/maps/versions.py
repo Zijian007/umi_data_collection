@@ -16,7 +16,7 @@ from umi.core.geometry import validate_transform
 from umi.devices import registry
 from umi.infra import provenance as artifact_identity
 from umi.infra.file_store import is_current, read_yaml
-from umi.reconstruction.estimation import mapping
+from umi.reconstruction import mapping
 from umi.scene.errors import MapCompatibilityError, MapUnavailableError
 from umi.store import layout
 from umi.store.cache import matches_map_inputs

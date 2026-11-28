@@ -57,15 +57,15 @@ A/B 只求解和返回测量；验收策略决定是否可用；安装是独立�
 | [`reports.py`](reports.py) | 只展示，不读取 registry、不实例化执行器、不恢复工作目录 |
 | [`devices.py`](devices.py) | 安装与设备命令；启用状态快照；调用现有 registry |
 | [`devices.py`](devices.py) | 只读检查 front/rear 版本与套件固定绑定，返回带类型的报告结构；显示由 reports 负责，不代替实拍组合验收 |
-| [`rear_workflow.py`](rear_workflow.py) | 环境镜头 C 的轨迹生成器：复用场景录像准备、`umi/reconstruction/estimation/mapping.py` 建图与固定地图融合，调用共享 workflow |
+| [`rear_workflow.py`](rear_workflow.py) | 环境镜头 C 的轨迹生成器：复用场景录像准备、`umi/reconstruction/mapping.py` 建图与固定地图融合，调用共享 workflow |
 
 函数显式接收所需的板、IMU、重力或轨迹参数组。A/B 的两个公开入口共用一个内部执行函数，执行器统一记录异常所属步骤。
 
 板几何由 `pipeline/inputs.load_board()` 将唯一布局 [`hardware/calibration_targets/aprilgrid.json`](../../hardware/calibration_targets/aprilgrid.json) 与本次 `--tag-size-mm` 实测边长合并。布局中的标签族和黑边需符合当前 Basalt/OpenCV 检测器；传给 Basalt 的板文件只含 `tagCols`、`tagRows`、`tagSpacing`、`tagSize`（米）。A4/A3 打印资产与自检记录放在 `prints/`，不作为求解配置；`umi-calib check` 核对这些记录与布局是否一致。详见 [标定板说明](../../hardware/calibration_targets/README.md)。
 
-C 的轨迹配置在板几何解析后通过 `Configuration.load_trajectory_validation(tag_size_m=...)` 生成，将实测尺寸派生到 `vision.initial_tag.size_m`；run、verify、环境镜头 Scene 与 recheck 使用同一规则，配置快照和检查点均记录派生后的值。板参考通过球面 KB4 反投影保留超 90° 的射线方向，再由 `minimum_bearing_z` 筛选可用于前向 PnP 的角点；不再调用会截断半径的 `cv2.fisheye.undistortPoints`。拟合诊断仍单独记录 OpenCV 和自带 ORB-SLAM3 反投影限制，不把它们当成全视野真值。时间匹配/退化的数值保护在 `trajectory_metrics.py`，覆盖归一化半径由相机规格推导，不再作为 YAML 调参项。
+C 的轨迹配置在板几何解析后通过 `Configuration.load_trajectory_validation(tag_size_m=...)` 生成，将实测尺寸派生到 `shared.orb.initial_tag.size_m`；run、verify、环境镜头 Scene 与 recheck 使用同一规则，配置快照和检查点均记录派生后的值。板参考通过球面 KB4 反投影保留超 90° 的射线方向，再由 `minimum_bearing_z` 筛选可用于前向 PnP 的角点；不再调用会截断半径的 `cv2.fisheye.undistortPoints`。拟合诊断仍单独记录 OpenCV 和自带 ORB-SLAM3 反投影限制，不把它们当成全视野真值。时间匹配/退化的数值保护在 `trajectory_metrics.py`，覆盖归一化半径由相机规格推导，不再作为 YAML 调参项。
 
-C 同时显式覆盖 `input.mode: handheld`、`poster.standalone_fusion: false`；环境镜头 C 的场景后端另关闭海报建图/尺度修正/任务融合，避免任务默认开关改变独立验证的输入要求。对应配置隔离已有回归。registry、状态查询、场景和独立流程共用 `umi/devices/calibration_assets.py` 的 rear 身份、来源与验收检查，原片来源核验只在有录像时执行。
+C 同时显式覆盖 `standalone.input.mode: handheld`、`standalone.poster_fusion: false`；环境镜头 C 的场景后端另关闭海报建图/尺度修正/任务融合，避免任务默认开关改变独立验证的输入要求。对应配置隔离已有回归。registry、状态查询、场景和独立流程共用 `umi/devices/calibration_assets.py` 的 rear 身份、来源与验收检查，原片来源核验只在有录像时执行。
 
 `workflow` 串联流程，`pipeline/steps` 管步骤执行与恢复，`pipeline/runtime` 管运行资源。`validation` 产生验证测量，`acceptance` 根据测量与门限给出验收结论；运行记录中的 `execution`、`evaluation` 字段名保持稳定。
 
@@ -89,7 +89,7 @@ C 默认在 1 μs 内匹配同一视频时钟的样本，不插值、不猜帧�
 
 工作镜头 C 保存各轮诊断：每张地图独立做融合前 Sim(3) 比较，记录视觉–IMU 初始化残差、融合尺度变化及该轮是否采用。单目地图尺度任意，融合前不报告米制 SE(3) 误差或物理尺度偏差。诊断不替代最终 C 验收，也不用于挑选板误差最小的一轮。
 
-内部轨迹引擎通过 `retry.maximum_scale_change_ratio` 检查每个有位置约束的分段相对自身初始化的尺度变化，默认上限 2 倍，双向对称。超限轮次重建且不能选中，全部轮次不合格则 C 不完整。该上限是大幅发散保护，尚需多录像验证；不是精度门限。C 子进程保留工作数据，由外层完成验收后统一清理，因此 C 拒绝时地图和定位现场仍在。
+内部轨迹引擎通过 `segment_engine.retry.maximum_scale_change_ratio` 检查每个有位置约束的分段相对自身初始化的尺度变化，默认上限 2 倍，双向对称。超限轮次重建且不能选中，全部轮次不合格则 C 不完整。该上限是大幅发散保护，尚需多录像验证；不是精度门限。C 子进程保留工作数据，由外层完成验收后统一清理，因此 C 拒绝时地图和定位现场仍在。
 
 样例内参与外参仅用于工作镜头健全性检查；可选 `--compare-sample` 的 C 轨迹仅作对照，失败不改变候选验收。内部名称为 sample，调用轨迹引擎时使用它的 `factory` 选择值。
 
@@ -126,7 +126,7 @@ A 需要重算且至少有 16 个可用核心、线程预算至少为 4 时，�
 
 ## 数值与验证约定
 
-标定图像准备按 `umi/core/frame.py` 的固定约定，每 2 个原始帧取 1 帧（约 30 Hz）；工作镜头取右半、环境镜头取左半，1440×1440 灰度直接取 Y 平面。`board.intrinsics_step` / `validation_step` 在准备后的序列上控制独立检测，`reconstruction.yaml` 的 `video` 配置用于轨迹引擎，不改变 A/B 标定图像。准备时间含 1 秒平移，板参考转回视频时钟时减去该平移；不修改 IMU 提取或相机–IMU 时间差符号。
+标定图像准备按 `umi/core/frame.py` 的固定约定，每 2 个原始帧取 1 帧（约 30 Hz）；工作镜头取右半、环境镜头取左半，1440×1440 灰度直接取 Y 平面。`board.intrinsics_step` / `validation_step` 在准备后的序列上控制独立检测，`reconstruction/common.yaml` 的 `recording.video` 配置用于轨迹引擎，不改变 A/B 标定图像。准备时间含 1 秒平移，板参考转回视频时钟时减去该平移；不修改 IMU 提取或相机–IMU 时间差符号。
 
 Basalt 保留 bag 输入、KB4、噪声先验和 `--fixed-scale-opt-offset`。转 bag 时最多使用 4 个 PNG 解码线程，并受 `--workers` 限制；预读队列最多保留线程数两倍的图像任务，主线程按时间顺序序列化与压缩写入。每次求解只清理自身工作目录；B 显式写入所选内参初始化，不使用 A 角点缓存。Basalt 的 mean 重投影用于质量提醒，RMS 仅作参考；factory A 的独立留出 RMS 另有提醒规则。B 的额外板可见比例、距离检测已移除，保留求解器拟合与运动激励检查；`board.camera_imu_step` 随之移除，自定义配置也应删除此项。A 的视野覆盖检查和 C 的独立板参考保持执行。
 

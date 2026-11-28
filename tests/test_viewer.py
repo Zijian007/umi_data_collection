@@ -591,7 +591,8 @@ class SceneVideoLayoutTests(unittest.TestCase):
         mapping = batch / 'mapping/map.insv'
         mapping.parent.mkdir(parents=True)
         mapping.write_text('mapping')
-        collection = normalize_collection(dict(kit='rig', arms=['left'], backend=dict(mode='auto')))
+        collection = normalize_collection(dict(kit='rig', arms=['left'],
+            backend=dict(mode='auto', auto_order=['scene_map', 'poster_vio'])))
         for directory, expected in ((batch, True), (self.f.scene.root / 'auto_without_mapping', False)):
             with self.subTest(directory=directory):
                 has_mapping = bool(recordings.insv_files(directory / 'mapping'))

@@ -1,0 +1,350 @@
+diff --git a/include/System.h b/include/System.h
+--- a/include/System.h
++++ b/include/System.h
+@@ -148,6 +148,10 @@
+     // This resumes local mapping thread and performs SLAM again.
+     void DeactivateLocalizationMode();
+ 
++    // Relative rotations for visual-only mapping, indexed by uninterrupted IMU segment.
++    void SetMappingGyroRotation(const Sophus::SO3f& rotation, int segment);
++    void ReportMappingGyroTracking() const;
++
+     // Returns true if there have been a big map change (loop closure, global BA)
+     // since last call to this function
+     bool MapChanged();
+diff --git a/include/Tracking.h b/include/Tracking.h
+--- a/include/Tracking.h
++++ b/include/Tracking.h
+@@ -29,6 +29,7 @@
+ #include "LocalMapping.h"
+ #include "LoopClosing.h"
+ #include "Frame.h"
++#include <deque>
+ #include "ORBVocabulary.h"
+ #include "KeyFrameDatabase.h"
+ #include "ORBextractor.h"
+@@ -127,6 +128,10 @@
+     void SaveSubTrajectory(string strNameFile_frames, string strNameFile_kf, Map* pMap);
+ 
+     float GetImageScale();
++
++    void SetMappingGyroRotation(const Sophus::SO3f& rotation, int segment);
++    bool MappingGyroRejected() const { return mbGyroRejected; }
++    void ReportMappingGyroTracking() const;
+ 
+ public:
+ 
+@@ -231,6 +236,29 @@
+ 
+     // Reset IMU biases and compute frame velocity
+     void ResetFrameIMU();
++
++    struct GyroAnchor
++    {
++        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
++        KeyFrame* reference;
++        Sophus::SE3f cameraFromReference;
++        Sophus::SO3f integratedRotation;
++        double time;
++    };
++    void CheckMappingGyro(Map* map);
++    void RememberMappingGyroPose();
++    bool MappingGyroPoseIsConsistent() const;
++    bool HasDistributedGyroMatches() const;
++    bool PredictMappingGyroPose(Sophus::SE3f& pose, bool keepTranslation) const;
++    bool RecoverMappingGyroPose();
++
++    std::deque<GyroAnchor, Eigen::aligned_allocator<GyroAnchor>> mGyroAnchors;
++    Sophus::SO3f mMappingGyroRotation;
++    Map* mpGyroMap = nullptr;
++    int mnMappingGyroSegment = -1;
++    int mnGyroRecoveryFrames = 0;
++    bool mbGyroRejected = false;
++    unsigned int mnGyroPredictions = 0, mnGyroRejections = 0, mnGyroRecoveries = 0, mnGyroKeyframesWithheld = 0;
+ 
+     bool mbMapUpdated;
+ 
+diff --git a/src/System.cc b/src/System.cc
+--- a/src/System.cc
++++ b/src/System.cc
+@@ -540,7 +540,7 @@
+     int trackingState = mpTracker->mState;
+     // has tracking for OK and RECENTLY_LOST state.
+     bool has_tracking = (trackingState == 2) || (trackingState == 3);
+-    // bool has_tracking = trackingState == 2;
++    has_tracking = has_tracking && !mpTracker->MappingGyroRejected();
+ 
+     unique_lock<mutex> lock2(mMutexState);
+     mTrackingState = mpTracker->mState;
+@@ -565,6 +565,16 @@
+ {
+     unique_lock<mutex> lock(mMutexMode);
+     mbActivateLocalizationMode = true;
++}
++
++void System::SetMappingGyroRotation(const Sophus::SO3f& rotation, int segment)
++{
++    mpTracker->SetMappingGyroRotation(rotation, segment);
++}
++
++void System::ReportMappingGyroTracking() const
++{
++    mpTracker->ReportMappingGyroTracking();
+ }
+ 
+ void System::DeactivateLocalizationMode()
+diff --git a/src/Tracking.cc b/src/Tracking.cc
+--- a/src/Tracking.cc
++++ b/src/Tracking.cc
+@@ -1511,6 +1511,7 @@
+     }
+ 
+     mLastProcessedState=mState;
++    CheckMappingGyro(pCurrentMap);
+ 
+     if ((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD) && !mbCreatedMap)
+     {
+@@ -1523,6 +1524,7 @@
+ 
+     mbMapUpdated = false;
+ 
++    bool triedRelocalization = false;
+     int nCurMapChangeIndex = pCurrentMap->GetMapChangeIndex();
+     int nMapChangeIndex = pCurrentMap->GetLastMapChange();
+     if(nCurMapChangeIndex>nMapChangeIndex)
+@@ -1637,7 +1639,8 @@
+                     else
+                     {
+                         // Relocalization
+-                        bOK = Relocalization();
++                        triedRelocalization = mGyroAnchors.empty();
++                        bOK = triedRelocalization && Relocalization();
+                         //std::cout << "mCurrentFrame.mTimeStamp:" << to_string(mCurrentFrame.mTimeStamp) << std::endl;
+                         //std::cout << "mTimeStampLost:" << to_string(mTimeStampLost) << std::endl;
+                         if(mCurrentFrame.mTimeStamp-mTimeStampLost>3.0f && !bOK)
+@@ -1841,6 +1844,21 @@
+             }
+         }
+ 
++        // Validate before updating the motion model or inserting a map keyframe.
++        if ((!mGyroAnchors.empty() || mnGyroRecoveryFrames > 0) && mState != LOST &&
++            (!bOK || !MappingGyroPoseIsConsistent()))
++        {
++            ++mnGyroRejections;
++            mnGyroRecoveryFrames = 3;
++            bOK = !triedRelocalization && RecoverMappingGyroPose() && TrackLocalMap() &&
++                  MappingGyroPoseIsConsistent();
++            if (!bOK && !triedRelocalization)
++                bOK = Relocalization() && TrackLocalMap() && MappingGyroPoseIsConsistent();
++            if (bOK)
++                ++mnGyroRecoveries;
++            mbGyroRejected = !bOK;
++        }
++
+         if(bOK)
+             mState = OK;
+         else if (mState == OK)
+@@ -1901,7 +1919,7 @@
+         if(bOK || mState==RECENTLY_LOST)
+         {
+             // Update motion model
+-            if(mLastFrame.isSet() && mCurrentFrame.isSet())
++            if(!mbGyroRejected && mLastFrame.isSet() && mCurrentFrame.isSet())
+             {
+                 Sophus::SE3f LastTwc = mLastFrame.GetPose().inverse();
+                 mVelocity = mCurrentFrame.GetPose() * LastTwc;
+@@ -1935,6 +1953,14 @@
+             mlpTemporalPoints.clear();
+ 
+             bool bNeedKF = NeedNewKeyFrame();
++            if (mnGyroRecoveryFrames > 0)
++            {
++                if (bNeedKF)
++                    ++mnGyroKeyframesWithheld;
++                bNeedKF = false;
++                if (bOK)
++                    --mnGyroRecoveryFrames;
++            }
+ 
+             // Check if we need to insert a new keyframe
+             // if(bNeedKF && bOK)
+@@ -2002,8 +2028,11 @@
+     }
+ 
+ 
++    if (mState == OK)
++        RememberMappingGyroPose();
++
+     // Store frame pose information to retrieve the complete camera trajectory afterwards.
+-    bool is_lost = !(mState==OK || mState==RECENTLY_LOST);
++    bool is_lost = mbGyroRejected || !(mState==OK || mState==RECENTLY_LOST);
+     if(!is_lost && mCurrentFrame.isSet())
+     {
+         Sophus::SE3f Tcr_ = mCurrentFrame.GetPose() * mCurrentFrame.mpReferenceKF->GetPoseInverse();
+@@ -2495,6 +2524,131 @@
+         return nmatchesMap>=10;
+ }
+ 
++namespace
++{
++constexpr double kGyroCheckWindow = 0.30;
++constexpr float kGyroBaseTolerance = 0.05235988f;  // 3 degrees
++}
++
++void Tracking::SetMappingGyroRotation(const Sophus::SO3f& rotation, int segment)
++{
++    if (segment != mnMappingGyroSegment || segment < 0)
++    {
++        mGyroAnchors.clear();
++        mnGyroRecoveryFrames = 0;
++    }
++    mMappingGyroRotation = rotation;
++    mnMappingGyroSegment = segment;
++    mbGyroRejected = false;
++}
++
++void Tracking::ReportMappingGyroTracking() const
++{
++    cout << "GYRO_TRACKING predicted " << mnGyroPredictions << " rejected " << mnGyroRejections
++         << " recovered " << mnGyroRecoveries << " keyframes_withheld " << mnGyroKeyframesWithheld << endl;
++}
++
++void Tracking::CheckMappingGyro(Map* map)
++{
++    if (mpGyroMap != map || mbOnlyTracking || mSensor != System::MONOCULAR)
++    {
++        mGyroAnchors.clear();
++        mnGyroRecoveryFrames = 0;
++        mpGyroMap = map;
++    }
++    while (!mGyroAnchors.empty() &&
++           (mCurrentFrame.mTimeStamp - mGyroAnchors.front().time > kGyroCheckWindow ||
++            mGyroAnchors.front().reference->isBad()))
++        mGyroAnchors.pop_front();
++}
++
++void Tracking::RememberMappingGyroPose()
++{
++    auto* reference = mCurrentFrame.mpReferenceKF;
++    if (mnMappingGyroSegment < 0 || mbOnlyTracking || mSensor != System::MONOCULAR ||
++        !reference || reference->isBad() || !mCurrentFrame.isSet())
++        return;
++    mGyroAnchors.push_back({reference, mCurrentFrame.GetPose() * reference->GetPoseInverse(),
++                            mMappingGyroRotation, mCurrentFrame.mTimeStamp});
++}
++
++bool Tracking::HasDistributedGyroMatches() const
++{
++    int cellCounts[9] = {};
++    const float width = Frame::mnMaxX - Frame::mnMinX;
++    const float height = Frame::mnMaxY - Frame::mnMinY;
++    if (width <= 0.f || height <= 0.f)
++        return false;
++    for (int i = 0; i < mCurrentFrame.N; ++i)
++    {
++        if (!mCurrentFrame.mvpMapPoints[i] || mCurrentFrame.mvbOutlier[i]) continue;
++        const auto pixel = mCurrentFrame.mvKeysUn[i].pt;
++        const int col = std::max(0, std::min(2, int(3.f * (pixel.x - Frame::mnMinX) / width)));
++        const int row = std::max(0, std::min(2, int(3.f * (pixel.y - Frame::mnMinY) / height)));
++        ++cellCounts[3 * row + col];
++    }
++    return std::count_if(std::begin(cellCounts), std::end(cellCounts), [](int count) { return count >= 3; }) >= 3;
++}
++
++bool Tracking::MappingGyroPoseIsConsistent() const
++{
++    if (!mCurrentFrame.isSet() || !mCurrentFrame.GetPose().matrix().allFinite())
++        return false;
++    const auto current = mCurrentFrame.GetPose().so3().inverse();
++    bool requireSpread = mnGyroRecoveryFrames > 0;
++    for (const auto& anchor : mGyroAnchors)
++    {
++        if (anchor.reference->isBad()) continue;
++        const auto old = (anchor.cameraFromReference * anchor.reference->GetPose()).so3().inverse();
++        const auto gyroDelta = anchor.integratedRotation.inverse() * mMappingGyroRotation;
++        const auto error = (gyroDelta.inverse() * old.inverse() * current).log().norm();
++        const float limit = kGyroBaseTolerance + 0.07f * gyroDelta.log().norm();
++        if (!std::isfinite(error) || error > limit)
++            return false;
++        requireSpread = requireSpread || error > 0.5f * limit;
++    }
++    return !requireSpread || HasDistributedGyroMatches();
++}
++
++bool Tracking::PredictMappingGyroPose(Sophus::SE3f& pose, bool keepTranslation) const
++{
++    if (mGyroAnchors.empty() || mGyroAnchors.back().reference->isBad())
++        return false;
++    const auto& anchor = mGyroAnchors.back();
++    const auto Twc = (anchor.cameraFromReference * anchor.reference->GetPose()).inverse();
++    // Use the trusted reference after map optimization. Keep visual translation in map units.
++    const auto rotation = Twc.so3() * anchor.integratedRotation.inverse() * mMappingGyroRotation;
++    const auto position = keepTranslation ? pose.inverse().translation().eval() : Twc.translation().eval();
++    pose = Sophus::SE3f(rotation, position).inverse();
++    return true;
++}
++
++bool Tracking::RecoverMappingGyroPose()
++{
++    Sophus::SE3f pose;
++    if (!PredictMappingGyroPose(pose, false))
++        return false;
++    Frame saved;
++    saved = mCurrentFrame;
++    mCurrentFrame.SetPose(pose);
++    std::fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), nullptr);
++    std::fill(mCurrentFrame.mvbOutlier.begin(), mCurrentFrame.mvbOutlier.end(), false);
++    auto* reference = mGyroAnchors.back().reference;
++    ORBmatcher matcher(0.75f, true);
++    if (matcher.SearchByProjection(mCurrentFrame, reference, {}, 18.f, 80) >= 30 &&
++        Optimizer::PoseOptimization(&mCurrentFrame) >= 30 &&
++        MappingGyroPoseIsConsistent() && HasDistributedGyroMatches())
++    {
++        for (int i = 0; i < mCurrentFrame.N; ++i)
++            if (mCurrentFrame.mvbOutlier[i]) mCurrentFrame.mvpMapPoints[i] = nullptr;
++        mpReferenceKF = reference;
++        mCurrentFrame.mpReferenceKF = reference;
++        return true;
++    }
++    mCurrentFrame = saved;
++    return false;
++}
++
+ void Tracking::UpdateLastFrame()
+ {
+     // Update pose according to reference keyframe
+@@ -2584,11 +2738,11 @@
+     }
+     else
+     {
+-        mCurrentFrame.SetPose(mVelocity * mLastFrame.GetPose());
+-    }
+-
+-
+-
++        auto pose = mVelocity * mLastFrame.GetPose();
++        if (PredictMappingGyroPose(pose, true))
++            ++mnGyroPredictions;
++        mCurrentFrame.SetPose(pose);
++    }
+ 
+     fill(mCurrentFrame.mvpMapPoints.begin(),mCurrentFrame.mvpMapPoints.end(),static_cast<MapPoint*>(NULL));
+ 
+@@ -3563,6 +3717,8 @@
+ 
+ void Tracking::Reset(bool bLocMap)
+ {
++    mGyroAnchors.clear();
++    mnGyroRecoveryFrames = 0;
+     Verbose::PrintMess("System Reseting", Verbose::VERBOSITY_NORMAL);
+ 
+     if(mpViewer)
+@@ -3624,6 +3780,8 @@
+ 
+ void Tracking::ResetActiveMap(bool bLocMap)
+ {
++    mGyroAnchors.clear();
++    mnGyroRecoveryFrames = 0;
+     Verbose::PrintMess("Active map Reseting", Verbose::VERBOSITY_NORMAL);
+     if(mpViewer)
+     {

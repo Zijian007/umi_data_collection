@@ -72,7 +72,7 @@ def validate_batch_name(value: str) -> str:
 
 def load_scene_parameters(path: Path | None = None, *, overrides: dict | None = None,
                           gap_sources: dict[str, str] | None = None) -> SceneParameters:
-    """项目默认值来自 reconstruction.yaml。path 是同结构覆盖文件；overrides 可以是同结构的
+    """项目默认值来自 algorithms/reconstruction/。path 是公开覆盖文件；overrides 可以是同结构的
     公开树，也可以是内部扁平字段（运行流程内部合并结果和策略开关使用）。"""
     if gap_sources is not None:
         gap_sources.update(reconstruction.default_gap_sources())
@@ -114,7 +114,9 @@ def _decode_scene_parameters(parameter_values: dict) -> SceneParameters:
                                     'tag_maximum_cull_fraction', 'poster_vio_maximum_cull_rounds',
                                     'poster_vio_maximum_natural_cull_fraction', 'poster_vio_holdout_stride',
                                     'poster_vio_keyframe_maximum_dt_s', 'poster_vio_natural_holdout_stride',
-                                    'poster_vio_board_tilt_minimum_gap_s', 'poster_independent_node_stride'}
+                                    'poster_vio_board_tilt_minimum_gap_s', 'poster_independent_node_stride',
+                                    'poster_independent_keyframe_maximum_dt_s',
+                                    'poster_vio_front_map_minimum_cull_rounds'}
         if (type(value) not in ((int,) if typ is int else (int, float)) or not math.isfinite(value)
                 or value < 0 or value == 0 and not allows_zero):
             bound = '非负' if allows_zero else '正的'
@@ -168,7 +170,7 @@ def scene_definition(scene_document: dict, name: str, *, default_mode: str = 'sh
     if type(version) is not int or version != 3:
         raise ValueError('场景配置需要 schema_version: 3')
     if any(key in scene_document for key in ('trajectory', 'parameters')):
-        raise ValueError('collection.yaml 的 scene 不承载算法参数；请按 reconstruction.yaml 的结构编写 --expert-config 文件')
+        raise ValueError('collection.yaml 的 scene 不承载算法参数；请用 --expert-config，格式见 config/README.md')
     require_keys(scene_document, {'schema_version', 'mode', 'layout', 'reference_arm', 'map_reference_arm', 'description', 'tags'}, set(), 'scene')
     scene_document = dict(scene_document)
     layout = scene_document.pop('layout', None)
@@ -253,7 +255,7 @@ def read_scene(path: Path, *, overrides: SceneOverrides | None = None, collectio
     # 用途开关来自 collection，expert-config 覆盖算法参数。
     gap_sources: dict[str, str] = {}
     parameters = load_scene_parameters(gap_sources=gap_sources)
-    sources = dict.fromkeys(PROCESSING_FIELDS.values(), 'project')
+    sources = dict.fromkeys((*PROCESSING_FIELDS.values(), *reconstruction.FRONT_MAP_FIELDS), 'project')
     switches = collection['reconstruction'].get('processing_options', {})
     if switches:
         parameters = replace(parameters, **switches)
@@ -278,7 +280,7 @@ def read_scene(path: Path, *, overrides: SceneOverrides | None = None, collectio
 
 @dataclass(frozen=True)
 class SceneOverrides:
-    """本次场景的 --expert-config：与 config/algorithms/reconstruction.yaml 同结构的覆盖。"""
+    """本次场景使用的专家覆盖。"""
     path: Path
     sha256: str
     values_json: str
@@ -295,7 +297,6 @@ class SceneOverrides:
     @classmethod
     def from_snapshot(cls, snapshot: dict) -> SceneOverrides:
         """验证并还原结果中冻结的算法覆盖。"""
-
         require_keys(snapshot, {'path', 'sha256', 'values'}, {'path', 'sha256', 'values'}, '场景覆盖记录')
         declaration = snapshot['values']
         if not isinstance(declaration, dict):
@@ -324,10 +325,10 @@ def apply_overrides(trajectory: config.Configuration | None, parameters: ScenePa
                     gap_sources: dict[str, str] | None = None,
                     processing_sources: dict[str, str] | None = None) -> tuple[config.Configuration, SceneParameters]:
     if overrides is None:
-        return trajectory or config.load('trajectory', inline={'input': reconstruction.SCENE_RECORDING_INPUT}), parameters
+        return trajectory or config.load('trajectory', standalone=False), parameters
     overlay = overrides.overlays(gap_sources=gap_sources)
     if trajectory is None:
-        trajectory = config.load('trajectory', inline={**overlay.trajectory, 'input': reconstruction.SCENE_RECORDING_INPUT})
+        trajectory = config.load('trajectory', inline=overlay.trajectory, standalone=False)
         trajectory = replace(trajectory, sources=(*trajectory.sources, str(overrides.path)))
     else:
         trajectory = config.overlay_trajectory(trajectory, overlay.trajectory, overrides.path)

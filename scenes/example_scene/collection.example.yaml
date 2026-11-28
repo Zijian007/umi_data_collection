@@ -29,7 +29,7 @@ backend:  # 可选；take 可覆盖。
   #   poster_constraint: staged  # 有海报且允许检测时默认 staged，轨迹输出为任务海报坐标；joint=视觉种子直接联合；off=使用地图坐标。
   poster_vio:
     base_tag: true  # 省略用项目默认；是否使用 kit.yaml 中声明的夹爪基座标签。
-    # robust_inertial_seed: true  # 仅批次级；省略用 config/algorithms/reconstruction.yaml 的默认值。
+    # robust_inertial_seed: true  # 仅批次级；省略用 config/algorithms/reconstruction/poster_vio.yaml 的默认值。
     # maximum_observation_gap_s: 3.5  # 海报观测间隔上限，单位 s。
   # poster_independent:
   #   maximum_position_support_gap_s: 2.0  # 自然视觉和海报均无位置支持的间隔上限，单位 s。
@@ -40,7 +40,7 @@ backend:  # 可选；take 可覆盖。
 
 # measurements:
 #   gripper_tags:
-#     verified_gap_recovery: true  # 仅批次级；省略用 config/algorithms/reconstruction.yaml 的默认值。
+#     verified_gap_recovery: true  # 仅批次级；省略用 config/algorithms/reconstruction/common.yaml 的默认值。
 
 tasks:  # 可选：按实际任务目录名填写；未列出的任务继承批次默认值。
   take_001:  # 示例任务名，不是枚举；可用字母/数字/中文/_/-，不能占用 mapping/results 等内部目录名。

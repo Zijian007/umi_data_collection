@@ -319,3 +319,40 @@ def merge(forward: VisualObservations, reverse: VisualObservations, *, metric_sc
     return merged, dict(status='completed', policy=policy(parameters), metric_scale=metric_scale,
                         forward_frames=len(forward.indices), reverse_frames=len(reverse.indices),
                         added_frames=len(accepted), merged_frames=len(indices), segments=segments)
+
+
+def candidate_score(observations, placement, *, total_frames: int | None = None) -> dict:
+    """Rank already accepted maps by consistency and coverage evidence."""
+    def number(value, fallback):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        return value if np.isfinite(value) else fallback
+
+    evidence = placement.get('evidence', {})
+    alignment = evidence.get('alignment', {})
+    fixed = alignment.get('fixed_map_validation', [])
+    measured = [item for item in fixed if item.get('status') in ('verified', 'inconsistent')
+                and isinstance(item.get('rms_m'), (int, float)) and np.isfinite(item['rms_m'])]
+    worst_rms = max((float(item['rms_m']) for item in measured), default=1e6)
+    verified_fraction = (sum(item.get('status') == 'verified' for item in measured) / len(fixed)
+                        if fixed else 0.0)
+    alignment_rms = number(evidence.get('rms_m'), 1e6)
+    scale_std = number(evidence.get('relative_scale_std'), 1e6)
+    condition = number(evidence.get('condition'), 1e12)
+    observed_frames = len(observations.imu_times_s)
+    coverage = min(observed_frames / total_frames, 1.0) if total_frames else 0.0
+    rank = [
+        float(verified_fraction),
+        -worst_rms,
+        -alignment_rms,
+        -scale_std,
+        -condition,
+        float(coverage),
+        float(observed_frames),
+    ]
+    return dict(verified_fraction=float(verified_fraction), worst_fixed_rms_m=worst_rms,
+        alignment_rms_m=alignment_rms, relative_scale_std=scale_std,
+        condition=condition, coverage_fraction=float(coverage),
+        observed_frames=observed_frames, rank=rank)

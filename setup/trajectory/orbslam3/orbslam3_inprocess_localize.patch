@@ -1,0 +1,381 @@
+--- a/include/Frame.h
++++ b/include/Frame.h
+@@ -51,6 +51,18 @@
+ class GeometricCamera;
+ class ORBextractor;
+ 
++struct CachedMonoFeatures
++{
++    double timestamp = 0.0;
++    bool used_ini_extractor = false;
++    int N = 0;
++    std::vector<cv::KeyPoint> mvKeys;
++    std::vector<cv::KeyPoint> mvKeysUn;
++    cv::Mat mDescriptors;
++    std::vector<std::size_t> mGrid[FRAME_GRID_COLS][FRAME_GRID_ROWS];
++    cv::Mat imGray;
++};
++
+ class Frame
+ {
+ public:
+@@ -68,6 +80,11 @@
+     // Constructor for Monocular cameras.
+     Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, GeometricCamera* pCamera, cv::Mat &distCoef, const float &bf, const float &thDepth, Frame* pPrevF = static_cast<Frame*>(NULL), const IMU::Calib &ImuCalib = IMU::Calib(), cv::Ptr<cv::aruco::Dictionary> aruco_dict=cv::makePtr<cv::aruco::Dictionary>(cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50)));
+ 
++    // Constructor from cached monocular features for in-process localization.
++    Frame(const CachedMonoFeatures &cached, ORBextractor* extractor, ORBVocabulary* voc, GeometricCamera* pCamera, cv::Mat &distCoef, const float &bf, const float &thDepth);
++
++    void CaptureCachedFeatures(CachedMonoFeatures &out, bool used_ini_extractor, const cv::Mat &imGray) const;
++
+     // Destructor
+     // ~Frame();
+ 
+--- a/src/Frame.cc
++++ b/src/Frame.cc
+@@ -371,6 +371,75 @@
+ }
+ 
+ 
++Frame::Frame(const CachedMonoFeatures &cached, ORBextractor* extractor, ORBVocabulary* voc, GeometricCamera* pCamera, cv::Mat &distCoef, const float &bf, const float &thDepth)
++    :mpcpi(NULL), mpORBvocabulary(voc), mpORBextractorLeft(extractor), mpORBextractorRight(static_cast<ORBextractor*>(NULL)),
++     mTimeStamp(cached.timestamp), mK(static_cast<Pinhole*>(pCamera)->toK()), mK_(static_cast<Pinhole*>(pCamera)->toK_()),
++     mDistCoef(distCoef.clone()), mbf(bf), mThDepth(thDepth), mImuCalib(IMU::Calib()),
++     mpImuPreintegrated(NULL), mpPrevFrame(nullptr), mpImuPreintegratedFrame(NULL), mpReferenceKF(static_cast<KeyFrame*>(NULL)),
++     mbIsSet(false), mbImuPreintegrated(false), mpCamera(pCamera), mpCamera2(nullptr), mbHasPose(false), mbHasVelocity(false)
++{
++    mnId=nNextId++;
++
++    mnScaleLevels = mpORBextractorLeft->GetLevels();
++    mfScaleFactor = mpORBextractorLeft->GetScaleFactor();
++    mfLogScaleFactor = log(mfScaleFactor);
++    mvScaleFactors = mpORBextractorLeft->GetScaleFactors();
++    mvInvScaleFactors = mpORBextractorLeft->GetInverseScaleFactors();
++    mvLevelSigma2 = mpORBextractorLeft->GetScaleSigmaSquares();
++    mvInvLevelSigma2 = mpORBextractorLeft->GetInverseScaleSigmaSquares();
++
++    N = cached.N;
++    mvKeys = cached.mvKeys;
++    mvKeysUn = cached.mvKeysUn;
++    mDescriptors = cached.mDescriptors;
++    mpMutexImu = new std::mutex();
++
++    if(N <= 0)
++        return;
++
++    mvuRight = vector<float>(N,-1);
++    mvDepth = vector<float>(N,-1);
++    mnCloseMPs = 0;
++
++    mvpMapPoints = vector<MapPoint*>(N,static_cast<MapPoint*>(NULL));
++    mmProjectPoints.clear();
++    mmMatchedInImage.clear();
++    mvbOutlier = vector<bool>(N,false);
++
++    mb = mbf/fx;
++
++    Nleft = -1;
++    Nright = -1;
++    mvLeftToRightMatch = vector<int>(0);
++    mvRightToLeftMatch = vector<int>(0);
++    mvStereo3Dpoints = vector<Eigen::Vector3f>(0);
++    monoLeft = -1;
++    monoRight = -1;
++
++    for(int i=0;i<FRAME_GRID_COLS;i++)
++        for(int j=0;j<FRAME_GRID_ROWS;j++)
++            mGrid[i][j] = cached.mGrid[i][j];
++
++    mVw.setZero();
++}
++
++void Frame::CaptureCachedFeatures(CachedMonoFeatures &out, bool used_ini_extractor, const cv::Mat &imGray) const
++{
++    out.timestamp = mTimeStamp;
++    out.used_ini_extractor = used_ini_extractor;
++    out.N = N;
++    out.mvKeys = mvKeys;
++    out.mvKeysUn = mvKeysUn;
++    out.mDescriptors = mDescriptors.clone();
++    for(int i=0;i<FRAME_GRID_COLS;i++)
++        for(int j=0;j<FRAME_GRID_ROWS;j++)
++            out.mGrid[i][j] = mGrid[i][j];
++    if(used_ini_extractor && !imGray.empty())
++        out.imGray = imGray.clone();
++    else
++        out.imGray.release();
++}
++
+ void Frame::AssignFeaturesToGrid()
+ {
+     // Fill matrix with points
+--- a/include/Tracking.h
++++ b/include/Tracking.h
+@@ -75,6 +75,10 @@
+     Sophus::SE3f GrabImageStereo(const cv::Mat &imRectLeft,const cv::Mat &imRectRight, const double &timestamp, string filename);
+     Sophus::SE3f GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp, string filename);
+     Sophus::SE3f GrabImageMonocular(const cv::Mat &im, const double &timestamp, string filename);
++    void EnableMonoFeatureCache(bool enabled);
++    size_t CachedMonoFeatureCount() const { return mvCachedMonoFeatures.size(); }
++    void PrepareForInProcessLocalization();
++    Sophus::SE3f GrabCachedMonocular(size_t cache_index);
+ 
+     void GrabImuData(const IMU::Point &imuMeasurement);
+ 
+@@ -347,6 +351,9 @@
+ 
+     void newParameterLoader(Settings* settings);
+ 
++    bool mbCacheMonoFeatures = false;
++    std::vector<CachedMonoFeatures> mvCachedMonoFeatures;
++
+ public:
+     cv::Mat mImRight;
+ };
+--- a/src/Tracking.cc
++++ b/src/Tracking.cc
+@@ -1203,6 +1203,14 @@
+     if (mState==NO_IMAGES_YET)
+         t0=timestamp;
+ 
++    if(mbCacheMonoFeatures && mSensor == System::MONOCULAR)
++    {
++        CachedMonoFeatures cached;
++        const bool used_ini_extractor = (mCurrentFrame.mpORBextractorLeft == mpIniORBextractor);
++        mCurrentFrame.CaptureCachedFeatures(cached, used_ini_extractor, mImGray);
++        mvCachedMonoFeatures.push_back(std::move(cached));
++    }
++
+     mCurrentFrame.mNameFile = filename;
+     mCurrentFrame.mnDataset = mnNumDataset;
+ 
+@@ -1541,10 +1549,10 @@
+         {
+             mLastFrame = Frame(mCurrentFrame);
+ 
+-            // initialization failed. still record the frames.
+-            mlRelativeFramePoses.push_back(mlRelativeFramePoses.back());
+-            mlpReferences.push_back(mlpReferences.back());
+-            mlFrameTimes.push_back(mlFrameTimes.back());
++            // Initialization has not produced a pose or reference keyframe.
++            mlRelativeFramePoses.emplace_back();
++            mlpReferences.push_back(nullptr);
++            mlFrameTimes.push_back(mCurrentFrame.mTimeStamp);
+             mlbLost.push_back(true);
+             mlState.push_back(mState);
+             return;
+@@ -3701,6 +3709,109 @@
+     mbOnlyTracking = flag;
+ }
+ 
++void Tracking::EnableMonoFeatureCache(bool enabled)
++{
++    mbCacheMonoFeatures = enabled;
++    if(!enabled)
++        std::vector<CachedMonoFeatures>().swap(mvCachedMonoFeatures);
++}
++
++void Tracking::PrepareForInProcessLocalization()
++{
++    mbOnlyTracking = true;
++    mbLoadedMap = true;
++    mState = NO_IMAGES_YET;
++    mLastProcessedState = NO_IMAGES_YET;
++    mTrackedFr = 0;
++    mbMapUpdated = false;
++    mbVO = false;
++    mbReadyToInitializate = false;
++    mbCreatedMap = false;
++    mbVelocity = false;
++    mVelocity = Sophus::SE3f();
++    mpReferenceKF = static_cast<KeyFrame*>(NULL);
++    mpLastKeyFrame = static_cast<KeyFrame*>(NULL);
++    mvpLocalKeyFrames.clear();
++    mvpLocalMapPoints.clear();
++    mlpTemporalPoints.clear();
++    mCurrentFrame = Frame();
++    mLastFrame = Frame();
++    mnLastRelocFrameId = 0;
++    mnLastKeyFrameId = 0;
++    mnInitialFrameId = 0;
++    mnFirstFrameId = 0;
++    // Keep Frame::nNextId monotonically increasing to avoid stale frame-ID stamps on MapPoints/KeyFrames,
++    // while matching fresh --localization_only init (initID = 0, lastID = 0) so only frame 0 uses mpIniORBextractor.
++    initID = 0;
++    lastID = 0;
++    mTimeStampLost = 0.0;
++    t0 = 0.0;
++    mlRelativeFramePoses.clear();
++    mlpReferences.clear();
++    mlFrameTimes.clear();
++    mlbLost.clear();
++    mlState.clear();
++}
++
++Sophus::SE3f Tracking::GrabCachedMonocular(size_t cache_index)
++{
++    CachedMonoFeatures& cached = mvCachedMonoFeatures.at(cache_index);
++    const bool want_ini = (mState == NOT_INITIALIZED || mState == NO_IMAGES_YET || (lastID - initID) < mMaxFrames);
++    ORBextractor* extractor = want_ini ? mpIniORBextractor : mpORBextractorLeft;
++    if(cached.used_ini_extractor == want_ini)
++    {
++        mCurrentFrame = Frame(cached, extractor, mpORBVocabulary, mpCamera, mDistCoef, mbf, mThDepth);
++    }
++    else if(!cached.imGray.empty())
++    {
++        mCurrentFrame = Frame(cached.imGray, cached.timestamp, extractor, mpORBVocabulary, mpCamera,
++                              mDistCoef, mbf, mThDepth, nullptr, IMU::Calib(),
++                              cv::Ptr<cv::aruco::Dictionary>());
++        if(!want_ini)
++        {
++            mCurrentFrame.CaptureCachedFeatures(cached, false, cv::Mat());
++            cached.imGray.release();
++        }
++    }
++    else
++    {
++        mCurrentFrame = Frame(cached, mpORBextractorLeft, mpORBVocabulary, mpCamera, mDistCoef, mbf, mThDepth);
++    }
++
++    if(mState == NO_IMAGES_YET)
++        t0 = cached.timestamp;
++
++    mCurrentFrame.mNameFile = "";
++    mCurrentFrame.mnDataset = mnNumDataset;
++
++    lastID = mCurrentFrame.mnId;
++
++    // Track copies the previous trajectory record when relocalization fails.
++    // Supply a placeholder for the first attempt and remove it after tracking.
++    const bool first_frame = mlRelativeFramePoses.empty();
++    if(first_frame)
++    {
++        mlRelativeFramePoses.emplace_back();
++        mlpReferences.push_back(nullptr);
++        mlFrameTimes.push_back(cached.timestamp);
++        mlbLost.push_back(true);
++        mlState.push_back(NO_IMAGES_YET);
++    }
++
++    Track();
++
++    if(first_frame)
++    {
++        mlRelativeFramePoses.pop_front();
++        mlpReferences.pop_front();
++        mlFrameTimes.pop_front();
++        mlbLost.pop_front();
++        mlState.pop_front();
++    }
++
++    return mCurrentFrame.GetPose();
++}
++
+ void Tracking::UpdateFrameIMU(const float s, const IMU::Bias &b, KeyFrame* pCurrentKeyFrame)
+ {
+     Map * pMap = pCurrentKeyFrame->GetMap();
+--- a/include/System.h
++++ b/include/System.h
+@@ -133,6 +133,11 @@
+     // Input images: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.
+     // Returns the camera pose (empty if tracking fails).
+     std::pair<Sophus::SE3f, bool> LocalizeMonocular(const cv::Mat &im, const double &timestamp, const vector<IMU::Point>& vImuMeas = vector<IMU::Point>(), string filename="");
++    void EnableMonoFeatureCache(bool enabled);
++    void FinalizeMappingForLocalization();
++    size_t AtlasMapCount() const;
++    bool BeginInProcessLocalization(size_t map_index);
++    std::pair<Sophus::SE3f, bool> LocalizeCachedMonocular(size_t cache_index);
+ 
+     // This stops local mapping thread (map building) and performs only camera tracking.
+     void ActivateLocalizationMode();
+--- a/src/System.cc
++++ b/src/System.cc
+@@ -1734,5 +1734,88 @@
+     return !mStrLoadAtlasFromFile.empty();
+ }
+ 
++void System::EnableMonoFeatureCache(bool enabled)
++{
++    if(mpTracker) mpTracker->EnableMonoFeatureCache(enabled);
++}
++
++void System::FinalizeMappingForLocalization()
++{
++    if(mbOfflineSync)
++    {
++        ProcessOfflineMapping();
++        mbOfflineSync = false;
++    }
++    mpLocalMapper->RequestFinish();
++    mpLoopCloser->RequestFinish();
++    if(mptLocalMapping && mptLocalMapping->joinable()) mptLocalMapping->join();
++    if(mptLoopClosing && mptLoopClosing->joinable()) mptLoopClosing->join();
++    mpLoopCloser->WaitForGlobalBA();
++
++    if(!mStrSaveAtlasToFile.empty())
++    {
++        Verbose::PrintMess("Atlas saving to file " + mStrSaveAtlasToFile, Verbose::VERBOSITY_NORMAL);
++        SaveAtlas(FileType::BINARY_FILE);
++        mStrSaveAtlasToFile.clear();
++    }
++    else
++    {
++        mpAtlas->PreSave();
++    }
++
++    mpKeyFrameDatabase->clear();
++    vector<Map*> maps = mpAtlas->GetAllMaps();
++    for(Map* pMap : maps)
++    {
++        if(!pMap || pMap->IsBad()) continue;
++        vector<KeyFrame*> kfs = pMap->GetAllKeyFrames();
++        std::sort(kfs.begin(), kfs.end(), KeyFrame::lId);
++        for(KeyFrame* pKF : kfs)
++        {
++            if(!pKF || pKF->isBad()) continue;
++            if(pKF->mBowVec.empty()) pKF->ComputeBoW();
++            mpKeyFrameDatabase->add(pKF);
++        }
++    }
++    for(size_t im = 0; im < maps.size(); ++im)
++        cout << "atlas_map index " << im << " id " << maps[im]->GetId()
++             << " keyframes " << maps[im]->KeyFramesInMap()
++             << " mappoints " << maps[im]->MapPointsInMap() << endl;
++}
++
++size_t System::AtlasMapCount() const
++{
++    return mpAtlas ? mpAtlas->GetAllMaps().size() : 0;
++}
++
++bool System::BeginInProcessLocalization(size_t map_index)
++{
++    if(!mpAtlas || !mpTracker) return false;
++    vector<Map*> maps = mpAtlas->GetAllMaps();
++    if(map_index >= maps.size()) return false;
++    DUtils::Random::SeedRand(0);
++    cout << "atlas_map selected index " << map_index << endl;
++    mpAtlas->ChangeMap(maps.at(map_index));
++    mpTracker->PrepareForInProcessLocalization();
++    return true;
++}
++
++std::pair<Sophus::SE3f, bool> System::LocalizeCachedMonocular(size_t cache_index)
++{
++    if(mSensor != MONOCULAR)
++    {
++        cerr << "ERROR: LocalizeCachedMonocular requires MONOCULAR sensor." << endl;
++        exit(-1);
++    }
++    Sophus::SE3f Tcw = mpTracker->GrabCachedMonocular(cache_index);
++    int trackingState = mpTracker->mState;
++    bool has_tracking = (trackingState == 2) || (trackingState == 3);
++    unique_lock<mutex> lock2(mMutexState);
++    mTrackingState = trackingState;
++    mTrackedMapPoints = mpTracker->mCurrentFrame.mvpMapPoints;
++    mTrackedKeyPointsUn = mpTracker->mCurrentFrame.mvKeysUn;
++    return std::make_pair(Tcw, has_tracking);
++}
++
+ } //namespace ORB_SLAM
+ 

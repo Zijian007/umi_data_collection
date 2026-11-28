@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-import subprocess
-import traceback
+from contextlib import contextmanager
+import os
 from pathlib import Path
+import signal
+import subprocess
+import threading
+import traceback
 
 from umi.config import operational_settings as settings
 from umi.config import parameter_models
@@ -65,24 +69,88 @@ def visual_settings(environment: dict[str, str], *, lens_settings: dict[str, str
         rear_settings=paths.get('rear', paths['front']), front_mask=mask)
 
 
+class OperationCancelled(RuntimeError):
+    """后台子进程因主流程中止而被主动取消。"""
+
+
+_CANCEL_STATE = threading.local()
+
+
+@contextmanager
+def cancellation_scope(event: threading.Event | None):
+    """在当前线程作用域内挂载取消事件，使 run_logged 可在等待时中止子进程组。"""
+    previous = getattr(_CANCEL_STATE, 'event', None)
+    _CANCEL_STATE.event = event
+    try:
+        yield
+    finally:
+        _CANCEL_STATE.event = previous
+
+
+def _terminate_process_group(process: subprocess.Popen) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=2.0)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    process.wait()
+
+
 def run_logged(command: list[str], log: Path, *, stage: str, environment: dict[str, str],
                cwd: Path | None = None, stderr: Path | None = None, check: bool = True,
                failure_code: int | None = None) -> int:
     """所有外部进程走同一日志边界；保留原始 stdout/stderr 和阶段归因。"""
     log.parent.mkdir(parents=True, exist_ok=True)
+    cancel_event = getattr(_CANCEL_STATE, 'event', None)
+    if cancel_event is not None and cancel_event.is_set():
+        raise OperationCancelled(f'{stage} 已取消')
+    env = settings.child_environment(environment)
     try:
         with log.open('w', encoding='utf-8') as stdout:
             if stderr is None:
-                result = subprocess.run(command, stdout=stdout, stderr=subprocess.STDOUT, env=settings.child_environment(environment), cwd=cwd)
+                if cancel_event is None:
+                    result = subprocess.run(command, stdout=stdout, stderr=subprocess.STDOUT, env=env, cwd=cwd)
+                    returncode = result.returncode
+                else:
+                    returncode = _run_cancellable(command, stdout, subprocess.STDOUT, env, cwd, cancel_event, stage)
             else:
                 with stderr.open('w', encoding='utf-8') as errors:
-                    result = subprocess.run(command, stdout=stdout, stderr=errors, env=settings.child_environment(environment), cwd=cwd)
+                    if cancel_event is None:
+                        result = subprocess.run(command, stdout=stdout, stderr=errors, env=env, cwd=cwd)
+                        returncode = result.returncode
+                    else:
+                        returncode = _run_cancellable(command, stdout, errors, env, cwd, cancel_event, stage)
     except OSError as error:
         raise ProcessingError(stage, f'{error}；日志：{log}') from error
-    if check and result.returncode:
-        raise ProcessingError(stage, f'外部程序退出码 {result.returncode}；日志：{log}',
-                                  return_code=failure_code or result.returncode)
-    return result.returncode
+    if check and returncode:
+        raise ProcessingError(stage, f'外部程序退出码 {returncode}；日志：{log}',
+                                  return_code=failure_code or returncode)
+    return returncode
+
+
+def _run_cancellable(command: list[str], stdout, stderr, env: dict[str, str],
+                     cwd: Path | None, cancel_event: threading.Event, stage: str) -> int:
+    process = subprocess.Popen(command, stdout=stdout, stderr=stderr, env=env, cwd=cwd, start_new_session=True)
+    try:
+        while True:
+            try:
+                return process.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                if cancel_event.is_set():
+                    _terminate_process_group(process)
+                    raise OperationCancelled(f'{stage} 已取消')
+    except BaseException:
+        if process.poll() is None:
+            _terminate_process_group(process)
+        raise
 
 
 def engine_command(context: VisualContext, command: list[str], *, timeout_s: int | None = None) -> list[str]:

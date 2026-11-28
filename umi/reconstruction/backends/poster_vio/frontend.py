@@ -6,8 +6,10 @@ geometry and landmark staging follow specialist da29719 (MIT, see NOTICE.md).
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+import threading
 
 import cv2
 import numpy as np
@@ -15,6 +17,9 @@ import numpy as np
 from umi.core.frame import CROP, LENS_HALF, SRC_H, SRC_W, crop_xywh
 from umi.perception.decoding import configure_decoder
 from umi.reconstruction.backends.poster_vio.models import FeatureTrackingParameters
+
+# cv2.setRNGSeed 修改进程全局随机状态；并发跟踪双镜头时仅需保护 RANSAC 调用段。
+_ESSENTIAL_RNG_LOCK = threading.Lock()
 
 
 def subsample_observations(node_indices, pixels, maximum_observations):
@@ -125,6 +130,8 @@ class _FeatureTracker:
                            for i in range(self.bin_count)]
         self.previous = None
         self.selected_index = 0
+        self._orb = cv2.ORB_create() if parameters.poster_vio_revisit_enabled else None
+        self._matcher = cv2.BFMatcher(cv2.NORM_HAMMING) if parameters.poster_vio_revisit_enabled else None
 
     @property
     def done(self):
@@ -139,9 +146,15 @@ class _FeatureTracker:
             raise ValueError(f'poster_vio {self.item.camera} 原片时间戳与冻结观测不一致')
         x, y, width, height = crop_xywh(LENS_HALF[self.item.camera])
         current = np.ascontiguousarray(gray[y:y + height, x:x + width])
-        mask = self.mask.copy()
-        for polygon in self.item.excluded_polygons.get(int(source_index), ()):
-            cv2.fillConvexPoly(mask, np.round(polygon).astype(np.int32), 0)
+        polygons = self.item.excluded_polygons.get(int(source_index), ())
+        if polygons:
+            mask = self.mask.copy()
+            for polygon in polygons:
+                cv2.fillConvexPoly(mask, np.round(polygon).astype(np.int32), 0)
+            mask_copied = True
+        else:
+            mask = self.mask
+            mask_copied = False
         node = int(self.nodes[self.selected_index])
         if self.previous is not None and self.active:
             ids = list(self.active)
@@ -179,14 +192,17 @@ class _FeatureTracker:
             self.active = following
         if len(self.active) < max(1, self.max_features // 2):
             self.flush()
-            for point in self.active.values():
-                cv2.circle(mask, tuple(np.round(point).astype(int)), 12, 0, -1)
+            if self.active:
+                if not mask_copied:
+                    mask = self.mask.copy()
+                for point in self.active.values():
+                    cv2.circle(mask, tuple(np.round(point).astype(int)), 12, 0, -1)
             found = cv2.goodFeaturesToTrack(
                 current, maxCorners=self.max_features - len(self.active),
                 qualityLevel=.01, minDistance=10, blockSize=7, mask=mask)
             if found is not None:
                 found = found.reshape(-1, 2)
-                descriptors = describe(current, found) if self.parameters.poster_vio_revisit_enabled else {}
+                descriptors = describe(current, found, orb=self._orb) if self.parameters.poster_vio_revisit_enabled else {}
                 # Compare both ends on the frozen timeline. Decoded PTS can round above the same frame.
                 self.bank = {key: track for key, track in self.bank.items()
                              if frame_time - track['last_time_s'] <= self.parameters.poster_vio_revisit_maximum_gap_s}
@@ -194,7 +210,8 @@ class _FeatureTracker:
                     self.item.seed_poses[node] @ self.camera_from_imu_inverse, self.item.model,
                     frame_time, maximum_gap_s=self.parameters.poster_vio_revisit_maximum_gap_s,
                     ratio=self.parameters.poster_vio_revisit_match_ratio,
-                    maximum_reprojection_px=self.parameters.poster_vio_revisit_maximum_reprojection_px)
+                    maximum_reprojection_px=self.parameters.poster_vio_revisit_maximum_reprojection_px,
+                    matcher=self._matcher)
                 for row, point in enumerate(found):
                     if row in matches:
                         track_id = matches[row]
@@ -313,15 +330,45 @@ def track_cameras(video: Path, cameras: tuple[FeatureCameraInput, ...], *, param
             if (stream.codec_context.width, stream.codec_context.height) != (SRC_W, SRC_H):
                 raise ValueError('poster_vio 自然特征需要原始 3840×1920 X3 录像')
             configure_decoder(stream)
-            for source_index, frame in enumerate(container.decode(stream)):
-                if any(not tracker.done and source_index == tracker.frames[tracker.selected_index]
-                       for tracker in trackers):
-                    timestamp = float(frame.pts * frame.time_base) if frame.pts is not None and frame.time_base else None
-                    gray = frame.to_ndarray(format='gray')
-                    for tracker in trackers:
-                        tracker.consume(source_index, gray, timestamp)
-                if all(tracker.done for tracker in trackers):
-                    break
+            if len(trackers) > 1:
+                # 双镜头特征跟踪相互独立且 OpenCV 释放 GIL；单帧流水线同时隐藏下一帧解码与灰度转换开销。
+                cursors = [0] * len(trackers)
+                pending = []
+                with ThreadPoolExecutor(max_workers=len(trackers)) as pool:
+                    try:
+                        for source_index, frame in enumerate(container.decode(stream)):
+                            active = []
+                            for idx, tracker in enumerate(trackers):
+                                cursor = cursors[idx]
+                                if cursor < len(tracker.frames) and source_index == tracker.frames[cursor]:
+                                    active.append(tracker)
+                                    cursors[idx] = cursor + 1
+                            if active:
+                                timestamp = (float(frame.pts * frame.time_base)
+                                             if frame.pts is not None and frame.time_base else None)
+                                gray = frame.to_ndarray(format='gray')
+                                for future in pending:
+                                    future.result()
+                                pending = [pool.submit(tracker.consume, source_index, gray, timestamp)
+                                           for tracker in active]
+                            if all(cursor == len(tracker.frames) for cursor, tracker in zip(cursors, trackers)):
+                                break
+                        for future in pending:
+                            future.result()
+                    finally:
+                        for future in pending:
+                            if not future.done():
+                                future.cancel()
+            else:
+                for source_index, frame in enumerate(container.decode(stream)):
+                    if any(not tracker.done and source_index == tracker.frames[tracker.selected_index]
+                           for tracker in trackers):
+                        timestamp = float(frame.pts * frame.time_base) if frame.pts is not None and frame.time_base else None
+                        gray = frame.to_ndarray(format='gray')
+                        for tracker in trackers:
+                            tracker.consume(source_index, gray, timestamp)
+                    if all(tracker.done for tracker in trackers):
+                        break
     result = {tracker.item.camera: tracker.finish() for tracker in trackers}
     if diagnostics is not None:
         diagnostics.update({tracker.item.camera: dict(
@@ -355,10 +402,12 @@ def bearing_inliers(previous, current, model, previous_pose, current_pose, *, th
     valid &= np.abs(np.sum(normal * second, axis=1)) <= tolerance * np.maximum(denominator, 1e-12)
     candidates = np.flatnonzero(valid)
     if len(candidates) >= 8:
-        cv2.setRNGSeed(int(seed) % 2147483647)
         a, b = first[candidates], second[candidates]
-        _, mask = cv2.findEssentialMat(a[:, :2] / a[:, 2:], b[:, :2] / b[:, 2:],
-            focal=1., pp=(0., 0.), method=cv2.USAC_DEFAULT, prob=.999, threshold=tolerance)
+        norm_a, norm_b = a[:, :2] / a[:, 2:], b[:, :2] / b[:, 2:]
+        with _ESSENTIAL_RNG_LOCK:
+            cv2.setRNGSeed(int(seed) % 2147483647)
+            _, mask = cv2.findEssentialMat(norm_a, norm_b,
+                focal=1., pp=(0., 0.), method=cv2.USAC_DEFAULT, prob=.999, threshold=tolerance)
         if mask is not None:
             valid[candidates] &= mask.ravel().astype(bool)
     return valid
@@ -403,19 +452,19 @@ def triangulate_batch(tracks, poses, camera_from_imu, model, *, maximum_rms_px=3
     return result
 
 
-def describe(gray, points):
+def describe(gray, points, *, orb=None):
     """ORB descriptors at existing LK corners; IDs preserve compute() filtering."""
     points = np.asarray(points)
     keypoints = [cv2.KeyPoint(float(point[0]), float(point[1]), 31., class_id=i)
                  for i, point in enumerate(points)]
-    returned, descriptors = cv2.ORB_create().compute(gray, keypoints)
+    returned, descriptors = (cv2.ORB_create() if orb is None else orb).compute(gray, keypoints)
     if descriptors is None:
         return {}
     return {point.class_id: descriptor.copy() for point, descriptor in zip(returned, descriptors)}
 
 
 def match_revisits(points, descriptors, bank, camera_pose, model, time_s, *, maximum_gap_s,
-                   ratio=.75, maximum_reprojection_px=4.):
+                   ratio=.75, maximum_reprojection_px=4., matcher=None):
     """Unique descriptor matches independently checked by metric reprojection."""
     available = [(key, track) for key, track in bank.items()
                  if 0 < time_s - track['last_time_s'] <= maximum_gap_s]
@@ -424,7 +473,7 @@ def match_revisits(points, descriptors, bank, camera_pose, model, time_s, *, max
     rows = list(descriptors)
     query = np.asarray([descriptors[row] for row in rows], dtype=np.uint8)
     target = np.asarray([track['descriptor'] for _, track in available], dtype=np.uint8)
-    matches = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(query, target, k=2)
+    matches = (cv2.BFMatcher(cv2.NORM_HAMMING) if matcher is None else matcher).knnMatch(query, target, k=2)
     inverse = np.linalg.inv(camera_pose)
     result, used = {}, set()
     for pair in sorted(matches, key=lambda pair: pair[0].distance if len(pair) else 256):

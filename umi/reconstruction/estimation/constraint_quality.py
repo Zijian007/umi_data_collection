@@ -94,6 +94,28 @@ def position_support_summary(times: np.ndarray, visual: np.ndarray, poster: dict
                 poster_supported_frames=len(poster['position_support_video_times_s']))
 
 
+def assess_required_poster_support(times, visual, poster, *, minimum_frames, maximum_gap_s) -> tuple[dict, str | None]:
+    """Measure coverage and apply the hard gate for publishing a poster-referenced trajectory."""
+    if not poster or poster.get('status') != 'fused':
+        return {}, '未实际融合环境海报，拒绝发布海报坐标轨迹'
+    try:
+        observed = np.asarray(poster.get('observation_video_times_s'), dtype=float)
+    except (TypeError, ValueError):
+        return {}, '独立海报观测时间证据不足或无效'
+    if (observed.ndim != 1 or len(observed) < max(1, minimum_frames) or not np.isfinite(observed).all()
+            or np.any(np.diff(observed) <= 0) or observed[0] < times[0] - 1e-8 or observed[-1] > times[-1] + 1e-8):
+        return {}, '独立海报观测时间证据不足或无效'
+    try:
+        support = position_support_summary(times, visual, poster)
+    except (TypeError, ValueError):
+        return {}, '独立海报几何有效的位置支持不足或证据无效'
+    support['maximum_poster_observation_gap_s'] = float(np.max(np.diff(np.r_[times[0], observed, times[-1]])))
+    if support['poster_supported_frames'] < minimum_frames:
+        return support, '独立海报几何有效的位置支持不足或证据无效'
+    gap = support['maximum_position_support_gap_s']
+    return support, (f'自然视觉和海报共同约束缺口过长：{gap:.3f} s' if gap > maximum_gap_s else None)
+
+
 def tracked_counts(run_txt: Path) -> dict:
     """'map: rc=0 TRACKED a / b' lines recorded by reconstruction.py."""
     structured = run_txt.parent / 'tracking.json'
@@ -135,7 +157,11 @@ def evaluate_notes(summary: dict, parameters: parameter_models.NoteParameters) -
     lead = evidence['map_position_starts_at_s']
     tracked = summary['tracking']['front_map_build_tracked']
     if not has_full:
-        notes.append('No frame got a position from the camera map: the trajectory is IMU-only and not usable.')
+        poster = (summary.get('fusion') or {}).get('environment_poster') or {}
+        if poster.get('status') == 'fused' and poster.get('position_support_video_times_s'):
+            notes.append('Position support comes from the environment poster and IMU.')
+        else:
+            notes.append('No frame got a position from the camera map: the trajectory is IMU-only and not usable.')
     elif full < parameters.minimum_full_fraction:
         notes.append('Camera-map position coverage is %.1f%%, below the configured %.1f%%; treat the trajectory with care.'
                      % (100 * full, 100 * parameters.minimum_full_fraction))

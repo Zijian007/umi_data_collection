@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from threading import Event, Lock, Thread
 
 from umi.infra.concurrency import daemon_map
-from umi.infra.file_store import write_json
 from umi.infra.terminal import Console
 from umi.perception.decoding import ScanProgress
 from umi.perception.gripper import distance as tag_distance
@@ -157,8 +155,8 @@ def prepare_task_detections(inputs: TaskInputs, arm: str, *, summary: DetectionS
     """Reuse each arm's completed detection across attempts and trimming."""
     if arm not in inputs.detections or (inputs.detections[arm] is None
                                         and inputs.episode.scene.environment_tag_detection):
-        inputs.detections[arm] = prepare_detections(inputs.episode, arm, inputs.recordings[arm],
-                                                   cache_audit=inputs.cache_audit, summary=summary)
+        return prepare_detections(inputs.episode, arm, inputs.recordings[arm],
+                                  cache_audit=inputs.cache_audit, summary=summary)
     return inputs.detections[arm]
 
 
@@ -224,8 +222,8 @@ def prepare_detections(episode: Episode, arm: str, recording: PreparedRecording,
 
 
 def measure(episode: Episode, arm: str, recording: PreparedRecording,
-            video_offset_s: float, output: Path) -> ArmMeasurements:
-    """共享或局部重建共用同一验收；失败由任务编排层阻止发布。"""
+            video_offset_s: float) -> ArmMeasurements:
+    """Measure each hand and report whether the gripper channel met its coverage criteria."""
     parameters = episode.scene.parameters
     camera = recording.camera
     width_result = None
@@ -252,10 +250,9 @@ def measure(episode: Episode, arm: str, recording: PreparedRecording,
             verified_gap_recovery=parameters.tag_distance_verified_gap_recovery,
             roi_px=tuple(parameters.tag_distance_roi_px),
             detection_times_s=recording.full_video_times_s)
-        try:
-            distance_result = tag_distance.process(request, layout.metadata(episode.root, 'cache'),
-                progress=lambda message: console.write(f'{arm}：{message}', recording=episode.root.name))
-        except tag_distance.TagDistanceAcceptanceError as error:
-            write_json(output / 'tag_distance.json', error.report)
-            raise ValueError(f'{arm}：{error}') from error
+        distance_result = tag_distance.process(request, layout.metadata(episode.root, 'cache'), strict=False,
+            progress=lambda message: console.write(f'{arm}：{message}', recording=episode.root.name))
+        if not distance_result.report.get('acceptance', {}).get('passed', True):
+            warning = tag_distance.TagDistanceAcceptanceError(distance_result.report)
+            console.write(f'{arm}：{warning}；保留轨迹及测距有效标记', recording=episode.root.name, state='提醒')
     return ArmMeasurements(width_result, distance_result)

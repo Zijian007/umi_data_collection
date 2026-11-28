@@ -32,6 +32,15 @@ class FusionInputs:
 
 
 @dataclass(frozen=True)
+class TrajectorySeed:
+    """Pose and velocity guesses on the video timeline for the poster graph."""
+
+    video_times_s: np.ndarray
+    T_world_imu: np.ndarray
+    velocities: np.ndarray
+
+
+@dataclass(frozen=True)
 class FusionSolution:
     video_times_s: np.ndarray
     T_world_imu: np.ndarray
@@ -42,7 +51,35 @@ class FusionSolution:
     evidence: dict
 
 
-def load_inputs(*, front_frames: Path, rear_frames: Path, imu_csv: Path, camera_json: Path,
+@dataclass(frozen=True)
+class FusionOutput:
+    solution: FusionSolution
+    tum: np.ndarray
+
+    @property
+    def video_times_s(self) -> np.ndarray:
+        return canonical_to_video_seconds(self.tum[:, 0])
+
+    @property
+    def evidence(self) -> dict:
+        return self.solution.evidence
+
+
+def read_imu_video_clock(path: Path, offset_ns: int) -> np.ndarray:
+    with path.open() as stream:
+        imu = np.array([[float(x) for x in row] for row in csv.reader(stream) if row and not row[0].startswith('#')])
+    if imu.ndim != 2 or imu.shape[1] != 7:
+        raise ValueError('IMU 文件缺少时间或三轴角速度及加速度')
+    imu[:, 0] = euroc_ns_to_seconds(imu[:, 0], camera_offset_ns=offset_ns)
+    return imu
+
+
+def read_video_times(path: Path) -> np.ndarray:
+    with path.open() as stream:
+        return canonical_to_video_seconds([float(row['t_canonical_s']) for row in csv.DictReader(stream)])
+
+
+def load_inputs(*, front_frames: Path | None = None, rear_frames: Path | None = None, imu_csv: Path, camera_json: Path,
                 offset_ns: int, rear_quaternion: list[float], rear_lever: list[float],
                 use_rear: bool, times_csv: Path | None = None) -> FusionInputs:
     camera = read_basalt(camera_json)
@@ -51,7 +88,7 @@ def load_inputs(*, front_frames: Path, rear_frames: Path, imu_csv: Path, camera_
     observations, map_ids, front_covariances = {}, {}, {}
     for lens, path in (('rear', rear_frames), ('front', front_frames)):
         obs, maps = {}, {}
-        if lens == 'front' or use_rear:
+        if path is not None and (lens == 'front' or use_rear):
             with path.open() as stream:
                 for row in csv.DictReader(stream):
                     if row['ok'] == '1' and row.get('state', '2') == '2':
@@ -65,26 +102,24 @@ def load_inputs(*, front_frames: Path, rear_frames: Path, imu_csv: Path, camera_
                         if row.get('map'):
                             maps[k] = row['map']
         observations[lens], map_ids[lens] = obs, maps
-    with imu_csv.open() as stream:
-        imu = np.array([[float(x) for x in row] for row in csv.reader(stream) if row and not row[0].startswith('#')])
-    imu[:, 0] = euroc_ns_to_seconds(imu[:, 0], camera_offset_ns=offset_ns)
-    times = None
-    if times_csv is not None:
-        with times_csv.open() as stream:
-            times = canonical_to_video_seconds([float(row['t_canonical_s']) for row in csv.DictReader(stream)])
+    imu = read_imu_video_clock(imu_csv, offset_ns)
+    times = read_video_times(times_csv) if times_csv is not None else None
     return FusionInputs(observations, map_ids, imu, times, camera,
                         Rot.from_quat(rear_quaternion).as_matrix(), np.array(rear_lever), front_covariances=front_covariances)
 
 
-def write_solution(solution: FusionSolution, output: Path) -> None:
+def write_solution(solution: FusionSolution, output: Path) -> FusionOutput:
     """保持原轨迹精度、辅助 CSV 字段与 JSON 结构；求解成功后才创建输出。"""
     output.mkdir(parents=True, exist_ok=True)
+    tum = np.empty((len(solution.video_times_s), 8))
     with (output/'traj_tum.txt').open('w') as fo:
         fo.write('# t x y z qx qy qz qw | T_WI, W gravity-aligned metric, front+rear relocalization + IMU, piecewise map placement (KIWI-style, ours) | canonical s\n')
         for k, time in enumerate(video_to_canonical_seconds(solution.video_times_s)):
             q = Rot.from_matrix(solution.T_world_imu[k,:3,:3]).as_quat()
             p = solution.T_world_imu[k,:3,3]
-            fo.write('%.9f %.9f %.9f %.9f %.9f %.9f %.9f %.9f\n' % (time, *p, *q))
+            line = '%.9f %.9f %.9f %.9f %.9f %.9f %.9f %.9f\n' % (time, *p, *q)
+            fo.write(line)
+            tum[k] = [float(value) for value in line.split()]
     cols = 't,px,py,pz,vx,vy,vz,bgx,bgy,bgz,bax,bay,baz,qx,qy,qz,qw,pstd_x,pstd_y,pstd_z,n_msckf,n_slam,dt_cam_imu,rItoC_x,rItoC_y,rItoC_z,pIinC_x,pIinC_y,pIinC_z,fx,fy,cx,cy,k1,k2,k3,k4,init_time,imu_t_last'.split(',')
     with (output/'state.csv').open('w') as fo:
         fo.write(','.join(cols)+'\n')
@@ -103,6 +138,7 @@ def write_solution(solution: FusionSolution, output: Path) -> None:
         for row in solution.segments:
             fo.write('%s,%d,%d,%d,%d,%.3f,%.3f,%.6g,%.6g,%.3f,%.5f,%.5f,%.5f\n' % row)
     (output/'fuse_info.json').write_text(json.dumps(solution.evidence, indent=1))
+    return FusionOutput(solution, tum)
 
 
 def retime_rear(inputs, measured):
@@ -115,8 +151,9 @@ def retime_rear(inputs, measured):
     indices = sorted(observations)
     times = inputs.video_times_s[indices]+offset
     result, result_maps = {}, {}
-    for k, query in enumerate(inputs.video_times_s):
-        right = int(np.searchsorted(times,query))
+    insertion_points = np.searchsorted(times, inputs.video_times_s) if indices else ()
+    for k, right in enumerate(insertion_points):
+        query = inputs.video_times_s[k]
         exact = next((i for i in (right,right-1) if 0 <= i < len(times) and abs(times[i]-query) <= 1e-9), None)
         if exact is not None:
             source = indices[exact]
@@ -135,11 +172,23 @@ def retime_rear(inputs, measured):
 
 
 @dataclass(frozen=True)
+class MapAnchor:
+    lens: str
+    chain: int
+
+
+@dataclass(frozen=True)
+class PoseAnchor:
+    T_world_imu_at_start: np.ndarray
+
+
+@dataclass(frozen=True)
 class MapPlacements:
     chains: dict
     groups: dict
     segments: dict
     initial_imu_poses: dict
-    gauge_chain: int
+    world_anchor: MapAnchor | PoseAnchor
     dropped: list
     gates: list
+    initial_velocities: np.ndarray | None = None

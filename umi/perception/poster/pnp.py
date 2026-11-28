@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from umi.core.geometry import transform
+_EYE3 = np.eye(3, dtype=float)
 
 
 def solve_frame_candidates(points, pixels, model, *, rays=None):
@@ -19,25 +19,36 @@ def solve_frame_candidates(points, pixels, model, *, rays=None):
     try:
         solved = cv2.solvePnPGeneric(
             np.ascontiguousarray(points, dtype=float), normalized,
-            np.eye(3), None, flags=cv2.SOLVEPNP_IPPE)
+            _EYE3, None, flags=cv2.SOLVEPNP_IPPE)
     except cv2.error as error:
         raise ValueError('poster_vio 海报平面 PnP 失败') from error
     if not solved[0]:
         raise ValueError('poster_vio 海报没有有效 PnP 候选')
-    candidates = []
+    valid_poses, valid_camera_points = [], []
     for rvec, tvec in zip(solved[1], solved[2]):
-        pose = transform(cv2.Rodrigues(rvec)[0], np.asarray(tvec, dtype=float).ravel())
+        rot = cv2.Rodrigues(rvec)[0]
+        trans = np.asarray(tvec, dtype=float).ravel()
         # IPPE can return numerically valid but physically absurd translations
         # for a weak planar hypothesis.  Reject them before distance/residual
         # norms can overflow and obscure the actual initialization failure.
-        if (not np.isfinite(pose).all()
-                or np.max(np.abs(pose[:3, 3])) > 1e4):
+        if (not np.isfinite(rot).all() or not np.isfinite(trans).all()
+                or np.max(np.abs(trans)) > 1e4):
             continue
-        camera_points = (pose[:3, :3] @ points.T).T + pose[:3, 3]
+        camera_points = points @ rot.T + trans
         if np.any(camera_points[:, 2] <= 0):
             continue
-        predicted = model.project(camera_points)
-        error = predicted - pixels
+        pose = np.eye(4, dtype=float)
+        pose[:3, :3] = rot
+        pose[:3, 3] = trans
+        valid_poses.append(pose)
+        valid_camera_points.append(camera_points)
+    if not valid_poses:
+        raise ValueError('poster_vio 海报 PnP 候选均为非正深度')
+    n_pts = len(points)
+    all_predicted = model.project(np.concatenate(valid_camera_points, axis=0)).reshape(len(valid_poses), n_pts, 2)
+    candidates = []
+    for index, pose in enumerate(valid_poses):
+        error = all_predicted[index] - pixels
         with np.errstate(over='ignore', invalid='ignore'):
             rms = float(np.sqrt(np.mean(np.sum(error * error, axis=1))))
         if np.isfinite(rms):

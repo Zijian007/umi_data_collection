@@ -33,7 +33,7 @@ from umi.calibration.pipeline import runtime as calibration_runtime
 from umi.infra import provenance
 from umi.infra.file_store import read_yaml, write_json, write_yaml
 from umi.infra.paths import KITS_ROOT, PROJECT_ROOT, python_executable
-from umi.scene import episodes
+from umi.scene import task_state as episodes
 from umi.scene import run as processing
 from umi.scene import run as workflow
 from umi.scene.collection import batch as batch_inputs
@@ -42,6 +42,8 @@ from umi.scene.collection import batch as episode_inputs
 from umi.scene.collection import batch as processing_batch
 from umi.scene.collection.configuration import SceneOverrides, apply_overrides
 from umi.scene.maps import versions as map_repository
+from umi.scene.collection.batch import episode_paths as discover_episode_paths
+from umi.scene.collection.batch import read_episode as read_task_episode
 from umi.store import layout
 
 # 启动器路径、参数校验与求解环境安装边界。
@@ -391,7 +393,6 @@ class DocumentationContractsTests(unittest.TestCase):
     def test_templates_are_valid_examples_and_excluded_from_discovery(self):
         from umi.apps.viewer.catalog import RecordingCatalog
         from umi.config.collection_schema import normalize_collection
-        from umi.scene import episodes
         from umi.scene.collection import kit as kit_inputs
         from umi.store import layout as batch_processing_layout
         normalize_collection(read_yaml(ROOT / 'scenes/example_scene/collection.example.yaml'))
@@ -404,7 +405,7 @@ class DocumentationContractsTests(unittest.TestCase):
             with patch.object(kit_inputs, 'KITS', root / 'kits'), self.assertRaises(OSError):
                 kit_inputs.read_kit('example_kit')
             self.assertEqual(batch_processing_layout.configured_batches([scenes / 'example_scene']), [])
-            self.assertEqual(episodes.episode_paths([scenes]), [])
+            self.assertEqual(discover_episode_paths([scenes]), [])
             self.assertEqual(RecordingCatalog(scenes).scan()['recordings'], [])
 
     def test_yaml_scalar_keys_have_user_facing_comments(self):
@@ -427,7 +428,7 @@ class DocumentationContractsTests(unittest.TestCase):
         references = {
             'scene/maps/binding.py': ('select_map',),
             'scene/routing.py': ('execute',),
-            'reconstruction/backends/scene_map/run.py': ('execute_task',),
+            'reconstruction/backends/scene_map.py': ('execute_task',),
             'scene/publication.py': ('write_arm_result', 'write_bimanual_trajectory', 'write_episode_result'),
             'scene/collection/batch.py': ('read_inputs', 'make_record', 'save_record'),
         }
@@ -471,7 +472,7 @@ print('lightweight')
             self.assertEqual(list(Path(temp).iterdir()), [])
 
     def test_mapping_and_shared_cache_do_not_depend_on_workflows(self):
-        for path in (PROJECT_ROOT / 'umi/reconstruction/estimation/mapping.py', PROJECT_ROOT / 'umi/store/cache.py'):
+        for path in (PROJECT_ROOT / 'umi/reconstruction/mapping.py', PROJECT_ROOT / 'umi/store/cache.py'):
             for node in ast.walk(ast.parse(path.read_text())):
                 if isinstance(node, ast.ImportFrom) and node.module:
                     self.assertFalse(node.module.startswith(('umi.calibration', 'umi.scene')), str(path))
@@ -519,7 +520,7 @@ print('lightweight')
                                      for module in modules for prefix in forbidden), str(path))
 
     def test_scene_dispatch_does_not_load_poster_vio_before_selecting_it(self):
-        script = "import sys\nfrom umi.scene import routing as estimation\nassert 'poster_vio' in estimation.ESTIMATORS\nassert 'umi.reconstruction.backends.poster_vio.run' not in sys.modules\nassert 'umi.reconstruction.backends.poster_vio' not in sys.modules\n"
+        script = "import sys\nfrom umi.scene import routing as estimation\nassert 'poster_vio' in estimation.ESTIMATORS\nassert 'umi.reconstruction.backends.poster_vio.task' not in sys.modules\nassert 'umi.reconstruction.backends.poster_vio' not in sys.modules\n"
         result = subprocess.run([sys.executable, '-c', script], cwd=PROJECT_ROOT,
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -602,7 +603,7 @@ class InternalLayoutTests(unittest.TestCase):
             current = batch / '.pipeline/tasks/take_001/episode.yaml'
             self.assertEqual(layout.manifest(task, 'episode.yaml'), current)
             self.assertFalse(current.exists())
-            self.assertEqual(episodes.episode_paths([batch]), [])
+            self.assertEqual(discover_episode_paths([batch]), [])
 
     def test_legacy_state_and_run_locations_are_not_read(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -662,7 +663,7 @@ class InternalLayoutTests(unittest.TestCase):
         self.assertTrue((layout.metadata(take, 'episode.yaml')).is_file())
         self.assertFalse((layout.metadata(take, 'state.json')).exists())
         self.assertFalse((fixture.batch / 'imports').exists())
-        self.assertEqual(episodes.episode_paths([fixture.batch]), [layout.metadata(take, 'episode.yaml')])
+        self.assertEqual(discover_episode_paths([fixture.batch]), [layout.metadata(take, 'episode.yaml')])
 
     def test_identical_failures_share_one_diagnostic_and_keep_previous_success(self):
         fixture = scene_tests.SceneWorkflowTests()
@@ -677,7 +678,7 @@ class InternalLayoutTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'same failure'):
                     workflow.run_episode(fixture.episode_path, force=True)
         self.assertEqual(episode.output.resolve(), success)
-        failed = list((layout.metadata(episode.root, 'runs')).glob('failed-*'))
+        failed = [path.parent for path in layout.metadata(episode.root, 'runs').glob('*/error.json')]
         self.assertEqual(len(failed), 1)
         self.assertEqual(json.loads((failed[0] / 'error.json').read_text())['reason'], 'same failure')
         self.assertFalse((failed[0] / 'failure.json').exists())
@@ -685,7 +686,7 @@ class InternalLayoutTests(unittest.TestCase):
         raw = json.loads((layout.metadata(episode.root, 'state.json')).read_text())
         self.assertNotIn('reason', raw['attempt'])
         self.assertNotIn('preflight_report', raw['attempt'])
-        self.assertEqual(episodes.task_status(fixture.episode_path)['reason'], 'same failure')
+        self.assertEqual(episodes.task_status(read_task_episode(fixture.episode_path, verify=False))['reason'], 'same failure')
 
 
     def test_task_declaration_changes_invalidate_result_and_viewer_status(self):
@@ -697,7 +698,7 @@ class InternalLayoutTests(unittest.TestCase):
         configuration = fixture.batch / 'collection.yaml'
         map_version = batch_inputs.read_batch(fixture.batch).map_version
         write_task_configuration(take, dict(instruction='拿起盒子'))
-        self.assertEqual(episodes.task_status(take)['status'], 'pending')
+        self.assertEqual(episodes.task_status(read_task_episode(take, verify=False))['status'], 'pending')
         self.assertEqual(capture_status(take)['status'], 'pending')
         self.assertEqual(processing.run([take])[0]['status'], 'ok')
         self.assertEqual(batch_inputs.read_batch(fixture.batch).map_version, map_version)

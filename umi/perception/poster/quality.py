@@ -3,7 +3,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from umi.perception.poster.geometry import PosterGeometryError, residual_and_jacobians
+from umi.perception.poster.geometry import PosterGeometryError, skew_batch
 
 
 @dataclass(frozen=True)
@@ -104,35 +104,58 @@ def position_support_metrics(bodies, board, camera_from_imu, points, pixels,
     复用因子 Jacobian 和逐标签 Huber 权重。奇异方向不能用伪逆当作零方差；
     平面远处的另一解、共同标定偏差仍需外部实测验证。
     """
+    bodies = np.asarray(bodies, dtype=float)
+    board = np.asarray(board, dtype=float)
+    camera_from_imu = np.asarray(camera_from_imu, dtype=float)
+    points = np.asarray(points, dtype=float)
+    pixels = np.asarray(pixels, dtype=float)
+    times = np.asarray(times, dtype=float)
+    count = len(times)
     frames = []
-    for time in np.unique(times):
-        indices = np.flatnonzero(times == time)
-        jacobians, residuals, errors = [], [], []
-        for i in indices:
-            residual, jacobian, _ = residual_and_jacobians(
-                bodies[i], board, camera_from_imu, points[i], pixels[i], model)
-            sigma = np.repeat(corner_sigma_px(pixels[i], model, parameters), 2)
-            whitened = residual / sigma
-            weight = min(1., parameters.tag_huber / max(np.linalg.norm(whitened), 1e-12))
-            jacobians.append(jacobian / sigma[:, None] * np.sqrt(weight))
-            residuals.append(whitened * np.sqrt(weight))
-            errors.extend(np.linalg.norm(residual.reshape(-1, 2), axis=1))
-        jacobian = np.concatenate(jacobians)
-        _, singular, vt = np.linalg.svd(jacobian, full_matrices=False)
-        rank = int(np.sum(singular > singular[0] * 1e-8)) if singular[0] > 0 else 0
-        position_std, rotation_std = None, None
-        if rank == 6:
-            inflation = max(1., float(np.sum(np.concatenate(residuals)**2)) / max(1, len(jacobian)-6))
-            covariance = (vt.T / singular**2) @ vt * inflation
-            position_std = float(np.sqrt(max(0., np.linalg.eigvalsh(covariance[3:, 3:])[-1])))
-            rotation_std = float(np.degrees(np.sqrt(max(0., np.linalg.eigvalsh(covariance[:3, :3])[-1]))))
-        rms = float(np.sqrt(np.mean(np.square(errors))))
-        supported = (rank == 6 and position_std <= parameters.tag_maximum_position_std_m
-                     and rotation_std <= parameters.tag_maximum_rotation_std_deg
-                     and rms <= parameters.tag_maximum_reprojection_rms_px)
-        frames.append(dict(video_time_s=float(time), observations=len(indices), rank=rank,
-                           position_std_m=position_std, rotation_std_deg=rotation_std,
-                           rms_px=rms, position_supported=bool(supported)))
+    if count:
+        # 一次性向量化计算全部观测的残差与位姿 Jacobian，消除逐标签 Python 循环开销。
+        world = points @ board[:3, :3].T + board[:3, 3]
+        in_body = np.einsum('nji,nkj->nki', bodies[:, :3, :3], world - bodies[:, None, :3, 3])
+        in_camera = np.einsum('ij,nkj->nki', camera_from_imu[:3, :3], in_body) + camera_from_imu[:3, 3]
+        flat_camera = in_camera.reshape(-1, 3)
+        projection = model.project_jacobian(flat_camera).reshape(count, 4, 2, 3)
+        predicted = model.project(flat_camera).reshape(count, 4, 2)
+        diff = predicted - pixels
+        residual = diff.reshape(count, 8)
+        projected_rotation = projection @ camera_from_imu[:3, :3]
+        body_twist = np.empty((count * 4, 3, 6), dtype=float)
+        body_twist[:, :, :3] = skew_batch(in_body.reshape(-1, 3))
+        body_twist[:, :, 3:] = -np.eye(3)
+        jacobians_all = (projected_rotation @ body_twist.reshape(count, 4, 3, 6)).reshape(count, 8, 6)
+        sigma = np.repeat(corner_sigma_px(pixels, model, parameters), 2, axis=1)
+        whitened = residual / sigma
+        weight = np.minimum(1., parameters.tag_huber / np.maximum(np.linalg.norm(whitened, axis=1), 1e-12))
+        sqrt_weight = np.sqrt(weight)
+        weighted_jacobians = jacobians_all / sigma[:, :, None] * sqrt_weight[:, None, None]
+        weighted_residuals = whitened * sqrt_weight[:, None]
+        corner_err2 = np.sum(diff * diff, axis=2)
+
+        order = np.argsort(times, kind='mergesort')
+        sorted_times = times[order]
+        unique_times, starts, counts = np.unique(sorted_times, return_index=True, return_counts=True)
+        for time, start, length in zip(unique_times, starts, counts):
+            idx = order[start:start + length]
+            jacobian = weighted_jacobians[idx].reshape(-1, 6)
+            _, singular, vt = np.linalg.svd(jacobian, full_matrices=False)
+            rank = int(np.sum(singular > singular[0] * 1e-8)) if singular[0] > 0 else 0
+            position_std, rotation_std = None, None
+            if rank == 6:
+                inflation = max(1., float(np.sum(weighted_residuals[idx] ** 2)) / max(1, len(jacobian) - 6))
+                covariance = (vt.T / singular ** 2) @ vt * inflation
+                position_std = float(np.sqrt(max(0., np.linalg.eigvalsh(covariance[3:, 3:])[-1])))
+                rotation_std = float(np.degrees(np.sqrt(max(0., np.linalg.eigvalsh(covariance[:3, :3])[-1]))))
+            rms = float(np.sqrt(np.mean(corner_err2[idx])))
+            supported = (rank == 6 and position_std <= parameters.tag_maximum_position_std_m
+                         and rotation_std <= parameters.tag_maximum_rotation_std_deg
+                         and rms <= parameters.tag_maximum_reprojection_rms_px)
+            frames.append(dict(video_time_s=float(time), observations=int(length), rank=rank,
+                               position_std_m=position_std, rotation_std_deg=rotation_std,
+                               rms_px=rms, position_supported=bool(supported)))
     return dict(model='conditional_linearized_fixed_board_and_calibration',
                 actual_error='not_measured',
                 maximum_position_std_m=parameters.tag_maximum_position_std_m,

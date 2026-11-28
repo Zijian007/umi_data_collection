@@ -1,0 +1,11 @@
+# 通过内部逐段引擎重建本段录像，再用海报统一坐标。
+# 单次专家覆盖写在 backends.poster_independent 下。
+
+maximum_gravity_difference_deg: 5.0  # 两手在海报坐标中的重力夹角上限，单位 deg。
+poster_guidance: false  # 建图前估计海报 + IMU 初值，并在固定图重定位时提供搜索初值。
+front_map:
+  pixel_weights: false  # 按工作镜头 ORB 特征的像素信息加权定位。
+fusion:
+  node_stride: 0  # 正整数指定节点步长，0 继承 shared.solver.node_stride。
+  imu_white_noise_multiplier: 1.0  # 乘在此后端的加速度和角速度白噪声标准差上。
+  poster_keyframe_maximum_dt_s: 0.0  # 0 保留全部海报曝光时刻；0.1 启用已验收的采样间隔（秒）。

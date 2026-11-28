@@ -1,0 +1,20 @@
+kit: kit_001
+arms:
+- left
+- right
+instruction: 把盒子放到货架上
+mapping: {}
+tasks:
+  take_001:
+    sequence: 1795868130
+    recordings:
+      left:
+        path: take_001/left/VID_20261128_201530_00_007.insv
+        sha256: 4554ba8deb3494254ef118cf02729f085dcde00bdc7400ded81450bd95ac03f0
+        serial: IAQEB2609JPAR3
+        captured_at: '2026-11-28T20:15:30'
+      right:
+        path: take_001/right/VID_20261128_201602_00_005.insv
+        sha256: 7c210eeeb1b1bc2bbf11d50d9aa8d9dbf9b69122e24511a49b9a247b7a668f40
+        serial: IAQEB26097M4CP
+        captured_at: '2026-11-28T20:16:02'

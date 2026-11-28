@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from umi.perception.models import RecordingPaths as VisualPaths
 from umi.perception.models import VisualContext, VisualSettings
+from umi.store.coordinates import OutputCoordinates
 
 if TYPE_CHECKING:
     import numpy as np
 
     from umi.config import loader as config
+    from umi.reconstruction.estimation.fusion.data import FusionOutput
 
 
 @dataclass(frozen=True)
@@ -23,6 +25,29 @@ class FusedTrajectory:
     front_tracked: np.ndarray
     evidence: dict
 
+
+@dataclass(frozen=True)
+class BackendResult:
+    """Validated IMU tracks on each recording's exposure grid."""
+
+    trajectories: dict[str, FusedTrajectory]
+    video_times_s: dict[str, np.ndarray]
+    coordinate_record: dict
+    source_map: InitVar[dict | None] = None
+    coordinates: OutputCoordinates = field(init=False)
+
+    def __post_init__(self, source_map):
+        object.__setattr__(self, 'coordinates', OutputCoordinates.from_record(self.coordinate_record, source_map=source_map))
+
+    @classmethod
+    def from_recordings(cls, trajectories, recordings, coordinate_record, *, source_map=None):
+        return cls(trajectories, {arm: recordings[arm].video_times_s for arm in trajectories},
+                   coordinate_record, source_map)
+
+
+@dataclass
+class BackendDiagnostics:
+    partial: BackendResult | None = None
 
 
 @dataclass(frozen=True)
@@ -77,12 +102,16 @@ class ReconstructionContext(VisualContext):
     settings: ReconstructionSettings
     correct_poster_clock: bool = False
     front_map_pixel_fusion: bool = False
+    poster_keyframe_maximum_dt_s: float = 0.0
+    confirm_zupt_visually: bool = False
 
 
 @dataclass(frozen=True)
 class FusionArtifacts:
     trajectory: Path
     quality_report: Path
+    result: FusionOutput | None = None
+    input_identity: str | None = None
 
 
 @dataclass(frozen=True)
@@ -93,3 +122,4 @@ class AttemptResult:
     reason: str | None = None
     failed_stage: str | None = None
     quality_rejected: bool = False
+    fusion: FusionArtifacts | None = None

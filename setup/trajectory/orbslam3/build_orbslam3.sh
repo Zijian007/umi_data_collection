@@ -14,6 +14,9 @@
 #      + orbslam3_tag_init.patch（标签已校正坐标的畸变向量显式清零）
 #      + orbslam3_kb4_forward.patch（默认启用，修复前向 KB4 并限制 <=85° 射线）
 #      + orbslam3_feature_parallel.patch（并行 ORB 层，初始化后跳过无用途标签检测）
+#      + orbslam3_inprocess_localize.patch（建图结束后单进程缓存特征复用定位）
+#      + orbslam3_pose_prior.patch（固定图重定位时用位姿初值投影匹配）
+#      + orbslam3_gyro_tracking.patch（单目建图时用陀螺仪辅助旋转预测和跟踪验收）
 #      + x3_mono_slam.cc（纯视觉单目驱动，逐帧写位姿）
 #   产物：<deps>/src/ORB_SLAM3/lib/libORB_SLAM3.so、Examples/Monocular-Inertial/x3_mono_slam、Vocabulary/ORBvoc.txt
 #
@@ -161,6 +164,30 @@ fi
 cp "$HERE/feature_extraction_check.cc" "$O/Examples/Monocular/feature_extraction_check.cc"
 if ! grep -q 'add_executable(umi_feature_check' "$O/CMakeLists.txt"; then
   printf '\nadd_executable(umi_feature_check Examples/Monocular/feature_extraction_check.cc)\ntarget_link_libraries(umi_feature_check ${PROJECT_NAME} OpenMP::OpenMP_CXX)\n' >> "$O/CMakeLists.txt"
+fi
+
+INPROCESS_PATCH="$HERE/orbslam3_inprocess_localize.patch"
+if git -C "$O" apply --check "$INPROCESS_PATCH" 2>/dev/null; then
+  git -C "$O" apply "$INPROCESS_PATCH"
+elif ! git -C "$O" apply --reverse --check "$INPROCESS_PATCH"; then
+  echo 'In-process localization patch conflicts with this source; inspect changes before rebuilding.' >&2
+  exit 1
+fi
+
+POSE_PRIOR_PATCH="$HERE/orbslam3_pose_prior.patch"
+if git -C "$O" apply --check "$POSE_PRIOR_PATCH" 2>/dev/null; then
+  git -C "$O" apply "$POSE_PRIOR_PATCH"
+elif ! git -C "$O" apply --reverse --check "$POSE_PRIOR_PATCH"; then
+  echo 'Localization pose prior patch conflicts with this source; inspect changes before rebuilding.' >&2
+  exit 1
+fi
+
+GYRO_TRACKING_PATCH="$HERE/orbslam3_gyro_tracking.patch"
+if git -C "$O" apply --check "$GYRO_TRACKING_PATCH" 2>/dev/null; then
+  git -C "$O" apply "$GYRO_TRACKING_PATCH"
+elif ! git -C "$O" apply --reverse --check "$GYRO_TRACKING_PATCH"; then
+  echo 'Gyro-aided mapping patch conflicts with this source; inspect changes before rebuilding.' >&2
+  exit 1
 fi
 
 if [ ! -f "$O/Thirdparty/DBoW2/lib/libDBoW2.so" ]; then

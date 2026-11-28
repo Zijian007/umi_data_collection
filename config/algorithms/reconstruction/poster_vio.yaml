@@ -1,0 +1,48 @@
+# 海报角点、自然特征和 IMU 的任务级联合优化。
+# 单次专家覆盖写在 backends.poster_vio 下。
+
+board_tilt_minimum_gap_s: 1.0  # 每只手的海报内部观测间隔都达到此秒数时优化共享倾角，0 关闭。
+per_tag_huber: false  # true=同帧批量投影时每个标签独立计算 Huber 权重；false=按共享权重。
+minimum_training_observation_times: 8  # 每手最少的独立训练标签时刻数，留出后仍需满足；至少 3。
+maximum_observation_gap_s: 3.5  # 初始化标签时刻之间的最大间隔，单位 s。
+minimum_time_span_s: 1.0  # 每手标签观测的最小时间跨度，单位 s。
+maximum_gravity_difference_deg: 5.0  # 两手惯性初始化重力方向夹角上限，单位 deg。
+base_tag:
+  prior_rotation_sigma_rad: 0.2  # 安装变量旋转先验标准差，单位 rad。
+  prior_translation_sigma_m: 0.03  # 安装变量平移先验标准差，单位 m。
+  maximum_rotation_correction_deg: 10.0  # 相对种子允许的最大修正角，单位 deg，(0, 180]；超出拒绝任务。
+  maximum_translation_correction_m: 0.05  # 相对种子允许的最大平移修正，单位 m；超出拒绝任务。
+  minimum_self_frames: 3  # 跨手安装变量所需的不同自身观测时刻数；至少 3，单手不使用。
+initialization:
+  robust_inertial_seed: true  # 重力或零偏超限时尝试鲁棒惯性初始化；批次可在 collection.yaml 覆盖。
+  maximum_hypotheses: 32  # 每帧整板/标签子集 PnP 假设的确定性上限；至少 3。
+keyframes:
+  maximum_dt_s: 0.1  # 关键帧最大时间间隔，单位 s；0 保留逐帧全图作对照。
+  minimum_translation_m: 0.03  # 初值平移超过此值时保留关键帧，单位 m。
+  minimum_rotation_deg: 3.0  # 初值旋转超过此值时保留关键帧，单位 deg。
+frontend:
+  maximum_features: 200  # 每镜头同时活动的特征点上限。
+  maximum_tracks: 500  # 每镜头保留给联合图的轨迹总预算，按录像时间分配。
+  minimum_track_length: 3  # 三角化所需的最少观测数；至少 2。
+  maximum_track_length: 40  # 单条轨迹的观测数上限，达到后重新检测。
+  maximum_observations_per_track: 8  # 联合图每条轨迹最多保留的观测数；保留首尾和均匀中间观测。
+  geometric_threshold_px: 3.0  # KB4 视线极几何/旋转门槛的像素等效值，单位 px。
+  revisit:
+    enabled: true  # true=用 ORB 描述子 + 米制重投影验证后续接轨迹。
+    maximum_bank: 256  # 每镜头暂存可重关联轨迹数上限。
+    maximum_gap_s: 5.0  # 可重关联的最长真实 IMU 时间间隔，单位 s。
+    match_ratio: 0.75  # Hamming 最近/次近距离比上限，(0, 1)。
+    maximum_reprojection_px: 4.0  # 重关联需通过的初值米制重投影门槛，单位 px。
+culling:
+  maximum_rounds: 3  # 常规剔除并重求解的轮数；满足预算且只剩一条自然轨迹时可追加一轮。0 关闭。
+  precull_iterations: 3  # 首轮先短求解判断异常；后续沿用已求解状态和阻尼。
+  maximum_natural_fraction: 0.15  # 每手每镜头累计剔除自然点比例，[0, 1)。
+  natural_threshold_px: 10.0  # 自然像素异常门槛，单位 px；标签沿用 shared.poster.culling。
+front_map:
+  cauchy_scale: 8.0  # 下降型 Cauchy 鲁棒核尺度（作用于原始 6D 白化残差）；正数。
+  enabled: false  # 在联合图加入工作镜头 ORB 地图观测。
+  minimum_cull_rounds: 6  # 启用剔除且含工作镜头地图时的最少剔除轮数上限；0 沿用 culling.maximum_rounds。
+holdout:
+  stride: 5  # 初始化前按独立标签时刻留出内部帧；0 关闭，否则至少为 2。
+  natural_stride: 5  # 按冻结图节点索引留出自然点像素；0 关闭，否则至少为 2。
+  maximum_rms_px: 5.0  # 未参与初始化或求解的标签/自然点像素 RMS 上限，单位 px。

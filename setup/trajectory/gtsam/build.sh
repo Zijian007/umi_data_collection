@@ -19,7 +19,7 @@ fi
 target="$site/_umi_gtsam_factors$suffix"
 if [[ $target -nt $here/build.sh && $target -nt $here/natural_factor.cpp &&
       $target -nt $here/poster_factors.cpp && $target -nt $here/kb4.h && $target -nt ${libraries[0]} ]] &&
-    "$python" -c 'import gtsam; from _umi_gtsam_factors import NaturalTrackFactor, PosterCornerFactor, PosterDepthFactor'; then
+    "$python" -c 'import gtsam; from _umi_gtsam_factors import FrontMapFactor, NaturalTrackFactor, PosterCornerFactor, PosterDepthFactor'; then
     exit 0
 fi
 mkdir -p "$deps/src" "$build"
@@ -41,6 +41,6 @@ trap 'rm -rf -- "$temporary"' EXIT
     -I"$src/wrap/pybind11/include" -I"$include" -I"$env_dir/include" -I"$src" -I"$build" \
     -I"$src/gtsam/3rdparty/Eigen" "$here/natural_factor.cpp" "$here/poster_factors.cpp" "${libraries[0]}" \
     -Wl,-rpath,'$ORIGIN/gtsam.libs' -o "$temporary/_umi_gtsam_factors$suffix"
-PYTHONPATH="$temporary" "$python" -c 'import gtsam; from _umi_gtsam_factors import NaturalTrackFactor, PosterCornerFactor, PosterDepthFactor'
+PYTHONPATH="$temporary" "$python" -c 'import gtsam; from _umi_gtsam_factors import FrontMapFactor, NaturalTrackFactor, PosterCornerFactor, PosterDepthFactor'
 mv "$temporary/_umi_gtsam_factors$suffix" "$target"
 echo "已安装 KB4 自然特征和海报因子：$target"

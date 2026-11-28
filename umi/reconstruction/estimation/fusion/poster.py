@@ -5,7 +5,7 @@ import gtsam
 import numpy as np
 from gtsam.symbol_shorthand import B, V, X
 
-from umi.core.geometry import imu_from_camera, resample_pose_series
+from umi.core.geometry import imu_from_camera, resample_pose_series, select_pose_keyframes
 from umi.perception.poster.geometry import (
     PosterGeometryError,
     camera_model,
@@ -22,6 +22,7 @@ from umi.perception.poster.quality import (
     position_support_metrics,
     without_sightings,
 )
+from umi.reconstruction.estimation.fusion.data import TrajectorySeed
 from umi.reconstruction.estimation.poster_factors import (
     add_rear_seat,
     add_tag_depth_barrier_factors,
@@ -76,7 +77,7 @@ class PosterInputs:
 
 @dataclass
 class PosterContext:
-    baseline: object
+    trajectory_seed: TrajectorySeed
     times: np.ndarray
     points: np.ndarray
     pixels: np.ndarray
@@ -120,7 +121,9 @@ class PosterContext:
 
     def measure(self, values, initial_error, final_error):
         board = values.atPose3(BOARD_KEY).matrix()
-        bodies = np.array([values.atPose3(X(k)).matrix() for k in self.node_keys])
+        nodes, sighting_nodes = np.unique(self.node_keys, return_inverse=True)
+        node_poses = np.array([values.atPose3(X(int(node))).matrix() for node in nodes])
+        bodies = node_poses[sighting_nodes]
         ext, correction_deg = solved_rear_extrinsic(values, REAR_SEAT_KEY, self.camera_from_imu, self.parameters)
         pixels,points = project_observations(board,bodies @ np.linalg.inv(ext),self.points,self.model)
         metrics = residual_metrics(pixels, self.pixels,
@@ -180,25 +183,42 @@ class PosterContext:
                     rear_rotation_refinement=rear_rotation_evidence(correction_deg, self.parameters))
 
 
-def eligible_sightings(inputs, baseline, parameters):
+def eligible_sightings(inputs, video_times_s, parameters, *, exposure_times=None):
     tags = inputs.poster
     observations = tags.observations
     # 独立图的 IMU 已减去 front offset；rear 原片 PTS 需加两镜头 offset 之差。
     times = observations.imu_times_s(tags.measured['cam_time_offset_ns']) - inputs.camera['cam_time_offset_ns']/1e9
     valid = observations.usable & (observations.side_px >= parameters.tag_minimum_side_px)
-    valid &= (times >= baseline.video_times_s[0]) & (times <= baseline.video_times_s[-1])
+    valid &= (times >= video_times_s[0]) & (times <= video_times_s[-1])
+    if exposure_times is not None:
+        valid &= np.isin(times, exposure_times)
     selected = np.flatnonzero(valid)
     return selected, times[selected]
 
 
-def prepare(inputs, baseline, parameters, *, _allow_cull=True):
+def sample_exposures(inputs, seed: TrajectorySeed, parameters, maximum_dt_s):
+    """Select exact rear exposure times, keeping the ends of each visible span."""
+    _, observations = eligible_sightings(inputs, seed.video_times_s, parameters)
+    times = np.unique(observations)
+    if len(times) <= parameters.tag_minimum_frames:
+        return times, len(times)
+    rear_poses = resample_pose_series(seed.video_times_s, seed.T_world_imu, times) @ imu_from_camera(inputs.poster.measured)
+    spans = np.split(np.arange(len(times)), np.flatnonzero(np.diff(times) > maximum_dt_s + 1e-9) + 1)
+    indices = np.concatenate([span[select_pose_keyframes(
+        times[span], rear_poses[span], maximum_dt_s=maximum_dt_s,
+        minimum_translation_m=.03, minimum_rotation_deg=3.)] for span in spans])
+    return (times[indices] if len(indices) >= parameters.tag_minimum_frames else times), len(times)
+
+
+def prepare(inputs, seed: TrajectorySeed, parameters, *, exposure_times=None, _allow_cull=True):
     tags = inputs.poster
     observations = tags.observations
     observations.validate()
     p = parameters.environment_tags
-    selected, times = eligible_sightings(inputs, baseline, p)
+    selected, times = eligible_sightings(inputs, seed.video_times_s, p, exposure_times=exposure_times)
+    unique_times, sighting_exposures = np.unique(times, return_inverse=True)
     evidence = dict(status='insufficient_observations',enabled=p.tag_fusion_enabled,layout=tags.board.record(),
-                    frames=len(np.unique(times)),observations=len(times),actual_error='not_measured',
+                    frames=len(unique_times),observations=len(times),actual_error='not_measured',
                     pose_scope='this_recording',timestamp_policy='exact_rear_imu_nodes',timestamp_tolerance_s=1e-9,
                     map_scale='joint_segment_variables')
     if evidence['frames'] < p.tag_minimum_frames: return None,evidence
@@ -210,8 +230,8 @@ def prepare(inputs, baseline, parameters, *, _allow_cull=True):
     pixels = observations.corners_px[selected]
     frame_ids = observations.sample_indices[selected]
     tag_ids = observations.tag_ids[selected]
-    bodies = resample_pose_series(baseline.video_times_s, baseline.T_world_imu, times)
-    cameras = bodies @ np.linalg.inv(camera_from_imu)
+    exposure_poses = resample_pose_series(seed.video_times_s, seed.T_world_imu, unique_times)
+    cameras = (exposure_poses @ np.linalg.inv(camera_from_imu))[sighting_exposures]
     try:
         pose, rms, metrics = estimate_board(
             cameras, points, pixels, model,
@@ -225,34 +245,30 @@ def prepare(inputs, baseline, parameters, *, _allow_cull=True):
         if getattr(error, 'metrics', None) is not None:
             rejected['reprojection_metrics'] = error.metrics
         return None, rejected
-    prediction, camera_points = project_observations(pose, cameras, points, model)
-    with np.errstate(over='ignore', invalid='ignore'):
-        sighting_rms = sighting_rms_px(prediction, pixels)
-    invalid_corners = ~np.isfinite(camera_points).all(axis=2) | (camera_points[:, :, 2] <= 0)
-    cull_limit = cull_threshold(p)
-    cull_mask = ~np.isfinite(sighting_rms) | (sighting_rms > cull_limit) | invalid_corners.any(axis=1)
-    if (_allow_cull and p.tag_fusion_enabled and isolated_cull(cull_mask, frame_ids,
-            p.tag_minimum_frames, times=times, parameters=p)):
-        filtered = replace(inputs.poster, observations=without_sightings(observations, selected, cull_mask))
-        refined, refined_evidence = prepare(
-            replace(inputs, poster=filtered), baseline, parameters, _allow_cull=False)
-        refined_evidence = dict(refined_evidence,
-                                **culling_record(cull_mask, selected, frame_ids, tag_ids, times,
-                                                 p, stage='initialization'),
-                                pre_cull_reprojection_rms_px=float(rms),
-                                pre_cull_reprojection_metrics=metrics)
-        if refined is None:
-            return None, refined_evidence
-        return replace(refined, evidence=refined_evidence), refined_evidence
+    if _allow_cull and p.tag_fusion_enabled:
+        prediction, camera_points = project_observations(pose, cameras, points, model)
+        with np.errstate(over='ignore', invalid='ignore'):
+            sighting_rms = sighting_rms_px(prediction, pixels)
+        invalid_corners = ~np.isfinite(camera_points).all(axis=2) | (camera_points[:, :, 2] <= 0)
+        cull_mask = ~np.isfinite(sighting_rms) | (sighting_rms > cull_threshold(p)) | invalid_corners.any(axis=1)
+        if isolated_cull(cull_mask, frame_ids, p.tag_minimum_frames, times=times, parameters=p):
+            filtered = replace(tags, observations=without_sightings(observations, selected, cull_mask))
+            refined, refined_evidence = prepare(
+                replace(inputs, poster=filtered), seed, parameters, exposure_times=exposure_times, _allow_cull=False)
+            refined_evidence.update(culling_record(cull_mask, selected, frame_ids, tag_ids, times,
+                                                   p, stage='initialization'),
+                                    pre_cull_reprojection_rms_px=float(rms),
+                                    pre_cull_reprojection_metrics=metrics)
+            return refined, refined_evidence
     evidence.update(status='diagnostics_only', initial_reprojection_rms_px=rms,
                     initial_reprojection_metrics=metrics,
                     T_world_board_initial=pose.tolist(),
                     first_video_clock_time_s=float(times[0]),last_video_clock_time_s=float(times[-1]),
-                    observation_video_times_s=np.unique(times).tolist())
+                    observation_video_times_s=unique_times.tolist())
     if not p.tag_fusion_enabled:
         if rms > p.tag_maximum_reprojection_rms_px:
             evidence.update(status='rejected_diagnostics', reason='独立海报与基线重投影不一致',
                             reprojection_metrics=metrics)
         return None,evidence
-    return PosterContext(baseline, times, points, pixels, model, camera_from_imu, pose, p,
+    return PosterContext(seed, times, points, pixels, model, camera_from_imu, pose, p,
                          evidence, frame_ids, tag_ids, selected), evidence

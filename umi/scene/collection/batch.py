@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,6 +14,7 @@ from umi.core.arms import ARMS, read_arms, resolve_arms
 from umi.devices import registry
 from umi.infra import provenance as artifact_identity
 from umi.infra.file_store import read_yaml, write_yaml
+from umi.scene import task_state
 from umi.scene.collection.configuration import (
     SceneOverrides,
     batch_declaration,
@@ -500,6 +502,39 @@ def task_video_sources(task: Path) -> list[Path]:
     return [path for path in roots if path.is_dir()]
 
 
+def episode_paths(paths: list[Path], *, exclude: Iterable[Path] = ()) -> list[Path]:
+    """只发现任务清单，跳过缓存、运行产物和归档；不启动处理。"""
+    found = []
+    excluded = {path.expanduser().resolve() for path in exclude}
+    for path in paths:
+        path = path.expanduser().resolve()
+        if any(path.is_relative_to(root) for root in excluded):
+            continue
+        if path.is_file():
+            layout.reject_legacy_user_file(path)
+            if path.name not in ('collection.yaml', 'manifest.yaml', 'episode.yaml'):
+                raise ValueError(f'请指定场景、套件、批次、任务目录或对应清单：{path}')
+            if path.name == 'episode.yaml':
+                found.append(path)
+                continue
+            path = layout.owner(path)
+        if not path.is_dir():
+            raise ValueError(f'任务路径不存在：{path}')
+        for current, children, files in os.walk(path):
+            children[:] = sorted(name for name in children if not name.startswith('.')
+                                 and name not in layout.INTERNAL_DIRECTORIES
+                                 and Path(current) / name not in excluded)
+            if layout.is_batch(Path(current)):
+                found.extend(layout.manifest(task, 'episode.yaml')
+                             for task in batch_task_directories(Path(current))
+                             if task not in excluded and layout.manifest(task, 'episode.yaml').is_file())
+            manifest = layout.manifest(Path(current), 'episode.yaml')
+            if manifest.is_file():
+                found.append(manifest)
+                children[:] = []
+    return list(dict.fromkeys(found))
+
+
 def batch_task_directories(batch: Path) -> list[Path]:
     if not batch.is_dir():
         return []
@@ -606,11 +641,10 @@ def episode_from_recordings(path: Path, session: Session, raw_recording_referenc
 
 
 def write_episode(path: Path, recording_refs: dict) -> None:
-    from umi.scene.episodes import invalidate_task_state
-
     """保存自动登记结果；原片引用变化时使旧运行失效。"""
     previous_record = read_yaml(path) if path.exists() else {}
     task_record = dict(schema_version=5, recordings=recording_refs)
     if task_record != previous_record:
         write_yaml(path, task_record)
-        invalidate_task_state(path)
+        episode = read_episode(path, verify=False, allow_pending_map=True)
+        task_state.invalidate_task_state(episode.root)

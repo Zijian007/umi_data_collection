@@ -53,8 +53,8 @@ from umi.reconstruction.estimation.models import (
     RecordingPaths,
     TrajectoryRequest,
 )
-from umi.reconstruction.segment import environment_assets, fusion_runner, map_data, reconstruction, results, workflow
-from umi.reconstruction.segment import reconstruction as runtime
+from umi.reconstruction.segment import environment_assets, fusion_runner, map_data, attempts as reconstruction, results, workflow
+from umi.reconstruction.segment import attempts as runtime
 from umi.reconstruction.segment import workflow as reuse
 from umi.reconstruction.segment.environment_assets import select_environment_assets
 from umi.reconstruction.segment.workflow import REQUIRED_OUTPUTS, reuse_decision, run_fingerprint
@@ -208,7 +208,8 @@ class WorkflowTests(RecordingFixture):
     def fake_fusion(self, request, **kwargs):
         return self.engines.fuse(request, **kwargs)
 
-    def fake_postprocess(self, kd, manifest, output, mode, name, calibration, command, *, parameters=None):
+    def fake_postprocess(self, kd, manifest, output, mode, name, calibration, command, *, parameters=None,
+                         fusion_output=None):
         for filename in REQUIRED_OUTPUTS:
             (output / filename).write_text('processed output')
         return dict(tcp_path_length_m=1.2, constraint_fraction={'full': 1.0}, notes=[])
@@ -661,10 +662,11 @@ class ReconstructionTests(unittest.TestCase):
         quiet.start()
         self.addCleanup(quiet.stop)
 
-    def run_stages(self, context=None, data=None):
+    def run_stages(self, context=None, data=None, *, require_poster_support=False):
         context = context or self.context
         videos = visual_recordings.prepare_lens_videos(self.video, context, lenses=('front', 'rear') if context.parameters.input.mode == 'dual' else ('front',))
-        return reconstruction.run_attempts(videos, data or self.data, context, recording_name=self.video.name)
+        return reconstruction.run_attempts(videos, data or self.data, context, recording_name=self.video.name,
+                                           require_poster_support=require_poster_support)
 
     def test_explicit_stage_order_and_forwarded_data(self):
         result = self.run_stages()
@@ -726,6 +728,40 @@ class ReconstructionTests(unittest.TestCase):
                     if case == 'sparse_good':
                         self.assertLess(quality['position_support_fraction'], .95)
                     self.assertAlmostEqual(quality['maximum_position_support_gap_s'], .1 if case == 'good' else 1.)
+
+    def test_required_poster_coverage_is_checked_before_comparing_map_placements(self):
+        from umi.reconstruction.estimation.constraint_quality import scale_consistency
+
+        def candidate(name, chains, events):
+            directory = self.root/name
+            directory.mkdir()
+            trajectory, info = directory/'traj_tum.txt', directory/'fuse_info.json'
+            trajectory.write_text(''.join(f'{1+i/10:.9f} 0 0 0 0 0 0 1\n' for i in range(100)))
+            info.write_text(json.dumps(dict(frames=100, init_lens='front', chains={'front': chains},
+                scale_consistency=scale_consistency([dict(scale_initial=1., scale_final=1.)]),
+                environment_poster=dict(status='fused', observation_video_times_s=events,
+                                        position_support_video_times_s=events))))
+            return FusionArtifacts(trajectory, info)
+
+        long_gap = candidate('one_bad_map', [([0, 50], 'full')], [0., 1., 2.])
+        covered = candidate('two_good_maps', [([0, 24], 'full'), ([26, 50], 'full')], [float(i) for i in range(10)])
+        for use_poster_for_retry in (True, False):
+            with self.subTest(use_poster_for_retry=use_poster_for_retry):
+                paths = RecordingPaths(self.root/str(use_poster_for_retry))
+                paths.logs.mkdir(parents=True)
+                configuration = config.load('trajectory', inline=dict(environment_tags=dict(tag_fusion_enabled=True),
+                    retry=dict(use_poster_position_support=use_poster_for_retry)))
+                context = replace(self.context, paths=paths, parameters=configuration.values)
+                with patch.object(reconstruction, 'run_attempt', side_effect=[long_gap, covered, covered]):
+                    result = self.run_stages(context, require_poster_support=True)
+                self.assertEqual(result.chosen, 2)
+                self.assertFalse(result.attempts[0]['usable'])
+                self.assertFalse(result.attempts[0]['poster_acceptance_passed'])
+                self.assertIn('共同约束缺口过长', result.attempts[0]['reason'])
+                self.assertTrue(result.attempts[1]['usable'])
+                self.assertTrue(result.attempts[1]['poster_acceptance_passed'])
+                self.assertLess(result.attempts[0]['placements'], result.attempts[1]['placements'])
+                self.assertLess(result.attempts[1]['maximum_position_support_gap_s'], 2.)
 
     def test_measured_lens_settings_are_preserved_without_sample_rear_fallback(self):
         front = calibration_assets.read_basalt(calibration_assets.SAMPLE_CAMERA_JSON)
@@ -807,10 +843,35 @@ class ReconstructionTests(unittest.TestCase):
         for number in (1, 2):
             self.assertEqual((self.paths.attempt(number) / 'front/front.mp4').resolve(), self.paths.lens_videos / 'front.mp4')
 
+    def test_retry_skips_fusion_when_poster_accepted_the_identical_inputs(self):
+        quality = dict(placements=2, full_fraction=.65, suspicious=True, usable=True)
+        with patch.object(reconstruction, 'assess_try', return_value=quality) as judge:
+            result = self.run_stages(require_poster_support=True)
+        self.assertEqual(result.chosen, 1)
+        self.assertEqual(len(result.attempts), 2)
+        self.assertEqual(result.attempts[-1], {'try': 2, 'rc': 0, 'status': 'skipped', 'repeat_of_attempt': 1,
+                                              'stop_reason': 'identical_usable_fusion_inputs'})
+        self.assertEqual(judge.call_count, 1)
+        self.assertEqual([kind for kind, *_ in self.engines.calls].count('fuse'), 1)
+        self.assertFalse(self.paths.attempt(3).exists())
+
+    def test_retry_does_not_reuse_a_fused_candidate_rejected_by_the_poster_gate(self):
+        rejected = dict(placements=2, full_fraction=.65, suspicious=True, usable=False, reason='无合格海报支持')
+        with patch.object(reconstruction, 'assess_try', return_value=rejected):
+            result = self.run_stages(require_poster_support=True)
+        self.assertIsNone(result.chosen)
+        self.assertEqual(len(result.attempts), 3)
+        self.assertEqual([kind for kind, *_ in self.engines.calls].count('fuse'), 3)
+
     def failing_alignment(self, request, **options):
         request.output.mkdir()
-        (request.output/'alignment_failure.json').write_text(json.dumps(dict(code='NO_USABLE_LENS')))
-        self.engines.fuse(request, **options)
+        diagnostic = dict(code='NO_USABLE_LENS')
+        path = request.output / 'alignment_failure.json'
+        path.write_text(json.dumps(diagnostic))
+        try:
+            self.engines.fuse(request, **options)
+        except fusion_runner.FusionFailed as error:
+            raise fusion_runner.FusionFailed(str(error), diagnostic=diagnostic, path=path) from error
 
     def test_identical_alignment_failure_stops_before_repeating_fusion(self):
         self.engines.failures['fuse'] = 2

@@ -24,9 +24,10 @@ from umi.config import reconstruction as reconstruction_config
 from umi.devices import registry
 from umi.infra import provenance as artifact_identity
 from umi.infra.file_store import read_yaml, write_json, write_yaml
-from umi.reconstruction.backends.scene_map import run as scene_reconstruction
-from umi.reconstruction.estimation import mapping
+from umi.reconstruction.backends import scene_map as scene_reconstruction
+from umi.reconstruction import mapping
 from umi.reconstruction.estimation.fixed_map.fusion import SceneFusionQualityError
+from umi.reconstruction.estimation.models import BackendResult
 from umi.scene import routing as estimation
 from umi.scene import run as processing
 from umi.scene.collection import batch as batch_inputs
@@ -45,13 +46,17 @@ from umi.scene.maps import binding as map_lifecycle_binding
 from umi.scene.maps.binding import requested_map_version
 from umi.scene.maps.epochs import MapEpochError
 from umi.store import layout
-from umi.store.models import ArmExecutionResult, TaskInputs
+from umi.store.models import TaskInputs
 from umi.store.result_io import result_paths
 
 # 场景元数据与专家算法配置的边界。
 
 
 class SceneConfigurationTests(unittest.TestCase):
+    def test_old_shared_orb_switch_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, '未知字段'):
+            reconstruction_config.split(dict(poster={'front_map_pixel_fusion': True}), label='expert')
+
     def test_frozen_gripper_paths_follow_hardware_migration(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -102,19 +107,19 @@ class SceneConfigurationTests(unittest.TestCase):
             map_lifecycle_binding.build_scene(self.path)
 
     def test_poster_position_support_thresholds_are_configurable_and_positive(self):
-        parameters = scene_inputs.load_scene_parameters(overrides=dict(poster=dict(acceptance=dict(
-            maximum_position_std_m=.02, maximum_rotation_std_deg=2.))))
+        parameters = scene_inputs.load_scene_parameters(overrides=dict(shared=dict(poster=dict(acceptance=dict(
+            maximum_position_std_m=.02, maximum_rotation_std_deg=2.)))))
         self.assertEqual(parameters.tag_maximum_position_std_m, .02)
         self.assertEqual(parameters.tag_maximum_rotation_std_deg, 2.)
         for value in (0., -1., float('nan')):
             with self.subTest(value=value), self.assertRaises(ValueError):
-                scene_inputs.load_scene_parameters(overrides=dict(poster=dict(acceptance=dict(
-                    maximum_position_std_m=value))))
+                scene_inputs.load_scene_parameters(overrides=dict(shared=dict(poster=dict(acceptance=dict(
+                    maximum_position_std_m=value)))))
 
     def test_poster_culling_and_rear_refinement_share_validated_configuration(self):
-        parameters = scene_inputs.load_scene_parameters(overrides=dict(poster=dict(
+        parameters = scene_inputs.load_scene_parameters(overrides=dict(shared=dict(poster=dict(
             culling=dict(maximum_fraction=.1, minimum_retained_time_fraction=.9),
-            rear_rotation_refinement=dict(enabled=False, prior_sigma_rad=.05, maximum_correction_deg=2.))))
+            rear_rotation_refinement=dict(enabled=False, prior_sigma_rad=.05, maximum_correction_deg=2.)))))
         self.assertEqual(parameters.tag_maximum_cull_fraction, .1)
         self.assertEqual(parameters.tag_minimum_retained_time_fraction, .9)
         self.assertFalse(parameters.tag_rear_rotation_refinement_enabled)
@@ -149,27 +154,33 @@ class SceneConfigurationTests(unittest.TestCase):
         from dataclasses import asdict
 
         from umi.config import reconstruction
-        parameters = scene_inputs.load_scene_parameters(overrides=dict(
-            mapping=dict(placement=dict(maximum_rotation_deg=1.)), localization=dict(maximum_visual_gap_s=.1)))
+        parameters = scene_inputs.load_scene_parameters(overrides=dict(backends=dict(scene_map=dict(
+            mapping=dict(placement=dict(maximum_rotation_deg=1.)), localization=dict(maximum_visual_gap_s=.1)))))
         self.assertEqual(parameters.poster_maximum_gravity_difference_deg, 5.)
         self.assertEqual(parameters.poster_maximum_position_support_gap_s, 2.)
         self.assertEqual(parameters.poster_independent_imu_white_noise_multiplier, 1.)
         self.assertEqual(parameters.poster_independent_node_stride, 0)
-        fusion = dict(node_stride=2, imu_white_noise_multiplier=3.)
+        self.assertEqual(parameters.poster_independent_keyframe_maximum_dt_s, 0.)
+        self.assertFalse(parameters.poster_independent_guidance)
+        fusion = dict(node_stride=2, imu_white_noise_multiplier=3., poster_keyframe_maximum_dt_s=.1)
         configured = scene_inputs.load_scene_parameters(overrides=dict(backends=dict(poster_independent=dict(
-            maximum_gravity_difference_deg=2., maximum_position_support_gap_s=.5, fusion=fusion))))
+            maximum_gravity_difference_deg=2., maximum_position_support_gap_s=.5, poster_guidance=True, fusion=fusion))))
         self.assertEqual(configured.poster_maximum_gravity_difference_deg, 2.)
         self.assertEqual(configured.poster_vio_maximum_position_support_gap_s, 2.)
         self.assertEqual(configured.maximum_visual_gap_s, 2.)
         tree = reconstruction.public_tree(scene=asdict(configured))
         self.assertEqual(tree['backends']['poster_independent'], dict(
-            maximum_gravity_difference_deg=2., maximum_position_support_gap_s=.5, fusion=fusion))
+            maximum_gravity_difference_deg=2., maximum_position_support_gap_s=.5, poster_guidance=True,
+            front_map=dict(pixel_weights=False), fusion=fusion))
         decoded = reconstruction.split(tree, label='snapshot').scene
         self.assertEqual(decoded['poster_maximum_gravity_difference_deg'], 2.)
         self.assertEqual(decoded['poster_maximum_position_support_gap_s'], .5)
         self.assertEqual(decoded['poster_independent_node_stride'], 2)
         self.assertEqual(decoded['poster_independent_imu_white_noise_multiplier'], 3.)
-        for invalid in (dict(node_stride=-1), dict(node_stride=1.5), dict(imu_white_noise_multiplier=0.)):
+        self.assertEqual(decoded['poster_independent_keyframe_maximum_dt_s'], .1)
+        self.assertIs(decoded['poster_independent_guidance'], True)
+        for invalid in (dict(node_stride=-1), dict(node_stride=1.5), dict(imu_white_noise_multiplier=0.),
+                        dict(poster_keyframe_maximum_dt_s=-.1)):
             with self.subTest(fusion=invalid), self.assertRaises(ValueError):
                 scene_inputs.load_scene_parameters(overrides=dict(backends=dict(poster_independent=dict(fusion=invalid))))
         for value in (0., -1., float('nan'), True, 181.):
@@ -566,7 +577,9 @@ class TaskConfigurationTests(unittest.TestCase):
             read_episode(self.helper.episode_path, verify=False)
 
     def test_auto_retains_pending_decision_for_fallback(self):
-        self.configure(backend='auto', poster=True)
+        document = self.configure(backend='auto', poster=True)
+        document['backend']['auto_order'] = ['poster_vio', 'scene_map']
+        write_yaml(self.collection, document)
         self.epoch_plan(pending=True)
         episode = read_episode(self.helper.episode_path, verify=False)
         self.assertEqual(episode.map_selection, self.preview()['effective']['map_selection'])
@@ -691,17 +704,15 @@ class TaskConfigurationTests(unittest.TestCase):
         document['tasks']['take_001']['backend'] = task_backend
         write_yaml(self.collection, document)
         expert_path = self.helper.batch_root / 'expert.yaml'
-        write_yaml(expert_path, dict(
-            retry=dict(target_maximum_position_support_gap_s=9.),
-            poster=dict(acceptance=dict(maximum_position_support_gap_s=5.))))
+        write_yaml(expert_path, dict(shared=dict(poster=dict(acceptance=dict(maximum_position_support_gap_s=5.)))))
 
-        project_source = 'reconstruction.yaml:poster.acceptance.maximum_position_support_gap_s'
+        project_source = 'common.yaml:shared.poster.acceptance.maximum_position_support_gap_s'
         batch_source = ':backend.poster_independent.maximum_position_support_gap_s'
         task_source = ':tasks.take_001.backend.poster_independent.maximum_position_support_gap_s'
         for use_task, use_batch, expert, expected, source in (
                 (False, False, None, 2., project_source), (False, True, None, 3., batch_source),
                 (True, True, None, 4., task_source),
-                (True, True, SceneOverrides.load(expert_path), 5., 'expert.yaml:poster.acceptance.maximum_position_support_gap_s')):
+                (True, True, SceneOverrides.load(expert_path), 5., 'expert.yaml:shared.poster.acceptance.maximum_position_support_gap_s')):
             with self.subTest(source=source):
                 batch_options = dict(poster_independent=dict(maximum_position_support_gap_s=3.)) if use_batch else {}
                 document['backend'] = dict(mode='poster_independent', **batch_options)
@@ -713,8 +724,7 @@ class TaskConfigurationTests(unittest.TestCase):
                 self.assertTrue(support['source'].endswith(source), support['source'])
                 episode = read_episode(self.helper.episode_path, verify=False, overrides=expert)
                 self.assertEqual(episode.scene.parameters.poster_maximum_position_support_gap_s, expected)
-                if expert:
-                    self.assertEqual(effective['reconstruction']['retry']['target_maximum_position_support_gap_s'], 9.)
+                self.assertNotIn('standalone', effective['reconstruction'])
 
     def test_auto_map_constraint_is_independent_of_poster_fallback(self):
         document = self.configure(poster=True)
@@ -722,7 +732,7 @@ class TaskConfigurationTests(unittest.TestCase):
         write_yaml(self.collection, document)
         episode = read_episode(self.helper.episode_path, verify=False)
         inputs = TaskInputs(episode, {}, {}, self.helper.task_root, None, None, None)
-        result = ArmExecutionResult({}, {}, {}, {})
+        result = BackendResult({}, {}, {})
 
         def run_map(current, **kwargs):
             self.assertFalse(current.episode.scene.parameters.tag_fusion_enabled)
@@ -737,7 +747,7 @@ class TaskConfigurationTests(unittest.TestCase):
         selection = estimation_binding.MapSelection.available(self.helper.batch_root, dict(version='v1', frame_id='map:v1'))
         with patch.object(estimation.scene_map, 'execute_task', side_effect=run_map), \
              patch.dict(estimation.ESTIMATORS, poster_vio=run_vio):
-            self.assertIs(estimation.execute(inputs, selection), result)
+            self.assertIs(estimation.execute(inputs, selection).coordinate_record, result.coordinate_record)
 
 
 # 配置优先级与只读展示边界，不启动算法或网络服务。
@@ -772,7 +782,7 @@ class EffectiveConfigurationTests(unittest.TestCase):
 
     def test_scene_expert_and_snapshot_share_the_same_input_scope(self):
         expert = self.root / 'expert.yaml'
-        settings = {'input': {'mode': 'dual', 'allow_irregular_frames': True}}
+        settings = {'standalone': {'input': {'mode': 'dual', 'allow_irregular_frames': True}}}
         write_yaml(expert, settings)
         standalone = config.load('trajectory', expert).values.input
         self.assertTrue(standalone.allow_irregular)
@@ -782,6 +792,20 @@ class EffectiveConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '只用于独立逐段引擎'):
             SceneOverrides.from_snapshot(dict(path=str(expert), sha256='previous', values=settings))
 
+    def test_scene_retry_gap_has_clear_scope_for_overrides_and_snapshots(self):
+        expert = self.root / 'expert.yaml'
+        settings = dict(standalone=dict(retry=dict(target_maximum_position_support_gap_s=9.)),
+                        segment_engine=dict(retry=dict(maximum_tries=2)))
+        write_yaml(expert, settings)
+        standalone = config.load('trajectory', expert).values.retry
+        self.assertEqual(standalone.maximum_position_support_gap_s, 9.)
+        with self.assertRaisesRegex(ValueError, r'retry\.target_maximum_position_support_gap_s.*backends\.poster_independent'):
+            SceneOverrides.load(expert)
+
+        snapshot = dict(path=str(expert), sha256='previous', values=settings)
+        with self.assertRaisesRegex(ValueError, '只用于独立逐段引擎'):
+            SceneOverrides.from_snapshot(snapshot)
+
     def test_processing_options_report_the_winning_layer_per_switch(self):
         from umi.scene.collection.config_report import effective_report
         collection = self.root / 'batch/collection.yaml'
@@ -790,9 +814,10 @@ class EffectiveConfigurationTests(unittest.TestCase):
         def options(expert=None):
             return effective_report([collection], overrides=expert)[0]['effective']['processing_options']
 
-        defaults = read_yaml(reconstruction_config.DEFAULT_PATH)
+        defaults = read_yaml(reconstruction_config.COMMON_PATH)
+        vio = read_yaml(reconstruction_config.BACKEND_PATHS['poster_vio'])
         project = dict(
-            robust_inertial_seed=defaults['backends']['poster_vio']['initialization']['robust_inertial_seed'],
+            robust_inertial_seed=vio['initialization']['robust_inertial_seed'],
             verified_gap_recovery=defaults['measurements']['gripper_tags']['verified_gap_recovery'])
         self.assertEqual(options(), {name: dict(value=value, source='project') for name, value in project.items()})
         doc['measurements'] = dict(gripper_tags=dict(verified_gap_recovery=not project['verified_gap_recovery']))
@@ -815,7 +840,7 @@ class EffectiveConfigurationTests(unittest.TestCase):
                                     map=dict(layout='shared', reference_arm='left'),
                                     backend=dict(mode='scene_map')))
         override_path = self.root/'override.yaml'
-        write_yaml(override_path, dict(video=dict(frame_step=4, crf=15),
+        write_yaml(override_path, dict(recording=dict(video=dict(frame_step=4, crf=15)),
                                       measurements=dict(gripper_width=dict(maximum_interpolation_gap_s=.8))))
         overrides = SceneOverrides.load(override_path)
         override_path.write_text('{}')
@@ -829,7 +854,7 @@ class EffectiveConfigurationTests(unittest.TestCase):
     def test_expert_files_reject_scene_policy_and_unsupported_sections(self):
         path = self.root / 'override.yaml'
         for values, message in (
-            (dict(poster=dict(standalone_fusion=True)), 'collection.yaml'),
+            (dict(standalone=dict(poster_fusion=True)), 'collection.yaml'),
             (dict(parameters=dict(localization=dict(minimum_fraction=.7))), r'parameters 是未知字段'),
             (dict(trajectory=dict(fusion=dict(node_stride=3))), r'trajectory 是未知字段'),
         ):
@@ -840,10 +865,10 @@ class EffectiveConfigurationTests(unittest.TestCase):
 
     def test_frozen_expert_uses_recorded_values_without_reopening_the_file(self):
         path = self.root / 'missing.yaml'
-        values = dict(fusion=dict(solver=dict(node_stride=3)),
-                      mapping=dict(poster_scale=dict(minimum_observation_times=7)),
-                      backends=dict(poster_vio=dict(minimum_training_observation_times=9)),
-                      localization=dict(minimum_localized_fraction=.7))
+        values = dict(shared=dict(solver=dict(node_stride=3)),
+                      backends=dict(poster_vio=dict(minimum_training_observation_times=9),
+                                    scene_map=dict(mapping=dict(poster_scale=dict(minimum_observation_times=7)),
+                                                   localization=dict(minimum_localized_fraction=.7))))
         frozen = SceneOverrides.from_snapshot(dict(path=str(path), sha256='frozen', values=values))
         parameters = scene_inputs.load_scene_parameters(overrides=dict(tag_mapping_enabled=True,
                                                                       tag_mapping_scale_enabled=True))
@@ -873,8 +898,8 @@ class EffectiveConfigurationTests(unittest.TestCase):
         write_yaml(expert, dict(backends=dict(poster_independent=threshold)))
         effective = effective_report([collection], overrides=SceneOverrides.load(expert))[0]['effective']
         self.assertEqual(effective['changed_from_defaults'], dict(backends=dict(poster_independent=threshold)))
-        self.assertEqual(effective['reconstruction']['poster']['acceptance']['maximum_position_support_gap_s'],
-                         read_yaml(reconstruction_config.DEFAULT_PATH)['poster']['acceptance']['maximum_position_support_gap_s'])
+        self.assertEqual(effective['reconstruction']['shared']['poster']['acceptance']['maximum_position_support_gap_s'],
+                         read_yaml(reconstruction_config.COMMON_PATH)['shared']['poster']['acceptance']['maximum_position_support_gap_s'])
 
     def test_scene_show_config_never_processes_inputs(self):
         collection = self.root/'batch/collection.yaml'
@@ -905,14 +930,17 @@ class EffectiveConfigurationTests(unittest.TestCase):
         self.assertEqual({path: path.read_bytes() for path in self.root.rglob('*') if path.is_file()}, before)
 
     def test_scene_show_config_prints_a_summary_and_full_json_on_request(self):
+        defaults = defaults_document()
+        defaults['backend']['poster_vio']['base_tag'] = True
+        self.enterContext(patched_defaults(self.root, defaults))
         collection = self.root/'batch/collection.yaml'
         write_yaml(collection, dict(kit='kit_001', arms=['left', 'right'], sync=dict(algorithm='kiwi'),
                                     backend=dict(mode='scene_map'), tasks=dict(take_002=dict(backend=dict(mode='poster_vio'))),
                                     poster=dict(layout=str(Path(__file__).resolve().parents[1] /
                                         'hardware/environment_poster/environment_poster.json'))))
         expert = self.root/'expert.yaml'
-        write_yaml(expert, dict(fusion=dict(solver=dict(node_stride=3)),
-                                localization=dict(minimum_localized_fraction=0.6)))
+        write_yaml(expert, dict(shared=dict(solver=dict(node_stride=3)),
+                                backends=dict(scene_map=dict(localization=dict(minimum_localized_fraction=0.6)))))
         arguments = ['run', str(collection.parent), '--show-config', '--expert-config', str(expert)]
         with patch.object(scene_cli.scene_run, 'run') as run, redirect_stdout(io.StringIO()) as output:
             self.assertEqual(scene_cli.main(arguments), 0)
@@ -924,14 +952,15 @@ class EffectiveConfigurationTests(unittest.TestCase):
                          '布局 auto（项目默认）', '参考手 left（项目默认）',
                          '  音频同步  开启（项目默认） · kiwi\n', '  基座标签  开启（项目默认）\n',
                          '鲁棒惯性初始化 开启（项目默认）', f'  专家覆盖  {expert}\n',
-                         '    fusion.solver.node_stride = 3\n',
-                         '    localization.minimum_localized_fraction = 0.6\n', '加 --json'):
+                         '    shared.solver.node_stride = 3\n',
+                         '    backends.scene_map.localization.minimum_localized_fraction = 0.6\n', '加 --json'):
             self.assertIn(expected, summary)
         with patch.object(scene_cli.scene_run, 'run'), redirect_stdout(io.StringIO()) as output:
             self.assertEqual(scene_cli.main([*arguments, '--json']), 0)
         effective = json.loads(output.getvalue())['configuration'][0]['effective']
         self.assertEqual(effective['changed_from_defaults'], dict(
-            fusion=dict(solver=dict(node_stride=3)), localization=dict(minimum_localized_fraction=0.6)))
+            shared=dict(solver=dict(node_stride=3)),
+            backends=dict(scene_map=dict(localization=dict(minimum_localized_fraction=0.6)))))
         self.assertEqual(set(effective['project_defaults_used']),
                          {'map.layout', 'map.reference_arm', 'sync.mode', 'backend.poster_vio.base_tag'})
 
@@ -969,8 +998,8 @@ class EffectiveConfigurationTests(unittest.TestCase):
     def test_calibration_show_config_without_recordings_or_environment(self):
         overlay = self.root/'calibration.yaml'
         write_yaml(overlay, dict(trajectory_validation=dict(config='trajectory.yaml')))
-        write_yaml(self.root/'trajectory.yaml', dict(input=dict(mode='dual'),
-            video=dict(frame_step=3), poster=dict(standalone_fusion=True)))
+        write_yaml(self.root/'trajectory.yaml', dict(standalone=dict(input=dict(mode='dual'), poster_fusion=True),
+            recording=dict(video=dict(frame_step=3))))
         with patch.object(calibration_cli.inputs, 'prepare_inputs') as parse_recordings, \
              patch.object(calibration_cli.runtime, 'use_calibration_environment') as environment:
             for command in (['run', 'missing/front'], ['verify', 'missing.insv'], ['run', 'missing/rear']):

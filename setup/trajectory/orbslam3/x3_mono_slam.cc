@@ -14,11 +14,13 @@
  */
 #include <chrono>
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <signal.h>
+#include <sys/stat.h>
 #include <omp.h>
 #include <vector>
 
@@ -76,6 +78,68 @@ class FramePlayback {
   vector<cv::Mat> decoded_block_;
 };
 
+struct LocalizationPrior {
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+  int frame;
+  Sophus::SE3f camera_from_map;
+  float max_translation;
+};
+
+using LocalizationPriors = std::vector<LocalizationPrior, Eigen::aligned_allocator<LocalizationPrior>>;
+
+struct GyroRotation {
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+  Sophus::SO3f rotation;
+  int segment = -1;
+};
+
+using GyroRotations = std::vector<GyroRotation, Eigen::aligned_allocator<GyroRotation>>;
+
+bool read_gyro_rotations(const std::string& path, GyroRotations& rotations) {
+  std::ifstream stream(path);
+  if (!stream) return false;
+  std::string line;
+  int previous_frame = -1, previous_segment = -1;
+  while (std::getline(stream, line)) {
+    std::istringstream row(line);
+    int frame, segment;
+    float qx, qy, qz, qw;
+    std::string extra;
+    if (!(row >> frame >> segment >> qx >> qy >> qz >> qw) || (row >> extra) ||
+        frame <= previous_frame || frame >= static_cast<int>(rotations.size()) ||
+        segment < 0 || segment < previous_segment ||
+        (segment == previous_segment && frame != previous_frame + 1)) return false;
+    const Eigen::Quaternionf orientation(qw, qx, qy, qz);
+    if (!orientation.coeffs().allFinite() || std::abs(orientation.squaredNorm() - 1.f) > 0.01f) return false;
+    rotations[frame] = {Sophus::SO3f(orientation.normalized()), segment};
+    previous_frame = frame;
+    previous_segment = segment;
+  }
+  return stream.eof() && previous_frame >= 0;
+}
+
+bool read_localization_priors(const std::string& path, int first, int end, LocalizationPriors& priors) {
+  std::ifstream stream(path);
+  if (!stream) return false;
+  std::string line;
+  int previous = first - 1;
+  while (std::getline(stream, line)) {
+    std::istringstream row(line);
+    int frame;
+    float x, y, z, qx, qy, qz, qw, limit;
+    std::string extra;
+    if (!(row >> frame >> x >> y >> z >> qx >> qy >> qz >> qw >> limit) || (row >> extra) ||
+        frame <= previous || frame >= end || !std::isfinite(limit) || limit <= 0.f) return false;
+    Eigen::Vector3f position(x, y, z);
+    Eigen::Quaternionf orientation(qw, qx, qy, qz);
+    if (!position.allFinite() || !orientation.coeffs().allFinite() ||
+        std::abs(orientation.squaredNorm() - 1.f) > 0.01f) return false;
+    priors.push_back({frame, Sophus::SE3f(orientation.normalized(), position).inverse(), limit});
+    previous = frame;
+  }
+  return stream.eof() && !priors.empty();
+}
+
 // Upper triangle of the pixel Hessian in right-local camera pose coordinates.
 std::string camera_information(ORB_SLAM3::System& slam, ORB_SLAM3::KannalaBrandt8& camera,
                                const Sophus::SE3f& camera_from_map, double pyramid_scale) {
@@ -132,7 +196,7 @@ void signal_callback_handler(int signum) {
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::string(argv[1]) == "--capabilities") {
-    cout << "{\"schema_version\":1,\"kb4_geometry\":\"forward_v1\",\"maximum_ray_angle_degrees\":85,\"offline_sync\":true,\"reverse_localization\":true,\"warm_reverse_localization\":true}\n";
+    cout << "{\"schema_version\":1,\"kb4_geometry\":\"forward_v1\",\"maximum_ray_angle_degrees\":85,\"offline_sync\":true,\"reverse_localization\":true,\"warm_reverse_localization\":true,\"inprocess_localization\":true,\"localization_pose_prior\":true,\"gyro_aided_mapping\":true}\n";
     return 0;
   }
   signal(SIGINT, signal_callback_handler);
@@ -154,12 +218,21 @@ int main(int argc, char **argv) {
   app.add_option("-l,--load_map", load_map);
   std::string save_map;
   app.add_option("--save_map", save_map);
+  std::string localize_after_mapping_dir;
+  app.add_option("--localize_after_mapping_dir", localize_after_mapping_dir,
+                 "After mapping finishes, localize all surviving maps in-process using cached features into loc_m<idx>/frames.csv");
   bool async_mapping = false;
   app.add_flag("--async_mapping", async_mapping, "Legacy threaded mapping (diagnostic only)");
   double offline_keyframe_interval_s = 0.2;
   app.add_option("--offline_keyframe_interval", offline_keyframe_interval_s, "Minimum offline keyframe spacing in video seconds [0,1]");
   bool localization_only = false;
   app.add_flag("--localization_only", localization_only);
+  std::string localization_pose_priors;
+  app.add_option("--localization_pose_priors", localization_pose_priors,
+                 "Per-frame camera pose hints in the loaded map frame");
+  std::string mapping_gyro_rotations;
+  app.add_option("--mapping_gyro_rotations", mapping_gyro_rotations,
+                 "Per-frame integrated camera rotations for forward offline mapping");
   bool reverse = false;
   app.add_flag("--reverse", reverse, "Read frames backwards for fixed-map visual localization only");
   bool warm_reverse = false;
@@ -186,6 +259,18 @@ int main(int argc, char **argv) {
     cerr << "--warm_reverse requires --reverse" << endl;
     return 2;
   }
+  if (!localization_pose_priors.empty() && (!localization_only || load_map.empty() || reverse)) {
+    cerr << "--localization_pose_priors requires forward --localization_only with --load_map" << endl;
+    return 2;
+  }
+  if (!mapping_gyro_rotations.empty() && (localization_only || async_mapping || !load_map.empty())) {
+    cerr << "--mapping_gyro_rotations requires forward offline mapping of a new atlas" << endl;
+    return 2;
+  }
+  if (!localize_after_mapping_dir.empty() && (localization_only || reverse || !load_map.empty())) {
+    cerr << "--localize_after_mapping_dir cannot be combined with --localization_only, --reverse, or --load_map" << endl;
+    return 2;
+  }
   if (reverse && (!localization_only || load_map.empty() || !save_map.empty() || !output_trajectory_csv.empty())) {
     cerr << "--reverse requires --load_map and --localization_only; map/trajectory export is not allowed" << endl;
     return 2;
@@ -204,7 +289,7 @@ int main(int argc, char **argv) {
   std::unique_ptr<ORB_SLAM3::KannalaBrandt8> information_camera;
   double pyramid_scale = 1.;
   if (information_stride) {
-    if (information_stride < 0 || !localization_only) return 2;
+    if (information_stride < 0 || (!localization_only && localize_after_mapping_dir.empty())) return 2;
     std::vector<float> parameters;
     for (const char* key : {"fx", "fy", "cx", "cy", "k1", "k2", "k3", "k4"})
       parameters.push_back((float)fsSettings[std::string("Camera1.") + key]);
@@ -243,6 +328,20 @@ int main(int argc, char **argv) {
   }
   cout << "frames " << nImages << " fps " << setprecision(12) << fps << " range [" << frame_start << ", "
        << frame_end << ")" << endl;
+  LocalizationPriors priors;
+  if (!localization_pose_priors.empty() && !read_localization_priors(localization_pose_priors, frame_start, frame_end, priors)) {
+    cerr << "Invalid localization pose priors: " << localization_pose_priors << endl;
+    return 2;
+  }
+  size_t next_prior = 0;
+  GyroRotations gyro_rotations;
+  if (!mapping_gyro_rotations.empty()) {
+    gyro_rotations.resize(nImages);
+    if (!read_gyro_rotations(mapping_gyro_rotations, gyro_rotations)) {
+      cerr << "Invalid mapping gyro rotations: " << mapping_gyro_rotations << endl;
+      return 2;
+    }
+  }
 
   // The pivot is frame_end, just outside the requested reverse CSV interval.
   // Keep its tracker state, then process frame_end-1 .. frame_start normally.
@@ -262,9 +361,17 @@ int main(int argc, char **argv) {
     reverse_clock_offset = (frame_end + 1.) / fps;
   }
 
+  const bool export_pass1_info = localization_only && information_stride > 0;
   ofstream fcsv(output_frames_csv);
-  fcsv << "frame_idx,t,state,ok,tx,ty,tz,qx,qy,qz,qw" << (information_stride ? ",camera_information" : "") << "\n";
+  fcsv << "frame_idx,t,state,ok,tx,ty,tz,qx,qy,qz,qw" << (export_pass1_info ? ",camera_information" : "") << "\n";
   fcsv << fixed << setprecision(9);
+
+  const bool cache_for_inprocess = !localize_after_mapping_dir.empty();
+  std::vector<std::pair<int, double>> cached_frames;
+  if (cache_for_inprocess) {
+    SLAM.EnableMonoFeatureCache(true);
+    cached_frames.reserve(frame_end - frame_start);
+  }
 
   int n_ok = 0, n_proc = 0;
   FramePlayback playback(cap, frame_start, frame_end, reverse, img_size);
@@ -286,11 +393,24 @@ int main(int argc, char **argv) {
     double t = (double)frame_idx / fps;
     // The tracker requires increasing time. CSV retains original frame indices
     // and video times; the IMU is fused later on the original ascending clock.
+    if (!priors.empty()) {
+      if (next_prior < priors.size() && priors[next_prior].frame == frame_idx) {
+        const auto& prior = priors[next_prior++];
+        SLAM.SetLocalizationPosePrior(prior.camera_from_map, prior.max_translation);
+      } else {
+        SLAM.SetLocalizationPosePrior(Sophus::SE3f(), 0.f);
+      }
+    }
+    if (!gyro_rotations.empty()) {
+      const auto& sample = gyro_rotations[frame_idx];
+      SLAM.SetMappingGyroRotation(sample.rotation, sample.segment);
+    }
     auto result = SLAM.LocalizeMonocular(im_track, reverse ? reverse_clock_offset + (double)step / fps : t);
     int state = SLAM.GetTrackingState();
     n_proc++;
+    if (cache_for_inprocess) cached_frames.emplace_back(frame_idx, t);
     write_frame_pose(fcsv, frame_idx, t, state, result);
-    if (information_stride) {
+    if (export_pass1_info) {
       fcsv << ",";
       if (result.second && state == 2 && (frame_idx % information_stride == 0 || frame_idx == frame_end - 1))
         fcsv << camera_information(SLAM, *information_camera, result.first, pyramid_scale);
@@ -301,6 +421,68 @@ int main(int argc, char **argv) {
   }
   fcsv.close();
   cout << "TRACKED " << n_ok << " / " << n_proc << endl;
+  if (!gyro_rotations.empty()) SLAM.ReportMappingGyroTracking();
+  if (!priors.empty()) {
+    const auto counts = SLAM.GetLocalizationPosePriorCounts();
+    cout << "POSE_PRIOR available " << next_prior << " attempted " << counts.first
+         << " accepted " << counts.second << endl;
+  }
+
+  if (cache_for_inprocess) {
+    if (!gyro_rotations.empty()) SLAM.SetMappingGyroRotation(Sophus::SO3f(), -1);
+    SLAM.FinalizeMappingForLocalization();
+    const size_t n_maps = SLAM.AtlasMapCount();
+    if (n_maps == 0) {
+      cerr << "No surviving maps in atlas for in-process localization" << endl;
+      return 5;
+    }
+    if (mkdir(localize_after_mapping_dir.c_str(), 0755) != 0 && errno != EEXIST) {
+      cerr << "Failed to create directory: " << localize_after_mapping_dir << endl;
+      return 1;
+    }
+    for (size_t map_index = 0; map_index < n_maps; ++map_index) {
+      const std::string loc_dir = localize_after_mapping_dir + "/loc_m" + std::to_string(map_index);
+      if (mkdir(loc_dir.c_str(), 0755) != 0 && errno != EEXIST) {
+        cerr << "Failed to create directory: " << loc_dir << endl;
+        return 1;
+      }
+      const std::string loc_csv = loc_dir + "/frames.csv";
+      ofstream lcsv(loc_csv);
+      if (!lcsv.is_open()) {
+        cerr << "Failed to open localization output CSV: " << loc_csv << endl;
+        return 1;
+      }
+      lcsv << "frame_idx,t,state,ok,tx,ty,tz,qx,qy,qz,qw" << (information_stride ? ",camera_information" : "") << "\n";
+      lcsv << fixed << setprecision(9);
+      if (!SLAM.BeginInProcessLocalization(map_index)) {
+        cerr << "Failed to begin in-process localization for map " << map_index << endl;
+        return 1;
+      }
+      int loc_ok = 0, loc_proc = 0;
+      for (size_t i = 0; i < cached_frames.size(); ++i) {
+        const int frame_idx = cached_frames[i].first;
+        const double t = cached_frames[i].second;
+        auto result = SLAM.LocalizeCachedMonocular(i);
+        int state = SLAM.GetTrackingState();
+        ++loc_proc;
+        write_frame_pose(lcsv, frame_idx, t, state, result);
+        if (information_stride) {
+          lcsv << ",";
+          if (result.second && state == 2 && (frame_idx % information_stride == 0 || frame_idx == frame_end - 1))
+            lcsv << camera_information(SLAM, *information_camera, result.first, pyramid_scale);
+        }
+        lcsv << "\n";
+        if (result.second) ++loc_ok;
+      }
+      lcsv.close();
+      if (!lcsv.good()) {
+        cerr << "Failed writing localization CSV: " << loc_csv << endl;
+        return 1;
+      }
+      cout << "LOCALIZED_MAP " << map_index << " TRACKED " << loc_ok << " / " << loc_proc << endl;
+    }
+    SLAM.EnableMonoFeatureCache(false);
+  }
 
   SLAM.Shutdown();
   if (!output_trajectory_csv.empty()) SLAM.SaveTrajectoryCSV(output_trajectory_csv);

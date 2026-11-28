@@ -17,7 +17,7 @@ from umi.infra.file_store import write_json
 from umi.infra.terminal import Console
 from umi.perception import runtime
 from umi.perception.models import ProcessingError
-from umi.reconstruction.estimation import mapping
+from umi.reconstruction import mapping
 from umi.scene import cleanup
 from umi.scene.errors import MapBuildQualityError
 from umi.scene.inputs import recordings

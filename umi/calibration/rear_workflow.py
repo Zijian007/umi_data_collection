@@ -14,7 +14,7 @@ from umi.devices import calibration_assets as assets
 from umi.devices import registry
 from umi.infra import provenance as artifact_identity
 from umi.infra.file_store import write_tum
-from umi.reconstruction.estimation import mapping
+from umi.reconstruction import mapping
 from umi.reconstruction.estimation.fixed_map import fusion
 from umi.reconstruction.estimation.fixed_map.parameters import FixedMapParameters
 from umi.scene.inputs import recordings

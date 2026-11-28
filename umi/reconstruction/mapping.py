@@ -6,7 +6,6 @@ import csv
 import hashlib
 import shutil
 from contextlib import nullcontext
-from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
 
@@ -25,6 +24,7 @@ from umi.reconstruction.estimation.fixed_map.geometry import (
     MapAlignmentError,
     VisualObservations,
     alignment_parameters,
+    candidate_score,
     metric_alignment,
     place_front,
 )
@@ -72,10 +72,8 @@ class MapAcceptanceError(ValueError):
 def definition(scene: Scene) -> dict:
     """只有建图相关配置改变才要求重建；任务融合与录制检查参数可单独调整。"""
     parameter_values = asdict(scene.parameters)
-    names = ('alignment_', 'minimum_alignment', 'maximum_alignment', 'maximum_scale', 'gravity_',
-             'maximum_acc_bias', 'minimum_pose', 'placement_', 'maximum_placement')
-    fusion_parameters = alignment_parameters(scene.trajectory.values.fusion,
-                                             scene.parameters.for_algorithm(MapPlacementParameters))
+    placement_parameters = scene.parameters.for_algorithm(MapPlacementParameters)
+    fusion_parameters = alignment_parameters(scene.trajectory.values.fusion, placement_parameters)
     result = dict(name=scene.name, mode=scene.mode, reference_arm=scene.reference_arm,
         environment_tag_policy=scene.environment_tag_policy,
         mapping={arm: str(path) for arm, path in scene.recordings.items()},
@@ -83,7 +81,7 @@ def definition(scene: Scene) -> dict:
                                               if key != 'width'})
                  for serial, binding in scene.devices.items()},
         rear_calibrations={serial: artifact_identity.file_hash(path) for serial, path in scene.rear_calibrations.items()},
-        parameters={key: value for key, value in parameter_values.items() if key.startswith(names) or key == 'huber'},
+        parameters=asdict(placement_parameters),
         motion_segmentation={key: getattr(fusion_parameters, key) for key in
             ('step', 'split_rotation_deg', 'refine_chain_pairs', 'minimum_alignment_pairs',
              'minimum_chain_pairs', 'linear_tolerance', 'linear_iterations')},
@@ -100,82 +98,25 @@ def definition(scene: Scene) -> dict:
     return result
 
 
-def candidate_score(observations, placement, *, total_frames: int | None = None) -> dict:
-    """Rank already accepted maps by consistency and coverage evidence."""
-    def number(value, fallback):
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            return fallback
-        return value if np.isfinite(value) else fallback
-
-    evidence = placement.get('evidence', {})
-    alignment = evidence.get('alignment', {})
-    fixed = alignment.get('fixed_map_validation', [])
-    measured = [item for item in fixed if item.get('status') in ('verified', 'inconsistent')
-                and isinstance(item.get('rms_m'), (int, float)) and np.isfinite(item['rms_m'])]
-    worst_rms = max((float(item['rms_m']) for item in measured), default=1e6)
-    verified_fraction = (sum(item.get('status') == 'verified' for item in measured) / len(fixed)
-                        if fixed else 0.0)
-    alignment_rms = number(evidence.get('rms_m'), 1e6)
-    scale_std = number(evidence.get('relative_scale_std'), 1e6)
-    condition = number(evidence.get('condition'), 1e12)
-    observed_frames = len(observations.imu_times_s)
-    coverage = min(observed_frames / total_frames, 1.0) if total_frames else 0.0
-    rank = [
-        float(verified_fraction),
-        -worst_rms,
-        -alignment_rms,
-        -scale_std,
-        -condition,
-        float(coverage),
-        float(observed_frames),
-    ]
-    return dict(verified_fraction=float(verified_fraction), worst_fixed_rms_m=worst_rms,
-        alignment_rms_m=alignment_rms, relative_scale_std=scale_std,
-        condition=condition, coverage_fraction=float(coverage),
-        observed_frames=observed_frames, rank=rank)
-
-
 def correct_poster_placement(placement, observations, lens, recording, scene, poster_observation_bundle):
-    """先诊断，显式开启才合并；几何不足保持原尺度，有效来源冲突则拒绝。"""
-    if not scene.parameters.tag_mapping_enabled:
-        return placement
-    from umi.reconstruction.estimation.fixed_map.poster import PosterScaleConflict, combine_scales, estimate_scale
     parameters = scene.parameters
-    scale_parameters = parameters.for_algorithm(PosterScaleParameters)
-    report = dict(status='missing_rear_calibration', applied=False, actual_error='not_measured')
-    result = deepcopy(placement)
-    try:
-        if poster_observation_bundle is not None:
-            board, detections = poster_observation_bundle
-            report = estimate_scale(observations, recording.camera.measurements[lens], recording.camera.measurements['rear'],
-                                    detections, board, placement['scale'], scale_parameters)
-            report['applied'] = False
-            if report['status'] == 'estimated':
-                merged = combine_scales(placement['scale'], placement['evidence']['relative_scale_std'],
-                                        report['scale'], report['relative_scale_std'], scale_parameters)
-                report['combination'] = merged
-                if not merged['compatible']:
-                    raise PosterScaleConflict('海报与 IMU 地图尺度不相容，拒绝加权合并', dict(report, status='conflict'))
-                report['status'] = 'diagnostics_only'
-                if parameters.tag_mapping_scale_enabled:
-                    try:
-                        result = metric_alignment(observations, np.linalg.inv(imu_from_camera(recording.camera.measurements[lens])),
-                            recording.imu, estimate_gyro_bias(recording.imu[:,1:4], recording.context.parameters.fusion),
-                            scene.trajectory.values.fusion.gravity_m_s2, parameters.for_algorithm(MapPlacementParameters),
-                            fusion_parameters=scene.trajectory.values.fusion, fixed_scale=merged['scale'])
-                    except ValueError as error:
-                        report['inertial_recheck'] = getattr(error, 'diagnostics', {})
-                        raise PosterScaleConflict(f'合并尺度未通过惯性复核：{error}', dict(report, status='conflict')) from error
-                    result['evidence']['relative_scale_std'] = merged['relative_scale_std']
-                    report.update(status='corrected', applied=True)
-    except PosterScaleConflict as error:
-        report = dict(error.evidence, reason=str(error), applied=False)
-        if parameters.tag_mapping_scale_enabled:
-            raise MapAlignmentError(str(error), dict(environment_poster=report)) from error
-    result['evidence']['environment_poster'] = report
-    return result
+    if not parameters.tag_mapping_enabled:
+        return placement
+    from umi.reconstruction.estimation.fixed_map.poster import correct_map_scale
+
+    fusion_parameters = scene.trajectory.values.fusion
+    measured = recording.camera.measurements[lens]
+
+    def recheck_scale(scale):
+        return metric_alignment(observations, np.linalg.inv(imu_from_camera(measured)), recording.imu,
+            estimate_gyro_bias(recording.imu[:, 1:4], recording.context.parameters.fusion),
+            fusion_parameters.gravity_m_s2, parameters.for_algorithm(MapPlacementParameters),
+            fusion_parameters=fusion_parameters, fixed_scale=scale)
+
+    rear = recording.camera.measurements['rear'] if poster_observation_bundle is not None else None
+    return correct_map_scale(placement, observations, measured, rear,
+        poster_observation_bundle, parameters.for_algorithm(PosterScaleParameters),
+        apply_scale=parameters.tag_mapping_scale_enabled, recheck_scale=recheck_scale)
 
 
 def choose_map(recording: PreparedRecording, lens: str, archive: Path, directory: Path, scene: Scene,

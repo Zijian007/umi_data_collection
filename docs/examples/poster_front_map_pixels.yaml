@@ -1,2 +1,7 @@
-poster:
-  front_map_pixel_fusion: true
+backends:
+  poster_independent:
+    front_map:
+      pixel_weights: true  # 按工作镜头像素信息加权已有 ORB 定位。
+  poster_vio:
+    front_map:
+      enabled: true  # 在 VIO 联合图加入工作镜头地图观测。

@@ -1,0 +1,12 @@
+# 独立录像入口的默认选项。算法参数继承 reconstruction/common.yaml。
+# python -m umi.apps.segment 可用 --mode 或 --config 覆盖。
+schema_version: 4  # 公开配置文件版本。
+
+# 独立录像入口专用。
+standalone:
+  input:
+    mode: handheld  # handheld=前镜头 ORB + IMU；dual=前后镜头 ORB + IMU。
+    allow_irregular_frames: false  # true=使用真实帧时间；false=拒绝不规则录像。
+  poster_fusion: false  # true=用海报角点参与联合优化；false=声明资产后只诊断。
+  retry:
+    target_maximum_position_support_gap_s: 2.0  # 独立录像使用合格海报位置支持时的重试门槛，单位 s。

@@ -195,7 +195,7 @@ def show_batch(summaries: list[dict]) -> None:
 
 
 def show_calibration(selected: SelectedCalibration, *, recording: str) -> None:
-    from umi.reconstruction.segment.reconstruction import console
+    from umi.reconstruction.segment.attempts import console
 
     source = SELECTION_LABELS.get(selected.selection, selected.selection)
     console.write(f"相机 {selected.camera_serial or '未知'}；标定 {selected.calibration_id}；"
@@ -204,7 +204,7 @@ def show_calibration(selected: SelectedCalibration, *, recording: str) -> None:
 
 def show_recording(summary: dict) -> None:
     """执行结果与质量指标分别展示；准备阶段失败时尚未生成新报告。"""
-    from umi.reconstruction.segment.reconstruction import console
+    from umi.reconstruction.segment.attempts import console
 
     name = Path(summary["video"]).stem
     output = Path(summary["out"])

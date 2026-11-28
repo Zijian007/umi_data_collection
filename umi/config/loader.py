@@ -1,6 +1,6 @@
 """Typed algorithm settings: explicit overlays, validation and reproducible records.
 
-Numerical defaults live in config/algorithms/*.yaml. Load once at a workflow boundary and
+Numerical defaults live under config/algorithms/. Load once at a workflow boundary and
 pass the immutable stage settings down. This module has no numerical dependencies
 and never creates output directories or changes environment variables.
 """
@@ -25,7 +25,7 @@ from umi.infra.paths import CONFIG_ROOT
 ALGORITHM_DIRECTORY = CONFIG_ROOT / 'algorithms'
 # 内部 TrajectoryParameters 快照的结构版本；公开文件的版本见 reconstruction.SCHEMA_VERSION。
 SCHEMA_VERSION = 1
-# 标定 B 段的 IMU 噪声先验与融合共用 reconstruction.yaml 的 fusion.imu。
+# 标定 B 段的 IMU 噪声先验与融合共用 reconstruction/common.yaml 的 shared.imu.noise。
 CALIBRATION_IMU_FIELDS = ('gyro_noise', 'acc_noise', 'gyro_bias_rw', 'acc_bias_rw')
 
 _CALIBRATION_CHECK_FIELDS = {
@@ -168,6 +168,10 @@ def _validate_parameters(values) -> None:
 def decode_parameters(kind: str, configuration_values: dict):
     """Decode a complete snapshot, including child-process boundaries; no defaults."""
     cls = {'calibration': CalibrationParameters, 'trajectory': TrajectoryParameters}[kind]
+    if kind == 'trajectory' and isinstance(configuration_values, dict):
+        orb = configuration_values.get('orb')
+        if isinstance(orb, dict) and 'gyro_aided_mapping' not in orb:
+            configuration_values = dict(configuration_values, orb=dict(orb, gyro_aided_mapping=False))
     values = decode_dataclass(cls, configuration_values)
     _validate_parameters(values)
     return values
@@ -222,28 +226,31 @@ class Configuration:
         overrides = {'environment_tags': {'tag_fusion_enabled': False}, 'input': {'mode': 'handheld'}}
         if tag_size_m is not None:
             overrides['orb'] = {'initial_tag_size_m': tag_size_m}
-        return load('trajectory', target, overrides)
+        return load('trajectory', target, overrides, standalone=False)
 
 
 def overlay_trajectory(configuration: Configuration, overlay: dict, source: Path) -> Configuration:
     values = merge_overrides(asdict(configuration.values), overlay)
     effective = decode_parameters('trajectory', values)
-    defaults, _ = _project_defaults('trajectory')
+    defaults, _ = _project_defaults('trajectory', standalone=False)
     return replace(configuration, values=effective, sources=(*configuration.sources, str(source)),
                    overrides_json=json.dumps(_changed_values(defaults, asdict(effective)), sort_keys=True))
 
 
-def _project_defaults(kind: str) -> tuple[dict, list[str]]:
+def _project_defaults(kind: str, *, standalone: bool) -> tuple[dict, list[str]]:
     from umi.config import reconstruction
     if kind == 'trajectory':
-        return dict(reconstruction.defaults().trajectory, schema_version=SCHEMA_VERSION), [str(reconstruction.DEFAULT_PATH)]
+        sources = [str(reconstruction.COMMON_PATH)]
+        if standalone:
+            sources.append(str(reconstruction.SEGMENT_DEFAULT_PATH))
+        return dict(reconstruction.trajectory_defaults(standalone=standalone), schema_version=SCHEMA_VERSION), sources
     default_path = ALGORITHM_DIRECTORY / 'calibration.yaml'
     defaults = _read_calibration_yaml(default_path)
     if 'imu' in defaults:
-        raise ValueError(f'{default_path}: IMU 默认值由 reconstruction.yaml 的 fusion.imu 提供')
-    fusion = reconstruction.defaults().trajectory['fusion']
+        raise ValueError(f'{default_path}: IMU 默认值由 reconstruction/common.yaml 的 shared.imu.noise 提供')
+    fusion = reconstruction.trajectory_defaults(standalone=False)['fusion']
     defaults['imu'] = {name: fusion[name] for name in CALIBRATION_IMU_FIELDS}
-    return defaults, [str(default_path), str(reconstruction.DEFAULT_PATH)]
+    return defaults, [str(default_path), str(reconstruction.COMMON_PATH)]
 
 
 def _overlay(kind: str, path: Path) -> dict:
@@ -253,14 +260,19 @@ def _overlay(kind: str, path: Path) -> dict:
     return _read_calibration_yaml(path)
 
 
-def load(kind: str, path: Path | None = None, overrides: dict | None = None, *, inline: dict | None = None) -> Configuration:
-    """path 是用户覆盖文件（轨迹为 reconstruction.yaml 同结构）；inline/overrides 是内部结构。"""
+def load(kind: str, path: Path | None = None, overrides: dict | None = None, *, inline: dict | None = None,
+         standalone: bool = True) -> Configuration:
+    """path 使用公开配置结构。inline 和 overrides 使用内部结构。"""
     try:
-        defaults, sources = _project_defaults(kind)
         overlay = {}
         if path is not None:
             path = Path(path).expanduser().resolve()
             overlay = _overlay(kind, path)
+        if standalone and kind == 'trajectory' and overlay:
+            from umi.config import reconstruction
+            standalone = not reconstruction.has_standalone_options(overlay)
+        defaults, sources = _project_defaults(kind, standalone=standalone)
+        if path is not None:
             sources.append(str(path))
         configuration_values = merge_overrides(defaults, overlay)
         configuration_values = merge_overrides(configuration_values, inline or {})
@@ -301,7 +313,7 @@ def write_yaml(path: Path, values) -> None:
     """Emit the complete resolved parameters for a child process."""
     document = asdict(values)
     if isinstance(values, TrajectoryParameters):
-        # 子进程按用户覆盖文件的同一入口读取：输出完整的 reconstruction.yaml 同结构树。
+        # 子进程沿用覆盖入口，写出已解析的算法和独立入口参数。
         from umi.config import reconstruction
         document = reconstruction.public_tree(trajectory=document)
     else:

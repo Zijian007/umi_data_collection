@@ -4,8 +4,9 @@ import gtsam
 import numpy as np
 from scipy.stats import chi2
 
-from umi.reconstruction.backends.poster_vio.front_map import placement_keys
-from umi.reconstruction.estimation.fusion.graph import logR, skew
+from umi.core.geometry import skew
+from umi.reconstruction.backends.poster_vio.front_map import effective_covariance, placement_keys
+from umi.reconstruction.estimation.so3 import rotation_log
 
 
 # Six-dimensional unrobustified pose innovation. A downweighted gross outlier
@@ -48,17 +49,18 @@ def assess_segment(segment, board_from_map, scale, joint_cov, board_from_bodies,
     local_translation = scale * R
     for t, p, M, C, body in zip(segment.times_s, segment.positions, segment.body_rotations,
                                 segment.covariances, board_from_bodies):
+        C_eff = effective_covariance(C, scale, item.fusion_parameters)
         J = placement_jacobian(board_from_map, scale * p, M)
         shared = J @ joint_cov @ J.T
         # Worst-axis standard deviations add conservatively when the map
         # placement and the measured pose may be correlated.
-        pos_std = _worst_axis_std(shared[3:, 3:]) + _worst_axis_std(local_translation @ C[3:, 3:] @ local_translation.T)
-        rot_std = np.degrees(_worst_axis_std(shared[:3, :3]) + _worst_axis_std(C[:3, :3]))
-        angle = logR((R @ M).T @ body[:3, :3])
+        pos_std = _worst_axis_std(shared[3:, 3:]) + _worst_axis_std(local_translation @ C_eff[3:, 3:] @ local_translation.T)
+        rot_std = np.degrees(_worst_axis_std(shared[:3, :3]) + _worst_axis_std(C_eff[:3, :3]))
+        angle = rotation_log((R @ M).T @ body[:3, :3])
         center = body[:3, 3] + body[:3, :3] @ lever
         displacement = R.T @ (center - board_from_map[:3, 3]) / scale - p
         innovation = np.r_[angle, displacement]
-        squared = float(innovation @ np.linalg.solve(C, innovation))
+        squared = float(innovation @ np.linalg.solve(C_eff, innovation))
         accepted = bool(pos_std <= item.parameters.tag_maximum_position_std_m
                         and rot_std <= item.parameters.tag_maximum_rotation_std_deg
                         and squared <= _INNOVATION_LIMIT)

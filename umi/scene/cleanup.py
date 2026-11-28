@@ -68,7 +68,13 @@ def prune_runs(task: Path, removal: Removal) -> None:
     keep = kept_runs(task)
     for entry in sorted(runs.iterdir()):
         if entry.resolve() not in keep:
-            removal.remove(entry)
+            audit = layout.run_audit(entry)
+            if not audit.is_dir():
+                removal.remove(entry)
+                continue
+            for child in entry.iterdir():
+                if child != audit:
+                    removal.remove(child)
 
 
 def prune_cache(cache: Path, removal: Removal, *, used_since: float) -> None:

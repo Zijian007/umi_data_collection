@@ -26,11 +26,11 @@ from umi.devices import registry
 from umi.infra import provenance as artifact_identity
 from umi.infra.file_store import mark_used, read_yaml, write_json, write_yaml
 from umi.perception.audio.specialist_audio import AudioSyncEstimate
-from umi.reconstruction.backends.scene_map import run as episode_execution
-from umi.reconstruction.backends.scene_map import run as scene_reconstruction
+from umi.reconstruction.backends import scene_map as episode_execution
+from umi.reconstruction.backends import scene_map as scene_reconstruction
 from umi.reconstruction.estimation.fixed_map import poster
-from umi.reconstruction.estimation.models import FusedTrajectory
-from umi.scene import cleanup, episodes, measurements, publication, routing
+from umi.reconstruction.estimation.models import BackendResult, FusedTrajectory
+from umi.scene import cleanup, task_state as episodes, measurements, publication, routing
 from umi.scene import publication as trajectory_writers
 from umi.scene import run as processing
 from umi.scene import run as workflow
@@ -44,6 +44,8 @@ from umi.scene.collection.configuration import read_synchronization
 from umi.scene.inputs import recordings, synchronization
 from umi.scene.maps import binding as map_lifecycle_binding
 from umi.scene.maps import epochs as processing_epochs
+from umi.scene.collection.batch import episode_paths as discover_episode_paths
+from umi.scene.collection.batch import read_episode as read_task_episode
 from umi.store import layout
 from umi.store import layout as processing_layout
 from umi.store.models import TaskInputs
@@ -53,6 +55,38 @@ from umi.store.result_io import pose_rows, result_paths
 
 
 class ProcessingTests(unittest.TestCase):
+    def test_auto_trims_again_after_map_reselects_recording(self):
+        from umi.reconstruction.backends import PosterVioQualityError
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scene = SimpleNamespace(reconstruction_mode='auto', auto_order=('poster_vio', 'scene_map'))
+            inputs = TaskInputs(SimpleNamespace(scene=scene), {'left': 'original'}, {}, root, None, None, None,
+                                work_directory=root / 'work')
+            chosen = SimpleNamespace(manifest={'mode': 'dual'}, failure=None)
+            seen = []
+
+            def trim(value):
+                seen.append((value.recordings['left'], value.directory.name, value.work_directory.name))
+                return replace(value, recordings={'left': 'trimmed ' + value.recordings['left']}), {}
+
+            def select_map(value):
+                return replace(value, recordings={'left': 'map camera'}), chosen
+
+            def reject(value, selection):
+                raise PosterVioQualityError('first candidate rejected')
+
+            def accept(value, selection):
+                self.assertEqual(value.recordings['left'], 'trimmed map camera')
+                return BackendResult({}, {}, {})
+
+            with patch.object(routing, 'uses_edge_trim', return_value=True), \
+                    patch.object(routing.tag_trimming, 'prepare', side_effect=trim), \
+                    patch.dict(routing.ESTIMATORS, poster_vio=reject, scene_map=accept):
+                routing.execute(inputs, routing.MapSelection.without_map(), resolve_map=select_map)
+            self.assertEqual(seen, [('original', '00_poster_vio', '00_poster_vio'),
+                                    ('map camera', '01_scene_map', '01_scene_map')])
+
     def setUp(self):
         self.f = scene_tests.SceneWorkflowTests()
         self.f.setUp()
@@ -112,7 +146,7 @@ class ProcessingTests(unittest.TestCase):
         from umi.scene.collection.configuration import SceneOverrides
         override_path = self.f.root/'override.yaml'
         write_yaml(override_path, dict(
-            mapping=dict(alignment=dict(maximum_scale_relative_std=.2)),
+            backends=dict(scene_map=dict(mapping=dict(alignment=dict(maximum_scale_relative_std=.2)))),
             measurements=dict(gripper_width=dict(maximum_interpolation_gap_s=.7))))
         originals = {path: path.read_bytes() for path in (self.f.scene_path, self.batch/'collection.yaml', kit_inputs.KITS/'rig/kit.yaml')}
         with redirect_stdout(io.StringIO()) as output:
@@ -126,8 +160,11 @@ class ProcessingTests(unittest.TestCase):
         result_path = self.batch/'take_001/results/data/episode.json'
         result = json.loads(result_path.read_text())
         self.assertEqual(result['inputs']['parameters']['gripper_width_max_gap_s'], .7)
-        self.assertNotIn('poster_vio_per_tag_huber', result['inputs']['parameters'])
-        self.assertEqual(result['runtime_overrides']['values']['mapping']['alignment']['maximum_scale_relative_std'], .2)
+        self.assertFalse(result['inputs']['parameters']['poster_vio_per_tag_huber'])
+        self.assertNotIn('poster_vio_per_tag_huber',
+                         result['inputs']['reuse_identity']['parameters']['scene_map']['parameters'])
+        frozen_overrides = result['runtime_overrides']['values']
+        self.assertEqual(frozen_overrides['backends']['scene_map']['mapping']['alignment']['maximum_scale_relative_std'], .2)
         self.assertEqual({path: path.read_bytes() for path in originals}, originals)
         # Equivalent YAML at a different path does not invalidate computed results.
         equivalent_path = self.f.root/'equivalent.yaml'
@@ -140,7 +177,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(json.loads(result_path.read_text())['runtime_overrides']['values'], equivalent.values)
         # A task-only parameter rebuilds the task, preserving the existing map.
         write_yaml(override_path, dict(
-            mapping=dict(alignment=dict(maximum_scale_relative_std=.2)),
+            backends=dict(scene_map=dict(mapping=dict(alignment=dict(maximum_scale_relative_std=.2)))),
             measurements=dict(gripper_width=dict(maximum_interpolation_gap_s=.8))))
         self.assertEqual(processing.run([self.batch], overrides=SceneOverrides.load(override_path))[0]['status'], 'ok')
         self.assertEqual(batch_inputs.read_batch(self.batch).map_version, batch.map_version)
@@ -154,7 +191,8 @@ class ProcessingTests(unittest.TestCase):
         command = ['run', str(self.batch), '--expert-config', str(override_path), '--json']
         previous = None
         for threshold in (.2, .3):
-            write_yaml(override_path, dict(mapping=dict(alignment=dict(maximum_scale_relative_std=threshold))))
+            write_yaml(override_path, dict(backends=dict(scene_map=dict(mapping=dict(
+                alignment=dict(maximum_scale_relative_std=threshold))))))
             with redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(cli.main([*command, '--force']), 0)
             self.assertEqual(json.loads(output.getvalue())[0]['status'], 'ok')
@@ -214,7 +252,7 @@ class ProcessingTests(unittest.TestCase):
         manifest = layout.metadata(self.batch, 'manifest.yaml')
         self.assertFalse((new_scene / 'collection.yaml').exists())
         self.assertTrue(manifest.is_file())
-        self.assertEqual(episodes.episode_paths([manifest]), [Path(registered['episodes'][0]['path'])])
+        self.assertEqual(discover_episode_paths([manifest]), [Path(registered['episodes'][0]['path'])])
         self.assertEqual({path: (path.read_bytes(), path.stat().st_ino) for path in before}, before)
 
     def test_preview_preflights_new_and_registered_tasks_without_writing(self):
@@ -316,7 +354,7 @@ class ProcessingTests(unittest.TestCase):
 
         with patch.object(processing_layout, 'configured_batches', return_value=[self.batch, other]), \
                 patch.object(processing_batch, 'prepare_batch', side_effect=[rejected, accepted]), \
-                patch.object(episodes, 'episode_paths', side_effect=discover), \
+                patch.object(batch_inputs, 'episode_paths', side_effect=discover), \
                 patch.object(workflow, 'run_episodes', return_value=[dict(status='ok')]) as run, \
                 patch.object(processing.cleanup, 'after_batch'):
             summaries = processing.run([self.f.scene.root])
@@ -331,7 +369,7 @@ class ProcessingTests(unittest.TestCase):
         selected = [first, second, third]
         clean = dict(episodes=[], errors=[], pending=[], ignored=[])
         with patch.object(processing_layout, 'configured_batches', return_value=[]), \
-                patch.object(episodes, 'episode_paths', return_value=selected), \
+                patch.object(batch_inputs, 'episode_paths', return_value=selected), \
                 patch.object(processing_batch, 'prepare_batch', return_value=clean) as prepare, \
                 patch.object(workflow, 'run_episodes', return_value=[dict(status='ok')]) as run, \
                 patch.object(processing.cleanup, 'after_batch'):
@@ -397,8 +435,8 @@ class ProcessingTests(unittest.TestCase):
     def test_auto_builds_only_the_needed_epoch_after_poster_quality_rejections(self):
         from umi.perception.poster.layout import DEFAULT_LAYOUT
         from umi.reconstruction.backends import PosterIndependentQualityError, PosterVioQualityError
-        from umi.reconstruction.backends.poster_independent import run as poster_independent
-        from umi.reconstruction.backends.poster_vio import run as poster_vio
+        from umi.reconstruction.backends import poster_independent as poster_independent
+        from umi.reconstruction.backends.poster_vio import task as poster_vio
         from umi.scene.maps import build as map_build
 
         declaration = self.batch / 'collection.yaml'
@@ -445,7 +483,7 @@ class ProcessingTests(unittest.TestCase):
             manifest = json.loads((task / 'results/data/episode.json').read_text())
             self.assertEqual([attempt['backend'] for attempt in manifest['scene']['attempts']], order)
             self.assertTrue(manifest['inputs']['auto_map_attempted'])
-            audit_path, = (self.batch / '.pipeline/tasks' / row['name'] / 'logs').glob('*/run_manifest.json')
+            audit_path, = (self.batch / '.pipeline/tasks' / row['name'] / 'runs').glob('*/audit/run_manifest.json')
             audit = json.loads(audit_path.read_text())
             self.assertEqual(audit['input_hash'], artifact_identity.canonical_hash(manifest['inputs']))
         self.assertEqual([row['status'] for row in processing.run([self.batch], jobs=2)], ['skipped', 'skipped'])
@@ -616,12 +654,12 @@ class ProcessingTests(unittest.TestCase):
         from unittest.mock import Mock
         processing_batch.prepare_batch(self.batch)
         other = self.f.episode_path
-        walk = Mock(wraps=episodes.os.walk)
-        with patch.object(episodes.os, 'walk', walk):
-            found = episodes.episode_paths([self.f.scene.root, self.batch], exclude=[self.batch])
+        walk = Mock(wraps=batch_inputs.os.walk)
+        with patch.object(batch_inputs.os, 'walk', walk):
+            found = discover_episode_paths([self.f.scene.root, self.batch], exclude=[self.batch])
         self.assertEqual(found, [layout.manifest(other, 'episode.yaml')])
         self.assertEqual(walk.call_count, 1)
-        self.assertEqual(episodes.episode_paths([self.batch / 'collection.yaml']),
+        self.assertEqual(discover_episode_paths([self.batch / 'collection.yaml']),
                          [layout.metadata(self.batch / 'take_001', 'episode.yaml')])
 
     def test_rear_calibration_belongs_to_calibration_entry(self):
@@ -720,9 +758,9 @@ class EpisodeLifecycleTests(unittest.TestCase):
                         result_sha256=file_hash(result_paths(self.f.task_root / run).manifest))
         state['review'] = decision
         state_path.write_text(json.dumps(state))
-        episode = episodes.read_episode(path)
+        episode = read_task_episode(path)
         episodes.record_attempt(episode, 'failed', None, reason='retry failed')
-        status = episodes.task_status(path)
+        status = episodes.task_status(read_task_episode(path, verify=False))
         self.assertEqual(status['status'], 'failed')
         self.assertIsNone(status['output'])
         self.assertFalse(status['current'])
@@ -749,7 +787,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
         report = self.f.task_root / state['attempt']['preflight_report']
         self.assertTrue(report.is_file())
         self.assertTrue(json.loads(report.read_text())['passed'])
-        with patch('umi.reconstruction.estimation.mapping.localize',side_effect=AssertionError('cached localization must be reused')), \
+        with patch('umi.reconstruction.mapping.localize',side_effect=AssertionError('cached localization must be reused')), \
                 patch.object(publication, 'reuse_episode', return_value=None):
             workflow.run_episode(self.f.episode_path)
 
@@ -890,7 +928,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
         data = read_yaml(self.f.session_path)
         data['description'] = 'updated session'
         write_yaml(self.f.session_path, data)
-        self.assertEqual(episodes.task_status(self.f.episode_path)['status'], 'pending')
+        self.assertEqual(episodes.task_status(read_task_episode(self.f.episode_path, verify=False))['status'], 'pending')
         entry = RecordingCatalog(self.f.root).scan()['recordings'][0]
         self.assertEqual(entry['status'], 'pending')
         self.assertFalse(entry['current'])
@@ -917,7 +955,7 @@ class EpisodeLifecycleTests(unittest.TestCase):
         write_yaml(self.f.episode_path, data)
         entry = RecordingCatalog(self.f.root).scan()['recordings'][0]
         self.assertEqual(entry['status'], 'incomplete')
-        self.assertEqual(episodes.task_status(self.f.episode_path)['status'], 'incomplete')
+        self.assertEqual(episodes.task_status(read_task_episode(self.f.episode_path, verify=False))['status'], 'incomplete')
 
     def test_bad_yaml_is_isolated_and_json_output_is_machine_readable(self):
         bad=self.f.batch_root/'.pipeline/tasks/bad/episode.yaml'
@@ -1059,7 +1097,7 @@ class EpisodeAnnotationTests(unittest.TestCase):
         write_task_configuration(self.f.task_root, changed)
         self.assertEqual(self.f.episode_path.read_bytes(), before)
         self.assertEqual(changed['synchronization'], original['synchronization'])
-        self.assertFalse(episodes.task_status(self.f.episode_path)['current'])
+        self.assertFalse(episodes.task_status(read_task_episode(self.f.episode_path, verify=False))['current'])
         workflow.run_episode(self.f.episode_path)
         result = json.loads((self.f.task_root / 'results/data/episode.json').read_text())
         self.assertEqual(result['instruction'], '拿起盒子')
@@ -1070,7 +1108,7 @@ class EpisodeAnnotationTests(unittest.TestCase):
         self.f.build_scene()
         workflow.run_episode(self.f.episode_path)
         self.configure(offset=-.3)
-        self.assertFalse(episodes.task_status(self.f.episode_path)['current'])
+        self.assertFalse(episodes.task_status(read_task_episode(self.f.episode_path, verify=False))['current'])
         self.configure(offset=-100.)
         with self.assertRaisesRegex(ValueError, '没有重叠'):
             workflow.run_episode(self.f.episode_path)
@@ -1098,7 +1136,8 @@ class SharedPosterExecutionTests(unittest.TestCase):
         episode = SimpleNamespace(expected_arms=('left', 'right'), session=SimpleNamespace(name='batch'),
                                   scene=scene, root=Path('take'),
                                   recording_refs={'left': {'sha256': 'a'}, 'right': {'sha256': 'b'}})
-        baselines = {arm: SimpleNamespace(name=f'{arm}-baseline') for arm in ('left', 'right')}
+        baselines = {arm: FusedTrajectory(np.eye(4)[None], np.ones(1, bool), np.ones(1, bool), {})
+                     for arm in ('left', 'right')}
         inputs = {arm: SimpleNamespace(arm=arm) for arm in ('left', 'right')}
         board = np.eye(4)
         board[:3, 3] = [1., 2., 3.]
@@ -1126,11 +1165,12 @@ class SharedPosterExecutionTests(unittest.TestCase):
                 patch.object(scene_reconstruction, 'reconstruct_arm_in_scene', side_effect=reconstruct), \
                 patch.object(trajectory_writers, 'write_arm_result', side_effect=write), \
                 patch.object(poster, 'refine_shared_poster_pose', return_value=refined) as shared:
-            task_inputs = TaskInputs(episode, {'left': object(), 'right': object()},
+            task_inputs = TaskInputs(episode, {arm: SimpleNamespace(video_times_s=np.array([0.])) for arm in ('left', 'right')},
                 {'left': 0., 'right': 0.}, Path(directory), None, None,
                 SimpleNamespace(write=lambda *args, **kwargs: None), backend_services=routing.backend_services())
-            result = episode_execution.execute_task(task_inputs, map_dir=Path(directory),
+            solved = episode_execution.execute_task(task_inputs, map_dir=Path(directory),
                 map_manifest=dict(frame_id='scene/v1'), coordinate_record=dict(frame_id='scene/v1'))
+            result = trajectory_writers.write_backend_result(task_inputs, solved)
         return result, calls, written, shared, inputs, refined, baselines
 
     def test_shared_poster_solves_once_and_writes_refined_tracks(self):
@@ -1229,7 +1269,7 @@ class SceneSchedulingTests(unittest.TestCase):
             workflow.run_episode(self.f.episode_path, force=True)
         self.assertTrue(finished.is_set())
         self.assertEqual((self.f.task_root / 'results').resolve(), previous)
-        failed = list(layout.metadata(self.f.task_root, 'runs').glob('failed-*'))
+        failed = [path.parent for path in layout.metadata(self.f.task_root, 'runs').glob('*/error.json')]
         self.assertEqual(len(failed), 1)
         self.assertTrue((failed[0] / 'right/trajectory.csv').is_file())
 
@@ -1344,28 +1384,34 @@ class TaskCleanupTests(unittest.TestCase):
         current = result_paths(self.task / 'results').run
         self.assertNotEqual(current, first)
         log = self.task / 'run.log'
-        self.assertEqual(log.resolve(), layout.metadata(self.task, 'logs') / current.name / 'run.log')
+        self.assertEqual(log.resolve(), layout.run_audit(current) / 'run.log')
         self.assertIn('轨迹已发布', log.read_text())
-        self.assertEqual(run_names(self.task), {current.name})
+        self.assertEqual(run_names(self.task), {first.name, current.name})
+        self.assertEqual({path.name for path in first.iterdir()}, {'audit'})
+        self.assertIn('轨迹已发布', (first / 'audit/run.log').read_text())
         self.assertFalse(layout.metadata(self.task, 'work').exists())
+        self.assertFalse((current / 'work').exists())
 
-    def test_latest_failure_is_kept_next_to_current_success_and_older_failures_go(self):
+    def test_latest_failure_keeps_evidence_and_previous_failure_keeps_audit(self):
         workflow.run_episode(self.f.episode_path, parallel_arms=False)
         success = result_paths(self.task / 'results').run.name
         self.fail_once('first reason')
         first_failure = run_names(self.task) - {success}
         self.assertEqual(len(first_failure), 1)
-        self.assertTrue(first_failure.pop().startswith('failed-'))
+        first, = first_failure
         log = self.task / 'run.log'
         first_log = log.resolve()
         self.fail_once('second reason')
         self.assertNotEqual(log.resolve(), first_log)
         self.assertIn('second reason', log.read_text())
         names = run_names(self.task)
-        self.assertEqual(len(names), 2)
+        self.assertEqual(len(names), 3)
         self.assertIn(success, names)
         state = json.loads(layout.metadata(self.task, 'state.json').read_text())
-        self.assertEqual({Path(state['attempt']['run']).name}, names - {success})
+        self.assertEqual({Path(state['attempt']['run']).name}, names - {success, first})
+        previous = layout.metadata(self.task, 'runs') / first
+        self.assertEqual({path.name for path in previous.iterdir()}, {'audit'})
+        self.assertIn('first reason', first_log.read_text())
 
     def test_localization_cache_entries_hold_only_their_listed_files(self):
         workflow.run_episode(self.f.episode_path, parallel_arms=False)
@@ -1414,8 +1460,22 @@ class TaskCleanupTests(unittest.TestCase):
         self.assertFalse(log.is_symlink())
         self.assertEqual(log.read_text(), 'user note')
         run = result_paths(self.task / 'results').run
-        audit_log = layout.metadata(self.task, 'logs') / run.name / 'run.log'
+        audit_log = layout.run_audit(run) / 'run.log'
         self.assertIn('轨迹已发布', audit_log.read_text())
+
+    def test_historical_failure_log_uses_legacy_manifest_reference(self):
+        metadata = layout.internal(self.task)
+        failed = metadata / 'runs/failed-legacy'
+        failed.mkdir(parents=True)
+        write_json(metadata / 'state.json', dict(attempt=dict(run=layout.run_reference(self.task, failed))))
+        log = metadata / 'logs/old-id/run.log'
+        write_json(log.with_name('run_manifest.json'), dict(run_directory=str(failed)))
+        log.write_text('legacy failure')
+        unrelated = metadata / 'runs/newer/audit/run.log'
+        unrelated.parent.mkdir(parents=True)
+        unrelated.write_text('unrelated log')
+        episodes.restore_task_log_link(self.task)
+        self.assertEqual((self.task / 'run.log').resolve(), log)
 
 
 class MapCleanupTests(unittest.TestCase):

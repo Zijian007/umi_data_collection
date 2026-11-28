@@ -173,13 +173,23 @@ class Kb4Model:
 
     def project(self, points):
         p = np.asarray(points, float).reshape(-1, 3)
-        radius = np.linalg.norm(p[:, :2], axis=1)
-        theta = np.arctan2(radius, p[:, 2])
-        t2 = theta*theta
-        rd = theta*(1+self.k1*t2+self.k2*t2**2+self.k3*t2**3+self.k4*t2**4)
-        scale = np.divide(rd, radius, out=np.zeros_like(rd), where=radius > 1e-12)
-        uv = p[:, :2]*scale[:, None]*[self.fx, self.fy]+[self.cx, self.cy]
-        uv[(np.linalg.norm(p, axis=1) < 1e-12) | ((radius < 1e-12) & (p[:, 2] < 0))] = np.nan
+        if len(p) == 0:
+            return np.empty((0, 2), dtype=float)
+        x, y, z = p[:, 0], p[:, 1], p[:, 2]
+        r2 = x * x + y * y
+        radius = np.sqrt(r2)
+        theta = np.arctan2(radius, z)
+        t2 = theta * theta
+        rd = theta * (1. + t2 * (self.k1 + t2 * (self.k2 + t2 * (self.k3 + t2 * self.k4))))
+        scale = np.zeros_like(rd)
+        positive = radius > 1e-12
+        scale[positive] = rd[positive] / radius[positive]
+        uv = np.empty((len(p), 2), dtype=float)
+        uv[:, 0] = x * scale * self.fx + self.cx
+        uv[:, 1] = y * scale * self.fy + self.cy
+        invalid = ((r2 + z * z) < 1e-24) | (~positive & (z < 0))
+        if np.any(invalid):
+            uv[invalid] = np.nan
         return uv
 
     def project_jacobian(self, points):
@@ -222,21 +232,40 @@ class Kb4Model:
 
     def unproject(self, pixels):
         uv = np.asarray(pixels, float).reshape(-1, 2)
-        xy = (uv-[self.cx, self.cy])/[self.fx, self.fy]
-        rd = np.linalg.norm(xy, axis=1)
-        theta = np.minimum(rd, np.pi/2)
+        if len(uv) == 0:
+            return np.empty((0, 3), dtype=float)
+        xy = np.empty_like(uv)
+        xy[:, 0] = (uv[:, 0] - self.cx) / self.fx
+        xy[:, 1] = (uv[:, 1] - self.cy) / self.fy
+        rd = np.hypot(xy[:, 0], xy[:, 1])
+        theta = np.minimum(rd, np.pi / 2)
+        k1, k2, k3, k4 = self.k1, self.k2, self.k3, self.k4
+        k1_3, k2_5, k3_7, k4_9 = 3. * k1, 5. * k2, 7. * k3, 9. * k4
         for _ in range(30):
-            t2 = theta*theta
-            value = theta*(1+self.k1*t2+self.k2*t2**2+self.k3*t2**3+self.k4*t2**4)
-            derivative = 1+3*self.k1*t2+5*self.k2*t2**2+7*self.k3*t2**3+9*self.k4*t2**4
-            step = np.divide(value-rd, derivative, out=np.full_like(rd, np.nan), where=derivative > 0)
-            theta = np.clip(theta-np.clip(step, -.25, .25), 0, np.pi-1e-6)
-        scale = np.divide(np.sin(theta), rd, out=np.ones_like(rd), where=rd > 1e-12)
-        rays = np.column_stack((xy*scale[:, None], np.cos(theta)))
-        error = np.linalg.norm(self.project(rays)-uv, axis=1)
-        t2 = theta*theta
-        derivative = 1+3*self.k1*t2+5*self.k2*t2**2+7*self.k3*t2**3+9*self.k4*t2**4
-        rays[~np.isfinite(error) | (error > .01) | (derivative <= 0)] = np.nan
+            t2 = theta * theta
+            value = theta * (1. + t2 * (k1 + t2 * (k2 + t2 * (k3 + t2 * k4))))
+            derivative = 1. + t2 * (k1_3 + t2 * (k2_5 + t2 * (k3_7 + t2 * k4_9)))
+            valid_d = derivative > 0
+            step = np.where(valid_d, (value - rd) / np.where(valid_d, derivative, 1.), np.nan)
+            new_theta = np.clip(theta - np.clip(step, -.25, .25), 0., np.pi - 1e-6)
+            delta = np.abs(new_theta - theta)
+            theta = new_theta
+            if np.all((delta <= 1e-13) | np.isnan(delta)):
+                break
+        scale = np.ones_like(rd)
+        positive = rd > 1e-12
+        scale[positive] = np.sin(theta[positive]) / rd[positive]
+        rays = np.empty((len(uv), 3), dtype=float)
+        rays[:, 0] = xy[:, 0] * scale
+        rays[:, 1] = xy[:, 1] * scale
+        rays[:, 2] = np.cos(theta)
+        diff = self.project(rays) - uv
+        error2 = diff[:, 0] * diff[:, 0] + diff[:, 1] * diff[:, 1]
+        t2 = theta * theta
+        derivative = 1. + t2 * (k1_3 + t2 * (k2_5 + t2 * (k3_7 + t2 * k4_9)))
+        bad = ~np.isfinite(error2) | (error2 > 1e-4) | (derivative <= 0)
+        if np.any(bad):
+            rays[bad] = np.nan
         return rays
 
     def full_view(self):

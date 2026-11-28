@@ -11,7 +11,8 @@
 | 原始录像内容 | 批次目录中的 `.insv` 文件 | `episode.yaml`、`manifest.yaml` 只保存路径、设备身份和内容哈希 |
 | Organizer 原片交接 | 批次 `collection.yaml` 中的 `mapping` 和 `tasks` | UMI 校验原片路径和 SHA-256，生成内部地图计划 `.pipeline/map_epochs.yaml`（包括已构建的地图版本） |
 | 批次省略字段的默认处理策略 | `config/collection_defaults.yaml`（与 `collection.yaml` 同结构，全团队共用） | 运行报告保存本次实际解析值 |
-| 默认重建参数 | `config/algorithms/reconstruction.yaml` | 单次 `--expert-config` 沿用同一字段路径，优先于项目默认及批次、任务覆盖 |
+| 默认重建参数 | `config/algorithms/reconstruction/` | 单次 `--expert-config` 在 `backends.<后端名>` 下覆盖后端参数，优先于项目默认及批次、任务覆盖 |
+| 独立录像入口默认选项 | `config/algorithms/segment.yaml` 的 `standalone` | `python -m umi.apps.segment` 可用 `--config` 或对应命令行选项覆盖 |
 | 多地图采集顺序与 epoch 规划 | `.pipeline/map_epochs.yaml` | 结果 `data/episode.json` 记录最终选择及选择理由 |
 | 当前批次绑定的默认地图 | `.pipeline/manifest.yaml.map` | 地图目录中的 `manifest.json` 是该不可变版本的完整身份和资产清单 |
 | 任务最终使用的地图 | `umi.scene.collection.batch.read_episode()` 解析出的 `map_selection` | 结果文件只保存解析后的不可变证据，不重新推断 |

@@ -27,11 +27,6 @@ def transform(pose, points):
     return np.asarray(points) @ pose[:3, :3].T + pose[:3, 3]
 
 
-def skew(point):
-    x, y, z = point
-    return np.array([[0., -z, y], [z, 0., -x], [-y, x, 0.]])
-
-
 def skew_batch(vectors):
     """Return cross-product matrices for a batch of 3-vectors."""
     result = np.zeros((len(vectors), 3, 3))

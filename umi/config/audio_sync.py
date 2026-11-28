@@ -16,6 +16,7 @@ AUDIO_SYNC_RECIPES = {
     'specialist': 'specialist_audio_envelope_xcorr_v1',
     'kiwi': 'kiwi_audio_landmarks_gcc_phat_v3',
 }
+KIWI_FALLBACK_RECIPE = 'specialist_envelope_verified_in_audio_windows_v2'
 
 
 DIRECTORY = ALGORITHM_DIRECTORY / 'audio_sync'

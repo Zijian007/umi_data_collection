@@ -13,7 +13,8 @@ from umi.core.timing import video_to_imu_seconds
 from umi.devices import selection
 from umi.devices.calibration_assets import read_basalt
 from umi.infra.provenance import file_hash
-from umi.reconstruction.estimation import mapping, trajectory_metrics
+from umi.reconstruction import mapping
+from umi.reconstruction.estimation import trajectory_metrics
 from umi.reconstruction.estimation.fixed_map import fusion
 from umi.reconstruction.estimation.fixed_map.parameters import FixedMapParameters
 from umi.scene.inputs.recordings import prepare_recording
